@@ -16,7 +16,7 @@ verifies what actually changed on disk, and records tamper-evident security evid
 ## Install
 
 ```bash
-cargo install --path .        # requires Rust 1.87+ and Git
+cargo install --path .        # requires Rust 1.89+ and Git
 crane --version
 ```
 

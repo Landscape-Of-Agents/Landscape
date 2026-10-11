@@ -137,7 +137,7 @@ pub(crate) fn init(args: &[String]) -> Result<(), String> {
     println!("  public key:     {}", manifest.public_key);
     match crate::telemetry::ingest::endpoint() {
         Some(url) => println!(
-            "  telemetry:      events and metrics are uploaded to {url}, signed with this key (set CRANE_INGEST_URL=off to keep them local)"
+            "  telemetry:      events and metrics are uploaded to {url}, signed with this machine's upload key (set CRANE_INGEST_URL=off to keep them local)"
         ),
         None => println!("  telemetry:      local only (no ingestion service in this build)"),
     }

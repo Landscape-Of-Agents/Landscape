@@ -13,7 +13,7 @@ pub(crate) mod crypto;
 use std::env;
 use std::fs;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -78,6 +78,63 @@ pub(crate) fn crane_home() -> Result<PathBuf, String> {
         .or_else(|| env::var_os("HOME").filter(|value| !value.is_empty()))
         .map(|home| PathBuf::from(home).join(".crane-trust"))
         .ok_or_else(|| "cannot determine the home directory; set CRANE_HOME".into())
+}
+
+/** File of this machine's upload key in the trust directory */
+const INSTALLATION_KEY: &str = "installation.key";
+
+/** Load this machine's upload key, creating it (owner-only) on first use. The key identifies the
+ * machine to the Foxx ingestion service and grants no authority over any repository, so unlike a
+ * repository signing key it is created for agents' hooks as well, and every teammate's machine
+ * uploads without running crane init
+ * Input
+    - None
+ * Output
+    - Result<SigningIdentity, String>
+    - Error if the trust directory cannot be determined or the key cannot be read or written
+*/
+pub(crate) fn installation_key() -> Result<SigningIdentity, String> {
+    installation_key_in(&crane_home()?)
+}
+
+/** Load or create the upload key in a trust directory. Concurrent first uses agree on one key:
+ * each writes a complete temporary file and links it into place only when no key exists yet, so a
+ * reader never sees a partial key and a key is never replaced
+ * Input
+    - home: &Path - trust directory
+ * Output
+    - Result<SigningIdentity, String>
+*/
+fn installation_key_in(home: &Path) -> Result<SigningIdentity, String> {
+    let path = home.join(INSTALLATION_KEY);
+    let read = || {
+        let seed = fs::read_to_string(&path)
+            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+        SigningIdentity::from_seed_hex(&seed)
+            .map_err(|error| format!("{}: {error}", path.display()))
+    };
+    match fs::metadata(&path) {
+        Ok(_) => return read(),
+        Err(error) if error.kind() != ErrorKind::NotFound => {
+            return Err(format!("could not read {}: {error}", path.display()))
+        }
+        Err(_) => {}
+    }
+    fs::create_dir_all(home).map_err(io_error)?;
+    let identity = SigningIdentity::generate()?;
+    let temporary = home.join(format!(
+        ".{INSTALLATION_KEY}.crane-tmp-{}",
+        crypto::hex(&crypto::random_bytes(8)?)
+    ));
+    fs::write(&temporary, format!("{}\n", identity.seed_hex())).map_err(io_error)?;
+    restrict_to_owner(&temporary)?;
+    let linked = fs::hard_link(&temporary, &path);
+    let _ = fs::remove_file(&temporary);
+    match linked {
+        Ok(()) => Ok(identity),
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => read(),
+        Err(error) => Err(format!("could not create {}: {error}", path.display())),
+    }
 }
 
 /** The latest registry generation this machine has seen, used to detect rollback of .crane
@@ -288,5 +345,35 @@ impl TrustStore {
         };
         let text = serde_json::to_string_pretty(&anchor).map_err(io_error)?;
         write_atomic(&self.repo_dir.join("anchor.json"), text.as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::installation_key_in;
+
+    /** Check that concurrent first uses create one upload key and later uses load it
+     * Input
+        - None
+     * Output
+        - None (panics on failure)
+    */
+    #[test]
+    fn installation_key_is_created_once() {
+        let home = tempfile::tempdir().unwrap();
+        let keys = std::thread::scope(|scope| {
+            let handles = (0..8)
+                .map(|_| scope.spawn(|| installation_key_in(home.path()).unwrap().public_hex()))
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<std::collections::BTreeSet<_>>()
+        });
+        assert_eq!(keys.len(), 1, "{keys:?}");
+        let again = installation_key_in(home.path()).unwrap().public_hex();
+        assert!(keys.contains(&again));
+        let leftovers = std::fs::read_dir(home.path()).unwrap().count();
+        assert_eq!(leftovers, 1, "only installation.key remains");
     }
 }

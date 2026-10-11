@@ -1,9 +1,11 @@
 // Zero-setup upload of the evidence to the Foxx ingestion service. Every build knows its service:
 // DEFAULT_INGEST_URL, or CRANE_DEFAULT_INGEST_URL when it is set at build time, and CRANE_INGEST_URL
-// overrides it at run time ("off" keeps everything local). The CLI never holds
-// database credentials: it sends batches over HTTPS, and every request is signed with the
-// repository's own Ed25519 key (created by crane init), whose public key identifies this
-// installation. The service writes to MongoDB and only ever returns an installation's own records.
+// overrides it at run time ("off" keeps everything local). The CLI never holds database
+// credentials: it sends batches over HTTPS, and every request is signed with this machine's
+// Ed25519 upload key (created automatically on first use, separate from repository signing keys),
+// whose public key identifies the installation. Every teammate's machine therefore uploads, not
+// only the one that ran crane init. The service writes to MongoDB and only ever returns an
+// installation's own records.
 //
 // A sync first asks the service how far each local stream already reached it (moving the local
 // checkpoint back when the service holds less, for example after a restore), then sends everything
@@ -247,7 +249,7 @@ fn save_state(stores: &Stores, state: &SyncState) {
  * Fields
     - base: String - service address
     - repository: String - repository identity
-    - key: SigningIdentity - the repository's signing key, identifying this installation
+    - key: SigningIdentity - this machine's upload key, identifying the installation
     - agent: ureq::Agent - HTTP client
 */
 pub(crate) struct Client {
@@ -258,21 +260,19 @@ pub(crate) struct Client {
 }
 
 impl Client {
-    /** Connect when uploads are on and this machine holds the repository's signing key
+    /** Connect when uploads are on, creating this machine's upload key on first use
      * Input
         - workspace: &Workspace - repository
      * Output
-        - Result<Option<Client>, String>, None when uploads are off or there is no key yet
-        - Error if the address is not HTTPS or the key is unreadable
+        - Result<Option<Client>, String>, None when uploads are off
+        - Error if the address is not HTTPS or the upload key cannot be loaded or created
     */
     pub(crate) fn open(workspace: &Workspace) -> Result<Option<Self>, String> {
         let Some(base) = endpoint() else {
             return Ok(None);
         };
         secure(&base)?;
-        let Some(key) = workspace.trust()?.signing_key()? else {
-            return Ok(None);
-        };
+        let key = crate::trust::installation_key()?;
         Ok(Some(Self {
             base,
             repository: workspace.repository_id.clone(),

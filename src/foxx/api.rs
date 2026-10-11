@@ -152,7 +152,7 @@ fn health(workspace: &Workspace, snapshot: &Snapshot) -> Value {
             "local": "trust-directory runtime folder (append-only JSON lines)",
             "source": snapshot.source,
             "source_error": snapshot.source_error,
-            "service": if crate::telemetry::sync::configured(workspace) {
+            "service": if crate::telemetry::sync::configured() {
                 crate::telemetry::ingest::endpoint().unwrap_or_default()
             } else {
                 "off".into()

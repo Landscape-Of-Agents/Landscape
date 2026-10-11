@@ -320,4 +320,39 @@ fn deployed_service_round_trip() {
         response.contains(&format!("\"events\":{local_events}")),
         "the service holds every local event ({local_events}): {response}"
     );
+    // A teammate's machine: same clone, its own trust directory, no repository signing key
+    let owner_home = fixture.home.clone();
+    fixture.home = fixture.root.path().join("teammate-trust");
+    let _ = fixture.command(&["session", "."]).output().unwrap();
+    let synced = fixture.ok(&["agent", "sync"]);
+    assert!(synced.contains("Synchronized"), "{synced}");
+    assert!(
+        !fixture.home.join("keys").exists(),
+        "the teammate never needed a repository signing key"
+    );
+    let teammate_key = std::fs::read_to_string(fixture.home.join("installation.key")).unwrap();
+    let owner_key = std::fs::read_to_string(owner_home.join("installation.key")).unwrap();
+    assert_ne!(
+        teammate_key, owner_key,
+        "each machine has its own upload key"
+    );
+    let teammate_events = std::fs::read_to_string(
+        std::fs::read_dir(fixture.home.join("repos"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path()
+            .join("runtime/events.jsonl"),
+    )
+    .unwrap()
+    .lines()
+    .count();
+    assert_ne!(teammate_events, local_events);
+    let (response, _) = dashboard(&fixture, "/api/health");
+    assert!(response.contains("\"source\":\"service\""), "{response}");
+    assert!(
+        response.contains(&format!("\"events\":{teammate_events}")),
+        "the teammate reads exactly its own {teammate_events} events: {response}"
+    );
 }

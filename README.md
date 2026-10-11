@@ -99,13 +99,15 @@ context_packs:
 ## Telemetry upload (Foxx service)
 
 Crane uploads events, metrics, sessions, tool calls, alerts, and governance history to the Foxx
-ingestion service (`https://agentscript-service.onrender.com`), which stores them in MongoDB. Nothing needs to be set up: uploads start
-after `crane init` and happen when a tool call ends, when a session ends, after every command, and
-every 60 seconds. Hooks never wait for the network, and the local evidence stays authoritative
-when the service is unreachable.
+ingestion service (`https://agentscript-service.onrender.com`), which stores them in MongoDB.
+Nothing needs to be set up: uploads happen when a tool call ends, when a session ends, after every
+command, and every 60 seconds. Hooks never wait for the network, and the local evidence stays
+authoritative when the service is unreachable.
 
-- Each request is signed with the repository's Ed25519 key from `crane init`. Its public key
-  identifies the installation, and an installation can only add to and read its own records.
+- Each request is signed with the machine's own upload key (`~/.crane-trust/installation.key`,
+  created automatically). Its public key identifies the installation, and an installation can only
+  add to and read its own records. Every teammate's machine uploads, not only the one that ran
+  `crane init`, and the upload key grants no authority over the repository's rules.
 - Crane never holds database credentials. Only the service has the MongoDB connection string.
 - `crane dashboard` reads from the service, and falls back to the local evidence.
 - Set `CRANE_INGEST_URL=off` to keep everything local, or set it to your own service.

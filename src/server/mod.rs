@@ -2,7 +2,7 @@
 // holds MongoDB credentials. Crane installations upload their evidence here and never see the
 // database. TLS is terminated by the hosting platform in front of the service.
 //
-// Every /v1 request must carry an installation's Ed25519 public key, a timestamp within five
+// Every /v1 request must carry an installation's Ed25519 public key (each machine's upload key), a timestamp within five
 // minutes of the service clock, and a signature over the method, path, timestamp, and body digest
 // (see telemetry/ingest.rs). The public key is the installation's identity: every stored record is
 // tagged with it and every read is filtered by it, so an installation can only add to and read its

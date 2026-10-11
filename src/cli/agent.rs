@@ -156,12 +156,12 @@ fn hook(args: &[String]) -> Result<(), String> {
     - None
  * Output
     - Result<(), String>
-    - Error if uploads are off, the repository has no signing key yet, or the upload fails
+    - Error if uploads are off or the upload fails
 */
 fn sync() -> Result<(), String> {
     let workspace = crate::governance::workspace::Workspace::locate()?;
-    if !crate::telemetry::sync::configured(&workspace) {
-        return Err("uploads are off: this build has no ingestion service and CRANE_INGEST_URL is unset or 'off', or the repository has no signing key yet (run 'crane init')".into());
+    if !crate::telemetry::sync::configured() {
+        return Err("uploads are off (CRANE_INGEST_URL is 'off')".into());
     }
     let stores = crate::telemetry::Stores::open(&workspace.trust()?.runtime());
     let flushed = crate::telemetry::ingest::sync(&workspace, &stores)?;

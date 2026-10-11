@@ -105,7 +105,7 @@ pub(crate) fn serve() -> Result<(), String> {
             eprintln!("crane: could not open a browser ({error}); open the URL above manually");
         }
     }
-    if crate::telemetry::sync::configured(&workspace) {
+    if crate::telemetry::sync::configured() {
         let stores = crate::telemetry::Stores::open(&workspace.trust()?.runtime());
         match crate::telemetry::ingest::sync(&workspace, &stores) {
             Ok(flushed) => println!(

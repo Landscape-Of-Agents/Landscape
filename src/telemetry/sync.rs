@@ -15,17 +15,15 @@ use crate::platform::now_millis;
 /** Default interval of the periodic sync, in seconds */
 pub(crate) const DEFAULT_INTERVAL_SECONDS: u64 = 60;
 
-/** Report whether uploads are on and this machine holds the repository's signing key
+/** Report whether uploads are on (the upload key is created on first use, so nothing else is
+ * needed)
  * Input
-    - workspace: &Workspace - repository
+    - None
  * Output
     - bool
 */
-pub(crate) fn configured(workspace: &Workspace) -> bool {
+pub(crate) fn configured() -> bool {
     ingest::endpoint().is_some()
-        && workspace
-            .trust()
-            .is_ok_and(|trust| trust.key_path.is_file())
 }
 
 /** Return the periodic sync interval: CRANE_SYNC_SECONDS, at least 5
@@ -49,7 +47,7 @@ pub(crate) fn interval_seconds() -> u64 {
     - None (failures to start are ignored; the next trigger retries)
 */
 pub(crate) fn trigger(workspace: &Workspace) {
-    if !configured(workspace) {
+    if !configured() {
         return;
     }
     let Ok(executable) = std::env::current_exe() else {
@@ -112,7 +110,7 @@ fn disinherit_standard_handles() {
     - None
 */
 pub(crate) fn trigger_if_due(workspace: &Workspace, stores: &Stores) {
-    if !configured(workspace) {
+    if !configured() {
         return;
     }
     let last = ingest::state(stores).last_attempt_at;

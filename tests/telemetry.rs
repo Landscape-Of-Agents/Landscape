@@ -400,8 +400,8 @@ fn views_without_activity() {
 }
 
 /** Every command in an initialized repository is recorded as a command.executed event with its
- * outcome (read-only ones included, help and version excluded, URL credentials removed); without
- * MongoDB support, agent sync explains how to enable it
+ * outcome (read-only ones included, help and version excluded, URL credentials removed); with
+ * uploads off, agent sync says so
  * Input
     - None
  * Output
@@ -441,9 +441,7 @@ fn commands_are_audited() {
         .unwrap();
     assert_eq!(failed["execution"], "FAILURE");
     assert!(failed["measurements"][0]["name"] == "command_duration_ms");
-    if !cfg!(feature = "mongodb") {
-        assert!(fixture
-            .fails(&["agent", "sync"])
-            .contains("--features mongodb"));
-    }
+    assert!(fixture
+        .fails(&["agent", "sync"])
+        .contains("uploads are off"));
 }

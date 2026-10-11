@@ -5,7 +5,8 @@
 // rollback anchors) -> selection (anchors, signed registry, location tracker) -> governance
 // (checkpoints, policies, configuration, verification) -> hooks (agent adapters and runtime
 // enforcement) -> telemetry (identity, events, metrics, autonomy ledger, compliance) -> foxx
-// (read-only dashboard) and integrations; cli dispatches the commands.
+// (read-only dashboard) and integrations; cli dispatches the commands. The server feature adds the
+// Foxx ingestion service, which stores every installation's uploads in MongoDB.
 
 mod cli;
 mod foxx;
@@ -15,8 +16,8 @@ mod hooks;
 mod integrations;
 mod platform;
 mod selection;
-#[cfg(feature = "mongodb")]
-mod store;
+#[cfg(feature = "server")]
+mod server;
 mod telemetry;
 mod trust;
 

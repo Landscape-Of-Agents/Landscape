@@ -29,12 +29,14 @@ pub const PAYMENTS: &str = "def charge(amount):\n    fee = amount * 0.03\n    to
     - work: PathBuf - the clone
     - remote: PathBuf - the bare remote
     - home: PathBuf - CRANE_HOME
+    - ingest_url: String - CRANE_INGEST_URL of every command ("off" unless a test sets a service)
 */
 pub struct Fixture {
     pub root: tempfile::TempDir,
     pub work: PathBuf,
     pub remote: PathBuf,
     pub home: PathBuf,
+    pub ingest_url: String,
 }
 
 /** Run git in a directory and assert success
@@ -142,6 +144,7 @@ impl Fixture {
             work,
             remote,
             home,
+            ingest_url: "off".into(),
         }
     }
 
@@ -184,6 +187,7 @@ impl Fixture {
             .env("CRANE_ALLOW_LOCAL_REMOTE", "1")
             .env("CRANE_DASHBOARD_NO_BROWSER", "1")
             .env("CRANE_ALERTS_DRY_RUN", "1")
+            .env("CRANE_INGEST_URL", &self.ingest_url)
             .env_remove("CRANE_TRUSTED_PUBLIC_KEYS")
             .env_remove("CRANE_SESSION_ID")
             .env_remove("CRANE_TASK_ID")

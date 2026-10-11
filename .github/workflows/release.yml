@@ -50,6 +50,9 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build release binary
+        env:
+          # The Foxx ingestion service compiled into the release, so uploads need no setup
+          CRANE_DEFAULT_INGEST_URL: ${{ vars.CRANE_INGEST_URL }}
         run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Package Unix binary
@@ -121,7 +124,7 @@ jobs:
           archive="dist/crane-${RELEASE_TAG}-x86_64-unknown-linux-gnu.tar.gz"
           mkdir unpacked
           tar -xzf "$archive" -C unpacked
-          CRANE_BIN="$PWD/unpacked/crane-${RELEASE_TAG}-x86_64-unknown-linux-gnu/crane" \
+          CRANE_INGEST_URL=off CRANE_BIN="$PWD/unpacked/crane-${RELEASE_TAG}-x86_64-unknown-linux-gnu/crane" \
             bash scripts/smoke_test.sh
 
       - name: Create release

@@ -71,6 +71,8 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["dashboard", ..] => runtime::dashboard(&rest(1)),
         ["agent", ..] => agent::run(&rest(1)),
         ["integrate", ..] => repo::integrate(&rest(1)),
+        #[cfg(feature = "server")]
+        ["server", ..] => crate::server::run(&rest(1)),
         [command, ..] => Err(format!("unknown command '{command}'; run 'crane help'")),
     }
 }
@@ -122,7 +124,7 @@ Agent
   crane agent hooks --profile claude|codex
 
 Integrations
-  crane integrate jira|whatsapp|slack|github|mongodb
+  crane integrate jira|whatsapp|slack|github
 
 Selections are created only by protect and target: Crane inserts language-appropriate anchor
 comments around the lines (the whole file when no lines are given), generates the 8-character

@@ -152,16 +152,12 @@ fn health(workspace: &Workspace, snapshot: &Snapshot) -> Value {
             "local": "trust-directory runtime folder (append-only JSON lines)",
             "source": snapshot.source,
             "source_error": snapshot.source_error,
-            "mongodb": if !cfg!(feature = "mongodb") {
-                "not built (cargo feature 'mongodb')"
-            } else if crate::telemetry::sync::configured(workspace) {
-                "configured"
+            "service": if crate::telemetry::sync::configured(workspace) {
+                crate::telemetry::ingest::endpoint().unwrap_or_default()
             } else {
-                "not configured (crane integrate mongodb)"
+                "off".into()
             },
-            "sync": std::fs::read_to_string(snapshot.stores.directory.join("mongodb-state.json"))
-                .ok()
-                .and_then(|text| serde_json::from_str::<Value>(&text).ok()),
+            "sync": crate::telemetry::ingest::state(&snapshot.stores),
         },
         "mode": "local read-only",
         "now": iso_time(now_millis()),

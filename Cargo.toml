@@ -10,8 +10,8 @@ homepage = "https://github.com/VishuKalier2003/Agentscript"
 
 [features]
 default = []
-# Optional MongoDB persistence for the Foxx control plane (events, ledger, governance snapshots)
-mongodb = ["dep:mongodb"]
+# The Foxx ingestion service ('crane server'), the only component that holds MongoDB credentials
+server = ["dep:mongodb", "dep:tiny_http"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -22,6 +22,9 @@ sha2 = "0.10"
 ed25519-dalek = "2"
 getrandom = "0.3"
 rpassword = "7"
+# HTTPS client of the Foxx ingestion service
+ureq = { version = "2.12", default-features = false, features = ["tls", "json"] }
+tiny_http = { version = "0.12", optional = true }
 mongodb = { version = "3", optional = true, default-features = false, features = ["compat-3-0-0", "rustls-tls", "dns-resolver", "sync"] }
 
 [dev-dependencies]
@@ -32,6 +35,6 @@ name = "crane"
 path = "src/main.rs"
 
 [[test]]
-name = "mongodb"
-path = "tests/mongodb.rs"
-required-features = ["mongodb"]
+name = "ingestion"
+path = "tests/ingestion.rs"
+required-features = ["server"]

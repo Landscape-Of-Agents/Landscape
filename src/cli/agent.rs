@@ -150,34 +150,30 @@ fn hook(args: &[String]) -> Result<(), String> {
     runtime::run(kind, event)
 }
 
-/** Copy the local evidence to MongoDB now (internal: started detached by hooks, commands, and the
- * periodic sync)
+/** Upload the local evidence to the Foxx ingestion service now (internal: started detached by
+ * hooks, commands, and the periodic sync)
  * Input
     - None
  * Output
     - Result<(), String>
-    - Error if this build has no MongoDB support or the sync fails
+    - Error if uploads are off, the repository has no signing key yet, or the upload fails
 */
 fn sync() -> Result<(), String> {
-    #[cfg(feature = "mongodb")]
-    {
-        let workspace = crate::governance::workspace::Workspace::locate()?;
-        let stores = crate::telemetry::Stores::open(&workspace.trust()?.runtime());
-        let flushed = crate::store::sync::sync(&workspace, &stores)?;
-        println!(
-            "Synchronized {} events, {} ledger entries, {} governance changes, {} alerts, {} metric rollups ({} already present{})",
-            flushed.events,
-            flushed.ledger,
-            flushed.audit,
-            flushed.alerts,
-            flushed.rollups,
-            flushed.duplicates,
-            if flushed.reset { "; re-sent records missing from MongoDB" } else { "" }
-        );
-        Ok(())
+    let workspace = crate::governance::workspace::Workspace::locate()?;
+    if !crate::telemetry::sync::configured(&workspace) {
+        return Err("uploads are off: this build has no ingestion service and CRANE_INGEST_URL is unset or 'off', or the repository has no signing key yet (run 'crane init')".into());
     }
-    #[cfg(not(feature = "mongodb"))]
-    {
-        Err("this crane was built without MongoDB support; rebuild with --features mongodb".into())
-    }
+    let stores = crate::telemetry::Stores::open(&workspace.trust()?.runtime());
+    let flushed = crate::telemetry::ingest::sync(&workspace, &stores)?;
+    println!(
+        "Synchronized {} events, {} ledger entries, {} governance changes, {} alerts, {} metric rollups ({} already present{})",
+        flushed.events,
+        flushed.ledger,
+        flushed.audit,
+        flushed.alerts,
+        flushed.rollups,
+        flushed.duplicates,
+        if flushed.reset { "; re-sent records missing from the service" } else { "" }
+    );
+    Ok(())
 }

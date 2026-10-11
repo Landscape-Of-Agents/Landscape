@@ -1,55 +1,48 @@
-// When to copy evidence to MongoDB. Data reaches the database at the moment it is complete: a tool
-// call when it ends (post-tool hook), a session when it ends (stop and session-end hooks), a
-// governance or other Crane command when it finishes, and everything else periodically (any Crane
-// run or hook starts a sync when the last attempt is older than the configured interval, and the
-// dashboard syncs on a timer). A sync runs as a detached 'crane agent sync' process with its output
-// discarded, so a hook or command never waits for the network and a slow or unreachable database
-// never delays or weakens enforcement.
+// When to upload evidence to the Foxx ingestion service. Data leaves the machine at the moment it is
+// complete: a tool call when it ends (post-tool hook), a session when it ends (stop and session-end
+// hooks), a governance or other Crane command when it finishes, and everything else periodically
+// (any Crane run or hook starts a sync when the last attempt is older than CRANE_SYNC_SECONDS, and
+// the dashboard syncs on a timer). A sync runs as a detached 'crane agent sync' process with its
+// output discarded, so a hook or command never waits for the network and a slow or unreachable
+// service never delays or weakens enforcement. Nothing has to be configured: see ingest.rs.
 
 use std::process::{Command, Stdio};
 
-use serde_json::Value;
-
-use super::Stores;
+use super::{ingest, Stores};
 use crate::governance::workspace::Workspace;
-use crate::integrations;
 use crate::platform::now_millis;
 
 /** Default interval of the periodic sync, in seconds */
 pub(crate) const DEFAULT_INTERVAL_SECONDS: u64 = 60;
 
-/** Report whether this build can sync and MongoDB is configured (the mongodb integration, or the
- * CRANE_MONGODB_URI fallback for CI)
+/** Report whether uploads are on and this machine holds the repository's signing key
  * Input
     - workspace: &Workspace - repository
  * Output
     - bool
 */
 pub(crate) fn configured(workspace: &Workspace) -> bool {
-    cfg!(feature = "mongodb")
-        && (integrations::load(workspace, "mongodb").is_some()
-            || std::env::var("CRANE_MONGODB_URI").is_ok_and(|uri| !uri.is_empty()))
+    ingest::endpoint().is_some()
+        && workspace
+            .trust()
+            .is_ok_and(|trust| trust.key_path.is_file())
 }
 
-/** Return the periodic sync interval
+/** Return the periodic sync interval: CRANE_SYNC_SECONDS, at least 5
  * Input
-    - workspace: &Workspace - repository
+    - None
  * Output
     - u64 seconds
 */
-pub(crate) fn interval_seconds(workspace: &Workspace) -> u64 {
-    integrations::load(workspace, "mongodb")
-        .and_then(|integration| {
-            integration
-                .settings
-                .get("sync_seconds")
-                .and_then(Value::as_u64)
-        })
+pub(crate) fn interval_seconds() -> u64 {
+    std::env::var("CRANE_SYNC_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
         .unwrap_or(DEFAULT_INTERVAL_SECONDS)
         .max(5)
 }
 
-/** Start a detached sync now, when MongoDB is configured
+/** Start a detached sync now, when uploads are on
  * Input
     - workspace: &Workspace - repository
  * Output
@@ -122,12 +115,8 @@ pub(crate) fn trigger_if_due(workspace: &Workspace, stores: &Stores) {
     if !configured(workspace) {
         return;
     }
-    let last = std::fs::read_to_string(stores.directory.join("mongodb-state.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|state| state["last_attempt_at"].as_u64())
-        .unwrap_or(0);
-    if now_millis().saturating_sub(last) >= interval_seconds(workspace) * 1000 {
+    let last = ingest::state(stores).last_attempt_at;
+    if now_millis().saturating_sub(last) >= interval_seconds() * 1000 {
         trigger(workspace);
     }
 }

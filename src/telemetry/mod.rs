@@ -6,6 +6,7 @@ pub(crate) mod alerts;
 pub(crate) mod compliance;
 pub(crate) mod events;
 pub(crate) mod identity;
+pub(crate) mod ingest;
 pub(crate) mod ledger;
 pub(crate) mod metrics;
 pub(crate) mod model;

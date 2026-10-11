@@ -16,7 +16,7 @@ verifies what actually changed on disk, and records tamper-evident security evid
 ## Install
 
 ```bash
-cargo install --path .        # requires Rust 1.85+ and Git
+cargo install --path .        # requires Rust 1.87+ and Git
 crane --version
 ```
 
@@ -60,7 +60,7 @@ comments); whitespace-only changes never satisfy a target.
 | Policies | `create policy NAME FILENAME`, `add policy NAME marker MARKER`, `policy NAME status` |
 | Runtime | `task current [ID]`, `task .`, `session current [ID]`, `session .`, `dashboard` |
 | Agents | `agent install\|uninstall\|hooks --profile claude\|codex` |
-| Integrations | `integrate jira\|slack\|whatsapp\|github\|mongodb` |
+| Integrations | `integrate jira\|slack\|whatsapp\|github` |
 
 `protect` and `target` options: `policy NAME`, `checkpoint NAME`, `start-line N`, `end-line N`,
 `name LABEL`. Run `crane help` for details. Governance commands refuse to run inside an AI agent
@@ -87,24 +87,44 @@ context_packs:
     content: ["Payment processing must be idempotent."]
 ```
 
-## Integrations, alerts, and MongoDB
+## Integrations and alerts
 
-- `crane integrate slack|jira|whatsapp|github|mongodb` stores settings outside the repository and can test
+- `crane integrate slack|jira|whatsapp|github` stores settings outside the repository and can test
   the connection. Security alerts go to Slack and WhatsApp, and to the Jira issue in
   `CRANE_TASK_ID`.
 - `.github/workflows/pr-notify.yml` posts pull-request activity to Slack and comments on the Jira
   issue named in the PR title or branch. Set the repository secrets `SLACK_WEBHOOK_URL`,
   `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN`.
-- MongoDB: build with `cargo install --path . --features mongodb`, then run
-  `crane integrate mongodb` (Atlas or self-managed). The connection string is stored owner-only
-  in `~/.crane-trust`, never in the repository or an agent's environment. Data is copied by a
-  background sync when a tool call ends, when a session ends, after every command, and
-  periodically; the dashboard then reads from MongoDB. Hooks never wait for the database.
+
+## Telemetry upload (Foxx service)
+
+Release builds upload events, metrics, sessions, tool calls, alerts, and governance history to the
+Foxx ingestion service, which stores them in MongoDB. Nothing needs to be set up: uploads start
+after `crane init` and happen when a tool call ends, when a session ends, after every command, and
+every 60 seconds. Hooks never wait for the network, and the local evidence stays authoritative
+when the service is unreachable.
+
+- Each request is signed with the repository's Ed25519 key from `crane init`. Its public key
+  identifies the installation, and an installation can only add to and read its own records.
+- Crane never holds database credentials. Only the service has the MongoDB connection string.
+- `crane dashboard` reads from the service, and falls back to the local evidence.
+- Set `CRANE_INGEST_URL=off` to keep everything local, or set it to your own service.
+
+Run the service yourself:
+
+```bash
+docker build -t crane-ingest .
+docker run -p 8080:8080 -e CRANE_MONGODB_URI='mongodb+srv://...' crane-ingest
+# or: cargo run --release --features server -- server --listen 0.0.0.0:8080
+```
+
+Put it behind HTTPS, then build releases with `CRANE_DEFAULT_INGEST_URL=https://your-host` (the
+release workflow reads the repository variable `CRANE_INGEST_URL`).
 
 ## Environment variables
 
 All optional. Crane does not read `.env` files; set them in your shell or CI. Credentials for
-MongoDB, Slack, Jira, WhatsApp, and GitHub are set with `crane integrate NAME` instead.
+Slack, Jira, WhatsApp, and GitHub are set with `crane integrate NAME` instead.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
@@ -117,8 +137,10 @@ MongoDB, Slack, Jira, WhatsApp, and GitHub are set with `crane integrate NAME` i
 | `CRANE_ENVIRONMENT` | Environment label on events | `local` (`ci` when `CI` is set) |
 | `CRANE_DASHBOARD_PORT`, `CRANE_DASHBOARD_NO_BROWSER` | Dashboard port; `1` skips opening a browser | free port, opens browser |
 | `CRANE_ALERTS_DRY_RUN` | `1` records alerts without delivering them | `0` |
-| `CRANE_MONGODB_URI`, `CRANE_MONGODB_DB`, `CRANE_MONGODB_EVENT_RETENTION_DAYS` | MongoDB fallback for CI only | unset, `foxx`, `30` |
-| `CRANE_ALLOW_LOCAL_REMOTE`, `CRANE_TEST_MONGODB_URI` | Offline mirrors and the live MongoDB test suite | unset |
+| `CRANE_INGEST_URL` | Foxx ingestion service; `off` keeps telemetry local | the release's service |
+| `CRANE_SYNC_SECONDS` | Periodic upload interval | `60` |
+| `CRANE_MONGODB_URI`, `CRANE_MONGODB_DB`, `CRANE_MONGODB_EVENT_RETENTION_DAYS` | `crane server` only (never on developer machines) | required, `foxx`, `30` |
+| `CRANE_ALLOW_LOCAL_REMOTE`, `CRANE_TEST_MONGODB_URI` | Offline mirrors and the live ingestion test suite | unset |
 
 ## Security notes
 
@@ -131,8 +153,8 @@ usage are not observed by hooks and are reported as unsupported.
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --all-targets --features server -- -D warnings
+cargo test --features server   # set CRANE_TEST_MONGODB_URI to include the live MongoDB test
 bash scripts/smoke_test.sh
 ```
 

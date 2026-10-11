@@ -135,6 +135,12 @@ pub(crate) fn init(args: &[String]) -> Result<(), String> {
         trust.key_path.display()
     );
     println!("  public key:     {}", manifest.public_key);
+    match crate::telemetry::ingest::endpoint() {
+        Some(url) => println!(
+            "  telemetry:      events and metrics are uploaded to {url}, signed with this key (set CRANE_INGEST_URL=off to keep them local)"
+        ),
+        None => println!("  telemetry:      local only (no ingestion service in this build)"),
+    }
     println!("Next: 'crane checkpoint NAME' to record a trusted baseline, then 'crane protect FILE ...'.");
     Ok(())
 }

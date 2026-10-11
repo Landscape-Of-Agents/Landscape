@@ -18,7 +18,7 @@ use crate::trust::require_human;
 use prompt::Prompter;
 
 /** Supported integrations */
-pub(crate) const NAMES: &[&str] = &["jira", "whatsapp", "slack", "github", "mongodb"];
+pub(crate) const NAMES: &[&str] = &["jira", "whatsapp", "slack", "github"];
 
 /** A stored integration (non-secret part)
  * Fields
@@ -565,85 +565,6 @@ fn github(
     Ok(())
 }
 
-/** Ask for the MongoDB connection: deployment, connection string (kept owner-only in the trust
- * directory, never in an agent's environment), database, telemetry retention, and sync interval
- * Input
-    - prompter: &mut Prompter - prompts
-    - settings: &mut Map<String, Value> - non-secret settings
-    - secrets: &mut Map<String, Value> - secrets
- * Output
-    - Result<(), String>
-*/
-fn mongodb(
-    prompter: &mut Prompter,
-    settings: &mut Map<String, Value>,
-    secrets: &mut Map<String, Value>,
-) -> Result<(), String> {
-    let deployment = prompter.choice(
-        "MongoDB deployment",
-        &["MongoDB Atlas", "Self-managed MongoDB (5.0 or later)"],
-        0,
-    )?;
-    settings.insert(
-        "deployment".into(),
-        json!(if deployment == 0 {
-            "atlas"
-        } else {
-            "self_managed"
-        }),
-    );
-    secrets.insert(
-        "uri".into(),
-        json!(prompter.secret("Connection string", false, &|value| {
-            if value.starts_with("mongodb+srv://") || value.starts_with("mongodb://") {
-                Ok(())
-            } else {
-                Err("a connection string starts with mongodb+srv:// or mongodb://".into())
-            }
-        })?),
-    );
-    settings.insert(
-        "database".into(),
-        json!(prompter.text("Database name", Some("foxx"), &|value| {
-            if !value.is_empty()
-                && value.len() <= 63
-                && value.chars().all(|character| {
-                    character.is_ascii_alphanumeric() || character == '_' || character == '-'
-                })
-            {
-                Ok(())
-            } else {
-                Err("use letters, digits, '_' or '-'".into())
-            }
-        })?),
-    );
-    let number = |low: u64, high: u64| {
-        move |value: &str| match value.parse::<u64>() {
-            Ok(number) if (low..=high).contains(&number) => Ok(()),
-            _ => Err(format!("enter a number from {low} to {high}")),
-        }
-    };
-    let retention = prompter.text(
-        "Days to keep routine telemetry events",
-        Some("30"),
-        &number(1, 3650),
-    )?;
-    settings.insert(
-        "retention_days".into(),
-        json!(retention.parse::<u64>().unwrap_or(30)),
-    );
-    let interval = prompter.text(
-        "Periodic sync interval in seconds",
-        Some("60"),
-        &number(5, 86_400),
-    )?;
-    settings.insert(
-        "sync_seconds".into(),
-        json!(interval.parse::<u64>().unwrap_or(60)),
-    );
-    Ok(())
-}
-
 /** Configure an integration interactively and store it
  * Input
     - name: &str - jira, whatsapp, slack, or github
@@ -655,7 +576,7 @@ pub(crate) fn configure(name: &str) -> Result<Integration, String> {
     let name = name.to_ascii_lowercase();
     if !NAMES.contains(&name.as_str()) {
         return Err(format!(
-            "unknown integration '{name}'; use jira, whatsapp, slack, github, or mongodb"
+            "unknown integration '{name}'; use jira, whatsapp, slack, or github"
         ));
     }
     require_human(&format!("crane integrate {name}"))?;
@@ -671,7 +592,6 @@ pub(crate) fn configure(name: &str) -> Result<Integration, String> {
         "jira" => jira(&mut prompter, &mut settings, &mut secrets)?,
         "whatsapp" => whatsapp(&mut prompter, &mut settings, &mut secrets)?,
         "slack" => slack(&mut prompter, &mut settings, &mut secrets)?,
-        "mongodb" => mongodb(&mut prompter, &mut settings, &mut secrets)?,
         _ => github(&mut prompter, &mut settings, &mut secrets, &workspace)?,
     }
     println!("Summary:");
@@ -786,26 +706,6 @@ pub(crate) fn verify(workspace: &Workspace, integration: &Integration) -> Result
         )
     };
     match integration.name.as_str() {
-        "mongodb" => {
-            #[cfg(feature = "mongodb")]
-            {
-                let settings = crate::store::settings(workspace)
-                    .ok_or("the MongoDB connection string is missing")?;
-                let database = crate::store::connect(&settings)?;
-                let version = crate::store::migrate(&database)?;
-                Ok(format!(
-                    "connected to database {} and applied schema version {version}",
-                    settings.database
-                ))
-            }
-            #[cfg(not(feature = "mongodb"))]
-            {
-                Err(
-                    "this crane was built without MongoDB support; rebuild with --features mongodb"
-                        .into(),
-                )
-            }
-        }
         "slack" => {
             let text = "Crane is connected: this channel will receive Crane security alerts.";
             let (status, body) = match setting(integration, "mode")?.as_str() {

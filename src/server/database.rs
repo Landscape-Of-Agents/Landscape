@@ -1,20 +1,9 @@
-// MongoDB persistence for the Foxx control plane (cargo feature "mongodb"). Crane never needs the
-// database to decide: hooks and commands write to the local hash-chained stores first, and a
-// detached sync process copies them to MongoDB when a tool call ends, when a session ends, after
-// every command, and periodically, idempotently, so a database outage never weakens enforcement
-// and a retried copy never duplicates events or charges. The dashboard reads from MongoDB.
-//
-// The connection string is configured with 'crane integrate mongodb' and kept owner-only in the
-// trust directory, never in the repository or in an agent's environment; CRANE_MONGODB_URI is
-// honored only as a fallback for CI machines. Migrations are versioned and idempotent: collections
-// get $jsonSchema validators, unique indexes enforce idempotency, filter indexes serve the
-// dashboard, and a TTL index expires only routine telemetry (events at or below MEDIUM severity);
-// security evidence, the ledger, alerts, and governance history are never expired by TTL. MongoDB
-// is append-only through this interface, not immutable by itself, which is why every copied record
-// keeps its SHA-512 chain digest for independent verification.
-
-pub(crate) mod read;
-pub(crate) mod sync;
+// The ingestion service's MongoDB database. Migrations are versioned and idempotent: collections
+// get $jsonSchema validators, unique indexes enforce idempotency per installation, filter indexes
+// serve the dashboard, and a TTL index expires only routine telemetry (events at or below MEDIUM
+// severity); security evidence, the ledger, alerts, and governance history are never expired.
+// MongoDB is append-only through this service, not immutable by itself, which is why every stored
+// record keeps its SHA-512 chain digest for independent verification.
 
 use std::time::Duration;
 
@@ -22,16 +11,13 @@ use mongodb::bson::{self, doc, Bson, Document};
 use mongodb::options::{ClientOptions, IndexOptions};
 use mongodb::sync::{Client, Database};
 use mongodb::IndexModel;
-use serde_json::Value;
 
-use crate::governance::workspace::Workspace;
-use crate::integrations;
 use crate::platform::io_error;
 
-/** Current schema version applied by the migrations */
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+/** Current schema version applied by the migrations (3: records keyed by installation) */
+pub(crate) const SCHEMA_VERSION: i64 = 3;
 
-/** How Crane reaches its database
+/** How the service reaches its database
  * Fields
     - uri: String - connection string (secret)
     - database: String - database name
@@ -44,51 +30,31 @@ pub(crate) struct Settings {
     pub(crate) retention_days: i64,
 }
 
-/** Read the connection settings: the mongodb integration in the trust directory, or else the
- * CRANE_MONGODB_URI fallback for CI
- * Input
-    - workspace: &Workspace - repository
- * Output
-    - Option<Settings>, None when MongoDB is not configured
-*/
-pub(crate) fn settings(workspace: &Workspace) -> Option<Settings> {
-    if let Some(integration) = integrations::load(workspace, "mongodb") {
-        let uri = integrations::secrets(workspace, "mongodb")
-            .get("uri")
-            .and_then(Value::as_str)
-            .map(String::from)?;
-        let number = |key: &str, default: u64| {
-            integration
-                .settings
-                .get(key)
-                .and_then(Value::as_u64)
-                .unwrap_or(default)
-        };
-        return Some(Settings {
-            uri,
-            database: integration
-                .settings
-                .get("database")
-                .and_then(Value::as_str)
-                .unwrap_or("foxx")
-                .to_string(),
-            retention_days: number("retention_days", 30) as i64,
-        });
-    }
-    let uri = std::env::var("CRANE_MONGODB_URI")
-        .ok()
-        .filter(|uri| !uri.is_empty())?;
-    Some(Settings {
-        uri,
-        database: std::env::var("CRANE_MONGODB_DB").unwrap_or_else(|_| "foxx".into()),
-        retention_days: std::env::var("CRANE_MONGODB_EVENT_RETENTION_DAYS")
+impl Settings {
+    /** Read the settings from the service's environment
+     * Input
+        - None
+     * Output
+        - Result<Settings, String>
+        - Error if CRANE_MONGODB_URI is not set
+    */
+    pub(crate) fn from_environment() -> Result<Self, String> {
+        let uri = std::env::var("CRANE_MONGODB_URI")
             .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(30),
-    })
+            .filter(|uri| !uri.is_empty())
+            .ok_or("set CRANE_MONGODB_URI in the service's environment")?;
+        Ok(Self {
+            uri,
+            database: std::env::var("CRANE_MONGODB_DB").unwrap_or_else(|_| "foxx".into()),
+            retention_days: std::env::var("CRANE_MONGODB_EVENT_RETENTION_DAYS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(30),
+        })
+    }
 }
 
-/** Open and ping a database
+/** Open and ping the database
  * Input
     - settings: &Settings - connection settings
  * Output
@@ -102,32 +68,29 @@ pub(crate) fn connect(settings: &Settings) -> Result<Database, String> {
             redact_uri(&error.to_string())
         )
     })?;
-    options.app_name = Some("crane".into());
+    options.app_name = Some("crane-server".into());
     options.server_selection_timeout = Some(Duration::from_secs(8));
     options.connect_timeout = Some(Duration::from_secs(8));
-    options.max_pool_size = Some(4);
+    options.max_pool_size = Some(16);
     options.retry_writes = Some(true);
     let client = Client::with_options(options).map_err(|error| redact_uri(&error.to_string()))?;
     let database = client.database(&settings.database);
-    database
-        .run_command(doc! {"ping": 1})
-        .run()
-        .map_err(|error| format!("MongoDB is unreachable: {}", redact_uri(&error.to_string())))?;
+    ping(&database).map_err(|error| format!("MongoDB is unreachable: {}", redact_uri(&error)))?;
     Ok(database)
 }
 
-/** Open the configured database
+/** Check that the database answers
  * Input
-    - workspace: &Workspace - repository
+    - database: &Database - database
  * Output
-    - Result<Option<(Database, Settings)>, String>, None when MongoDB is not configured
-    - Error if it is configured but unreachable
+    - Result<(), String>
 */
-pub(crate) fn database(workspace: &Workspace) -> Result<Option<(Database, Settings)>, String> {
-    let Some(settings) = settings(workspace) else {
-        return Ok(None);
-    };
-    connect(&settings).map(|database| Some((database, settings)))
+pub(crate) fn ping(database: &Database) -> Result<(), String> {
+    database
+        .run_command(doc! {"ping": 1})
+        .run()
+        .map(|_| ())
+        .map_err(io_error)
 }
 
 /** Remove credentials from a connection-related message
@@ -168,28 +131,33 @@ struct Collection {
 const COLLECTIONS: &[Collection] = &[
     Collection {
         name: "repositories",
-        required: &["repository_id"],
-        indexes: &[(&[("repository_id", 1)], true)],
+        required: &["repository_id", "installation"],
+        indexes: &[(&[("repository_id", 1), ("installation", 1)], true)],
     },
     Collection {
         name: "agents",
-        required: &["agent_id", "repository_id"],
-        indexes: &[(&[("agent_id", 1)], true)],
+        required: &["agent_id", "repository_id", "installation"],
+        indexes: &[(&[("installation", 1), ("agent_id", 1)], true)],
     },
     Collection {
         name: "sessions",
-        required: &["foxx_session_id", "repository_id"],
+        required: &["foxx_session_id", "repository_id", "installation"],
         indexes: &[
-            (&[("foxx_session_id", 1)], true),
+            (&[("installation", 1), ("foxx_session_id", 1)], true),
             (&[("repository_id", 1), ("last_seen_at", -1)], false),
             (&[("agent_id", 1), ("started_at", -1)], false),
         ],
     },
     Collection {
         name: "tasks",
-        required: &["foxx_task_id", "foxx_session_id", "repository_id"],
+        required: &[
+            "foxx_task_id",
+            "foxx_session_id",
+            "repository_id",
+            "installation",
+        ],
         indexes: &[
-            (&[("foxx_task_id", 1)], true),
+            (&[("installation", 1), ("foxx_task_id", 1)], true),
             (&[("foxx_session_id", 1), ("started_at", -1)], false),
             (&[("external_task_id", 1)], false),
         ],
@@ -200,13 +168,17 @@ const COLLECTIONS: &[Collection] = &[
             "event_id",
             "event_type",
             "repository_id",
+            "installation",
             "sequence",
             "digest",
             "occurred_at",
         ],
         indexes: &[
-            (&[("event_id", 1)], true),
-            (&[("repository_id", 1), ("sequence", 1)], true),
+            (&[("installation", 1), ("event_id", 1)], true),
+            (
+                &[("repository_id", 1), ("installation", 1), ("sequence", 1)],
+                true,
+            ),
             (&[("repository_id", 1), ("occurred_at", -1)], false),
             (&[("scope.foxx_session_id", 1), ("sequence", 1)], false),
             (&[("scope.foxx_task_id", 1), ("sequence", 1)], false),
@@ -227,49 +199,95 @@ const COLLECTIONS: &[Collection] = &[
             "idempotency_key",
             "digest",
             "repository_id",
+            "installation",
         ],
         indexes: &[
-            (&[("idempotency_key", 1)], true),
-            (&[("repository_id", 1), ("seq", 1)], true),
+            (&[("installation", 1), ("idempotency_key", 1)], true),
+            (
+                &[("repository_id", 1), ("installation", 1), ("seq", 1)],
+                true,
+            ),
             (&[("session", 1), ("seq", 1)], false),
         ],
     },
     Collection {
         name: "selection_registry",
-        required: &["id", "repository_id", "record_digest", "signature"],
-        indexes: &[(&[("repository_id", 1), ("id", 1)], true)],
+        required: &[
+            "id",
+            "repository_id",
+            "installation",
+            "record_digest",
+            "signature",
+        ],
+        indexes: &[(
+            &[("repository_id", 1), ("installation", 1), ("id", 1)],
+            true,
+        )],
     },
     Collection {
         name: "policy_versions",
-        required: &["repository_id", "generation", "head", "signature"],
-        indexes: &[(&[("repository_id", 1), ("generation", 1)], true)],
+        required: &[
+            "repository_id",
+            "installation",
+            "generation",
+            "head",
+            "signature",
+        ],
+        indexes: &[(
+            &[("repository_id", 1), ("installation", 1), ("generation", 1)],
+            true,
+        )],
     },
     Collection {
         name: "governance_changes",
-        required: &["repository_id", "seq", "action", "digest"],
-        indexes: &[(&[("repository_id", 1), ("seq", 1)], true)],
+        required: &["repository_id", "installation", "seq", "action", "digest"],
+        indexes: &[(
+            &[("repository_id", 1), ("installation", 1), ("seq", 1)],
+            true,
+        )],
     },
     Collection {
         name: "alerts",
-        required: &["alert_id", "kind", "repository_id"],
+        required: &["alert_id", "kind", "repository_id", "installation"],
         indexes: &[
-            (&[("repository_id", 1), ("alert_id", 1)], true),
+            (
+                &[("repository_id", 1), ("installation", 1), ("alert_id", 1)],
+                true,
+            ),
             (&[("repository_id", 1), ("at", -1)], false),
             (&[("session", 1), ("at", -1)], false),
         ],
     },
     Collection {
         name: "metric_rollups",
-        required: &["repository_id", "scope", "id", "metrics", "computed_at"],
+        required: &[
+            "repository_id",
+            "installation",
+            "scope",
+            "id",
+            "metrics",
+            "computed_at",
+        ],
         indexes: &[
-            (&[("repository_id", 1), ("scope", 1), ("id", 1)], true),
+            (
+                &[
+                    ("repository_id", 1),
+                    ("installation", 1),
+                    ("scope", 1),
+                    ("id", 1),
+                ],
+                true,
+            ),
             (&[("scope", 1), ("computed_at", -1)], false),
         ],
     },
     Collection {
         name: "ingestion_checkpoints",
-        required: &["repository_id", "stream"],
-        indexes: &[(&[("repository_id", 1), ("stream", 1)], true)],
+        required: &["repository_id", "installation", "stream"],
+        indexes: &[(
+            &[("repository_id", 1), ("installation", 1), ("stream", 1)],
+            true,
+        )],
     },
     Collection {
         name: "schema_migrations",
@@ -279,7 +297,8 @@ const COLLECTIONS: &[Collection] = &[
 ];
 
 /** Apply the migrations that have not been applied: create missing collections with validators,
- * update the validators of existing ones, create every index (idempotent), and record the version
+ * update the validators of existing ones, replace their indexes with the current ones, and record
+ * the version
  * Input
     - database: &Database - database
  * Output
@@ -305,6 +324,12 @@ pub(crate) fn migrate(database: &Database) -> Result<i64, String> {
         if existing.iter().any(|name| name == collection.name) {
             database
                 .run_command(doc! {"collMod": collection.name, "validator": validator})
+                .run()
+                .map_err(io_error)?;
+            // Indexes of earlier versions identify records without the installation
+            database
+                .collection::<Document>(collection.name)
+                .drop_indexes()
                 .run()
                 .map_err(io_error)?;
         } else {
@@ -351,7 +376,7 @@ pub(crate) fn migrate(database: &Database) -> Result<i64, String> {
     database
         .collection::<Document>("schema_migrations")
         .insert_one(
-            doc! {"version": SCHEMA_VERSION, "applied_at": bson::DateTime::now(), "by": "crane"},
+            doc! {"version": SCHEMA_VERSION, "applied_at": bson::DateTime::now(), "by": "crane server"},
         )
         .run()
         .map_err(io_error)?;

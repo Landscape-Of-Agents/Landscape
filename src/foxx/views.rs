@@ -21,8 +21,8 @@ use crate::telemetry::Stores;
     - sessions: Vec<SessionRecord> - sessions, most recent first
     - tasks: Vec<TaskRecord> - tasks, most recent first
     - alerts: Vec<Value> - alerts, newest first
-    - source: String - where the data came from: mongodb or local
-    - source_error: Option<String> - why MongoDB could not be used, when it is configured
+    - source: String - where the data came from: service (the Foxx ingestion service) or local
+    - source_error: Option<String> - why the service could not be used, when uploads are on
 */
 pub(crate) struct Snapshot {
     pub(crate) stores: Stores,
@@ -56,38 +56,32 @@ impl Snapshot {
         })
     }
 
-    /** Load the data the dashboard shows: from MongoDB when it is configured and reachable,
-     * otherwise from the local stores, recording why MongoDB was not used
+    /** Load the data the dashboard shows: from the Foxx ingestion service when uploads are on and
+     * it is reachable, otherwise from the local stores, recording why the service was not used
      * Input
         - workspace: &Workspace - repository
      * Output
         - Result<Snapshot, String>
     */
     pub(crate) fn load_for_dashboard(workspace: &Workspace) -> Result<Self, String> {
-        #[cfg(feature = "mongodb")]
-        {
-            match crate::store::read::load(workspace) {
-                Ok(Some(remote)) => {
-                    return Ok(Self {
-                        stores: Stores::open(&workspace.trust()?.runtime()),
-                        events: remote.events,
-                        ledger: remote.ledger,
-                        sessions: remote.sessions,
-                        tasks: remote.tasks,
-                        alerts: remote.alerts,
-                        source: "mongodb".into(),
-                        source_error: None,
-                    })
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    let mut local = Self::load(workspace)?;
-                    local.source_error = Some(crate::store::redact_uri(&error));
-                    return Ok(local);
-                }
+        match crate::telemetry::ingest::snapshot(workspace) {
+            Ok(Some(remote)) => Ok(Self {
+                stores: Stores::open(&workspace.trust()?.runtime()),
+                events: remote.events,
+                ledger: remote.ledger,
+                sessions: remote.sessions,
+                tasks: remote.tasks,
+                alerts: remote.alerts,
+                source: "service".into(),
+                source_error: None,
+            }),
+            Ok(None) => Self::load(workspace),
+            Err(error) => {
+                let mut local = Self::load(workspace)?;
+                local.source_error = Some(error);
+                Ok(local)
             }
         }
-        Self::load(workspace)
     }
 
     /** Events of one session

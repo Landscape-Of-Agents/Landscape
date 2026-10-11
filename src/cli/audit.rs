@@ -1,7 +1,7 @@
 // Command audit: every Crane command run in an initialized repository (read-only ones included)
 // is recorded as a command.executed event with its outcome, duration, and whether it ran in an
-// agent environment, and then handed to the MongoDB sync. Help, version, and the internal hook and
-// sync entry points are not recorded (hooks record their own events). Credentials embedded in URL
+// agent environment, and then handed to the upload sync. Help, version, the ingestion service, and
+// the internal hook and sync entry points are not recorded (hooks record their own events). Credentials embedded in URL
 // arguments are removed, and the event store redacts known secret patterns as well.
 
 use serde_json::json;
@@ -39,8 +39,10 @@ fn without_credentials(word: &str) -> String {
 pub(crate) fn record(words: &[String], result: &Result<(), String>, started: u64) {
     let first = words.first().map(String::as_str).unwrap_or_default();
     let second = words.get(1).map(String::as_str).unwrap_or_default();
-    if matches!(first, "" | "help" | "--help" | "-h" | "--version" | "-V")
-        || (first == "agent" && matches!(second, "hook" | "sync"))
+    if matches!(
+        first,
+        "" | "help" | "--help" | "-h" | "--version" | "-V" | "server"
+    ) || (first == "agent" && matches!(second, "hook" | "sync"))
     {
         return;
     }

@@ -171,7 +171,7 @@ pub(crate) fn github(args: &[String]) -> Result<(), String> {
 */
 pub(crate) fn integrate(args: &[String]) -> Result<(), String> {
     let [name] = args else {
-        return Err("usage: crane integrate jira|whatsapp|slack|github|mongodb".into());
+        return Err("usage: crane integrate jira|whatsapp|slack|github".into());
     };
     let integration = integrations::configure(name)?;
     println!(

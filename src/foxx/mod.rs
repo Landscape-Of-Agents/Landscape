@@ -105,23 +105,22 @@ pub(crate) fn serve() -> Result<(), String> {
             eprintln!("crane: could not open a browser ({error}); open the URL above manually");
         }
     }
-    #[cfg(feature = "mongodb")]
     if crate::telemetry::sync::configured(&workspace) {
         let stores = crate::telemetry::Stores::open(&workspace.trust()?.runtime());
-        match crate::store::sync::sync(&workspace, &stores) {
+        match crate::telemetry::ingest::sync(&workspace, &stores) {
             Ok(flushed) => println!(
-                "MongoDB: synchronized {} events, {} ledger entries, {} governance changes, {} alerts; the dashboard reads from MongoDB",
+                "Foxx service: synchronized {} events, {} ledger entries, {} governance changes, {} alerts; the dashboard reads from the service",
                 flushed.events, flushed.ledger, flushed.audit, flushed.alerts
             ),
             Err(error) => eprintln!(
-                "crane: MongoDB synchronization failed ({error}); the dashboard serves the local evidence, which remains authoritative"
+                "crane: synchronization failed ({error}); the dashboard serves the local evidence, which remains authoritative"
             ),
         }
-        let interval = crate::telemetry::sync::interval_seconds(&workspace);
+        let interval = crate::telemetry::sync::interval_seconds();
         let background = workspace.clone();
         std::thread::spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_secs(interval));
-            let _ = crate::store::sync::sync(&background, &stores);
+            let _ = crate::telemetry::ingest::sync(&background, &stores);
         });
     }
     let limit = std::env::var("CRANE_DASHBOARD_MAX_REQUESTS")

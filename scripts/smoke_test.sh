@@ -12,6 +12,8 @@ DEMO="$(mktemp -d)"
 trap 'rm -rf "$DEMO"' EXIT
 unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CODEX_SANDBOX CODEX_SANDBOX_NETWORK_DISABLED CRANE_AGENT
 export CRANE_HOME="$DEMO/trust" CRANE_ALLOW_LOCAL_REMOTE=1 CRANE_ALERTS_DRY_RUN=1
+# Never upload smoke-test data to the production ingestion service
+export CRANE_INGEST_URL="${CRANE_INGEST_URL:-off}"
 
 "$BIN" --version | grep -Eq '^crane [0-9]+\.[0-9]+\.[0-9]+$'
 

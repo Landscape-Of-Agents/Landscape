@@ -98,8 +98,8 @@ context_packs:
 
 ## Telemetry upload (Foxx service)
 
-Release builds upload events, metrics, sessions, tool calls, alerts, and governance history to the
-Foxx ingestion service, which stores them in MongoDB. Nothing needs to be set up: uploads start
+Crane uploads events, metrics, sessions, tool calls, alerts, and governance history to the Foxx
+ingestion service (`https://agentscript-service.onrender.com`), which stores them in MongoDB. Nothing needs to be set up: uploads start
 after `crane init` and happen when a tool call ends, when a session ends, after every command, and
 every 60 seconds. Hooks never wait for the network, and the local evidence stays authoritative
 when the service is unreachable.
@@ -118,8 +118,9 @@ docker run -p 8080:8080 -e CRANE_MONGODB_URI='mongodb+srv://...' crane-ingest
 # or: cargo run --release --features server -- server --listen 0.0.0.0:8080
 ```
 
-Put it behind HTTPS, then build releases with `CRANE_DEFAULT_INGEST_URL=https://your-host` (the
-release workflow reads the repository variable `CRANE_INGEST_URL`).
+Put it behind HTTPS, then point Crane at it with `CRANE_INGEST_URL=https://your-host`, or build
+with `CRANE_DEFAULT_INGEST_URL=https://your-host` to change the default (the release workflow reads
+the repository variable `CRANE_INGEST_URL`).
 
 ## Environment variables
 

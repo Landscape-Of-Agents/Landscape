@@ -1,6 +1,6 @@
-// Zero-setup upload of the evidence to the Foxx ingestion service. A Crane release knows its
-// service: the address is compiled in from CRANE_DEFAULT_INGEST_URL when the release is built, and
-// CRANE_INGEST_URL overrides it at run time ("off" keeps everything local). The CLI never holds
+// Zero-setup upload of the evidence to the Foxx ingestion service. Every build knows its service:
+// DEFAULT_INGEST_URL, or CRANE_DEFAULT_INGEST_URL when it is set at build time, and CRANE_INGEST_URL
+// overrides it at run time ("off" keeps everything local). The CLI never holds
 // database credentials: it sends batches over HTTPS, and every request is signed with the
 // repository's own Ed25519 key (created by crane init), whose public key identifies this
 // installation. The service writes to MongoDB and only ever returns an installation's own records.
@@ -37,11 +37,14 @@ pub(crate) const REQUEST_DOMAIN: &str = "foxx/ingest/request/v1";
 /** Most records of one stream sent in one batch */
 pub(crate) const BATCH: usize = 500;
 
+/** The Foxx ingestion service every build uploads to unless told otherwise */
+pub(crate) const DEFAULT_INGEST_URL: &str = "https://agentscript-service.onrender.com";
+
 /** Time limit of one request */
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-/** Return the ingestion service address: CRANE_INGEST_URL, else the address compiled into this
- * release; None when uploads are off
+/** Return the ingestion service address: CRANE_INGEST_URL, else CRANE_DEFAULT_INGEST_URL from the
+ * build, else DEFAULT_INGEST_URL; None when uploads are off
  * Input
     - None
  * Output
@@ -50,7 +53,10 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) fn endpoint() -> Option<String> {
     let value = match std::env::var("CRANE_INGEST_URL") {
         Ok(value) => value,
-        Err(_) => option_env!("CRANE_DEFAULT_INGEST_URL")?.to_string(),
+        Err(_) => option_env!("CRANE_DEFAULT_INGEST_URL")
+            .filter(|url| !url.trim().is_empty())
+            .unwrap_or(DEFAULT_INGEST_URL)
+            .to_string(),
     };
     let value = value.trim().trim_end_matches('/').to_string();
     match value.to_ascii_lowercase().as_str() {

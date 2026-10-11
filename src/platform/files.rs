@@ -196,6 +196,14 @@ impl Lock {
                     }
                     thread::sleep(Duration::from_millis(15));
                 }
+                // Windows reports access denied while another process is deleting the lock file
+                Err(error)
+                    if cfg!(windows)
+                        && error.kind() == ErrorKind::PermissionDenied
+                        && started.elapsed() <= Duration::from_millis(LOCK_TIMEOUT_MILLIS) =>
+                {
+                    thread::sleep(Duration::from_millis(15));
+                }
                 Err(error) => {
                     return Err(format!("could not create lock {}: {error}", path.display()))
                 }

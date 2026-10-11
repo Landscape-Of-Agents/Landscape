@@ -162,7 +162,12 @@ fn service_outage_does_not_weaken_enforcement() {
         session.contains("status: ENDED") && session.contains("actions_denied"),
         "{session}"
     );
-    assert!(fixture.fails(&["agent", "sync"]).contains("unreachable"));
+    // The upload fails; under load the hooks' own retries may still hold the sync lock
+    let failed = fixture.fails(&["agent", "sync"]);
+    assert!(
+        failed.contains("unreachable") || failed.contains("timed out waiting for lock"),
+        "{failed}"
+    );
     let (response, stderr) = dashboard(&fixture, "/api/health");
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     assert!(response.contains("\"source\":\"local\""), "{response}");
@@ -264,4 +269,55 @@ fn live_pipeline_reaches_mongodb_without_setup() {
     assert!(response.contains("\"source\":\"service\""), "{response}");
     assert!(response.contains("\"status\":\"verified\""), "{response}");
     database.drop().run().unwrap();
+}
+
+/** A deployed service (needs CRANE_TEST_INGEST_URL, skipped otherwise): a fresh installation with
+ * only the address set uploads its commands, session, and tool calls, and its dashboard reads the
+ * same verified event chain back from the service
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn deployed_service_round_trip() {
+    let Ok(url) = std::env::var("CRANE_TEST_INGEST_URL") else {
+        eprintln!("skipped: set CRANE_TEST_INGEST_URL to test a deployed ingestion service");
+        return;
+    };
+    let mut fixture = Fixture::ready();
+    fixture.ingest_url = url;
+    fixture.protect(&["app/payments.py", "start-line", "1", "end-line", "4"]);
+    let call = |id: &str| json!({"session_id": "deployed-1", "tool_use_id": id, "cwd": fixture.work.to_string_lossy(), "tool_name": "Bash", "tool_input": {"command": "echo ok"}});
+    fixture.hook(
+        "claude",
+        "SessionStart",
+        &json!({"session_id": "deployed-1"}),
+    );
+    fixture.hook("claude", "pre-tool-use", &call("d1"));
+    fixture.hook("claude", "post-tool-use", &call("d1"));
+    fixture.hook("claude", "SessionEnd", &json!({"session_id": "deployed-1"}));
+    // Let the detached syncs started by the hooks finish, then upload the rest
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    let synced = fixture.ok(&["agent", "sync"]);
+    assert!(synced.contains("Synchronized"), "{synced}");
+    let local_events = std::fs::read_to_string(
+        std::fs::read_dir(fixture.home.join("repos"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path()
+            .join("runtime/events.jsonl"),
+    )
+    .unwrap()
+    .lines()
+    .count();
+    let (response, _) = dashboard(&fixture, "/api/health");
+    assert!(response.contains("\"source\":\"service\""), "{response}");
+    assert!(response.contains("\"status\":\"verified\""), "{response}");
+    assert!(
+        response.contains(&format!("\"events\":{local_events}")),
+        "the service holds every local event ({local_events}): {response}"
+    );
 }

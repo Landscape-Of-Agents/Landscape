@@ -2,6 +2,7 @@
 // the optional smoke-test commands of 'crane test .'. Changed only through Crane commands, and
 // covered by the signed registry manifest.
 
+use super::admins::AdminStatement;
 use serde::{Deserialize, Serialize};
 
 /** Version of the configuration layout */
@@ -17,6 +18,8 @@ pub(crate) const DEFAULT_POLICY: &str = "default";
     - default_checkpoint: Option<String> - checkpoint used when a command names none
     - autonomy: Autonomy - credit and safety model for agent sessions
     - tests: Vec<TestCommand> - commands 'crane test .' runs after the policies
+    - admins: Option<AdminStatement> - the owner's signed admin list (absent until the owner adds
+      an admin, and then not written, so existing repositories keep their signed digests)
 */
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -26,6 +29,8 @@ pub(crate) struct Config {
     pub(crate) default_checkpoint: Option<String>,
     pub(crate) autonomy: Autonomy,
     pub(crate) tests: Vec<TestCommand>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) admins: Option<AdminStatement>,
 }
 
 impl Default for Config {
@@ -43,6 +48,7 @@ impl Default for Config {
             default_checkpoint: None,
             autonomy: Autonomy::default(),
             tests: Vec::new(),
+            admins: None,
         }
     }
 }

@@ -2,7 +2,8 @@
 // changes, alerts) are inserted unordered with duplicates skipped, so a retried upload never
 // duplicates evidence; current state (repository, sessions, agents, tasks, selection records, the
 // signed manifest, metric rollups) is upserted. Every document carries the repository identity and
-// the installation key, and every filter includes the installation.
+// the installation key, and every filter includes the installation. The team dashboard reads
+// across installations, but only for repositories whose remote was verified (see team.rs).
 
 use mongodb::bson::{self, doc, Bson, Document};
 use mongodb::options::InsertManyOptions;
@@ -12,6 +13,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::database::Settings;
+use crate::governance::workspace::identity;
 use crate::platform::{io_error, now_millis};
 use crate::telemetry::events::Event;
 use crate::telemetry::identity::{SessionRecord, TaskRecord};
@@ -99,6 +101,62 @@ fn upsert(
         .map_err(io_error)
 }
 
+/** Check that a batch proves its remote: the root commits and the remote reproduce the repository
+ * identity
+ * Input
+    - repository: &str - repository identity from the request path
+    - batch: &Batch - the batch
+ * Output
+    - bool
+*/
+fn verified(repository: &str, batch: &Batch) -> bool {
+    !batch.root_commits.is_empty()
+        && batch.remote.is_some()
+        && identity(&batch.root_commits, batch.remote.as_deref()) == repository
+}
+
+/** What an installation already stores
+ * Fields
+    - events: u64 - events across every repository
+    - repositories: u64 - repositories
+    - known: bool - this repository is one of them
+*/
+pub(super) struct Quota {
+    pub(super) events: u64,
+    pub(super) repositories: u64,
+    pub(super) known: bool,
+}
+
+/** Measure an installation's stored data
+ * Input
+    - database: &Database - database
+    - repository: &str - repository identity
+    - installation: &str - installation key
+ * Output
+    - Result<Quota, String>
+*/
+pub(super) fn quota(
+    database: &Database,
+    repository: &str,
+    installation: &str,
+) -> Result<Quota, String> {
+    let count = |collection: &str, filter: Document| {
+        database
+            .collection::<Document>(collection)
+            .count_documents(filter)
+            .run()
+            .map_err(io_error)
+    };
+    Ok(Quota {
+        events: count("events", doc! {"installation": installation})?,
+        repositories: count("repositories", doc! {"installation": installation})?,
+        known: count(
+            "repositories",
+            doc! {"installation": installation, "repository_id": repository},
+        )? > 0,
+    })
+}
+
 /** Store one batch
  * Input
     - database: &Database - database
@@ -175,9 +233,13 @@ pub(super) fn ingest(
             database,
             "repositories",
             scope.clone(),
-            tag!(
-                &json!({"remote": batch.remote, "registry_generation": batch.registry_generation, "updated_at": now_millis()})
-            )?,
+            tag!(&json!({
+                "remote": batch.remote,
+                "verified": verified(repository, batch),
+                "actor": batch.actor.as_deref().map(|actor| actor.chars().take(100).collect::<String>()),
+                "registry_generation": batch.registry_generation,
+                "updated_at": now_millis(),
+            }))?,
         )?;
         for session in &batch.sessions {
             upsert(
@@ -243,7 +305,7 @@ pub(super) fn ingest(
  * Output
     - u64, 0 when absent or not a number
 */
-fn number(value: Option<&Bson>) -> u64 {
+pub(super) fn number(value: Option<&Bson>) -> u64 {
     match value {
         Some(Bson::Int32(number)) => *number as u64,
         Some(Bson::Int64(number)) => *number as u64,
@@ -365,4 +427,184 @@ pub(super) fn snapshot(
             .collect::<Result<_, _>>()?,
     };
     serde_json::to_value(remote).map_err(io_error)
+}
+
+/** List the repositories with a verified remote
+ * Input
+    - database: &Database - database
+ * Output
+    - Result<Vec<(String, String)>, String> (repository identity, remote), sorted by remote
+*/
+pub(super) fn verified_repositories(database: &Database) -> Result<Vec<(String, String)>, String> {
+    let mut found = database
+        .collection::<Document>("repositories")
+        .find(doc! {"verified": true})
+        .projection(doc! {"_id": 0, "repository_id": 1, "remote": 1})
+        .run()
+        .map_err(io_error)?
+        .filter_map(Result::ok)
+        .filter_map(|document| {
+            Some((
+                document.get_str("repository_id").ok()?.to_string(),
+                document.get_str("remote").ok()?.to_string(),
+            ))
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    found.sort_by(|left, right| left.1.cmp(&right.1));
+    Ok(found)
+}
+
+/** Return a repository's verified remote
+ * Input
+    - database: &Database - database
+    - repository: &str - repository identity
+ * Output
+    - Result<Option<String>, String>
+*/
+pub(super) fn verified_remote(
+    database: &Database,
+    repository: &str,
+) -> Result<Option<String>, String> {
+    Ok(database
+        .collection::<Document>("repositories")
+        .find_one(doc! {"repository_id": repository, "verified": true})
+        .run()
+        .map_err(io_error)?
+        .and_then(|document| document.get_str("remote").ok().map(String::from)))
+}
+
+/** A repository's data across installations, for the team dashboard
+ * Fields
+    - members: Vec<Value> - one repository record per installation (actor, verified, updated_at)
+    - activity: Vec<Value> - per installation: events, tool_calls, sessions, denied, last
+    - sessions: Vec<Value> - the 50 most recent sessions
+    - alerts: Vec<Value> - the 50 most recent alerts
+    - rollups: Vec<Value> - each installation's repository metrics
+*/
+pub(super) struct TeamView {
+    pub(super) members: Vec<Value>,
+    pub(super) activity: Vec<Value>,
+    pub(super) sessions: Vec<Value>,
+    pub(super) alerts: Vec<Value>,
+    pub(super) rollups: Vec<Value>,
+}
+
+/** Read a repository's team view
+ * Input
+    - database: &Database - database
+    - repository: &str - repository identity
+ * Output
+    - Result<TeamView, String>
+*/
+pub(super) fn team_view(database: &Database, repository: &str) -> Result<TeamView, String> {
+    let find = |collection: &str,
+                filter: Document,
+                sort: Document,
+                limit: i64|
+     -> Result<Vec<Value>, String> {
+        database
+            .collection::<Document>(collection)
+            .find(filter)
+            .sort(sort)
+            .limit(limit)
+            .projection(doc! {"_id": 0, "expires_at": 0, "ingested_at": 0})
+            .run()
+            .map_err(io_error)?
+            .map(|document| serde_json::to_value(document.map_err(io_error)?).map_err(io_error))
+            .collect()
+    };
+    let scope = doc! {"repository_id": repository};
+    let mut activity = database
+        .collection::<Document>("events")
+        .aggregate(vec![
+            doc! {"$match": {"repository_id": repository}},
+            doc! {"$group": {
+                "_id": "$installation",
+                "events": {"$sum": 1},
+                "tool_calls": {"$sum": {"$cond": [{"$eq": ["$event_type", "tool_call.verified"]}, 1, 0]}},
+                "denied": {"$sum": {"$cond": [{"$eq": ["$decision", "DENY"]}, 1, 0]}},
+                "last": {"$max": "$occurred_at"},
+            }},
+        ])
+        .run()
+        .map_err(io_error)?
+        .map(|document| serde_json::to_value(document.map_err(io_error)?).map_err(io_error))
+        .collect::<Result<Vec<_>, String>>()?;
+    let sessions_per_member = database
+        .collection::<Document>("sessions")
+        .aggregate(vec![
+            doc! {"$match": {"repository_id": repository}},
+            doc! {"$group": {"_id": "$installation", "sessions": {"$sum": 1}}},
+        ])
+        .run()
+        .map_err(io_error)?
+        .filter_map(Result::ok)
+        .filter_map(|document| {
+            Some((
+                document.get_str("_id").ok()?.to_string(),
+                number(document.get("sessions")),
+            ))
+        })
+        .collect::<Vec<_>>();
+    for row in &mut activity {
+        let sessions = sessions_per_member
+            .iter()
+            .find(|(installation, _)| Some(installation.as_str()) == row["_id"].as_str())
+            .map_or(0, |(_, count)| *count);
+        row["sessions"] = json!(sessions);
+    }
+    Ok(TeamView {
+        members: find("repositories", scope.clone(), doc! {"updated_at": -1}, 500)?,
+        activity,
+        sessions: find("sessions", scope.clone(), doc! {"last_seen_at": -1}, 50)?,
+        alerts: find("alerts", scope.clone(), doc! {"at": -1}, 50)?,
+        rollups: find(
+            "metric_rollups",
+            doc! {"repository_id": repository, "scope": "repository"},
+            doc! {"computed_at": -1},
+            500,
+        )?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verified;
+    use crate::governance::workspace::identity;
+    use crate::telemetry::ingest::Batch;
+
+    /** Check that a remote is verified only when the root commits and remote reproduce the identity
+     * Input
+        - None
+     * Output
+        - None (panics on failure)
+    */
+    #[test]
+    fn remotes_are_verified_by_identity() {
+        let roots = vec!["abc".to_string()];
+        let repository = identity(&roots, Some("github.com/acme/widgets"));
+        let batch = |remote: &str, roots: Vec<String>| Batch {
+            remote: Some(remote.into()),
+            root_commits: roots,
+            ..Batch::default()
+        };
+        assert!(verified(
+            &repository,
+            &batch("github.com/acme/widgets", roots.clone())
+        ));
+        assert!(!verified(
+            &repository,
+            &batch("github.com/evil/widgets", roots.clone())
+        ));
+        assert!(!verified(
+            &repository,
+            &batch("github.com/acme/widgets", vec!["other".into()])
+        ));
+        assert!(!verified(
+            &repository,
+            &batch("github.com/acme/widgets", Vec::new())
+        ));
+    }
 }

@@ -20,6 +20,7 @@ const IDENTITY_DOMAIN: &str = "repository/identity/v1";
     - crane: PathBuf - root/.crane
     - repository_id: String - repository identity digest
     - remote: Option<String> - normalized origin remote, if any
+    - root_commits: Vec<String> - the root commits the identity is computed from
 */
 #[derive(Debug, Clone)]
 pub(crate) struct Workspace {
@@ -27,6 +28,25 @@ pub(crate) struct Workspace {
     pub(crate) crane: PathBuf,
     pub(crate) repository_id: String,
     pub(crate) remote: Option<String>,
+    pub(crate) root_commits: Vec<String>,
+}
+
+/** Compute a repository identity from its root commits and normalized remote (the ingestion
+ * service recomputes it to check which repository an upload really belongs to)
+ * Input
+    - roots: &[String] - root commits
+    - remote: Option<&str> - normalized origin remote
+ * Output
+    - String of 128 hex characters
+*/
+pub(crate) fn identity(roots: &[String], remote: Option<&str>) -> String {
+    digest(
+        IDENTITY_DOMAIN,
+        &[
+            roots.join("\n").as_bytes(),
+            remote.unwrap_or_default().as_bytes(),
+        ],
+    )
 }
 
 impl Workspace {
@@ -44,18 +64,13 @@ impl Workspace {
         let roots = git::root_commits(&root).map_err(|_| {
             "the repository has no commits yet; commit before using Crane".to_string()
         })?;
-        let repository_id = digest(
-            IDENTITY_DOMAIN,
-            &[
-                roots.join("\n").as_bytes(),
-                remote.clone().unwrap_or_default().as_bytes(),
-            ],
-        );
+        let repository_id = identity(&roots, remote.as_deref());
         Ok(Self {
             crane: root.join(CRANE_DIR),
             root,
             repository_id,
             remote,
+            root_commits: roots,
         })
     }
 

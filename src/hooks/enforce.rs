@@ -39,6 +39,7 @@ const READ_ONLY_COMMANDS: &[&[&str]] = &[
     &["repo", "status"],
     &["repo", "--view"],
     &["agent", "hooks"],
+    &["admin", "list"],
 ];
 
 /** Shell words that change files */

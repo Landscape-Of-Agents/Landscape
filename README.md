@@ -60,11 +60,32 @@ comments); whitespace-only changes never satisfy a target.
 | Policies | `create policy NAME FILENAME`, `add policy NAME marker MARKER`, `policy NAME status` |
 | Runtime | `task current [ID]`, `task .`, `session current [ID]`, `session .`, `dashboard` |
 | Agents | `agent install\|uninstall\|hooks --profile claude\|codex` |
+| Admins | `admin list`, `admin add PUBLIC_KEY [name NAME]`, `admin del PUBLIC_KEY` |
 | Integrations | `integrate jira\|slack\|whatsapp\|github` |
 
 `protect` and `target` options: `policy NAME`, `checkpoint NAME`, `start-line N`, `end-line N`,
 `name LABEL`. Run `crane help` for details. Governance commands refuse to run inside an AI agent
 session, and the hooks deny them.
+
+## Teams
+
+The person who runs `crane init` first is the **owner**; `crane init` prints the owner key.
+
+1. **Teammates join.** On their machine: `crane repo --https URL`, then `crane init`. Crane shows
+   the owner key's fingerprint and asks whether to trust it; compare it with the owner's
+   `crane admin list`. Until the key is trusted, the rules cannot be verified and agent changes are
+   blocked. After it is, enforcement works normally. Teammates who are not admins cannot change
+   the rules.
+2. **More admins.** A teammate sends the key `crane init` printed for them; the owner runs
+   `crane admin add KEY name NAME` and commits `.crane`. Admins can then protect, target,
+   checkpoint, and change policies from their own machines. Every teammate trusts them through
+   the owner's signature. `crane admin del KEY` removes an admin; machines that saw the removal
+   reject an older admin list.
+3. **Two admins changed the rules on different branches.** Git reports a conflict in `.crane`.
+   Keep one side for the whole directory (`git checkout --theirs .crane`), commit, run
+   `crane init` to accept that signed state, then re-apply your change with crane.
+
+CI machines can trust the owner without a prompt: set `CRANE_TRUSTED_PUBLIC_KEYS` to the owner key.
 
 ## Zones, flows, and context packs
 
@@ -109,7 +130,15 @@ authoritative when the service is unreachable.
   add to and read its own records. Every teammate's machine uploads, not only the one that ran
   `crane init`, and the upload key grants no authority over the repository's rules.
 - Crane never holds database credentials. Only the service has the MongoDB connection string.
-- `crane dashboard` reads from the service, and falls back to the local evidence.
+- `crane dashboard` reads from the service, and falls back to the local evidence. It shows this
+  machine's activity.
+- **Team dashboard:** `https://agentscript-service.onrender.com/team`. Sign in with GitHub to see
+  every teammate's sessions, alerts, and metrics for repositories owned by your account or your
+  organizations. A repository appears only after an upload proves its GitHub remote, so nobody can
+  attach their uploads to someone else's repository.
+- **Limits** protect the shared database: 120 requests a minute per machine, at most 2,000 records
+  of each kind per upload, 250,000 stored events and 50 repositories per machine, and no uploads
+  while the database is over 450 MB. A refused upload stays on the machine and is retried.
 - Set `CRANE_INGEST_URL=off` to keep everything local, or set it to your own service.
 
 Run the service yourself:
@@ -119,6 +148,11 @@ docker build -t crane-ingest .
 docker run -p 8080:8080 -e CRANE_MONGODB_URI='mongodb+srv://...' crane-ingest
 # or: cargo run --release --features server -- server --listen 0.0.0.0:8080
 ```
+
+For the team dashboard, create a GitHub OAuth app (GitHub, Settings, Developer settings, OAuth
+Apps) with the callback URL `https://your-host/team/callback`, and set `CRANE_GITHUB_CLIENT_ID`,
+`CRANE_GITHUB_CLIENT_SECRET`, `CRANE_PUBLIC_URL=https://your-host`, and `CRANE_SESSION_KEY` (64 hex
+characters, for example `openssl rand -hex 32`) on the service.
 
 Put it behind HTTPS, then point Crane at it with `CRANE_INGEST_URL=https://your-host`, or build
 with `CRANE_DEFAULT_INGEST_URL=https://your-host` to change the default (the release workflow reads
@@ -132,7 +166,7 @@ Slack, Jira, WhatsApp, and GitHub are set with `crane integrate NAME` instead.
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `CRANE_HOME` | Trust directory (keys, evidence, secrets); use an absolute path | `~/.crane-trust` |
-| `CRANE_TRUSTED_PUBLIC_KEYS` | Extra registry public keys (hex, comma separated) for CI or teammates | none |
+| `CRANE_TRUSTED_PUBLIC_KEYS` | Trusted owner keys (hex, comma separated), for CI without the `crane init` prompt | none |
 | `CRANE_GITHUB_HOSTS` | GitHub Enterprise hosts accepted by `crane repo` | `github.com` only |
 | `CRANE_GH` | Path of the GitHub CLI | `gh` |
 | `CRANE_TASK_ID`, `CRANE_TASK_NAME` | Link agent sessions to a tracker task (Jira alerts use the ID) | none |
@@ -143,6 +177,9 @@ Slack, Jira, WhatsApp, and GitHub are set with `crane integrate NAME` instead.
 | `CRANE_INGEST_URL` | Foxx ingestion service; `off` keeps telemetry local | the release's service |
 | `CRANE_SYNC_SECONDS` | Periodic upload interval | `60` |
 | `CRANE_MONGODB_URI`, `CRANE_MONGODB_DB`, `CRANE_MONGODB_EVENT_RETENTION_DAYS` | `crane server` only (never on developer machines) | required, `foxx`, `30` |
+| `CRANE_GITHUB_CLIENT_ID`, `CRANE_GITHUB_CLIENT_SECRET`, `CRANE_PUBLIC_URL`, `CRANE_SESSION_KEY` | `crane server`: team dashboard sign-in | dashboard off |
+| `CRANE_SERVER_REQUESTS_PER_MINUTE`, `CRANE_SERVER_ADDRESS_REQUESTS_PER_MINUTE` | `crane server`: rate per machine and per client address | `120`, `600` |
+| `CRANE_SERVER_MAX_BATCH_RECORDS`, `CRANE_SERVER_MAX_EVENTS_PER_INSTALLATION`, `CRANE_SERVER_MAX_REPOSITORIES_PER_INSTALLATION`, `CRANE_SERVER_MAX_STORAGE_MB` | `crane server`: upload limits | `2000`, `250000`, `50`, `450` |
 | `CRANE_ALLOW_LOCAL_REMOTE`, `CRANE_TEST_MONGODB_URI` | Offline mirrors and the live ingestion test suite | unset |
 
 ## Security notes

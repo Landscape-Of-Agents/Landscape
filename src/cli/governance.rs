@@ -9,6 +9,7 @@ use serde_json::json;
 
 use super::args::Args;
 use crate::github;
+use crate::governance::admins::{self, Admin, AdminStatement};
 use crate::governance::changes::ChangeType;
 use crate::governance::config::DEFAULT_POLICY;
 use crate::governance::context::{Binding, MAX_CONTEXT_BYTES};
@@ -20,12 +21,14 @@ use crate::governance::state::{commit, integrity, State};
 use crate::governance::verify::{evaluate, Options, Outcome, Report};
 use crate::governance::workspace::Workspace;
 use crate::governance::{Finding, Severity};
+use crate::integrations::prompt::Prompter;
 use crate::platform::files::{is_text, rewrite_preserving, write_atomic};
+use crate::platform::render::iso_time;
 use crate::platform::{actor, git, now_unix, process, validate_name};
 use crate::selection::create::{create, Request};
 use crate::selection::registry::Operation;
 use crate::trust::crypto::{is_selection_id, sha512_hex};
-use crate::trust::{agent_environment, require_human};
+use crate::trust::{agent_environment, require_human, TrustStore};
 
 /** Text of a new policy block
  * Input
@@ -39,8 +42,8 @@ fn empty_block(name: &str) -> String {
 
 /** Initialize Crane: require a clone with a live GitHub connection, create .crane with the
  * default policy, configuration, empty checkpoint log, registry, map, and audit trail, create the
- * signing key in the trust directory, and sign generation 1; running it again verifies and changes
- * nothing
+ * signing key in the trust directory, and sign generation 1; in a repository that is already
+ * initialized, join it instead (see join)
  * Input
     - args: &[String] - no arguments are accepted
  * Output
@@ -66,24 +69,7 @@ pub(crate) fn init(args: &[String]) -> Result<(), String> {
     );
     let state = State::load(&workspace)?;
     if state.registry.manifest.is_some() {
-        let trust = workspace.trust()?;
-        let blocking = integrity(&workspace, &state, &trust)
-            .into_iter()
-            .filter(Finding::blocking)
-            .map(|finding| finding.message)
-            .collect::<Vec<_>>();
-        if !blocking.is_empty() {
-            return Err(format!(
-                "Crane is initialized but its state fails verification: {}",
-                blocking.join("; ")
-            ));
-        }
-        println!(
-            "Crane is already initialized in {} (registry generation {}); nothing changed",
-            workspace.crane.display(),
-            state.generation()
-        );
-        return Ok(());
+        return join(&workspace, &state);
     }
     require_human("crane init")?;
     fs::create_dir_all(workspace.policies_dir()).map_err(|error| error.to_string())?;
@@ -134,7 +120,8 @@ pub(crate) fn init(args: &[String]) -> Result<(), String> {
         "  signing key:    {} (outside the repository; never commit or share it)",
         trust.key_path.display()
     );
-    println!("  public key:     {}", manifest.public_key);
+    println!("  owner key:      {}", grouped(&manifest.public_key));
+    println!("                  (teammates compare this when their 'crane init' asks to trust it)");
     match crate::telemetry::ingest::endpoint() {
         Some(url) => println!(
             "  telemetry:      events and metrics are uploaded to {url}, signed with this machine's upload key (set CRANE_INGEST_URL=off to keep them local)"
@@ -142,6 +129,257 @@ pub(crate) fn init(args: &[String]) -> Result<(), String> {
         None => println!("  telemetry:      local only (no ingestion service in this build)"),
     }
     println!("Next: 'crane checkpoint NAME' to record a trusted baseline, then 'crane protect FILE ...'.");
+    Ok(())
+}
+
+/** Format a public key in groups of four characters, for comparing fingerprints by eye
+ * Input
+    - key: &str - public key in hex
+ * Output
+    - String
+*/
+fn grouped(key: &str) -> String {
+    key.as_bytes()
+        .chunks(4)
+        .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/** Describe this machine's role in the repository
+ * Input
+    - state: &State - governance state
+    - trust: &TrustStore - trust directory
+ * Output
+    - Result<String, String> owner, admin, or member, with this machine's key
+*/
+fn role(state: &State, trust: &TrustStore) -> Result<String, String> {
+    let Some(identity) = trust.signing_key()? else {
+        return Ok("member (this machine has no key yet)".into());
+    };
+    let key = identity.public_hex();
+    let role = if admins::owner(state).as_deref() == Some(key.as_str()) {
+        "owner"
+    } else if admins::signers(state).contains(&key) {
+        "admin"
+    } else {
+        "member"
+    };
+    Ok(format!("{role} (key {})", grouped(&key)))
+}
+
+/** Join an initialized repository, or re-check it. When the state verifies, nothing changes. When
+ * it would verify except that this machine does not trust the owner's key yet (a teammate's first
+ * run), show the owner key's fingerprint and the last signed change, and pin the key once the human
+ * confirms it; this machine's own key is created for rollback detection and for becoming an admin.
+ * When the only problem is a fork (another admin's change was kept after a merge), show the signed
+ * state and move this machine's rollback anchor to it once the human confirms. Anything else fails.
+ * Input
+    - workspace: &Workspace - repository
+    - state: &State - governance state
+ * Output
+    - Result<(), String>
+    - Error if the state fails verification for any other reason, or the human declines
+*/
+fn join(workspace: &Workspace, state: &State) -> Result<(), String> {
+    let trust = workspace.trust()?;
+    let manifest = state
+        .registry
+        .manifest
+        .as_ref()
+        .ok_or("internal error: no manifest")?;
+    let owner = admins::owner(state).ok_or("internal error: no owner")?;
+    let blocking = |trust: &TrustStore| {
+        integrity(workspace, state, trust)
+            .into_iter()
+            .filter(Finding::blocking)
+            .collect::<Vec<_>>()
+    };
+    let found = blocking(&trust);
+    if found.is_empty() {
+        println!(
+            "Crane is already initialized in {} (registry generation {}); nothing changed",
+            workspace.crane.display(),
+            state.generation()
+        );
+        println!("  owner key: {}", grouped(&owner));
+        println!("  this machine: {}", role(state, &trust)?);
+        return Ok(());
+    }
+    let describe = || {
+        println!(
+            "  last change: generation {} by {} at {}",
+            manifest.generation,
+            manifest.updated_by,
+            iso_time(manifest.updated_at * 1000)
+        );
+        if let Some(statement) = &state.config.admins {
+            let names = statement
+                .admins
+                .iter()
+                .map(|admin| admin.name.as_str())
+                .collect::<Vec<_>>();
+            println!("  admins besides the owner: {}", names.join(", "));
+        }
+    };
+    let mut candidate = trust.clone();
+    candidate.candidates.push(owner.clone());
+    if !trust.trusted_public_keys()?.contains(&owner) && blocking(&candidate).is_empty() {
+        require_human("trusting a repository owner key")?;
+        println!(
+            "This repository's rules are signed, but this machine does not trust their owner yet."
+        );
+        println!("  owner key:   {}", grouped(&owner));
+        describe();
+        println!("Ask the repository owner for their key ('crane admin list' shows it) and compare every group.");
+        if !Prompter::new().confirm("Trust this owner key for this repository?", false)? {
+            return Err("the owner key was not trusted; nothing changed, and agent changes stay blocked until it is".into());
+        }
+        trust.pin(&owner)?;
+        let identity = trust.signing_key_or_create()?;
+        trust.set_anchor(&identity, manifest.generation, &manifest.head)?;
+        println!("Trusted. Crane now verifies this repository's rules on this machine.");
+        println!(
+            "  your key: {} (to become an admin, send it to the owner: crane admin add KEY name NAME)",
+            grouped(&identity.public_hex())
+        );
+        return Ok(());
+    }
+    if found.iter().all(|finding| finding.code == "registry_fork") {
+        require_human("accepting another admin's signed rules")?;
+        println!("The signed rules differ from the version this machine last signed at the same generation. This is expected after merging another admin's change (keeping their side of .crane).");
+        describe();
+        if !Prompter::new().confirm("Accept the current signed rules?", false)? {
+            return Err("not accepted; nothing changed".into());
+        }
+        let identity = trust.require_signing_key()?;
+        trust.set_anchor(&identity, manifest.generation, &manifest.head)?;
+        println!(
+            "Accepted generation {}. Re-apply your own change with crane to sign it on top.",
+            manifest.generation
+        );
+        return Ok(());
+    }
+    Err(format!(
+        "Crane is initialized but its state fails verification: {}",
+        found
+            .into_iter()
+            .map(|finding| finding.message)
+            .collect::<Vec<_>>()
+            .join("; ")
+    ))
+}
+
+/** Manage the repository's admins: list them, or (owner only) add or remove one
+ * Input
+    - args: &[String] - list | add PUBLIC_KEY [name NAME] | del PUBLIC_KEY
+ * Output
+    - Result<(), String>
+*/
+pub(crate) fn admin(args: &[String]) -> Result<(), String> {
+    let usage = "usage: crane admin list | crane admin add PUBLIC_KEY [name NAME] | crane admin del PUBLIC_KEY";
+    let words = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let (adding, key, name) = match words.as_slice() {
+        ["list"] => return admin_list(),
+        ["add", key] => (true, *key, "admin"),
+        ["add", key, "name", name] => (true, *key, *name),
+        ["del", key] => (false, *key, ""),
+        _ => return Err(usage.into()),
+    };
+    let key = key.replace(' ', "").to_ascii_lowercase();
+    if key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("a public key is 64 hexadecimal characters (spaces are ignored)".into());
+    }
+    require_human(if adding {
+        "crane admin add"
+    } else {
+        "crane admin del"
+    })?;
+    let workspace = Workspace::locate()?;
+    let trust = workspace.trust()?;
+    let identity = trust.require_signing_key()?;
+    let state = State::load(&workspace)?;
+    let owner = admins::owner(&state).ok_or("the repository is not initialized")?;
+    if identity.public_hex() != owner {
+        return Err(format!(
+            "only the repository owner can change admins (owner key {})",
+            grouped(&owner)
+        ));
+    }
+    let repository_id = workspace.repository_id.clone();
+    let name = name.to_string();
+    let detail = json!({"public_key": key, "name": name});
+    let (command, action) = if adding {
+        ("crane admin add", "governance.admin_added")
+    } else {
+        ("crane admin del", "governance.admin_removed")
+    };
+    let state = commit(&workspace, command, action, detail, |state, _| {
+        let current = state.config.admins.clone();
+        let mut list = current
+            .as_ref()
+            .map(|statement| statement.admins.clone())
+            .unwrap_or_default();
+        let present = list.iter().any(|admin| admin.public_key == key);
+        if adding {
+            if key == owner {
+                return Err("the owner is already an admin".into());
+            }
+            if present {
+                return Err("this key is already an admin".into());
+            }
+            list.push(Admin {
+                public_key: key.clone(),
+                name: name.clone(),
+                added_at: now_unix(),
+            });
+        } else {
+            if !present {
+                return Err("this key is not an admin".into());
+            }
+            list.retain(|admin| admin.public_key != key);
+        }
+        let epoch = current.map_or(0, |statement| statement.epoch) + 1;
+        state.config.admins = Some(AdminStatement::sign(&identity, &repository_id, epoch, list));
+        Ok(())
+    })?;
+    println!(
+        "{} admin {} (admin list version {}, registry generation {}). Commit .crane so teammates receive it.",
+        if adding { "Added" } else { "Removed" },
+        grouped(&key),
+        state.config.admins.as_ref().map_or(0, |statement| statement.epoch),
+        state.generation()
+    );
+    Ok(())
+}
+
+/** Print the owner, the admins, and this machine's role
+ * Input
+    - None
+ * Output
+    - Result<(), String>
+*/
+fn admin_list() -> Result<(), String> {
+    let workspace = Workspace::locate()?;
+    let trust = workspace.trust()?;
+    let state = State::load(&workspace)?;
+    let owner = admins::owner(&state).ok_or("the repository is not initialized")?;
+    println!("owner: {}", grouped(&owner));
+    match &state.config.admins {
+        Some(statement) if !statement.admins.is_empty() => {
+            println!("admins (list version {}):", statement.epoch);
+            for admin in &statement.admins {
+                println!(
+                    "  {}  {} (added {})",
+                    grouped(&admin.public_key),
+                    admin.name,
+                    iso_time(admin.added_at * 1000)
+                );
+            }
+        }
+        _ => println!("admins: none besides the owner"),
+    }
+    println!("this machine: {}", role(&state, &trust)?);
     Ok(())
 }
 

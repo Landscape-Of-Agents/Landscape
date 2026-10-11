@@ -140,9 +140,13 @@ pub(crate) struct Rollup {
  * Fields
     - complete: bool - the last batch of a sync, carrying the current state below
     - remote: Option<String> - repository remote
+    - root_commits: Vec<String> - root commits, so the service can check that the repository
+      identity really belongs to the remote (the team dashboard relies on it)
+    - actor: Option<String> - this machine's Git user name, shown on the team dashboard
     - registry_generation: u64 - signed registry generation
     - events, ledger, audit, alerts - new records of each stream
-    - sessions, tasks, selections, manifest - current state
+    - sessions, tasks - sessions with new records and their tasks (all of them after a reset)
+    - selections, manifest - current state
     - rollups: Vec<Rollup> - refreshed metric rollups
 */
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -150,6 +154,8 @@ pub(crate) struct Rollup {
 pub(crate) struct Batch {
     pub(crate) complete: bool,
     pub(crate) remote: Option<String>,
+    pub(crate) root_commits: Vec<String>,
+    pub(crate) actor: Option<String>,
     pub(crate) registry_generation: u64,
     pub(crate) events: Vec<Event>,
     pub(crate) ledger: Vec<Entry>,
@@ -550,11 +556,22 @@ fn push(
                     &calls,
                 );
             }
+            let touched = |session: &str| flushed.reset || sessions.contains(session);
             batch.complete = true;
             batch.remote = workspace.remote.clone();
+            batch.root_commits = workspace.root_commits.clone();
+            batch.actor = Some(crate::platform::actor());
             batch.registry_generation = governance.generation();
-            batch.sessions = records;
-            batch.tasks = stores.identity.tasks();
+            batch.sessions = records
+                .into_iter()
+                .filter(|record| touched(&record.foxx_session_id))
+                .collect();
+            batch.tasks = stores
+                .identity
+                .tasks()
+                .into_iter()
+                .filter(|task| touched(&task.foxx_session_id))
+                .collect();
             batch.selections = governance.registry.selections.clone();
             batch.manifest = governance.registry.manifest.clone();
         }

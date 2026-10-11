@@ -109,8 +109,13 @@ pub(crate) fn serve() -> Result<(), String> {
         let stores = crate::telemetry::Stores::open(&workspace.trust()?.runtime());
         match crate::telemetry::ingest::sync(&workspace, &stores) {
             Ok(flushed) => println!(
-                "Foxx service: synchronized {} events, {} ledger entries, {} governance changes, {} alerts; the dashboard reads from the service",
-                flushed.events, flushed.ledger, flushed.audit, flushed.alerts
+                "Foxx service: synchronized {} events, {} ledger entries, {} governance changes, {} alerts; the dashboard reads from the service
+Team view (every teammate, sign in with GitHub): {}/team",
+                flushed.events,
+                flushed.ledger,
+                flushed.audit,
+                flushed.alerts,
+                crate::telemetry::ingest::endpoint().unwrap_or_default()
             ),
             Err(error) => eprintln!(
                 "crane: synchronization failed ({error}); the dashboard serves the local evidence, which remains authoritative"

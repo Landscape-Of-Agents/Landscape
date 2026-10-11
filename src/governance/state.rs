@@ -12,6 +12,7 @@ use std::io::ErrorKind;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::admins;
 use super::audit::{self, Entry};
 use super::checkpoints::CheckpointLog;
 use super::config::Config;
@@ -120,12 +121,37 @@ fn read_json<T: for<'de> Deserialize<'de> + Default>(
     name: &str,
 ) -> Result<T, String> {
     match fs::read_to_string(workspace.file(name)) {
+        Ok(text) if has_conflict_markers(&text) => Err(conflicted(name)),
         Ok(text) => serde_json::from_str(&text).map_err(|error| {
             format!(".crane/{name} is malformed ({error}); it may have been tampered with")
         }),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(T::default()),
         Err(error) => Err(format!("could not read .crane/{name}: {error}")),
     }
+}
+
+/** Report whether text contains Git merge conflict markers
+ * Input
+    - text: &str - file content
+ * Output
+    - bool
+*/
+fn has_conflict_markers(text: &str) -> bool {
+    text.lines()
+        .any(|line| line.starts_with("<<<<<<< ") || line.starts_with(">>>>>>> "))
+}
+
+/** Explain how to resolve a merge conflict in .crane: two admins changed the rules on different
+ * branches, so each side has its own signed generation and only one can be kept
+ * Input
+    - name: &str - file name inside .crane
+ * Output
+    - String
+*/
+fn conflicted(name: &str) -> String {
+    format!(
+        ".crane/{name} has unresolved merge conflicts: two admins changed the rules on different branches. Keep one side for the whole directory ('git checkout --theirs .crane' or '--ours'), commit, run 'crane init' to accept that signed state, then re-apply your change with crane so it is signed again"
+    )
 }
 
 impl State {
@@ -137,6 +163,13 @@ impl State {
         - Error if a file is unreadable or malformed
     */
     pub(crate) fn load(workspace: &Workspace) -> Result<Self, String> {
+        for name in ["audit.jsonl", "map"] {
+            if fs::read_to_string(workspace.file(name))
+                .is_ok_and(|text| has_conflict_markers(&text))
+            {
+                return Err(conflicted(name));
+            }
+        }
         let audit = read_lines(&workspace.file("audit.jsonl"))?
             .into_iter()
             .map(|value| {
@@ -251,24 +284,53 @@ pub(crate) fn integrity(workspace: &Workspace, state: &State, trust: &TrustStore
                 .into(),
         ));
     }
-    let keys = match trust.trusted_public_keys() {
+    let pinned = match trust.trusted_public_keys() {
         Ok(keys) => keys,
         Err(error) => {
             findings.push(critical("trust_unavailable", error));
             return findings;
         }
     };
-    if keys.is_empty() {
+    let short = |key: &str| key[..key.len().min(16)].to_string();
+    // With an admin list, the signers are the owner and the admins, trusted through the owner
+    let mut keys = pinned.clone();
+    let mut verified_epoch = None;
+    if let Some(statement) = &state.config.admins {
+        let remembered = admins::remembered_epoch(trust);
+        if !pinned.contains(&statement.owner) {
+            findings.push(critical(
+                "untrusted_owner",
+                format!(
+                    "this machine does not trust the repository owner's key ({}...); run 'crane init' to review its fingerprint and trust it",
+                    short(&statement.owner)
+                ),
+            ));
+        } else if let Err(error) = statement.verify(&workspace.repository_id) {
+            findings.push(critical("admins_tampered", error));
+        } else if statement.epoch < remembered {
+            findings.push(critical(
+                "admins_rollback",
+                format!(
+                    "the admin list was rolled back to version {} after this machine verified version {remembered} (a removed admin may have restored an old list)",
+                    statement.epoch
+                ),
+            ));
+        } else {
+            keys = statement.keys();
+            verified_epoch = Some(statement.epoch);
+        }
+    }
+    if pinned.is_empty() {
         findings.push(critical(
             "no_trusted_key",
-            "this machine holds no trusted key for the repository, so signatures cannot be verified; add the registry's public key to CRANE_TRUSTED_PUBLIC_KEYS or the trust directory's trusted_keys".into(),
+            "this machine holds no trusted key for the repository, so signatures cannot be verified; run 'crane init' to review the owner's key fingerprint and trust it (or set CRANE_TRUSTED_PUBLIC_KEYS on CI)".into(),
         ));
     } else if !keys.contains(&manifest.public_key) {
         findings.push(critical(
             "untrusted_signer",
             format!(
-                "the registry is signed by an untrusted key ({}...)",
-                &manifest.public_key[..manifest.public_key.len().min(16)]
+                "the registry is signed by a key that is not trusted or not an admin ({}...); run 'crane init' to review it",
+                short(&manifest.public_key)
             ),
         ));
     }
@@ -363,6 +425,11 @@ pub(crate) fn integrity(workspace: &Workspace, state: &State, trust: &TrustStore
     if let Err(error) = audit::verify(&state.audit) {
         findings.push(critical("audit_tampered", error));
     }
+    if let Some(epoch) = verified_epoch {
+        if !findings.iter().any(Finding::blocking) {
+            admins::remember_epoch(trust, epoch);
+        }
+    }
     match trust.anchor() {
         Err(error) => findings.push(critical("anchor_unreadable", error)),
         Ok(None) => findings.push(Finding::new(
@@ -427,6 +494,12 @@ pub(crate) fn commit(
     } else {
         trust.require_signing_key()?
     };
+    if !first && !admins::signers(&state).contains(&identity.public_hex()) {
+        return Err(format!(
+            "this machine's key is not an admin of the repository; ask the owner to run 'crane admin add {} name YOUR_NAME'",
+            identity.public_hex()
+        ));
+    }
     if !first {
         let blocking = integrity(workspace, &state, &trust)
             .into_iter()

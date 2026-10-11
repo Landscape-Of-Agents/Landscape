@@ -160,12 +160,15 @@ const ANCHOR_DOMAIN: &str = "trust/anchor/v1";
     - home: PathBuf - the trust directory
     - repo_dir: PathBuf - home/repos/REPO_KEY: runtime evidence, anchors, integration secrets
     - key_path: PathBuf - home/keys/REPO_KEY.key: the repository's signing key seed
+    - candidates: Vec<String> - keys treated as trusted for one evaluation only (crane init checks
+      that the state verifies under a key before asking the human to pin it)
 */
 #[derive(Debug, Clone)]
 pub(crate) struct TrustStore {
     pub(crate) home: PathBuf,
     pub(crate) repo_dir: PathBuf,
     pub(crate) key_path: PathBuf,
+    pub(crate) candidates: Vec<String>,
 }
 
 impl TrustStore {
@@ -184,7 +187,21 @@ impl TrustStore {
             repo_dir: home.join("repos").join(key),
             key_path: home.join("keys").join(format!("{key}.key")),
             home,
+            candidates: Vec::new(),
         })
+    }
+
+    /** Pin a public key as trusted for this repository on this machine (repo_dir/trusted_keys)
+     * Input
+        - key: &str - public key in hex
+     * Output
+        - Result<(), String>
+    */
+    pub(crate) fn pin(&self, key: &str) -> Result<(), String> {
+        if self.trusted_public_keys()?.iter().any(|known| known == key) {
+            return Ok(());
+        }
+        crate::platform::files::append_line(&self.repo_dir.join("trusted_keys"), key)
     }
 
     /** Return the runtime evidence directory (events, identities, ledger) of the repository
@@ -256,8 +273,9 @@ impl TrustStore {
     }
 
     /** List the public keys trusted to sign this repository's registry: this machine's own key,
-     * the comma-separated CRANE_TRUSTED_PUBLIC_KEYS, and the lines of home/trusted_keys (blank
-     * lines and # comments ignored)
+     * the comma-separated CRANE_TRUSTED_PUBLIC_KEYS, the lines of home/trusted_keys (every
+     * repository) and repo_dir/trusted_keys (keys pinned for this repository by crane init; blank
+     * lines and # comments ignored), and any candidates
      * Input
         - None (uses self)
      * Output
@@ -272,13 +290,19 @@ impl TrustStore {
         if let Ok(list) = env::var("CRANE_TRUSTED_PUBLIC_KEYS") {
             keys.extend(list.split(',').map(|key| key.trim().to_ascii_lowercase()));
         }
-        if let Ok(list) = fs::read_to_string(self.home.join("trusted_keys")) {
-            keys.extend(
-                list.lines()
-                    .map(|line| line.trim().to_ascii_lowercase())
-                    .filter(|line| !line.is_empty() && !line.starts_with('#')),
-            );
+        for file in [
+            self.home.join("trusted_keys"),
+            self.repo_dir.join("trusted_keys"),
+        ] {
+            if let Ok(list) = fs::read_to_string(file) {
+                keys.extend(
+                    list.lines()
+                        .map(|line| line.trim().to_ascii_lowercase())
+                        .filter(|line| !line.is_empty() && !line.starts_with('#')),
+                );
+            }
         }
+        keys.extend(self.candidates.iter().cloned());
         keys.retain(|key| key.len() == 64);
         keys.sort();
         keys.dedup();

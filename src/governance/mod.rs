@@ -2,6 +2,7 @@
 // context bindings, the audit chain, the signed state, the AgentScript policy language, change
 // classification, and verification of preserve and target commands.
 
+pub(crate) mod admins;
 pub(crate) mod audit;
 pub(crate) mod changes;
 pub(crate) mod checkpoints;

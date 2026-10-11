@@ -24,7 +24,8 @@ function h(tag, attributes, ...children) {
 class SignedOut extends Error {}
 function scoped(path) {
   const url = new URL(path, location.origin);
-  if (!url.pathname.startsWith("/api/me") && !url.pathname.startsWith("/api/accounts")) {
+  // The viewer and account routes take no repository; every other route does
+  if (url.pathname !== "/api/me" && !url.pathname.startsWith("/api/accounts/")) {
     url.searchParams.set("repository", scope.repository);
     if (scope.member) url.searchParams.set("members", scope.member);
   }
@@ -233,6 +234,7 @@ function signIn(message) {
   document.getElementById("viewer").replaceChildren();
   document.getElementById("nav").replaceChildren();
   document.getElementById("main").replaceChildren(h("div", { class: "signin" },
+    h("img", { class: "hero", src: "/logo.png", alt: "Foxx", width: "168", height: "168" }),
     h("h2", {}, "Crane security observability"),
     h("p", { class: "muted" }, "Sign in with GitHub to see your agents' sessions, actions, and metrics. Personal accounts see their own repositories; organization members see the organization's repositories with a filter for each teammate."),
     message ? h("p", { class: "error" }, message) : null,

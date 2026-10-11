@@ -101,19 +101,8 @@ pub(crate) fn ping(database: &Database) -> Result<(), String> {
     - String
 */
 pub(crate) fn redact_uri(text: &str) -> String {
-    crate::telemetry::redact::redact(
-        &text
-            .split_whitespace()
-            .map(|word| match (word.find("://"), word.rfind('@')) {
-                (Some(scheme), Some(at)) if at > scheme => {
-                    format!("{}://[REDACTED]@{}", &word[..scheme], &word[at + 1..])
-                }
-                _ => word.to_string(),
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
-    .0
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    crate::telemetry::redact::redact(&crate::telemetry::redact::strip_url_credentials(&text)).0
 }
 
 /** A collection, its validator, and its indexes

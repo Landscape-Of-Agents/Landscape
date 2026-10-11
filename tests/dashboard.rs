@@ -36,7 +36,10 @@ struct World {
 
 impl Drop for World {
     fn drop(&mut self) {
-        let _ = self.database.drop().run();
+        // CRANE_TEST_KEEP_DATABASE=1 keeps the data, for looking at the dashboard by hand
+        if std::env::var("CRANE_TEST_KEEP_DATABASE").map_or(true, |value| value != "1") {
+            let _ = self.database.drop().run();
+        }
     }
 }
 
@@ -198,6 +201,46 @@ fn sign_in_scopes_personal_and_organization_accounts() {
     );
     assert_eq!(get(&format!("{base}/app.js"), None).status, 200);
     assert_eq!(get(&format!("{base}/api/me"), None).status, 401);
+    // The dashboard's /api/health needs a signed-in viewer; the service's /health does not
+    assert_eq!(get(&format!("{base}/api/health"), None).status, 401);
+    assert_eq!(get(&format!("{base}/health"), None).json()["status"], "ok");
+    // The logo and the tab icon are served as cacheable images
+    for asset in ["/logo.png", "/favicon.png"] {
+        let image = get(&format!("{base}{asset}"), None);
+        assert_eq!(image.status, 200, "{asset}");
+        assert_eq!(image.header("content-type"), Some("image/png"));
+        assert!(image
+            .header("cache-control")
+            .unwrap_or_default()
+            .contains("max-age"));
+    }
+    // Every response carries a correlation id; a caller's id is echoed and logged without the
+    // query string or the session cookie
+    assert_eq!(page.header("x-request-id").map(str::len), Some(16));
+    let traced = request(
+        "GET",
+        &format!("{base}/api/me?secret-query=1"),
+        &[
+            ("X-Request-Id", "trace-0001"),
+            ("Cookie", "foxx_session=not-a-session"),
+        ],
+    );
+    assert_eq!(traced.header("x-request-id"), Some("trace-0001"));
+    let line = world
+        .service
+        .logs()
+        .lines()
+        .find(|line| line.contains("\"request_id\":\"trace-0001\""))
+        .expect("the request is logged with its correlation id")
+        .to_string();
+    let entry: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(entry["path"], "/api/me");
+    assert_eq!(entry["status"], 401);
+    assert_eq!(entry["component"], "http");
+    assert!(
+        !line.contains("secret-query") && !line.contains("not-a-session"),
+        "{line}"
+    );
     let start = get(&format!("{base}/auth/login"), None);
     let oauth = start.cookies[0].split(';').next().unwrap().to_string();
     let mismatch = get(

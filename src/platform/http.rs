@@ -138,6 +138,7 @@ pub(crate) fn post_detached(url: &str, headers: &[String], body: &str) -> Result
     - String
 */
 pub(crate) fn base64(bytes: &[u8]) -> String {
+    /** The standard base64 alphabet */
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::new();
     for chunk in bytes.chunks(3) {

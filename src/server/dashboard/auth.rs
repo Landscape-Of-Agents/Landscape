@@ -18,6 +18,7 @@ use serde_json::Value;
 use tiny_http::Request;
 
 use crate::platform::now_millis;
+use crate::server::http::{cookie, header};
 use crate::trust::crypto::{hex, unhex, verify_signature, SigningIdentity};
 
 /** Signature domain of session cookies */
@@ -273,39 +274,6 @@ impl Auth {
             expires: now_millis() + SESSION_MILLIS,
         })
     }
-}
-
-/** Read a request header
- * Input
-    - request: &Request - request
-    - name: &'static str - header name
- * Output
-    - Option<String>
-*/
-fn header(request: &Request, name: &'static str) -> Option<String> {
-    request
-        .headers()
-        .iter()
-        .find(|header| header.field.equiv(name))
-        .map(|header| header.value.as_str().trim().to_string())
-}
-
-/** Read a cookie
- * Input
-    - request: &Request - request
-    - name: &str - cookie name
- * Output
-    - Option<String>
-*/
-pub(crate) fn cookie(request: &Request, name: &str) -> Option<String> {
-    request
-        .headers()
-        .iter()
-        .filter(|header| header.field.equiv("Cookie"))
-        .flat_map(|header| header.value.as_str().split(';'))
-        .filter_map(|pair| pair.trim().split_once('='))
-        .find(|(key, _)| *key == name)
-        .map(|(_, value)| value.to_string())
 }
 
 /** Percent-encode a query value

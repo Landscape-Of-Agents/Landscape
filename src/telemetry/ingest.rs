@@ -33,7 +33,7 @@ use crate::governance::workspace::Workspace;
 use crate::platform::files::{read_lines, write_atomic, Lock};
 use crate::platform::{io_error, now_millis};
 use crate::selection::registry::Record;
-use crate::trust::crypto::{sha512_hex, SigningIdentity};
+use crate::trust::crypto::{hex, random_bytes, sha512_hex, SigningIdentity};
 
 /** Signature domain of ingestion requests */
 pub(crate) const REQUEST_DOMAIN: &str = "foxx/ingest/request/v1";
@@ -181,6 +181,7 @@ pub(crate) struct Batch {
     - rollups: usize - metric rollups refreshed
     - duplicates: usize - records the service already held (retries)
     - reset: bool - the service held less than the checkpoint, so missing records were re-sent
+    - skipped: bool - another sync was running, so this background sync did nothing
 */
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub(crate) struct Flushed {
@@ -191,6 +192,7 @@ pub(crate) struct Flushed {
     pub(crate) rollups: usize,
     pub(crate) duplicates: usize,
     pub(crate) reset: bool,
+    pub(crate) skipped: bool,
 }
 
 /** The sync status kept in the trust directory
@@ -291,6 +293,9 @@ impl Client {
     */
     fn call(&self, method: &str, operation: &str, body: &[u8]) -> Result<Value, String> {
         let path = format!("/v1/repositories/{}/{operation}", self.repository);
+        // Correlation identifier: the service logs it and returns it, so a failure reported here
+        // can be found in the service's logs
+        let request_id = random_bytes(8).map(|bytes| hex(&bytes)).unwrap_or_default();
         let timestamp = now_millis();
         let signature = self.key.sign(
             REQUEST_DOMAIN,
@@ -302,6 +307,7 @@ impl Client {
             .set("X-Crane-Installation", &self.key.public_hex())
             .set("X-Crane-Timestamp", &timestamp.to_string())
             .set("X-Crane-Signature", &signature)
+            .set("X-Request-Id", &request_id)
             .set("User-Agent", concat!("crane/", env!("CARGO_PKG_VERSION")));
         let response = if method == "POST" {
             request
@@ -312,10 +318,10 @@ impl Client {
         };
         match response {
             Ok(response) => response.into_json::<Value>().map_err(|error| {
-                format!("the ingestion service sent an unreadable answer: {error}")
+                format!("the ingestion service sent an unreadable answer: {error} (request {request_id})")
             }),
             Err(ureq::Error::Status(code, response)) => Err(format!(
-                "the ingestion service answered HTTP {code}: {}",
+                "the ingestion service answered HTTP {code}: {} (request {request_id})",
                 response
                     .into_string()
                     .unwrap_or_default()
@@ -323,16 +329,31 @@ impl Client {
                     .take(300)
                     .collect::<String>()
             )),
-            Err(error) => Err(format!("the ingestion service is unreachable: {error}")),
+            Err(error) => Err(format!(
+                "the ingestion service is unreachable: {error} (request {request_id})"
+            )),
         }
     }
+}
+
+/** What started a sync
+ * Variants
+    - Background - a hook or command; skipped while another sync runs (that sync, or the next
+      trigger, uploads the same records), and the repository status is sent only when due
+    - Manual - a person ran 'crane agent sync'; waits for a running sync and always refreshes the
+      repository status
+*/
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Trigger {
+    Background,
+    Manual,
 }
 
 /** Upload the local stores under the sync lock, recording the outcome
  * Input
     - workspace: &Workspace - repository
     - stores: &Stores - runtime stores
-    - refresh: bool - send the repository status even when it is not due (a manual sync)
+    - trigger: Trigger - what started the sync
  * Output
     - Result<Flushed, String> what was sent (nothing when uploads are off)
     - Error if the upload failed (the local stores are unaffected)
@@ -340,9 +361,22 @@ impl Client {
 pub(crate) fn sync(
     workspace: &Workspace,
     stores: &Stores,
-    refresh: bool,
+    trigger: Trigger,
 ) -> Result<Flushed, String> {
-    let _lock = Lock::acquire(&stores.directory.join("sync.lock"))?;
+    let path = stores.directory.join("sync.lock");
+    let _lock = match trigger {
+        Trigger::Manual => Lock::acquire(&path)?,
+        Trigger::Background => match Lock::try_acquire(&path)? {
+            Some(lock) => lock,
+            None => {
+                return Ok(Flushed {
+                    skipped: true,
+                    ..Flushed::default()
+                })
+            }
+        },
+    };
+    let refresh = trigger == Trigger::Manual;
     let mut status = state(stores);
     status.last_attempt_at = now_millis();
     save_state(stores, &status);

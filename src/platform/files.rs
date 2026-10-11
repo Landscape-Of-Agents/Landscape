@@ -154,10 +154,53 @@ const STALE_LOCK_SECONDS: u64 = 30;
 /** How long to wait for a lock before failing, in milliseconds */
 const LOCK_TIMEOUT_MILLIS: u64 = 10_000;
 
+/** The outcome of one attempt to take a lock
+ * Variants
+    - Taken(Lock) - the lock is now held
+    - Busy - another process holds it
+*/
+enum Attempt {
+    Taken(Lock),
+    Busy,
+}
+
 impl Lock {
-    /** Acquire the lock, by creating the lock file exclusively (retrying until the timeout) and
-     * breaking a lock whose recorded creation time is older than STALE_LOCK_SECONDS, so a crashed
-     * hook cannot block every later one
+    /** Try once to take the lock: create the lock file exclusively, and break a lock whose
+     * recorded creation time is older than STALE_LOCK_SECONDS (a crashed process), so it cannot
+     * block every later one
+     * Input
+        - path: &Path - lock file path (its directory exists)
+     * Output
+        - Result<Attempt, String>
+        - Error if the lock file cannot be created for another reason
+    */
+    fn attempt(path: &Path) -> Result<Attempt, String> {
+        match OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(mut file) => {
+                let _ = write!(file, "{} {}", std::process::id(), now_unix());
+                Ok(Attempt::Taken(Self {
+                    path: path.to_path_buf(),
+                }))
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                let stale = fs::read_to_string(path)
+                    .ok()
+                    .and_then(|text| text.split_whitespace().nth(1)?.parse::<u64>().ok())
+                    .is_some_and(|created| now_unix().saturating_sub(created) > STALE_LOCK_SECONDS);
+                if stale && fs::remove_file(path).is_ok() {
+                    return Self::attempt(path);
+                }
+                Ok(Attempt::Busy)
+            }
+            // Windows reports access denied while another process is deleting the lock file
+            Err(error) if cfg!(windows) && error.kind() == ErrorKind::PermissionDenied => {
+                Ok(Attempt::Busy)
+            }
+            Err(error) => Err(format!("could not create lock {}: {error}", path.display())),
+        }
+    }
+
+    /** Acquire the lock, waiting while another process holds it
      * Input
         - path: &Path - lock file path
      * Output
@@ -170,45 +213,33 @@ impl Lock {
         }
         let started = Instant::now();
         loop {
-            match OpenOptions::new().write(true).create_new(true).open(path) {
-                Ok(mut file) => {
-                    let _ = write!(file, "{} {}", std::process::id(), now_unix());
-                    return Ok(Self {
-                        path: path.to_path_buf(),
-                    });
+            match Self::attempt(path)? {
+                Attempt::Taken(lock) => return Ok(lock),
+                Attempt::Busy if started.elapsed() > Duration::from_millis(LOCK_TIMEOUT_MILLIS) => {
+                    return Err(format!(
+                        "timed out waiting for lock {}; remove it if no Crane process is running",
+                        path.display()
+                    ))
                 }
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                    let stale = fs::read_to_string(path)
-                        .ok()
-                        .and_then(|text| text.split_whitespace().nth(1)?.parse::<u64>().ok())
-                        .is_some_and(|created| {
-                            now_unix().saturating_sub(created) > STALE_LOCK_SECONDS
-                        });
-                    if stale {
-                        let _ = fs::remove_file(path);
-                        continue;
-                    }
-                    if started.elapsed() > Duration::from_millis(LOCK_TIMEOUT_MILLIS) {
-                        return Err(format!(
-                            "timed out waiting for lock {}; remove it if no Crane process is running",
-                            path.display()
-                        ));
-                    }
-                    thread::sleep(Duration::from_millis(15));
-                }
-                // Windows reports access denied while another process is deleting the lock file
-                Err(error)
-                    if cfg!(windows)
-                        && error.kind() == ErrorKind::PermissionDenied
-                        && started.elapsed() <= Duration::from_millis(LOCK_TIMEOUT_MILLIS) =>
-                {
-                    thread::sleep(Duration::from_millis(15));
-                }
-                Err(error) => {
-                    return Err(format!("could not create lock {}: {error}", path.display()))
-                }
+                Attempt::Busy => thread::sleep(Duration::from_millis(15)),
             }
         }
+    }
+
+    /** Take the lock only if no other process holds it
+     * Input
+        - path: &Path - lock file path
+     * Output
+        - Result<Option<Lock>, String>, None when another process holds it
+    */
+    pub(crate) fn try_acquire(path: &Path) -> Result<Option<Self>, String> {
+        if let Some(directory) = path.parent() {
+            fs::create_dir_all(directory).map_err(io_error)?;
+        }
+        Ok(match Self::attempt(path)? {
+            Attempt::Taken(lock) => Some(lock),
+            Attempt::Busy => None,
+        })
     }
 }
 
@@ -232,4 +263,33 @@ impl Drop for Lock {
 */
 pub(crate) fn is_text(bytes: &[u8]) -> bool {
     !bytes.contains(&0) && std::str::from_utf8(bytes).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Lock;
+
+    /** Check that a held lock is busy for another taker and free again once released
+     * Input
+        - None
+     * Output
+        - None (panics on failure)
+    */
+    #[test]
+    fn locks_exclude_and_release() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("x.lock");
+        let held = Lock::try_acquire(&path).unwrap().expect("free at first");
+        assert!(
+            Lock::try_acquire(&path).unwrap().is_none(),
+            "busy while held"
+        );
+        drop(held);
+        assert!(
+            Lock::try_acquire(&path).unwrap().is_some(),
+            "free after release"
+        );
+        std::fs::write(&path, "1 0").unwrap();
+        assert!(Lock::acquire(&path).is_ok(), "a stale lock is broken");
+    }
 }

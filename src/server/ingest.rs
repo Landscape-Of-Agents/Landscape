@@ -1,0 +1,230 @@
+// The signed upload API (/v1): every request carries a machine's upload key, a timestamp within
+// five minutes of the service clock, and an Ed25519 signature over the method, path, timestamp,
+// and body digest (see telemetry/ingest.rs). Uploads pass the limits (limits.rs) before they are
+// stored (store.rs). The only routes are positions (how far each stream is stored, as counts) and
+// batch (store records): no route returns stored records, so a machine, or an agent holding its
+// key, cannot read evidence back.
+
+use std::io::Read;
+
+use serde_json::{json, Value};
+use tiny_http::Request;
+
+use super::http::header;
+use super::{database, log, store, Service};
+use crate::platform::now_millis;
+use crate::telemetry::ingest::{request_message, Batch, REQUEST_DOMAIN};
+use crate::trust::crypto::{is_digest, verify_signature};
+
+/** Largest accepted request body */
+const MAX_BODY: usize = 8 * 1024 * 1024;
+
+/** Largest accepted difference between a request timestamp and the service clock */
+const WINDOW_MILLIS: u64 = 5 * 60 * 1000;
+
+/** An HTTP status and a message for the client */
+pub(super) type Failure = (u16, String);
+
+/** Check a request's installation key, timestamp, and signature
+ * Input
+    - request: &Request - request
+    - method: &str - HTTP method
+    - path: &str - path starting at /v1/
+    - body: &[u8] - body
+ * Output
+    - Result<String, Failure> the installation's public key in hex
+*/
+fn authenticate(
+    request: &Request,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> Result<String, Failure> {
+    let unauthorized = |message: &str| (401, message.to_string());
+    let installation = header(request, "X-Crane-Installation")
+        .filter(|key| {
+            key.len() == 64
+                && key
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        })
+        .ok_or_else(|| unauthorized("missing or malformed installation key"))?;
+    let timestamp = header(request, "X-Crane-Timestamp")
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| unauthorized("missing request timestamp"))?;
+    if now_millis().abs_diff(timestamp) > WINDOW_MILLIS {
+        return Err(unauthorized(
+            "the request timestamp is more than five minutes off; check the clock",
+        ));
+    }
+    let signature = header(request, "X-Crane-Signature")
+        .ok_or_else(|| unauthorized("missing request signature"))?;
+    verify_signature(
+        &installation,
+        REQUEST_DOMAIN,
+        &request_message(method, path, timestamp, body),
+        &signature,
+    )
+    .map_err(|_| unauthorized("invalid request signature"))?;
+    Ok(installation)
+}
+
+/** Check a batch against the limits before storing it
+ * Input
+    - service: &Service - shared state
+    - repository: &str - repository identity
+    - installation: &str - installation key
+    - batch: &Batch - batch
+ * Output
+    - Result<(), Failure>
+*/
+fn admit(
+    service: &Service,
+    repository: &str,
+    installation: &str,
+    batch: &Batch,
+) -> Result<(), Failure> {
+    let limits = &service.limits;
+    let largest = [
+        batch.events.len(),
+        batch.ledger.len(),
+        batch.audit.len(),
+        batch.alerts.len(),
+        batch.sessions.len(),
+        batch.tasks.len(),
+        batch.selections.len(),
+        batch.rollups.len(),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0);
+    if largest > limits.max_batch_records {
+        return Err((
+            413,
+            format!(
+                "a batch may carry at most {} records of each kind",
+                limits.max_batch_records
+            ),
+        ));
+    }
+    let unavailable = |_| {
+        (
+            503,
+            "the database is unavailable; try again later".to_string(),
+        )
+    };
+    if service
+        .storage
+        .used(&service.database)
+        .map_err(unavailable)?
+        > limits.max_storage_bytes
+    {
+        return Err((
+            507,
+            "the service's storage is full; uploads resume when old telemetry expires".into(),
+        ));
+    }
+    let quota = store::quota(&service.database, repository, installation).map_err(unavailable)?;
+    if !quota.known && quota.repositories >= limits.max_repositories_per_installation {
+        return Err((
+            429,
+            format!(
+                "this installation already uploads {} repositories, the most allowed",
+                quota.repositories
+            ),
+        ));
+    }
+    if quota.events + batch.events.len() as u64 > limits.max_events_per_installation {
+        return Err((
+            507,
+            format!(
+                "this installation reached its quota of {} stored events",
+                limits.max_events_per_installation
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/** Route a /v1 request
+ * Input
+    - request: &mut Request - request
+    - service: &Service - shared state
+    - request_id: &str - correlation identifier, for the log
+ * Output
+    - Result<Value, Failure>
+*/
+pub(super) fn handle(
+    request: &mut Request,
+    service: &Service,
+    request_id: &str,
+) -> Result<Value, Failure> {
+    let method = request.method().as_str().to_ascii_uppercase();
+    let url = request.url().to_string();
+    let not_found = || (404, "not found".to_string());
+    let path = url
+        .find("/v1/")
+        .map(|start| url[start..].to_string())
+        .ok_or_else(not_found)?;
+    let (repository, operation) = match path.split('/').collect::<Vec<_>>().as_slice() {
+        ["", "v1", "repositories", repository, operation] if is_digest(repository) => {
+            (repository.to_string(), operation.to_string())
+        }
+        _ => return Err(not_found()),
+    };
+    if request
+        .body_length()
+        .is_some_and(|length| length > MAX_BODY)
+    {
+        return Err((413, "the request body is too large".into()));
+    }
+    let mut body = Vec::new();
+    request
+        .as_reader()
+        .take(MAX_BODY as u64 + 1)
+        .read_to_end(&mut body)
+        .map_err(|_| (400, "the request body could not be read".to_string()))?;
+    if body.len() > MAX_BODY {
+        return Err((413, "the request body is too large".into()));
+    }
+    let installation = authenticate(request, &method, &path, &body)?;
+    if !service.installations.allow(&installation) {
+        return Err((
+            429,
+            "too many requests from this installation; try again in a minute".into(),
+        ));
+    }
+    let database = &service.database;
+    let stored = match (method.as_str(), operation.as_str()) {
+        ("GET", "positions") => {
+            store::positions(database, &repository, &installation).map(|positions| json!(positions))
+        }
+        ("POST", "batch") => {
+            let batch: Batch = serde_json::from_slice(&body)
+                .map_err(|error| (400, format!("invalid batch: {error}")))?;
+            admit(service, &repository, &installation, &batch)?;
+            store::ingest(
+                database,
+                &service.settings,
+                &repository,
+                &installation,
+                &batch,
+            )
+        }
+        (_, "positions" | "batch") => return Err((405, "method not allowed".into())),
+        _ => return Err(not_found()),
+    };
+    stored.map_err(|error| {
+        log::write(
+            "error",
+            "ingest",
+            Some(request_id),
+            "storing failed",
+            json!({"operation": operation, "installation": &installation[..16], "error": database::redact_uri(&error)}),
+        );
+        (
+            500,
+            "the record could not be stored; try again later".to_string(),
+        )
+    })
+}

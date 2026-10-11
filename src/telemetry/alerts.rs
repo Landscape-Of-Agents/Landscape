@@ -14,7 +14,6 @@ use super::Stores;
 use crate::governance::workspace::Workspace;
 use crate::integrations;
 use crate::platform::files::{append_line, read_lines, Lock};
-use crate::platform::http::post_detached;
 use crate::platform::now_unix;
 
 /** Default cooldown between two alerts with the same key, in seconds */
@@ -61,22 +60,6 @@ fn describe(kind: &str) -> (&'static str, &'static str) {
             "recorded for review; decisions are unaffected",
         ),
         _ => ("Crane alert", "recorded"),
-    }
-}
-
-/** Rank a severity name for threshold comparison
- * Input
-    - name: &str - critical, high, medium, low
- * Output
-    - u8 rank, higher is more severe
-*/
-fn rank(name: &str) -> u8 {
-    match name.to_ascii_lowercase().as_str() {
-        "critical" => 4,
-        "high" => 3,
-        "medium" => 2,
-        "low" => 1,
-        _ => 0,
     }
 }
 
@@ -159,35 +142,18 @@ fn try_raise(
             .map(|url| format!("\nDashboard: {url}/#/sessions/{}", session.foxx_session_id))
             .unwrap_or_default()
     );
-    let mut deliveries = Vec::new();
-    if !suppressed {
-        let event_rank = rank(&severity);
-        if let Some(slack) = &slack {
-            let minimum = slack
-                .settings
-                .get("min_severity")
-                .and_then(Value::as_str)
-                .unwrap_or("high");
-            if event_rank >= rank(minimum) {
-                deliveries.push(
-                    json!({"channel": "slack", "result": deliver_slack(workspace, slack, &text)}),
-                );
-            }
-        }
-        if let (Some(jira), Some(issue)) = (
-            integrations::load(workspace, "jira"),
-            event.scope.external_task_id.as_deref(),
-        ) {
-            if event_rank >= rank("high") {
-                deliveries.push(json!({"channel": "jira", "issue": issue, "result": deliver_jira(workspace, &jira, issue, &text)}));
-            }
-        }
-        if let Some(whatsapp) = integrations::load(workspace, "whatsapp") {
-            if event_rank >= rank("high") {
-                deliveries.push(json!({"channel": "whatsapp", "result": deliver_whatsapp(workspace, &whatsapp, &text)}));
-            }
-        }
-    }
+    let deliveries = if suppressed {
+        Vec::new()
+    } else {
+        integrations::deliver(
+            workspace,
+            &integrations::Alert {
+                text: &text,
+                severity: integrations::severity_rank(&severity),
+                issue: event.scope.external_task_id.as_deref(),
+            },
+        )
+    };
     let record = json!({
         "alert_id": format!("alr_{}_{}", now, event.sequence),
         "key": key,
@@ -202,165 +168,6 @@ fn try_raise(
         "deliveries": deliveries,
     });
     append_line(&path, &record.to_string())
-}
-
-/** Send an alert request without waiting for the answer, unless CRANE_ALERTS_DRY_RUN=1
- * Input
-    - url: &str - endpoint
-    - headers: &[String] - headers (may contain credentials)
-    - body: &Value - JSON body
- * Output
-    - String, "queued", "dry-run", or why it could not be sent
-*/
-fn send(url: &str, headers: &[String], body: &Value) -> String {
-    if std::env::var("CRANE_ALERTS_DRY_RUN").is_ok_and(|value| value == "1") {
-        return "dry-run".into();
-    }
-    match post_detached(url, headers, &body.to_string()) {
-        Ok(()) => "queued".into(),
-        Err(error) => error,
-    }
-}
-
-/** Deliver an alert to Slack
- * Input
-    - workspace: &Workspace - repository
-    - slack: &integrations::Integration - Slack settings
-    - text: &str - alert text
- * Output
-    - String delivery result
-*/
-fn deliver_slack(workspace: &Workspace, slack: &integrations::Integration, text: &str) -> String {
-    let secrets = integrations::secrets(workspace, "slack");
-    match slack.settings.get("mode").and_then(Value::as_str) {
-        Some("bot") => match (
-            secrets.get("bot_token").and_then(Value::as_str),
-            slack.settings.get("channel").and_then(Value::as_str),
-        ) {
-            (Some(token), Some(channel)) => send(
-                "https://slack.com/api/chat.postMessage",
-                &[format!("Authorization: Bearer {token}")],
-                &json!({"channel": channel, "text": text}),
-            ),
-            _ => "missing bot token or channel".into(),
-        },
-        _ => match secrets.get("webhook_url").and_then(Value::as_str) {
-            Some(url) => send(url, &[], &json!({"text": text})),
-            None => "missing webhook URL".into(),
-        },
-    }
-}
-
-/** Deliver an alert as a comment on the Jira issue the session works on (CRANE_TASK_ID), when the
- * issue belongs to the configured project
- * Input
-    - workspace: &Workspace - repository
-    - jira: &integrations::Integration - Jira settings
-    - issue: &str - issue key such as PAY-1821
-    - text: &str - alert text
- * Output
-    - String delivery result
-*/
-fn deliver_jira(
-    workspace: &Workspace,
-    jira: &integrations::Integration,
-    issue: &str,
-    text: &str,
-) -> String {
-    let project = jira
-        .settings
-        .get("project_key")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let valid = issue
-        .strip_prefix(project)
-        .and_then(|rest| rest.strip_prefix('-'))
-        .is_some_and(|number| {
-            !number.is_empty() && number.chars().all(|character| character.is_ascii_digit())
-        });
-    if !valid {
-        return format!("skipped: {issue} is not an issue of project {project}");
-    }
-    let secrets = integrations::secrets(workspace, "jira");
-    let (Some(authorization), Some(site), Some(version)) = (
-        integrations::jira_authorization(jira, &secrets),
-        jira.settings.get("site_url").and_then(Value::as_str),
-        jira.settings.get("api_version").and_then(Value::as_str),
-    ) else {
-        return "incomplete Jira configuration".into();
-    };
-    let body = if version == "3" {
-        json!({"body": {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]}})
-    } else {
-        json!({ "body": text })
-    };
-    send(
-        &format!("{site}/rest/api/{version}/issue/{issue}/comment"),
-        &[authorization],
-        &body,
-    )
-}
-
-/** Deliver an alert to WhatsApp recipients through the Cloud API
- * Input
-    - workspace: &Workspace - repository
-    - whatsapp: &integrations::Integration - WhatsApp settings
-    - text: &str - alert text
- * Output
-    - String delivery result
-*/
-fn deliver_whatsapp(
-    workspace: &Workspace,
-    whatsapp: &integrations::Integration,
-    text: &str,
-) -> String {
-    let secrets = integrations::secrets(workspace, "whatsapp");
-    let (Some(token), Some(version), Some(phone)) = (
-        secrets.get("access_token").and_then(Value::as_str),
-        whatsapp.settings.get("api_version").and_then(Value::as_str),
-        whatsapp
-            .settings
-            .get("phone_number_id")
-            .and_then(Value::as_str),
-    ) else {
-        return "incomplete WhatsApp configuration".into();
-    };
-    let url = format!("https://graph.facebook.com/{version}/{phone}/messages");
-    let mut results = Vec::new();
-    for recipient in whatsapp
-        .settings
-        .get("recipients")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-    {
-        let body = if whatsapp
-            .settings
-            .get("message_type")
-            .and_then(Value::as_str)
-            == Some("template")
-        {
-            json!({
-                "messaging_product": "whatsapp",
-                "to": recipient,
-                "type": "template",
-                "template": {
-                    "name": whatsapp.settings.get("template_name"),
-                    "language": {"code": whatsapp.settings.get("template_language")},
-                    "components": [{"type": "body", "parameters": [{"type": "text", "text": text.chars().take(1000).collect::<String>()}]}],
-                },
-            })
-        } else {
-            json!({"messaging_product": "whatsapp", "to": recipient, "type": "text", "text": {"body": text}})
-        };
-        results.push(send(
-            &url,
-            &[format!("Authorization: Bearer {token}")],
-            &body,
-        ));
-    }
-    results.join(", ")
 }
 
 /** Read the recorded alerts, newest first

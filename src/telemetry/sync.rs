@@ -84,9 +84,12 @@ fn disinherit_standard_handles() {
     use std::ffi::c_void;
     #[link(name = "kernel32")]
     extern "system" {
+        /** Return a standard handle of this process (Win32) */
         fn GetStdHandle(kind: u32) -> *mut c_void;
+        /** Change a handle's flags (Win32) */
         fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
     }
+    /** The flag that lets a child process inherit a handle */
     const HANDLE_FLAG_INHERIT: u32 = 0x1;
     // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE are -10, -11, -12 as DWORD
     for kind in [-10i32, -11, -12] {

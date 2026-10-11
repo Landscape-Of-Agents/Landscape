@@ -100,6 +100,12 @@ fn service_outage_does_not_weaken_enforcement() {
         failed.contains("unreachable") || failed.contains("timed out waiting for lock"),
         "{failed}"
     );
+    if failed.contains("unreachable") {
+        assert!(
+            failed.contains("(request "),
+            "failures name their correlation id: {failed}"
+        );
+    }
     assert!(
         local_events(&fixture) >= 4,
         "the evidence stays on the machine"
@@ -193,6 +199,13 @@ fn live_pipeline_reaches_mongodb_without_setup() {
         ],
     );
     assert_eq!(forged.status, 401, "{}", forged.body);
+    let id = forged.header("x-request-id").unwrap().to_string();
+    assert_eq!(
+        forged.json()["request_id"],
+        id.as_str(),
+        "errors name their request"
+    );
+    assert!(running.logs().contains(&format!("\"request_id\":\"{id}\"")));
     // Let the detached syncs started by the hooks finish before simulating data loss
     std::thread::sleep(std::time::Duration::from_secs(5));
     database

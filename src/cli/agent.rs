@@ -164,9 +164,17 @@ fn sync() -> Result<(), String> {
         return Err("uploads are off (CRANE_INGEST_URL is 'off')".into());
     }
     let stores = crate::telemetry::Stores::open(&workspace.trust()?.runtime());
-    // Hooks and commands start background syncs; a sync someone runs refreshes the status too
-    let background = std::env::var("CRANE_SYNC_BACKGROUND").is_ok_and(|value| value == "1");
-    let flushed = crate::telemetry::ingest::sync(&workspace, &stores, !background)?;
+    // Hooks and commands start background syncs (marked by the trigger); a person runs a manual one
+    let trigger = if std::env::var("CRANE_SYNC_BACKGROUND").is_ok_and(|value| value == "1") {
+        crate::telemetry::ingest::Trigger::Background
+    } else {
+        crate::telemetry::ingest::Trigger::Manual
+    };
+    let flushed = crate::telemetry::ingest::sync(&workspace, &stores, trigger)?;
+    if flushed.skipped {
+        println!("Another upload is running; this one was skipped");
+        return Ok(());
+    }
     println!(
         "Synchronized {} events, {} ledger entries, {} governance changes, {} alerts, {} metric rollups ({} already present{})",
         flushed.events,

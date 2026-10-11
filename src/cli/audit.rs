@@ -10,23 +10,9 @@ use crate::governance::workspace::Workspace;
 use crate::platform::now_millis;
 use crate::telemetry::events::{Event, EventStore, Measurement, Source};
 use crate::telemetry::model::{Domain, Execution, Severity};
+use crate::telemetry::redact::strip_url_credentials;
 use crate::telemetry::sync;
 use crate::trust::agent_environment;
-
-/** Remove user information (user:password@) from URL-like arguments
- * Input
-    - word: &str - argument
- * Output
-    - String
-*/
-fn without_credentials(word: &str) -> String {
-    match (word.find("://"), word.rfind('@')) {
-        (Some(scheme), Some(at)) if at > scheme => {
-            format!("{}://[REDACTED]@{}", &word[..scheme], &word[at + 1..])
-        }
-        _ => word.to_string(),
-    }
-}
 
 /** Record a finished command and trigger a sync
  * Input
@@ -54,7 +40,7 @@ pub(crate) fn record(words: &[String], result: &Result<(), String>, started: u64
     };
     let command = words
         .iter()
-        .map(|word| without_credentials(word))
+        .map(|word| strip_url_credentials(word))
         .collect::<Vec<_>>()
         .join(" ");
     let mut event = Event::new(
@@ -96,28 +82,4 @@ pub(crate) fn record(words: &[String], result: &Result<(), String>, started: u64
     ));
     let _ = EventStore::open(&trust.runtime()).append(event);
     sync::trigger(&workspace);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::without_credentials;
-
-    /** Check that URL credentials are removed and other words are kept
-     * Input
-        - None
-     * Output
-        - None (panics on failure)
-    */
-    #[test]
-    fn removes_url_credentials() {
-        assert_eq!(
-            without_credentials("https://token@github.com/a/b"),
-            "https://[REDACTED]@github.com/a/b"
-        );
-        assert_eq!(
-            without_credentials("git@github.com:a/b.git"),
-            "git@github.com:a/b.git"
-        );
-        assert_eq!(without_credentials("app/payments.py"), "app/payments.py");
-    }
 }

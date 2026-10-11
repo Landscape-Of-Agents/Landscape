@@ -4,6 +4,25 @@
 // exposure but cannot prove that no secret remains, which is why raw tool payloads and prompts
 // are never stored at all.
 
+/** Remove the user information (user:password@) from every URL in a text, keeping the scheme
+ * and host so the message stays useful; words without a URL are kept as they are
+ * Input
+    - text: &str - text that may contain URLs with credentials
+ * Output
+    - String
+*/
+pub(crate) fn strip_url_credentials(text: &str) -> String {
+    text.split(' ')
+        .map(|word| match (word.find("://"), word.rfind('@')) {
+            (Some(scheme), Some(at)) if at > scheme => {
+                format!("{}://[REDACTED]@{}", &word[..scheme], &word[at + 1..])
+            }
+            _ => word.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /** Known token prefixes and their kinds, with the minimum length of the token that follows */
 const PREFIXES: &[(&str, &str, usize)] = &[
     ("AKIA", "aws_access_key", 16),
@@ -137,6 +156,26 @@ pub(crate) fn redact(text: &str) -> (String, usize) {
 
 #[cfg(test)]
 mod tests {
+    /** Check that URL credentials are removed and other words are kept
+     * Input
+        - None
+     * Output
+        - None (panics on failure)
+    */
+    #[test]
+    fn strips_url_credentials() {
+        use super::strip_url_credentials;
+        assert_eq!(
+            strip_url_credentials("clone https://token@github.com/a/b now"),
+            "clone https://[REDACTED]@github.com/a/b now"
+        );
+        assert_eq!(
+            strip_url_credentials("git@github.com:a/b.git"),
+            "git@github.com:a/b.git"
+        );
+        assert_eq!(strip_url_credentials("app/payments.py"), "app/payments.py");
+    }
+
     use super::redact;
 
     /** Check that common secrets are redacted and ordinary text is kept

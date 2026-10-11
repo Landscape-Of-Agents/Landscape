@@ -5,7 +5,7 @@
 // only writes, and the dashboard answers only signed-in browsers. The dashboard holds a read-only
 // database handle (data.rs), so viewing never changes the stored evidence.
 //
-// Routes (GET only): / and /app.js (the page), /auth/login, /auth/callback, /auth/logout,
+// Routes (GET only): /, /app.js, /logo.png, and /favicon.png (the page), /auth/login, /auth/callback, /auth/logout,
 // /api/me (the viewer, accounts, and repositories), /api/accounts/NAME (a summary of an account's
 // repositories), and /api/ROUTE?repository=ID[&members=KEY,...] (api.rs). Responses carry a
 // strict Content-Security-Policy; the page loads only its own script.
@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tiny_http::Request;
 
-use super::Reply;
+use super::http::{self, Reply};
 use crate::trust::crypto::{hex, is_digest, random_bytes};
 use auth::{Auth, Viewer, SESSION_MILLIS};
 use data::{Context, ReadOnly};
@@ -31,6 +31,12 @@ const PAGE: &str = include_str!("app.html");
 
 /** The page's script */
 const SCRIPT: &str = include_str!("app.js");
+
+/** The Foxx logo (256 px, transparent background) */
+const LOGO: &[u8] = include_bytes!("logo.png");
+
+/** The browser tab icon (64 px) */
+const FAVICON: &[u8] = include_bytes!("favicon.png");
 
 /** How long a loaded repository view is reused */
 const CACHE_TTL: Duration = Duration::from_secs(20);
@@ -86,10 +92,12 @@ impl Dashboard {
         if !request.method().as_str().eq_ignore_ascii_case("GET") {
             return Reply::json(405, json!({"error": "the dashboard is read-only"}));
         }
-        let (path, query) = split(request.url());
+        let (path, query) = http::split(request.url());
         match path.as_str() {
             "/" | "/index.html" => Reply::page(PAGE),
             "/app.js" => Reply::script(SCRIPT),
+            "/logo.png" => Reply::image(LOGO, "image/png"),
+            "/favicon.png" | "/favicon.ico" => Reply::image(FAVICON, "image/png"),
             "/auth/login" => self.login(request),
             "/auth/callback" => self.callback(request, &query),
             "/auth/logout" => Reply::redirect("/")
@@ -98,15 +106,7 @@ impl Dashboard {
                 let (status, body, download) = self.api(request, &path["/api/".len()..], &query);
                 match (download, body) {
                     // A download is sent as the file itself
-                    (Some(name), Value::String(text)) => Reply {
-                        status,
-                        content_type: "application/json",
-                        body: text,
-                        headers: vec![(
-                            "Content-Disposition".into(),
-                            format!("attachment; filename=\"{name}\""),
-                        )],
-                    },
+                    (Some(name), Value::String(text)) => Reply::download(text, &name),
                     (_, body) => Reply::json(status, body),
                 }
             }
@@ -144,7 +144,7 @@ impl Dashboard {
         let Some(auth) = &self.auth else {
             return Reply::redirect("/");
         };
-        let expected = auth::cookie(request, "foxx_oauth").filter(|state| !state.is_empty());
+        let expected = http::cookie(request, "foxx_oauth").filter(|state| !state.is_empty());
         if expected.is_none() || query.get("state") != expected.as_ref() {
             return Reply::json(
                 400,
@@ -303,70 +303,4 @@ fn me(viewer: &Viewer, repositories: &[(String, String)]) -> Value {
         "accounts": accounts,
         "repositories": repositories.iter().map(|(id, remote)| json!({"id": id, "remote": remote, "account": auth::account(remote)})).collect::<Vec<_>>(),
     })
-}
-
-/** Decode %XX escapes and + in a query value
- * Input
-    - text: &str - encoded text
- * Output
-    - String
-*/
-fn decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'%' => match text
-                .get(index + 1..index + 3)
-                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
-            {
-                Some(byte) => {
-                    out.push(byte);
-                    index += 3;
-                    continue;
-                }
-                None => out.push(b'%'),
-            },
-            b'+' => out.push(b' '),
-            byte => out.push(byte),
-        }
-        index += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/** Split a URL into its path and query parameters
- * Input
-    - url: &str - request URL
- * Output
-    - (String, BTreeMap<String, String>)
-*/
-fn split(url: &str) -> (String, BTreeMap<String, String>) {
-    let (path, query) = url.split_once('?').unwrap_or((url, ""));
-    let parameters = query
-        .split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .map(|(key, value)| (decode(key), decode(value)))
-        .collect();
-    (path.to_string(), parameters)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{decode, split};
-
-    /** Check query decoding
-     * Input
-        - None
-     * Output
-        - None (panics on failure)
-    */
-    #[test]
-    fn queries_are_decoded() {
-        assert_eq!(decode("a%2Fb+c%zz"), "a/b c%zz");
-        let (path, query) = split("/api/events?type=tool_call&members=ab%2Ccd");
-        assert_eq!(path, "/api/events");
-        assert_eq!(query["members"], "ab,cd");
-    }
 }

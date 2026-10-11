@@ -4,8 +4,9 @@
 
 #![allow(dead_code)]
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 
@@ -25,10 +26,24 @@ pub fn mongodb() -> Option<String> {
  * Fields
     - child: Child - the crane server process
     - url: String - its base URL
+    - logs: Arc<Mutex<String>> - everything it wrote to stderr (its structured log)
 */
 pub struct Service {
     child: Child,
     pub url: String,
+    logs: Arc<Mutex<String>>,
+}
+
+impl Service {
+    /** Return the service's log so far
+     * Input
+        - None (uses self)
+     * Output
+        - String JSON lines
+    */
+    pub fn logs(&self) -> String {
+        self.logs.lock().unwrap().clone()
+    }
 }
 
 impl Drop for Service {
@@ -65,9 +80,23 @@ pub fn service(uri: &str, database: &str, variables: &[(&str, &str)]) -> Service
         .env("CRANE_MONGODB_DB", database)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    let logs = Arc::new(Mutex::new(String::new()));
+    let mut stderr = child.stderr.take().unwrap();
+    let sink = Arc::clone(&logs);
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        while let Ok(read) = stderr.read(&mut buffer) {
+            if read == 0 {
+                break;
+            }
+            sink.lock()
+                .unwrap()
+                .push_str(&String::from_utf8_lossy(&buffer[..read]));
+        }
+    });
     let mut line = String::new();
     BufReader::new(child.stdout.take().unwrap())
         .read_line(&mut line)
@@ -81,6 +110,7 @@ pub fn service(uri: &str, database: &str, variables: &[(&str, &str)]) -> Service
     Service {
         child,
         url: format!("http://{address}"),
+        logs,
     }
 }
 

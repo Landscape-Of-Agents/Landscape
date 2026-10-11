@@ -22,8 +22,8 @@ mod telemetry;
 mod trust;
 
 /** Entry point of the crane binary: run the command line and convert an error into a message
- * and an exit code, 2 for errors prefixed with HOOK_BLOCK: (the blocking convention of Claude Code
- * and Codex hooks, with the prefix left out of the message) and 1 for every other error
+ * and an exit code: 2 for a blocking error (hooks::outcome, the blocking convention of Claude Code
+ * and Codex hooks) and 1 for every other error
  * Input
     - None (arguments are read from the process environment)
  * Output
@@ -32,14 +32,8 @@ mod trust;
 */
 fn main() {
     if let Err(error) = cli::run() {
-        eprintln!(
-            "crane: {}",
-            error.strip_prefix("HOOK_BLOCK:").unwrap_or(&error)
-        );
-        std::process::exit(if error.starts_with("HOOK_BLOCK:") {
-            2
-        } else {
-            1
-        });
+        let blocked = hooks::outcome::blocked(&error);
+        eprintln!("crane: {}", blocked.unwrap_or(&error));
+        std::process::exit(if blocked.is_some() { 2 } else { 1 });
     }
 }

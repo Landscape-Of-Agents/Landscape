@@ -205,6 +205,50 @@ repository. An agent with an unrestricted shell running as your user can still r
 run agents in a sandbox or separate account for a hard boundary. Network, CPU, memory, and token
 usage are not observed by hooks and are reported as unsupported.
 
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph Machine["Developer machine (crane CLI)"]
+    Agent["Claude Code / Codex"] -->|hooks| Hooks["hooks: adapter → guard → runtime"]
+    CLI["cli: commands"] --> Gov["governance: signed rules"]
+    Hooks --> Gov
+    Hooks --> Tel["telemetry: events, ledger, metrics"]
+    CLI --> Tel
+    Tel -->|"signed uploads, X-Request-Id"| Up["telemetry::ingest"]
+  end
+  Up -->|HTTPS| Ingest
+  subgraph Service["Foxx service (crane server)"]
+    Ingest["server::ingest: auth, limits"] --> Store["server::store (writes)"]
+    Dash["server::dashboard (read-only)"] --> Read["dashboard::data (ReadOnly)"]
+  end
+  Store --> DB[("MongoDB")]
+  Read --> DB
+  Browser["Browser, GitHub sign-in"] --> Dash
+```
+
+| Layer | Modules | Responsibility |
+| --- | --- | --- |
+| Platform | `platform` | Git, files and locks, processes, curl, rendering |
+| Trust | `trust` | Keys, SHA-512 digests, Ed25519, rollback anchors, upload key |
+| Selections | `selection` | Anchor comments, signed registry, location tracking |
+| Governance | `governance` | State and integrity, admins, policies, verification, zones and flows |
+| Enforcement | `hooks` | `adapter/` (one module per agent), `enforce` (the guard), `shell` (command analysis), `runtime/` (session and tool-call phases), `outcome` (the blocking exit-code convention) |
+| Telemetry | `telemetry` | Events, ledger, metrics, compliance, redaction, alerts, upload (`ingest`, `sync`) |
+| Integrations | `integrations` | One `Provider` per service (`jira`, `slack`, `whatsapp`, `github`): prompts, verification, alert delivery |
+| CLI | `cli` | Dispatch and command audit; `governance/` has one file per command group |
+| Service | `server` | `http` (replies, correlation ids), `ingest` (signed upload API), `limits`, `store`, `log` (JSON lines), `dashboard/` (`auth`, read-only `data`, `api/` by view) |
+
+**Extending.** A new service is one module implementing `integrations::Provider` plus one entry in
+`PROVIDERS`. A new agent is one module implementing `hooks::adapter::AgentAdapter`. A new dashboard
+view is one function in `server/dashboard/api/` and one route in `api::route`.
+
+**Conventions.** Errors are `Result<T, String>` messages written for the person reading them;
+`hooks::outcome::block` marks an error that must block the agent (exit code 2). The service logs one
+JSON object per line on stderr with a `request_id`; Crane sends an `X-Request-Id` with every upload,
+the service returns it on every response, and client error messages include it, so a failure can be
+traced end to end.
+
 ## Development
 
 ```bash

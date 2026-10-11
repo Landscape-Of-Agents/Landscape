@@ -5,4 +5,6 @@ pub(crate) mod action;
 pub(crate) mod adapter;
 pub(crate) mod enforce;
 pub(crate) mod install;
+pub(crate) mod outcome;
 pub(crate) mod runtime;
+pub(crate) mod shell;

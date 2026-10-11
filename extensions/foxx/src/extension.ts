@@ -402,9 +402,9 @@ export function activate(context: vscode.ExtensionContext): void {
   register("foxx.test", () => test());
   register("foxx.refresh", () => validate(true));
   register("foxx.openDashboard", () => {
-    const terminal = vscode.window.createTerminal({ name: "Foxx dashboard", cwd: root() });
-    terminal.sendText(`${vscode.workspace.getConfiguration("foxx").get<string>("cranePath", "crane")} dashboard`);
-    terminal.show();
+    // The dashboard is hosted by the Foxx service; sign in there with GitHub
+    const url = vscode.workspace.getConfiguration("foxx").get<string>("dashboardUrl", "https://agentscript-service.onrender.com");
+    void vscode.env.openExternal(vscode.Uri.parse(url));
   });
   register("foxx.policyStatus", async () => {
     const policy = await pick(policies().map((policy) => policy.name), "Policy");

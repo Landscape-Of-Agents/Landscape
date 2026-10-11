@@ -1,0 +1,382 @@
+// The dashboard's data. The dashboard only ever holds a ReadOnly handle: it can find and
+// aggregate, never insert, update, replace, or delete, and pipelines that would write ($out,
+// $merge) are refused, so viewing can never change the source of truth. A repository's view is
+// assembled from every selected member's records: each member's event chain and ledger are
+// verified separately (their sequences are independent), then the records are merged in time
+// order, and every event and session remembers which member it came from.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use mongodb::bson::{self, doc, Bson, Document};
+use mongodb::sync::Database;
+use serde::de::DeserializeOwned;
+use serde_json::{json, Value};
+
+use crate::foxx::views::Snapshot;
+use crate::platform::io_error;
+use crate::telemetry::events::{verify_chain, Event};
+use crate::telemetry::identity::{SessionRecord, TaskRecord};
+use crate::telemetry::ledger::{self, Entry};
+
+/** Most events loaded per member */
+const MAX_EVENTS: i64 = 100_000;
+
+/** A database handle that can only read
+ * Fields
+    - database: Database - MongoDB (private, so no write method is reachable)
+*/
+pub(crate) struct ReadOnly {
+    database: Database,
+}
+
+impl ReadOnly {
+    /** Wrap a database
+     * Input
+        - database: Database - MongoDB
+     * Output
+        - ReadOnly
+    */
+    pub(crate) fn new(database: Database) -> Self {
+        Self { database }
+    }
+
+    /** Find documents
+     * Input
+        - collection: &str - collection
+        - filter: Document - filter
+        - sort: Document - order
+        - limit: i64 - most documents
+     * Output
+        - Result<Vec<Document>, String>
+    */
+    pub(crate) fn find(
+        &self,
+        collection: &str,
+        filter: Document,
+        sort: Document,
+        limit: i64,
+    ) -> Result<Vec<Document>, String> {
+        self.database
+            .collection::<Document>(collection)
+            .find(filter)
+            .sort(sort)
+            .limit(limit)
+            .projection(doc! {"_id": 0, "ingested_at": 0, "expires_at": 0})
+            .run()
+            .map_err(io_error)?
+            .map(|document| document.map_err(io_error))
+            .collect()
+    }
+
+    /** Run an aggregation pipeline that only reads
+     * Input
+        - collection: &str - collection
+        - pipeline: Vec<Document> - stages
+     * Output
+        - Result<Vec<Document>, String>
+        - Error if a stage would write ($out or $merge)
+    */
+    pub(crate) fn aggregate(
+        &self,
+        collection: &str,
+        pipeline: Vec<Document>,
+    ) -> Result<Vec<Document>, String> {
+        if pipeline
+            .iter()
+            .any(|stage| stage.contains_key("$out") || stage.contains_key("$merge"))
+        {
+            return Err("the dashboard cannot run pipelines that write".into());
+        }
+        self.database
+            .collection::<Document>(collection)
+            .aggregate(pipeline)
+            .run()
+            .map_err(io_error)?
+            .map(|document| document.map_err(io_error))
+            .collect()
+    }
+}
+
+/** Decode documents into a type
+ * Input
+    - documents: Vec<Document> - documents
+    - what: &str - collection, for errors
+ * Output
+    - Result<Vec<T>, String>
+*/
+fn decode<T: DeserializeOwned>(documents: Vec<Document>, what: &str) -> Result<Vec<T>, String> {
+    documents
+        .into_iter()
+        .map(|document| bson::from_document(document).map_err(|error| format!("{what}: {error}")))
+        .collect()
+}
+
+/** Convert a document to JSON
+ * Input
+    - document: Document - document
+ * Output
+    - Value
+*/
+pub(crate) fn json(document: Document) -> Value {
+    serde_json::to_value(document).unwrap_or(Value::Null)
+}
+
+/** List the repositories whose remote an upload verified
+ * Input
+    - read: &ReadOnly - database
+ * Output
+    - Result<Vec<(String, String)>, String> (repository identity, remote), sorted by remote
+*/
+pub(crate) fn verified_repositories(read: &ReadOnly) -> Result<Vec<(String, String)>, String> {
+    let mut found = read
+        .find("repositories", doc! {"verified": true}, doc! {}, 10_000)?
+        .into_iter()
+        .filter_map(|document| {
+            Some((
+                document.get_str("repository_id").ok()?.to_string(),
+                document.get_str("remote").ok()?.to_string(),
+            ))
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    found.sort_by(|left, right| left.1.cmp(&right.1));
+    Ok(found)
+}
+
+/** Everything one repository view is built from
+ * Fields
+    - repository: String - repository identity
+    - remote: String - verified remote
+    - snapshot: Snapshot - the selected members' records merged in time order
+    - members: Vec<Value> - every member (one per installation): actor, verified, updated_at
+    - selected: Vec<String> - the members shown
+    - chains: Vec<Value> - per selected member: event chain and ledger verification
+    - statuses: Vec<Value> - the latest repository status of each selected member
+    - event_member: BTreeMap<String, String> - event identifier to member
+    - session_member: BTreeMap<String, String> - session to member
+    - truncated: bool - a member had more events than are loaded
+*/
+pub(crate) struct Context {
+    pub(crate) repository: String,
+    pub(crate) remote: String,
+    pub(crate) snapshot: Snapshot,
+    pub(crate) members: Vec<Value>,
+    pub(crate) selected: Vec<String>,
+    pub(crate) chains: Vec<Value>,
+    pub(crate) statuses: Vec<Value>,
+    pub(crate) event_member: BTreeMap<String, String>,
+    pub(crate) session_member: BTreeMap<String, String>,
+    pub(crate) truncated: bool,
+}
+
+impl Context {
+    /** Describe a member: Git user name and the short code of its upload key
+     * Input
+        - installation: Option<&String> - member key
+     * Output
+        - Value {key, short, actor}
+    */
+    pub(crate) fn member(&self, installation: Option<&String>) -> Value {
+        let Some(key) = installation else {
+            return Value::Null;
+        };
+        let actor = self
+            .members
+            .iter()
+            .find(|member| member["installation"] == key.as_str())
+            .and_then(|member| member["actor"].as_str())
+            .unwrap_or("unknown");
+        json!({"key": key, "short": &key[..key.len().min(8)], "actor": actor})
+    }
+
+    /** Return the most recent repository status among the selected members
+     * Input
+        - None (uses self)
+     * Output
+        - Option<&Value>
+    */
+    pub(crate) fn latest_status(&self) -> Option<&Value> {
+        self.statuses
+            .iter()
+            .max_by_key(|status| status["collected_at"].as_u64().unwrap_or(0))
+    }
+}
+
+/** Load a repository's view for the selected members (all when none are named)
+ * Input
+    - read: &ReadOnly - database
+    - repository: &str - repository identity
+    - remote: &str - verified remote
+    - wanted: &BTreeSet<String> - members to show, empty for all
+ * Output
+    - Result<Context, String>
+*/
+pub(crate) fn load(
+    read: &ReadOnly,
+    repository: &str,
+    remote: &str,
+    wanted: &BTreeSet<String>,
+) -> Result<Context, String> {
+    let members = read
+        .find(
+            "repositories",
+            doc! {"repository_id": repository},
+            doc! {"updated_at": -1},
+            500,
+        )?
+        .into_iter()
+        .map(json)
+        .collect::<Vec<_>>();
+    let selected = members
+        .iter()
+        .filter_map(|member| member["installation"].as_str())
+        .filter(|key| wanted.is_empty() || wanted.contains(*key))
+        .map(String::from)
+        .collect::<Vec<_>>();
+    let mut snapshot = Snapshot::default();
+    let mut chains = Vec::new();
+    let mut event_member = BTreeMap::new();
+    let mut truncated = false;
+    for installation in &selected {
+        let scope = doc! {"repository_id": repository, "installation": installation};
+        let found = read.find("events", scope.clone(), doc! {"sequence": 1}, MAX_EVENTS)?;
+        truncated |= found.len() as i64 >= MAX_EVENTS;
+        let events: Vec<Event> = decode(found, "events")?;
+        let entries: Vec<Entry> = decode(
+            read.find("autonomy_ledger", scope, doc! {"seq": 1}, MAX_EVENTS)?,
+            "autonomy_ledger",
+        )?;
+        chains.push(json!({
+            "member": installation,
+            "event_chain": verify_chain(&events),
+            "ledger_reconciles": ledger::verify(&entries).is_ok(),
+        }));
+        for event in &events {
+            event_member.insert(event.event_id.clone(), installation.clone());
+        }
+        snapshot.events.extend(events);
+        snapshot.ledger.extend(entries);
+    }
+    snapshot.events.sort_by(|left, right| {
+        (left.occurred_at, left.sequence).cmp(&(right.occurred_at, right.sequence))
+    });
+    let among = doc! {
+        "repository_id": repository,
+        "installation": {"$in": selected.iter().map(|key| Bson::String(key.clone())).collect::<Vec<_>>()},
+    };
+    let sessions = read.find("sessions", among.clone(), doc! {"last_seen_at": -1}, 5_000)?;
+    let mut session_member = BTreeMap::new();
+    for session in &sessions {
+        if let (Ok(id), Ok(key)) = (
+            session.get_str("foxx_session_id"),
+            session.get_str("installation"),
+        ) {
+            session_member.insert(id.to_string(), key.to_string());
+        }
+    }
+    snapshot.sessions = decode::<SessionRecord>(sessions, "sessions")?;
+    snapshot.tasks = decode::<TaskRecord>(
+        read.find("tasks", among.clone(), doc! {"started_at": -1}, 5_000)?,
+        "tasks",
+    )?;
+    snapshot.alerts = read
+        .find("alerts", among.clone(), doc! {"at": -1}, 5_000)?
+        .into_iter()
+        .map(json)
+        .collect();
+    let statuses = read
+        .find("repository_status", among, doc! {"collected_at": -1}, 500)?
+        .into_iter()
+        .map(json)
+        .collect();
+    Ok(Context {
+        repository: repository.into(),
+        remote: remote.into(),
+        snapshot,
+        members,
+        selected,
+        chains,
+        statuses,
+        event_member,
+        session_member,
+        truncated,
+    })
+}
+
+/** Summarize every repository of an account: members, events, denials, sessions, alerts, and
+ * the last activity
+ * Input
+    - read: &ReadOnly - database
+    - repositories: &[(String, String)] - (identity, remote) of the account's repositories
+ * Output
+    - Result<Vec<Value>, String>
+*/
+pub(crate) fn summary(
+    read: &ReadOnly,
+    repositories: &[(String, String)],
+) -> Result<Vec<Value>, String> {
+    let ids = repositories
+        .iter()
+        .map(|(id, _)| Bson::String(id.clone()))
+        .collect::<Vec<_>>();
+    let count_by = |collection: &str| -> Result<BTreeMap<String, u64>, String> {
+        Ok(read
+            .aggregate(
+                collection,
+                vec![
+                    doc! {"$match": {"repository_id": {"$in": ids.clone()}}},
+                    doc! {"$group": {"_id": "$repository_id", "count": {"$sum": 1}}},
+                ],
+            )?
+            .into_iter()
+            .filter_map(|row| {
+                Some((
+                    row.get_str("_id").ok()?.to_string(),
+                    crate::server::store::number(row.get("count")),
+                ))
+            })
+            .collect())
+    };
+    let activity = read
+        .aggregate(
+            "events",
+            vec![
+                doc! {"$match": {"repository_id": {"$in": ids.clone()}}},
+                doc! {"$group": {
+                    "_id": "$repository_id",
+                    "events": {"$sum": 1},
+                    "denied": {"$sum": {"$cond": [{"$eq": ["$decision", "DENY"]}, 1, 0]}},
+                    "bypass": {"$sum": {"$cond": [{"$eq": ["$enforcement", "BYPASS_CONFIRMED"]}, 1, 0]}},
+                    "last": {"$max": "$occurred_at"},
+                }},
+            ],
+        )?
+        .into_iter()
+        .map(json)
+        .collect::<Vec<_>>();
+    let members = count_by("repositories")?;
+    let sessions = count_by("sessions")?;
+    let alerts = count_by("alerts")?;
+    Ok(repositories
+        .iter()
+        .map(|(id, remote)| {
+            let row = activity
+                .iter()
+                .find(|row| row["_id"] == id.as_str())
+                .cloned()
+                .unwrap_or(Value::Null);
+            json!({
+                "repository": id,
+                "remote": remote,
+                "members": members.get(id).copied().unwrap_or(0),
+                "sessions": sessions.get(id).copied().unwrap_or(0),
+                "alerts": alerts.get(id).copied().unwrap_or(0),
+                "events": row["events"].as_u64().unwrap_or(0),
+                "denied": row["denied"].as_u64().unwrap_or(0),
+                "bypasses_confirmed": row["bypass"].as_u64().unwrap_or(0),
+                "last_activity": row["last"],
+            })
+        })
+        .collect())
+}

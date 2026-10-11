@@ -1,5 +1,6 @@
-// Read models shared by the task and session commands and the Foxx dashboard API: sessions,
-// tasks, agents, and tool calls with their metrics, built from the runtime stores.
+// Read models shared by the task and session commands and the hosted Foxx dashboard: sessions,
+// tasks, agents, and tool calls with their metrics, built from the local runtime stores or, on the
+// service, from the uploaded records.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,24 +16,20 @@ use crate::telemetry::Stores;
 
 /** Everything the read models are built from
  * Fields
-    - stores: Stores - runtime stores
     - events: Vec<Event> - every event
     - ledger: Vec<Entry> - every ledger entry
     - sessions: Vec<SessionRecord> - sessions, most recent first
     - tasks: Vec<TaskRecord> - tasks, most recent first
     - alerts: Vec<Value> - alerts, newest first
-    - source: String - where the data came from: service (the Foxx ingestion service) or local
-    - source_error: Option<String> - why the service could not be used, when uploads are on
 */
+#[derive(Debug, Default)]
 pub(crate) struct Snapshot {
-    pub(crate) stores: Stores,
     pub(crate) events: Vec<Event>,
     pub(crate) ledger: Vec<Entry>,
     pub(crate) sessions: Vec<SessionRecord>,
     pub(crate) tasks: Vec<TaskRecord>,
+    #[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the hosted dashboard
     pub(crate) alerts: Vec<Value>,
-    pub(crate) source: String,
-    pub(crate) source_error: Option<String>,
 }
 
 impl Snapshot {
@@ -50,38 +47,7 @@ impl Snapshot {
             sessions: stores.identity.sessions(),
             tasks: stores.identity.tasks(),
             alerts: crate::telemetry::alerts::list(&stores),
-            stores,
-            source: "local".into(),
-            source_error: None,
         })
-    }
-
-    /** Load the data the dashboard shows: from the Foxx ingestion service when uploads are on and
-     * it is reachable, otherwise from the local stores, recording why the service was not used
-     * Input
-        - workspace: &Workspace - repository
-     * Output
-        - Result<Snapshot, String>
-    */
-    pub(crate) fn load_for_dashboard(workspace: &Workspace) -> Result<Self, String> {
-        match crate::telemetry::ingest::snapshot(workspace) {
-            Ok(Some(remote)) => Ok(Self {
-                stores: Stores::open(&workspace.trust()?.runtime()),
-                events: remote.events,
-                ledger: remote.ledger,
-                sessions: remote.sessions,
-                tasks: remote.tasks,
-                alerts: remote.alerts,
-                source: "service".into(),
-                source_error: None,
-            }),
-            Ok(None) => Self::load(workspace),
-            Err(error) => {
-                let mut local = Self::load(workspace)?;
-                local.source_error = Some(error);
-                Ok(local)
-            }
-        }
     }
 
     /** Events of one session
@@ -255,6 +221,7 @@ pub(crate) fn session_view(snapshot: &Snapshot, session: &SessionRecord) -> Valu
  * Output
     - Vec<Value>
 */
+#[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the hosted dashboard
 pub(crate) fn agents(snapshot: &Snapshot) -> Vec<Value> {
     let mut by_agent: BTreeMap<String, Vec<&SessionRecord>> = BTreeMap::new();
     for session in &snapshot.sessions {

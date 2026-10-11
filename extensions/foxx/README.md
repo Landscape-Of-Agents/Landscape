@@ -28,7 +28,7 @@ directory, signing keys, or integration secrets.
 | Foxx: Preview Impact | Zone, flow, selector, and context findings of the current configuration |
 | Foxx: Undo Last Governance Change | Restore the previous `governance.yaml` |
 | Foxx: Create Proposal Branch | Commit `governance.yaml` on a new branch for review |
-| Foxx: Open Dashboard | Run `crane dashboard` in a terminal |
+| Foxx: Open Dashboard | Open the hosted Foxx dashboard (setting `foxx.dashboardUrl`) |
 
 Every governance edit is shown as a diff first, written only after you confirm, validated by
 Crane, and reverted automatically if Crane reports a zone, flow, or selector error. Decorations

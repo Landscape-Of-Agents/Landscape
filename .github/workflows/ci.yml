@@ -57,10 +57,10 @@ jobs:
       - name: Run Clippy with the ingestion service
         run: cargo clippy --locked --all-targets --features server -- -D warnings
 
-      - name: Test the ingestion pipeline (live service, MongoDB, and outage)
+      - name: Test the ingestion service and the hosted dashboard (live MongoDB)
         env:
           CRANE_TEST_MONGODB_URI: mongodb://127.0.0.1:27017
-        run: cargo test --locked --features server --test ingestion
+        run: cargo test --locked --features server --test ingestion --test dashboard
 
       - name: Run tests
         run: cargo test --locked

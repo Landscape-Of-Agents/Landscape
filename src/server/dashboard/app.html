@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foxx Dashboard</title>
+<meta name="description" content="Crane security observability for individuals and teams">
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1f23; --muted: #5f6672; --line: #e2e4e8;
+  --accent: #2f5bd3; --ok: #1f7a46; --warn: #a15c00; --bad: #b42318; --crit: #7a1020;
+  --chip: #eef0f4; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #121417; --panel: #1b1e23; --ink: #e8eaee; --muted: #9aa3b0; --line: #2c3139;
+    --accent: #7ea2ff; --ok: #5cc98a; --warn: #f0b35a; --bad: #ff7b72; --crit: #ff9aa8; --chip: #262b33; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+header .tag { font-size: 12px; color: var(--muted); }
+nav { display: flex; gap: 4px; flex-wrap: wrap; padding: 8px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.scope { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; flex: 1; }
+.scope select { background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; max-width: 100%; }
+.scope label { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
+.viewer { color: var(--muted); font-size: 12px; }
+.signin { max-width: 560px; margin: 60px auto; text-align: center; }
+.signin a.button { display: inline-block; margin-top: 16px; padding: 10px 18px; border-radius: 8px; background: var(--ink); color: var(--panel); text-decoration: none; font-weight: 600; }
+.member { white-space: nowrap; }
+nav a { color: var(--muted); text-decoration: none; padding: 6px 10px; border-radius: 6px; }
+nav a.active, nav a:hover { color: var(--ink); background: var(--chip); }
+main { padding: 20px; max-width: 1280px; margin: 0 auto; }
+h2 { font-size: 15px; margin: 24px 0 10px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.tile .label { color: var(--muted); font-size: 12px; }
+.tile .value { font-size: 22px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.tile .note { color: var(--muted); font-size: 11px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+code, .mono { font-family: var(--mono); font-size: 12px; }
+.chip { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; background: var(--chip); color: var(--muted); margin: 1px 2px 1px 0; white-space: nowrap; }
+.chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.bad { color: var(--bad); } .chip.crit { color: var(--crit); font-weight: 600; }
+.muted { color: var(--muted); }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.filters input, .filters select { background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; }
+button { background: var(--chip); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer; }
+a { color: var(--accent); }
+.error { color: var(--bad); padding: 12px; }
+details summary { cursor: pointer; color: var(--muted); }
+.graph svg text { fill: var(--ink); font-size: 11px; }
+.legend span { margin-right: 10px; }
+@media (max-width: 640px) { main { padding: 12px 16px; } header, nav { padding: 10px 16px; } .scope select { width: 100%; } .scope label { width: 100%; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Foxx</h1><span class="tag">read-only security observability for Crane</span>
+  <div id="scope" class="scope"></div>
+  <span id="viewer" class="viewer"></span>
+</header>
+<nav id="nav" class="pages"></nav>
+<main id="main"><p class="muted">Loading…</p></main>
+<script src="/app.js" defer></script>
+</body>
+</html>

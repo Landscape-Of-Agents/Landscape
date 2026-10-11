@@ -510,6 +510,7 @@ impl EventStore {
     - problem: Option<String> - first problem found
 */
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the hosted dashboard
 pub(crate) struct ChainStatus {
     pub(crate) status: String,
     pub(crate) length: usize,
@@ -523,6 +524,7 @@ pub(crate) struct ChainStatus {
  * Output
     - ChainStatus
 */
+#[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the hosted dashboard
 pub(crate) fn verify_chain(events: &[Event]) -> ChainStatus {
     let mut previous = GENESIS.to_string();
     for (index, event) in events.iter().enumerate() {

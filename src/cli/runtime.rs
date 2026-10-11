@@ -1,9 +1,8 @@
-// Runtime views and the dashboard: the current or a given task or session of the AI agent, every
-// task of the current session, every session, and the Foxx dashboard.
+// Runtime views: the current or a given task or session of the AI agent, every task of the current
+// session, and every session. The Foxx dashboard is hosted by the ingestion service.
 
 use serde_json::{json, Value};
 
-use crate::foxx;
 use crate::foxx::views::{session_view, task_view, Snapshot};
 use crate::governance::workspace::Workspace;
 use crate::platform::render::yaml;
@@ -126,18 +125,4 @@ pub(crate) fn session(args: &[String]) -> Result<(), String> {
         }
         _ => Err("usage: crane session current [SESSION_ID] | crane session .".into()),
     }
-}
-
-/** Open the Foxx dashboard
- * Input
-    - args: &[String] - no arguments
- * Output
-    - Result<(), String>
-    - Error if the dashboard cannot be served or opened
-*/
-pub(crate) fn dashboard(args: &[String]) -> Result<(), String> {
-    if !args.is_empty() {
-        return Err("usage: crane dashboard".into());
-    }
-    foxx::serve()
 }

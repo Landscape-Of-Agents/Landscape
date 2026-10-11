@@ -68,7 +68,6 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["github", ..] => repo::github(&rest(1)),
         ["task", ..] => runtime::task(&rest(1)),
         ["session", ..] => runtime::session(&rest(1)),
-        ["dashboard", ..] => runtime::dashboard(&rest(1)),
         ["agent", ..] => agent::run(&rest(1)),
         ["integrate", ..] => repo::integrate(&rest(1)),
         ["admin", ..] => governance::admin(&rest(1)),
@@ -116,8 +115,6 @@ Tasks and sessions
   crane session current [SESSION_ID]
   crane session .
 
-Dashboard
-  crane dashboard
 
 Admins
   crane admin list

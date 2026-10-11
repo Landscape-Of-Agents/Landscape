@@ -185,7 +185,6 @@ impl Fixture {
             .args(args)
             .env("CRANE_HOME", &self.home)
             .env("CRANE_ALLOW_LOCAL_REMOTE", "1")
-            .env("CRANE_DASHBOARD_NO_BROWSER", "1")
             .env("CRANE_ALERTS_DRY_RUN", "1")
             .env("CRANE_INGEST_URL", &self.ingest_url)
             .env_remove("CRANE_TRUSTED_PUBLIC_KEYS")

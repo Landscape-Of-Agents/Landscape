@@ -1,85 +1,20 @@
-// The Foxx ingestion pipeline (built with --features server). An unreachable service never weakens
-// enforcement, never loses local evidence, and never stops the dashboard. With a live MongoDB
-// (CRANE_TEST_MONGODB_URI), a real 'crane server' receives signed uploads with no setup on the
-// client, rejects forged requests, re-receives records missing from the database, and serves the
-// dashboard.
+// The upload pipeline (built with --features server). An unreachable service never weakens
+// enforcement or loses local evidence. With a live MongoDB (CRANE_TEST_MONGODB_URI), a real
+// 'crane server' receives signed uploads with no setup on the client, stores each machine's
+// repository status, rejects forged requests, re-receives records missing from the database, and
+// enforces its limits. With CRANE_TEST_INGEST_URL, the same uploads reach a deployed service.
 
 mod common;
+mod support;
 
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
+use std::io::Write;
+use std::process::Stdio;
 
 use common::{text, Fixture};
 use serde_json::json;
 
 /** An address where nothing listens */
 const UNREACHABLE: &str = "http://127.0.0.1:9";
-
-/** A running ingestion service, stopped on drop
- * Fields
-    - child: Child - the crane server process
-    - url: String - its base URL
-*/
-struct Service {
-    child: Child,
-    url: String,
-}
-
-impl Drop for Service {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/** Start 'crane server' on a free local port
- * Input
-    - uri: &str - MongoDB connection string (given to the service only)
-    - database: &str - database name
- * Output
-    - Service
-*/
-fn service(uri: &str, database: &str) -> Service {
-    service_with(uri, database, &[])
-}
-
-/** Start 'crane server' on a free local port with extra environment variables
- * Input
-    - uri: &str - MongoDB connection string (given to the service only)
-    - database: &str - database name
-    - variables: &[(&str, &str)] - extra environment
- * Output
-    - Service
-*/
-fn service_with(uri: &str, database: &str, variables: &[(&str, &str)]) -> Service {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_crane"));
-    for (name, value) in variables {
-        command.env(name, value);
-    }
-    let mut child = command
-        .args(["server", "--listen", "127.0.0.1:0"])
-        .env("CRANE_MONGODB_URI", uri)
-        .env("CRANE_MONGODB_DB", database)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .unwrap();
-    let mut line = String::new();
-    BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
-    let address = line
-        .split("listening on ")
-        .nth(1)
-        .and_then(|rest| rest.split(' ').next())
-        .unwrap_or_else(|| panic!("the service did not start: {line}"))
-        .to_string();
-    Service {
-        child,
-        url: format!("http://{address}"),
-    }
-}
 
 /** Run a hook and return its output
  * Input
@@ -107,44 +42,25 @@ fn hook(fixture: &Fixture, event: &str, payload: serde_json::Value) -> std::proc
     child.wait_with_output().unwrap()
 }
 
-/** Start the dashboard for one request and fetch an API path with its token
+/** Count the events this machine holds locally
  * Input
-    - fixture: &Fixture - repository
-    - path: &str - API path
+    - fixture: &Fixture - repository (on the current machine)
  * Output
-    - (String, String) the HTTP response and the dashboard's stderr
+    - u64
 */
-fn dashboard(fixture: &Fixture, path: &str) -> (String, String) {
-    let mut dashboard = fixture
-        .command(&["dashboard"])
-        .env("CRANE_DASHBOARD_MAX_REQUESTS", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut line = String::new();
-    BufReader::new(dashboard.stdout.as_mut().unwrap())
-        .read_line(&mut line)
-        .unwrap();
-    let token = line.split("#token=").nth(1).unwrap().trim().to_string();
-    let port = line[line.find("127.0.0.1:").unwrap() + 10..]
-        .split('/')
-        .next()
-        .unwrap()
-        .to_string();
-    let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
-    write!(
-        stream,
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\n\r\n"
+fn local_events(fixture: &Fixture) -> u64 {
+    std::fs::read_to_string(
+        std::fs::read_dir(fixture.home.join("repos"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path()
+            .join("runtime/events.jsonl"),
     )
-    .unwrap();
-    let mut response = String::new();
-    std::io::Read::read_to_string(&mut stream, &mut response).unwrap();
-    let output = dashboard.wait_with_output().unwrap();
-    (
-        response,
-        String::from_utf8_lossy(&output.stderr).to_string(),
-    )
+    .unwrap()
+    .lines()
+    .count() as u64
 }
 
 /** Enforcement and local evidence are unaffected when the service is unreachable
@@ -184,16 +100,16 @@ fn service_outage_does_not_weaken_enforcement() {
         failed.contains("unreachable") || failed.contains("timed out waiting for lock"),
         "{failed}"
     );
-    let (response, stderr) = dashboard(&fixture, "/api/health");
-    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-    assert!(response.contains("\"source\":\"local\""), "{response}");
-    assert!(stderr.contains("synchronization failed"), "{stderr}");
+    assert!(
+        local_events(&fixture) >= 4,
+        "the evidence stays on the machine"
+    );
 }
 
-/** The live pipeline (needs CRANE_TEST_MONGODB_URI, skipped otherwise): with only the service
- * address set, hooks and commands reach MongoDB through signed uploads, rollups and alerts are
- * stored, forged requests are refused, records missing from MongoDB are re-sent, and the dashboard
- * reads from the service
+/** The live pipeline (needs CRANE_TEST_MONGODB_URI): with only the service address set, hooks and
+ * commands reach MongoDB through signed uploads, rollups, alerts, and the repository status are
+ * stored, the remote is verified, forged requests are refused, and records missing from MongoDB
+ * are re-sent
  * Input
     - None
  * Output
@@ -202,12 +118,12 @@ fn service_outage_does_not_weaken_enforcement() {
 #[test]
 fn live_pipeline_reaches_mongodb_without_setup() {
     use mongodb::bson::doc;
-    let Ok(uri) = std::env::var("CRANE_TEST_MONGODB_URI") else {
+    let Some(uri) = support::mongodb() else {
         eprintln!("skipped: set CRANE_TEST_MONGODB_URI to run against a live MongoDB");
         return;
     };
     let name = format!("crane_test_{}", std::process::id());
-    let running = service(&uri, &name);
+    let running = support::service(&uri, &name, &[]);
     let mut fixture = Fixture::ready();
     fixture.ingest_url = running.url.clone();
     fixture.protect(&["app/payments.py", "start-line", "1", "end-line", "4"]);
@@ -219,8 +135,9 @@ fn live_pipeline_reaches_mongodb_without_setup() {
     fixture.hook("claude", "SessionEnd", &json!({"session_id": "live-1"}));
     let synced = fixture.ok(&["agent", "sync"]);
     assert!(synced.contains("Synchronized"), "{synced}");
-    let client = mongodb::sync::Client::with_uri_str(&uri).unwrap();
-    let database = client.database(&name);
+    let database = mongodb::sync::Client::with_uri_str(&uri)
+        .unwrap()
+        .database(&name);
     let count = |collection: &str, filter| {
         database
             .collection::<mongodb::bson::Document>(collection)
@@ -228,26 +145,15 @@ fn live_pipeline_reaches_mongodb_without_setup() {
             .run()
             .unwrap()
     };
-    let local_events = std::fs::read_to_string(
-        std::fs::read_dir(fixture.home.join("repos"))
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path()
-            .join("runtime/events.jsonl"),
-    )
-    .unwrap()
-    .lines()
-    .count() as u64;
-    assert_eq!(count("events", doc! {}), local_events);
+    let local = local_events(&fixture);
+    assert_eq!(count("events", doc! {}), local);
     assert_eq!(
         count(
             "events",
             doc! {"installation": {"$regex": "^[0-9a-f]{64}$"}}
         ),
-        local_events,
-        "every record is tagged with the installation key"
+        local,
+        "every record is tagged with the machine's upload key"
     );
     assert!(count("events", doc! {"event_type": "command.executed"}) >= 2);
     assert!(count("events", doc! {"event_type": "tool_call.verified"}) >= 1);
@@ -257,21 +163,36 @@ fn live_pipeline_reaches_mongodb_without_setup() {
     assert_eq!(count("sessions", doc! {}), 1);
     assert!(count("governance_changes", doc! {}) >= 3);
     assert_eq!(count("policy_versions", doc! {}), 1);
+    assert_eq!(
+        count("repositories", doc! {"verified": true}),
+        1,
+        "the upload proved its remote"
+    );
+    let status = database
+        .collection::<mongodb::bson::Document>("repository_status")
+        .find_one(doc! {})
+        .run()
+        .unwrap()
+        .expect("the repository status was uploaded");
+    assert!(status
+        .get_document("governance")
+        .is_ok_and(|governance| governance.contains_key("policies")));
+    assert!(status.get_document("integrity").is_ok());
     // A request without a valid signature is refused
-    let address = running.url.trim_start_matches("http://").to_string();
-    let mut stream = std::net::TcpStream::connect(&address).unwrap();
-    write!(
-        stream,
-        "GET /v1/repositories/{}/snapshot HTTP/1.1\r\nHost: {address}\r\nX-Crane-Installation: {}\r\nX-Crane-Timestamp: {}\r\nX-Crane-Signature: {}\r\nConnection: close\r\n\r\n",
-        "a".repeat(128),
-        "b".repeat(64),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
-        "c".repeat(128)
-    )
-    .unwrap();
-    let mut response = String::new();
-    std::io::Read::read_to_string(&mut stream, &mut response).unwrap();
-    assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+    let forged = support::request(
+        "GET",
+        &format!(
+            "{}/v1/repositories/{}/positions",
+            running.url,
+            "a".repeat(128)
+        ),
+        &[
+            ("X-Crane-Installation", "b".repeat(64).as_str()),
+            ("X-Crane-Timestamp", "1"),
+            ("X-Crane-Signature", "c".repeat(128).as_str()),
+        ],
+    );
+    assert_eq!(forged.status, 401, "{}", forged.body);
     // Let the detached syncs started by the hooks finish before simulating data loss
     std::thread::sleep(std::time::Duration::from_secs(5));
     database
@@ -280,16 +201,13 @@ fn live_pipeline_reaches_mongodb_without_setup() {
         .run()
         .unwrap();
     assert!(fixture.ok(&["agent", "sync"]).contains("re-sent"));
-    assert_eq!(count("events", doc! {}), local_events);
-    let (response, _) = dashboard(&fixture, "/api/health");
-    assert!(response.contains("\"source\":\"service\""), "{response}");
-    assert!(response.contains("\"status\":\"verified\""), "{response}");
+    assert_eq!(count("events", doc! {}), local);
     database.drop().run().unwrap();
 }
 
-/** A deployed service (needs CRANE_TEST_INGEST_URL, skipped otherwise): a fresh installation with
- * only the address set uploads its commands, session, and tool calls, and its dashboard reads the
- * same verified event chain back from the service
+/** A deployed service (needs CRANE_TEST_INGEST_URL): a fresh machine with only the address set
+ * uploads everything (a second sync has nothing left to send and nothing to re-send), and a
+ * teammate's machine without a repository signing key uploads with its own upload key
  * Input
     - None
  * Output
@@ -317,24 +235,10 @@ fn deployed_service_round_trip() {
     std::thread::sleep(std::time::Duration::from_secs(5));
     let synced = fixture.ok(&["agent", "sync"]);
     assert!(synced.contains("Synchronized"), "{synced}");
-    let local_events = std::fs::read_to_string(
-        std::fs::read_dir(fixture.home.join("repos"))
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path()
-            .join("runtime/events.jsonl"),
-    )
-    .unwrap()
-    .lines()
-    .count();
-    let (response, _) = dashboard(&fixture, "/api/health");
-    assert!(response.contains("\"source\":\"service\""), "{response}");
-    assert!(response.contains("\"status\":\"verified\""), "{response}");
+    let again = fixture.ok(&["agent", "sync"]);
     assert!(
-        response.contains(&format!("\"events\":{local_events}")),
-        "the service holds every local event ({local_events}): {response}"
+        again.contains("Synchronized 0 events") && !again.contains("re-sent"),
+        "the service holds every local record: {again}"
     );
     // A teammate's machine: same clone, its own trust directory, no repository signing key
     let owner_home = fixture.home.clone();
@@ -352,25 +256,6 @@ fn deployed_service_round_trip() {
         teammate_key, owner_key,
         "each machine has its own upload key"
     );
-    let teammate_events = std::fs::read_to_string(
-        std::fs::read_dir(fixture.home.join("repos"))
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path()
-            .join("runtime/events.jsonl"),
-    )
-    .unwrap()
-    .lines()
-    .count();
-    assert_ne!(teammate_events, local_events);
-    let (response, _) = dashboard(&fixture, "/api/health");
-    assert!(response.contains("\"source\":\"service\""), "{response}");
-    assert!(
-        response.contains(&format!("\"events\":{teammate_events}")),
-        "the teammate reads exactly its own {teammate_events} events: {response}"
-    );
 }
 
 /** The service's limits (needs CRANE_TEST_MONGODB_URI): a rate per installation answers 429, an
@@ -383,7 +268,7 @@ fn deployed_service_round_trip() {
 */
 #[test]
 fn upload_limits_protect_the_database() {
-    let Ok(uri) = std::env::var("CRANE_TEST_MONGODB_URI") else {
+    let Some(uri) = support::mongodb() else {
         eprintln!("skipped: set CRANE_TEST_MONGODB_URI to run against a live MongoDB");
         return;
     };
@@ -409,7 +294,7 @@ fn upload_limits_protect_the_database() {
                 .run()
                 .unwrap();
         }
-        let limited = service_with(&uri, &name, &[(variable, value)]);
+        let limited = support::service(&uri, &name, &[(variable, value)]);
         fixture.ingest_url = limited.url.clone();
         let first = fixture.command(&["agent", "sync"]).output().unwrap();
         let refused = if first.status.success() {
@@ -431,211 +316,4 @@ fn upload_limits_protect_the_database() {
             .unwrap();
     }
     assert!(fixture.ok(&["session", "."]).contains("sessions"));
-}
-
-/** A fake GitHub for sign-in: the code names the user, alice belongs to the Acme organization
- * Input
-    - None
- * Output
-    - String base URL
-*/
-fn fake_github() -> String {
-    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-    let address = server.server_addr().to_ip().unwrap().to_string();
-    std::thread::spawn(move || {
-        for mut request in server.incoming_requests() {
-            let url = request.url().to_string();
-            let login = request
-                .headers()
-                .iter()
-                .find(|header| header.field.equiv("Authorization"))
-                .map(|header| {
-                    header
-                        .value
-                        .as_str()
-                        .trim_start_matches("Bearer tok-")
-                        .to_string()
-                })
-                .unwrap_or_default();
-            let body = if url.starts_with("/login/oauth/access_token") {
-                let mut form = String::new();
-                request.as_reader().read_to_string(&mut form).unwrap();
-                let code = form
-                    .split('&')
-                    .find_map(|pair| pair.strip_prefix("code="))
-                    .unwrap_or_default()
-                    .to_string();
-                json!({"access_token": format!("tok-{code}")})
-            } else if url == "/user" {
-                json!({"login": login})
-            } else if url.starts_with("/user/orgs") {
-                if login == "alice" {
-                    json!([{"login": "Acme"}])
-                } else {
-                    json!([])
-                }
-            } else {
-                json!({})
-            };
-            let _ = request.respond(tiny_http::Response::from_string(body.to_string()));
-        }
-    });
-    format!("http://{address}")
-}
-
-/** Fetch a page without following redirects
- * Input
-    - url: &str - address
-    - cookie: Option<&str> - Cookie header
- * Output
-    - (u16, Vec<String>, Option<String>, String) status, Set-Cookie values, Location, body
-*/
-fn fetch(url: &str, cookie: Option<&str>) -> (u16, Vec<String>, Option<String>, String) {
-    let agent = ureq::AgentBuilder::new().redirects(0).build();
-    let mut request = agent.get(url);
-    if let Some(cookie) = cookie {
-        request = request.set("Cookie", cookie);
-    }
-    let response = match request.call() {
-        Ok(response) | Err(ureq::Error::Status(_, response)) => response,
-        Err(error) => panic!("{url}: {error}"),
-    };
-    let status = response.status();
-    let cookies = response
-        .all("set-cookie")
-        .into_iter()
-        .map(|cookie| cookie.split(';').next().unwrap_or_default().to_string())
-        .collect();
-    let location = response.header("location").map(String::from);
-    (
-        status,
-        cookies,
-        location,
-        response.into_string().unwrap_or_default(),
-    )
-}
-
-/** The team dashboard (needs CRANE_TEST_MONGODB_URI): uploads from a clone are verified; a viewer
- * signs in with GitHub and sees every installation of a repository their organization owns, while
- * a viewer outside the organization, a forged cookie, or a mismatched sign-in see nothing
- * Input
-    - None
- * Output
-    - None (panics on failure)
-*/
-#[test]
-fn team_dashboard_shows_owners_every_member() {
-    use mongodb::bson::doc;
-    let Ok(uri) = std::env::var("CRANE_TEST_MONGODB_URI") else {
-        eprintln!("skipped: set CRANE_TEST_MONGODB_URI to run against a live MongoDB");
-        return;
-    };
-    let github = fake_github();
-    let name = format!("crane_team_{}", std::process::id());
-    let running = service_with(
-        &uri,
-        &name,
-        &[
-            ("CRANE_GITHUB_CLIENT_ID", "client"),
-            ("CRANE_GITHUB_CLIENT_SECRET", "secret"),
-            ("CRANE_PUBLIC_URL", "http://127.0.0.1"),
-            ("CRANE_GITHUB_URL", github.as_str()),
-            ("CRANE_GITHUB_API_URL", github.as_str()),
-        ],
-    );
-    let base = running.url.clone();
-    let mut fixture = Fixture::ready();
-    fixture.ingest_url = base.clone();
-    fixture.protect(&["app/payments.py", "start-line", "1", "end-line", "4"]);
-    let call = |id: &str, command: &str| json!({"session_id": "team-1", "tool_use_id": id, "cwd": fixture.work.to_string_lossy(), "tool_name": "Bash", "tool_input": {"command": command}});
-    fixture.hook("claude", "SessionStart", &json!({"session_id": "team-1"}));
-    fixture.hook("claude", "pre-tool-use", &call("t1", "cat .crane/map"));
-    fixture.hook("claude", "SessionEnd", &json!({"session_id": "team-1"}));
-    fixture.ok(&["agent", "sync"]);
-    // A teammate's machine on the same repository
-    fixture.home = fixture.root.path().join("teammate");
-    fixture.ok(&["repo", "--https", fixture.remote_url().as_str()]);
-    fixture.with_input(&["init"], "y\n");
-    fixture.ok(&["validate"]);
-    fixture.ok(&["agent", "sync"]);
-    let database = mongodb::sync::Client::with_uri_str(&uri)
-        .unwrap()
-        .database(&name);
-    let repositories = database.collection::<mongodb::bson::Document>("repositories");
-    let members = repositories
-        .find(doc! {})
-        .run()
-        .unwrap()
-        .map(Result::unwrap)
-        .collect::<Vec<_>>();
-    assert_eq!(members.len(), 2, "two installations: {members:?}");
-    assert!(members
-        .iter()
-        .all(|member| member.get_bool("verified") == Ok(true)));
-    let repository = members[0].get_str("repository_id").unwrap().to_string();
-    // The clone's remote is a local mirror; give it a GitHub owner for the dashboard
-    repositories
-        .update_many(
-            doc! {},
-            doc! {"$set": {"remote": "github.com/acme/widgets"}},
-        )
-        .run()
-        .unwrap();
-    let (status, _, _, body) = fetch(&format!("{base}/team"), None);
-    assert_eq!(status, 200);
-    assert!(body.contains("Sign in with GitHub"), "{body}");
-    let sign_in = |code: &str| {
-        let (_, cookies, location, _) = fetch(&format!("{base}/team/login"), None);
-        let location = location.unwrap();
-        assert!(location.starts_with(&github), "{location}");
-        let state = location.split("state=").nth(1).unwrap().to_string();
-        let oauth = cookies
-            .iter()
-            .find(|cookie| cookie.starts_with("crane_oauth="))
-            .unwrap()
-            .clone();
-        let (mismatch, _, _, _) = fetch(
-            &format!("{base}/team/callback?code={code}&state=wrong"),
-            Some(&oauth),
-        );
-        assert_eq!(mismatch, 400);
-        let (status, cookies, _, _) = fetch(
-            &format!("{base}/team/callback?code={code}&state={state}"),
-            Some(&oauth),
-        );
-        assert_eq!(status, 302);
-        cookies
-            .iter()
-            .find(|cookie| cookie.starts_with("crane_session=") && cookie.len() > 20)
-            .unwrap()
-            .clone()
-    };
-    let alice = sign_in("alice");
-    let (_, _, _, list) = fetch(&format!("{base}/team"), Some(&alice));
-    assert!(list.contains("github.com/acme/widgets"), "{list}");
-    let (status, _, _, page) = fetch(
-        &format!("{base}/team/repository?id={repository}"),
-        Some(&alice),
-    );
-    assert_eq!(status, 200, "{page}");
-    for member in &members {
-        let key = member.get_str("installation").unwrap();
-        assert!(page.contains(&key[..8]), "member {key} is shown: {page}");
-    }
-    assert!(page.contains("bypass_attempt"), "{page}");
-    let mallory = sign_in("mallory");
-    let (_, _, _, list) = fetch(&format!("{base}/team"), Some(&mallory));
-    assert!(!list.contains("widgets"), "{list}");
-    let (status, _, _, _) = fetch(
-        &format!("{base}/team/repository?id={repository}"),
-        Some(&mallory),
-    );
-    assert_eq!(status, 403);
-    let forged = format!("{}0", &alice[..alice.len() - 1]);
-    let (_, _, _, body) = fetch(&format!("{base}/team"), Some(&forged));
-    assert!(
-        body.contains("Sign in with GitHub"),
-        "a forged session is ignored"
-    );
-    database.drop().run().unwrap();
 }

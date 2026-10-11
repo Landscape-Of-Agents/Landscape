@@ -1,26 +1,20 @@
-// The read-only Foxx API. Every route reads the governance state and the runtime stores; there is
-// no route that changes anything. Lists are bounded (limit at most 500) and paginated by event
-// sequence; secrets are never returned (integrations expose non-secret settings only).
+// The dashboard's JSON API for one repository (and the selected members): every view the old local
+// dashboard had (overview, agents and sessions, the action graph, the event timeline, governance,
+// the autonomy ledger, metrics, compliance, alerts, health, the repository connection, integrations,
+// session reports, and evidence bundles), built from the uploaded records and the members' latest
+// repository status. No route changes anything. Lists are bounded and paginated.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{json, Value};
 
-use super::views::{agents, metric_map, session_view, task_view, Snapshot};
-use crate::github;
-use crate::governance::state::{integrity, State};
-use crate::governance::verify::{evaluate, Options, Outcome};
-use crate::governance::workspace::Workspace;
-use crate::hooks::adapter::AgentKind;
-use crate::hooks::install;
-use crate::integrations;
+use super::data::Context;
+use crate::foxx::views::{agents, metric_map, session_view, task_view};
 use crate::platform::now_millis;
 use crate::platform::render::iso_time;
-use crate::selection::registry::Operation;
-use crate::telemetry::alerts;
 use crate::telemetry::compliance::{self, Inputs};
-use crate::telemetry::events::{verify_chain, Event};
-use crate::telemetry::ledger::{self, Ledger};
+use crate::telemetry::events::Event;
+use crate::telemetry::ledger::Ledger;
 use crate::telemetry::metrics::{self, DEFINITIONS};
 use crate::telemetry::model::{Decision, Enforcement};
 use crate::trust::crypto::{canonical_json, digest};
@@ -32,7 +26,7 @@ const MAX_LIMIT: usize = 500;
 const DEFAULT_LIMIT: usize = 100;
 
 /** A route's answer: status, body, and a download file name for attachments */
-type Answer = (u16, Value, Option<String>);
+pub(crate) type Answer = (u16, Value, Option<String>);
 
 /** Build an error answer
  * Input
@@ -41,79 +35,91 @@ type Answer = (u16, Value, Option<String>);
  * Output
     - Answer
 */
-fn error(status: u16, message: String) -> Answer {
+pub(crate) fn error(status: u16, message: String) -> Answer {
     (status, json!({"error": message}), None)
 }
 
-/** Route a request
+/** Route a repository request
  * Input
-    - workspace: &Workspace - repository
-    - path: &str - request path
+    - context: &Context - the repository's data
+    - path: &str - request path after /api/
     - query: &BTreeMap<String, String> - query parameters
  * Output
     - Answer
 */
-pub(crate) fn route(workspace: &Workspace, path: &str, query: &BTreeMap<String, String>) -> Answer {
-    let snapshot = match Snapshot::load_for_dashboard(workspace) {
-        Ok(snapshot) => snapshot,
-        Err(message) => return error(500, message),
+pub(crate) fn route(context: &Context, path: &str, query: &BTreeMap<String, String>) -> Answer {
+    let snapshot = &context.snapshot;
+    let segments = path.trim_end_matches('/').split('/').collect::<Vec<_>>();
+    let session_detail = |id: &str| {
+        snapshot.session(id).map(|session| {
+            let mut view = session_view(snapshot, session);
+            view["member"] = context.member(context.session_member.get(&session.foxx_session_id));
+            view["tasks"] = json!(snapshot
+                .tasks
+                .iter()
+                .filter(|task| task.foxx_session_id == session.foxx_session_id)
+                .map(|task| task_view(snapshot, task))
+                .collect::<Vec<_>>());
+            view
+        })
     };
-    let segments = path
-        .trim_start_matches("/api/")
-        .trim_end_matches('/')
-        .split('/')
-        .collect::<Vec<_>>();
     match segments.as_slice() {
-        ["health"] => (200, health(workspace, &snapshot), None),
-        ["overview"] => (200, overview(workspace, &snapshot, query), None),
-        ["agents"] => (200, json!({"agents": agents(&snapshot)}), None),
-        ["sessions"] => (200, sessions(&snapshot, query), None),
-        ["sessions", id] => match snapshot.session(id) {
-            Some(session) => {
-                let mut view = session_view(&snapshot, session);
-                view["tasks"] = json!(snapshot.tasks.iter().filter(|task| task.foxx_session_id == session.foxx_session_id).map(|task| task_view(&snapshot, task)).collect::<Vec<_>>());
-                (200, view, None)
-            }
+        ["health"] => (200, health(context), None),
+        ["overview"] => (200, overview(context, query), None),
+        ["members"] => (200, members(context), None),
+        ["agents"] => (200, json!({"agents": agents(snapshot)}), None),
+        ["sessions"] => (200, sessions(context, query), None),
+        ["sessions", id] => match session_detail(id) {
+            Some(view) => (200, view, None),
             None => error(404, format!("no session '{id}'")),
         },
-        ["tasks"] => (200, json!({"tasks": snapshot.tasks.iter().filter(|task| query.get("session").is_none_or(|session| &task.foxx_session_id == session)).take(MAX_LIMIT).map(|task| task_view(&snapshot, task)).collect::<Vec<_>>()}), None),
+        ["tasks"] => (
+            200,
+            json!({"tasks": snapshot.tasks.iter().filter(|task| query.get("session").is_none_or(|session| &task.foxx_session_id == session)).take(MAX_LIMIT).map(|task| task_view(snapshot, task)).collect::<Vec<_>>()}),
+            None,
+        ),
         ["tasks", id] => match snapshot.task(id) {
-            Some(task) => (200, task_view(&snapshot, task), None),
+            Some(task) => (200, task_view(snapshot, task), None),
             None => error(404, format!("no task '{id}'")),
         },
-        ["events"] => (200, events(&snapshot, query), None),
+        ["events"] => (200, events(context, query), None),
         ["graph", id] => match snapshot.session(id) {
-            Some(session) => (200, graph(&snapshot.session_events(&session.foxx_session_id)), None),
+            Some(session) => (
+                200,
+                graph(context, &snapshot.session_events(&session.foxx_session_id)),
+                None,
+            ),
             None => error(404, format!("no session '{id}'")),
         },
-        ["governance"] => governance(workspace),
-        ["ledger"] => (200, ledger_view(&snapshot, query), None),
-        ["metrics"] => metrics_view(&snapshot, query),
-        ["definitions"] => (200, json!({"metrics": DEFINITIONS, "controls": compliance::CONTROLS, "domains": crate::telemetry::model::Domain::ALL}), None),
-        ["repo", "insights"] => match query.get("privilege") {
-            Some(privilege) => match github::fetch(workspace, privilege) {
-                Ok(data) => (200, json!({"privilege": privilege, "data": data}), None),
-                Err(message) => error(403, message),
-            },
-            None => error(400, "give ?privilege=rf|codeowners|contributors|ci-cd|gh-actions|gh-branches|gh-insights".into()),
-        },
-        ["compliance"] => (200, compliance_view(workspace, &snapshot), None),
-        ["alerts"] => (200, json!({"alerts": snapshot.alerts.clone().into_iter().take(MAX_LIMIT).collect::<Vec<_>>()}), None),
-        ["integrations"] => (200, json!({"integrations": integrations::configured(workspace)}), None),
-        ["repo"] => (200, repo_view(workspace), None),
+        ["governance"] => governance(context),
+        ["ledger"] => (200, ledger_view(context, query), None),
+        ["metrics"] => metrics_view(context, query),
+        ["definitions"] => (
+            200,
+            json!({"metrics": DEFINITIONS, "controls": compliance::CONTROLS, "domains": crate::telemetry::model::Domain::ALL}),
+            None,
+        ),
+        ["compliance"] => (200, compliance_view(context), None),
+        ["alerts"] => (200, alerts(context), None),
+        ["integrations"] => (200, integrations(context), None),
+        ["repo"] => (200, repo_view(context), None),
         ["reports", "session", id] => match snapshot.session(id) {
-            Some(session) => (200, session_report(workspace, &snapshot, &session.foxx_session_id), None),
+            Some(session) => (200, session_report(context, &session.foxx_session_id), None),
             None => error(404, format!("no session '{id}'")),
         },
         ["evidence", "session", id] => match snapshot.session(id) {
             Some(session) => {
-                let bundle = evidence_bundle(workspace, &snapshot, &session.foxx_session_id);
+                let bundle = evidence_bundle(context, &session.foxx_session_id);
                 let text = serde_json::to_string_pretty(&bundle).unwrap_or_default();
-                (200, Value::String(text), Some(format!("crane-evidence-{}.json", session.foxx_session_id)))
+                (
+                    200,
+                    Value::String(text),
+                    Some(format!("crane-evidence-{}.json", session.foxx_session_id)),
+                )
             }
             None => error(404, format!("no session '{id}'")),
         },
-        _ => error(404, format!("no API route {path}")),
+        _ => error(404, format!("no API route /api/{path}")),
     }
 }
 
@@ -128,51 +134,117 @@ fn time_filter(query: &BTreeMap<String, String>, key: &str) -> Option<u64> {
     query.get(key).and_then(|value| value.parse::<u64>().ok())
 }
 
-/** Health of the runtime: versions, chain status, store sizes, and storage backends
+/** Combine the members' event chain and ledger results
  * Input
-    - workspace: &Workspace - repository
-    - snapshot: &Snapshot - stores
+    - context: &Context - repository data
+ * Output
+    - (Value, bool) event chain summary {status, length, members} and whether every ledger reconciles
+*/
+fn chains(context: &Context) -> (Value, bool) {
+    let statuses = context
+        .chains
+        .iter()
+        .map(|chain| {
+            chain["event_chain"]["status"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    let status = if statuses.iter().any(|status| status == "broken") {
+        "broken"
+    } else if statuses.iter().all(|status| status == "verified") && !statuses.is_empty() {
+        "verified"
+    } else if statuses.is_empty() {
+        "empty"
+    } else {
+        statuses.first().map_or("unknown", String::as_str)
+    };
+    let members = context
+        .chains
+        .iter()
+        .map(|chain| {
+            json!({
+                "member": context.member(chain["member"].as_str().map(String::from).as_ref()),
+                "event_chain": chain["event_chain"],
+                "ledger_reconciles": chain["ledger_reconciles"],
+            })
+        })
+        .collect::<Vec<_>>();
+    (
+        json!({"status": status, "length": context.snapshot.events.len(), "members": members}),
+        context
+            .chains
+            .iter()
+            .all(|chain| chain["ledger_reconciles"] == true),
+    )
+}
+
+/** Combine the members' latest integrity reports
+ * Input
+    - context: &Context - repository data
+ * Output
+    - Value {ok, findings, reported}
+*/
+fn integrity(context: &Context) -> Value {
+    let mut findings = Vec::new();
+    let mut ok = true;
+    for status in &context.statuses {
+        let member = context.member(status["installation"].as_str().map(String::from).as_ref());
+        ok &= status["integrity"]["ok"] != false;
+        for finding in status["integrity"]["findings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let mut finding = finding.clone();
+            finding["member"] = member.clone();
+            findings.push(finding);
+        }
+    }
+    json!({"ok": ok, "findings": findings, "reported": !context.statuses.is_empty()})
+}
+
+/** Health: versions, chain status per member, store sizes, and the members' status reports
+ * Input
+    - context: &Context - repository data
  * Output
     - Value
 */
-fn health(workspace: &Workspace, snapshot: &Snapshot) -> Value {
-    let state = State::load(workspace).ok();
+fn health(context: &Context) -> Value {
+    let (chain, ledger_reconciles) = chains(context);
+    let latest = context.latest_status();
     json!({
         "crane_version": env!("CARGO_PKG_VERSION"),
+        "reported_crane_version": latest.map(|status| status["crane_version"].clone()),
         "schema_version": crate::telemetry::events::SCHEMA_VERSION,
         "metric_formula_version": metrics::FORMULA_VERSION,
-        "repository_id": workspace.repository_id,
-        "registry_generation": state.as_ref().map(State::generation),
-        "events": snapshot.events.len(),
-        "event_chain": verify_chain(&snapshot.events),
-        "ledger_entries": snapshot.ledger.len(),
-        "ledger_reconciles": ledger::verify(&snapshot.ledger).is_ok(),
-        "sessions": snapshot.sessions.len(),
-        "storage": {
-            "local": "trust-directory runtime folder (append-only JSON lines)",
-            "source": snapshot.source,
-            "source_error": snapshot.source_error,
-            "service": if crate::telemetry::sync::configured() {
-                crate::telemetry::ingest::endpoint().unwrap_or_default()
-            } else {
-                "off".into()
-            },
-            "sync": crate::telemetry::ingest::state(&snapshot.stores),
-        },
-        "mode": "local read-only",
+        "repository_id": context.repository,
+        "remote": context.remote,
+        "registry_generation": latest.map(|status| status["registry_generation"].clone()),
+        "events": context.snapshot.events.len(),
+        "event_chain": chain,
+        "ledger_entries": context.snapshot.ledger.len(),
+        "ledger_reconciles": ledger_reconciles,
+        "sessions": context.snapshot.sessions.len(),
+        "members": context.members.len(),
+        "selected_members": context.selected.len(),
+        "truncated": context.truncated,
+        "storage": {"service": "Foxx service (MongoDB, read-only for the dashboard)"},
+        "mode": "hosted read-only",
         "now": iso_time(now_millis()),
     })
 }
 
 /** The overview page: activity, outcomes, autonomy, integrity, coverage, and recent alerts
  * Input
-    - workspace: &Workspace - repository
-    - snapshot: &Snapshot - stores
+    - context: &Context - repository data
     - query: &BTreeMap<String, String> - since/until filters
  * Output
     - Value
 */
-fn overview(workspace: &Workspace, snapshot: &Snapshot, query: &BTreeMap<String, String>) -> Value {
+fn overview(context: &Context, query: &BTreeMap<String, String>) -> Value {
+    let snapshot = &context.snapshot;
     let since = time_filter(query, "since").unwrap_or(0);
     let until = time_filter(query, "until").unwrap_or(u64::MAX);
     let events = snapshot
@@ -187,51 +259,88 @@ fn overview(workspace: &Workspace, snapshot: &Snapshot, query: &BTreeMap<String,
         .collect::<Vec<_>>();
     let ledger = snapshot.ledger.iter().collect::<Vec<_>>();
     let computed = metrics::compute(&events, &ledger, &sessions);
-    let integrity_findings = match (State::load(workspace), workspace.trust()) {
-        (Ok(state), Ok(trust)) => integrity(workspace, &state, &trust),
-        (Err(error), _) | (_, Err(error)) => vec![crate::governance::Finding::new(
-            "governance_unreadable",
-            crate::governance::Severity::Critical,
-            error,
-        )],
-    };
     json!({
         "active_sessions": snapshot.sessions.iter().filter(|session| session.ended_at.is_none()).count(),
         "sessions": snapshot.sessions.len(),
         "tasks": snapshot.tasks.len(),
         "tasks_by_status": snapshot.tasks.iter().fold(BTreeMap::<String, usize>::new(), |mut counts, task| { *counts.entry(task.status.clone()).or_default() += 1; counts }),
         "agents": snapshot.sessions.iter().map(|session| session.agent_id.clone()).collect::<BTreeSet<_>>().len(),
+        "members": context.selected.len(),
         "metrics": metric_map(&computed),
-        "integrity": {
-            "ok": !integrity_findings.iter().any(super::super::governance::Finding::blocking),
-            "findings": integrity_findings,
-        },
-        "event_chain": verify_chain(&snapshot.events),
-        "recent_alerts": snapshot.alerts.clone().into_iter().take(10).collect::<Vec<_>>(),
-        "recent_violations": snapshot.events.iter().rev().filter(|event| matches!(event.enforcement, Enforcement::BypassConfirmed | Enforcement::DetectedAfterEffect)).take(10).map(compact).collect::<Vec<_>>(),
+        "integrity": integrity(context),
+        "event_chain": chains(context).0,
+        "recent_alerts": alerts(context)["alerts"].as_array().map(|alerts| alerts.iter().take(10).cloned().collect::<Vec<_>>()).unwrap_or_default(),
+        "recent_violations": snapshot.events.iter().rev().filter(|event| matches!(event.enforcement, Enforcement::BypassConfirmed | Enforcement::DetectedAfterEffect)).take(10).map(|event| compact(context, event)).collect::<Vec<_>>(),
     })
 }
 
-/** A compact event for lists and timelines
+/** Every member of the repository with its activity and status report
  * Input
+    - context: &Context - repository data
+ * Output
+    - Value {members}
+*/
+fn members(context: &Context) -> Value {
+    let list = context
+        .members
+        .iter()
+        .map(|member| {
+            let key = member["installation"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let events = context
+                .event_member
+                .values()
+                .filter(|owner| **owner == key)
+                .count();
+            let sessions = context
+                .session_member
+                .values()
+                .filter(|owner| **owner == key)
+                .count();
+            let status = context
+                .statuses
+                .iter()
+                .find(|status| status["installation"] == key.as_str());
+            json!({
+                "member": context.member(Some(&key)),
+                "selected": context.selected.contains(&key),
+                "verified": member["verified"],
+                "last_upload": member["updated_at"],
+                "registry_generation": member["registry_generation"],
+                "events": events,
+                "sessions": sessions,
+                "status_reported_at": status.map(|status| status["collected_at"].clone()),
+                "crane_version": status.map(|status| status["crane_version"].clone()),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({"members": list})
+}
+
+/** A compact event for lists and timelines, with its member
+ * Input
+    - context: &Context - repository data
     - event: &Event - event
  * Output
     - Value
 */
-fn compact(event: &Event) -> Value {
+fn compact(context: &Context, event: &Event) -> Value {
     json!({
         "event_id": event.event_id,
         "sequence": event.sequence,
         "type": event.event_type,
         "at": iso_time(event.occurred_at),
         "occurred_at": event.occurred_at,
+        "member": context.member(context.event_member.get(&event.event_id)),
         "session": event.scope.foxx_session_id,
         "task": event.scope.foxx_task_id,
         "tool_call": event.scope.tool_call_id,
         "provider": event.scope.provider,
         "model": event.scope.model,
-        "domain": event.domain,
         "severity": event.severity,
+        "domain": event.domain,
         "decision": event.decision,
         "execution": event.execution,
         "assessment": event.assessment,
@@ -250,12 +359,13 @@ fn compact(event: &Event) -> Value {
 
 /** List sessions with filters (agent, provider, safety)
  * Input
-    - snapshot: &Snapshot - stores
+    - context: &Context - repository data
     - query: &BTreeMap<String, String> - filters
  * Output
     - Value
 */
-fn sessions(snapshot: &Snapshot, query: &BTreeMap<String, String>) -> Value {
+fn sessions(context: &Context, query: &BTreeMap<String, String>) -> Value {
+    let snapshot = &context.snapshot;
     let list = snapshot
         .sessions
         .iter()
@@ -275,20 +385,25 @@ fn sessions(snapshot: &Snapshot, query: &BTreeMap<String, String>) -> Value {
                 .is_none_or(|safety| format!("{:?}", session.safety).eq_ignore_ascii_case(safety))
         })
         .take(MAX_LIMIT)
-        .map(|session| session_view(snapshot, session))
+        .map(|session| {
+            let mut view = session_view(snapshot, session);
+            view["member"] = context.member(context.session_member.get(&session.foxx_session_id));
+            view
+        })
         .collect::<Vec<_>>();
     json!({"sessions": list})
 }
 
-/** List events with filters and cursor pagination by sequence
+/** List events with filters, paginated by position (members' sequences are independent)
  * Input
-    - snapshot: &Snapshot - stores
+    - context: &Context - repository data
     - query: &BTreeMap<String, String> - session, task, agent, provider, model, type, decision,
       severity, domain, enforcement, tool_call, selection, policy, since, until, cursor, limit
  * Output
     - Value {events, next_cursor}
 */
-fn events(snapshot: &Snapshot, query: &BTreeMap<String, String>) -> Value {
+fn events(context: &Context, query: &BTreeMap<String, String>) -> Value {
+    let snapshot = &context.snapshot;
     let limit = query
         .get("limit")
         .and_then(|value| value.parse::<usize>().ok())
@@ -296,7 +411,7 @@ fn events(snapshot: &Snapshot, query: &BTreeMap<String, String>) -> Value {
         .clamp(1, MAX_LIMIT);
     let cursor = query
         .get("cursor")
-        .and_then(|value| value.parse::<u64>().ok())
+        .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
     let since = time_filter(query, "since").unwrap_or(0);
     let until = time_filter(query, "until").unwrap_or(u64::MAX);
@@ -315,8 +430,7 @@ fn events(snapshot: &Snapshot, query: &BTreeMap<String, String>) -> Value {
                 .map(String::from)
                 .unwrap_or_else(|| value.to_string())
         };
-        event.sequence > cursor
-            && event.occurred_at >= since
+        event.occurred_at >= since
             && event.occurred_at <= until
             && query
                 .get("session")
@@ -368,13 +482,14 @@ fn events(snapshot: &Snapshot, query: &BTreeMap<String, String>) -> Value {
         .events
         .iter()
         .filter(matches)
+        .skip(cursor)
         .take(limit + 1)
         .collect::<Vec<_>>();
     let more = page.len() > limit;
     let page = &page[..page.len().min(limit)];
     json!({
-        "events": page.iter().map(|event| compact(event)).collect::<Vec<_>>(),
-        "next_cursor": if more { page.last().map(|event| event.sequence) } else { None },
+        "events": page.iter().map(|event| compact(context, event)).collect::<Vec<_>>(),
+        "next_cursor": if more { Some(cursor + limit) } else { None },
     })
 }
 
@@ -383,11 +498,12 @@ fn events(snapshot: &Snapshot, query: &BTreeMap<String, String>) -> Value {
  * tool call (established by the tool call identifier), and "followed_by" edges only record order,
  * never a claimed cause
  * Input
+    - context: &Context - repository data
     - events: &[&Event] - session events
  * Output
     - Value {nodes, edges}
 */
-fn graph(events: &[&Event]) -> Value {
+fn graph(context: &Context, events: &[&Event]) -> Value {
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     let mut previous: Option<String> = None;
@@ -439,7 +555,7 @@ fn graph(events: &[&Event]) -> Value {
             "id": event.event_id,
             "kind": kind,
             "label": event.payload.get("tool").and_then(Value::as_str).map(String::from).unwrap_or_else(|| event.event_type.clone()),
-            "event": compact(event),
+            "event": compact(context, event),
             "flags": flags,
         }));
         if let Some(previous) = &previous {
@@ -463,78 +579,45 @@ fn graph(events: &[&Event]) -> Value {
     json!({"nodes": nodes, "edges": edges})
 }
 
-/** The repository governance view: policies, selections with their resolution, checkpoints,
- * defaults, context bindings, findings, and relocations
+/** The governance view, as last reported by a member's machine
  * Input
-    - workspace: &Workspace - repository
+    - context: &Context - repository data
  * Output
     - Answer
 */
-fn governance(workspace: &Workspace) -> Answer {
-    let (report, state) = match evaluate(workspace, &Options::default()) {
-        Ok(result) => result,
-        Err(message) => return error(500, message),
+fn governance(context: &Context) -> Answer {
+    let Some(status) = context.latest_status() else {
+        return error(
+            404,
+            "no member has reported the repository's governance yet; it is sent with the next upload".into(),
+        );
     };
-    let selections = state
-        .registry
-        .selections
-        .iter()
-        .map(|record| {
-            json!({
-                "id": record.id,
-                "name": record.name,
-                "operation": record.operation,
-                "change_type": record.change_type,
-                "policy": record.policy,
-                "language": record.language,
-                "status": record.status,
-                "generation": record.generation,
-                "origin": {"checkpoint": record.origin.checkpoint, "commit": record.origin.commit, "path": record.origin.span.path, "lines": [record.origin.span.start_line, record.origin.span.end_line], "binding_digest": record.origin.binding_digest},
-                "resolved": report.resolutions.get(&record.id).cloned().flatten(),
-                "created_at": iso_time(record.created_at * 1000),
-                "created_by": record.created_by,
-            })
-        })
-        .collect::<Vec<_>>();
-    let contexts = state
-        .context
-        .bindings
-        .iter()
-        .map(|binding| {
-            let current = std::fs::read(workspace.root.join(&binding.path)).ok().map(|bytes| crate::trust::crypto::sha512_hex(&bytes));
-            json!({"policy": binding.policy, "path": binding.path, "state": match current { None => "missing", Some(digest) if digest == binding.digest => "current", Some(_) => "stale" }})
-        })
-        .collect::<Vec<_>>();
-    (
-        200,
-        json!({
-            "generation": report.generation,
-            "public_key": state.registry.manifest.as_ref().map(|manifest| manifest.public_key.clone()),
-            "defaults": {"policy": state.config.default_policy, "checkpoint": state.config.default_checkpoint},
-            "autonomy": state.config.autonomy,
-            "checkpoints": state.checkpoints.checkpoints.iter().map(|checkpoint| json!({"name": checkpoint.name, "commit": checkpoint.commit, "branch": checkpoint.branch, "created_at": iso_time(checkpoint.created_at * 1000), "created_by": checkpoint.created_by})).collect::<Vec<_>>(),
-            "policies": report.policies,
-            "selections": selections,
-            "contexts": contexts,
-            "findings": report.findings,
-            "relocations": report.relocations,
-            "passed": report.passed,
-            "governance_config": crate::governance::zones::load(workspace).ok(),
-            "zones_and_flows": report.zones,
-            "audit": state.audit.iter().rev().take(50).map(|entry| json!({"seq": entry.seq, "at": iso_time(entry.at * 1000), "actor": entry.actor, "action": entry.action, "detail": entry.detail})).collect::<Vec<_>>(),
-        }),
-        None,
-    )
+    let mut view = status["governance"].clone();
+    if view.get("error").is_some() {
+        return error(
+            500,
+            format!(
+                "the reporting machine could not evaluate governance: {}",
+                view["error"]
+            ),
+        );
+    }
+    view["reported_by"] =
+        context.member(status["installation"].as_str().map(String::from).as_ref());
+    view["reported_at"] = status["collected_at"].clone();
+    (200, view, None)
 }
 
-/** The ledger view of one session or all sessions
+/** The ledger view of one session or all sessions: entries, balances, and whether every member's
+ * ledger reconciles
  * Input
-    - snapshot: &Snapshot - stores
+    - context: &Context - repository data
     - query: &BTreeMap<String, String> - optional session
  * Output
     - Value
 */
-fn ledger_view(snapshot: &Snapshot, query: &BTreeMap<String, String>) -> Value {
+fn ledger_view(context: &Context, query: &BTreeMap<String, String>) -> Value {
+    let snapshot = &context.snapshot;
     let entries = snapshot
         .ledger
         .iter()
@@ -549,21 +632,21 @@ fn ledger_view(snapshot: &Snapshot, query: &BTreeMap<String, String>) -> Value {
         .map(|entry| entry.session.clone())
         .collect::<BTreeSet<_>>();
     json!({
-        "reconciles": ledger::verify(&snapshot.ledger).is_ok(),
+        "reconciles": chains(context).1,
         "balances": sessions.iter().map(|session| json!({"session": session, "balance": Ledger::balance_of(&snapshot.ledger, session)})).collect::<Vec<_>>(),
         "entries": entries.iter().rev().take(MAX_LIMIT).collect::<Vec<_>>(),
     })
 }
 
-/** Metrics of a scope: repository (default), session, task, agent, tool_call, or hook (a hook
- * event name)
+/** Metrics for a scope: repository (default), session, agent, task, tool call, or hook
  * Input
-    - snapshot: &Snapshot - stores
+    - context: &Context - repository data
     - query: &BTreeMap<String, String> - scope and id
  * Output
     - Answer
 */
-fn metrics_view(snapshot: &Snapshot, query: &BTreeMap<String, String>) -> Answer {
+fn metrics_view(context: &Context, query: &BTreeMap<String, String>) -> Answer {
+    let snapshot = &context.snapshot;
     let scope = query
         .get("scope")
         .map(String::as_str)
@@ -638,68 +721,15 @@ fn metrics_view(snapshot: &Snapshot, query: &BTreeMap<String, String>) -> Answer
     )
 }
 
-/** Inputs of the compliance evaluation, from fresh verification
+/** The compliance view: every control with outcome, evidence, gaps, and mappings, from the
+ * uploaded records and the latest reported local verification
  * Input
-    - workspace: &Workspace - repository
-    - snapshot: &Snapshot - stores
- * Output
-    - Inputs
-*/
-fn compliance_inputs(workspace: &Workspace, snapshot: &Snapshot) -> Inputs {
-    let mut inputs = Inputs {
-        events_verified: verify_chain(&snapshot.events).status != "broken",
-        ledger_verified: ledger::verify(&snapshot.ledger).is_ok(),
-        alerts_configured: alerts::configured(workspace),
-        hooks_valid: [AgentKind::Claude, AgentKind::Codex]
-            .into_iter()
-            .any(|kind| install::validate(kind).is_ok_and(|report| report["valid"] == true)),
-        ..Inputs::default()
-    };
-    if let Ok((report, state)) = evaluate(
-        workspace,
-        &Options {
-            candidates: false,
-            ..Options::default()
-        },
-    ) {
-        let tally = |operation: Operation| {
-            let commands = report
-                .policies
-                .iter()
-                .flat_map(|policy| policy.commands.iter())
-                .filter(|command| command.operation == operation)
-                .collect::<Vec<_>>();
-            Some((
-                commands
-                    .iter()
-                    .filter(|command| command.outcome == Outcome::Pass)
-                    .count(),
-                commands.len(),
-            ))
-        };
-        inputs.preserve = tally(Operation::Preserve);
-        inputs.target = tally(Operation::Target);
-        if let Ok(trust) = workspace.trust() {
-            let findings = integrity(workspace, &state, &trust);
-            inputs.integrity_findings =
-                findings.iter().filter(|finding| finding.blocking()).count();
-            inputs.audit_verified = !findings
-                .iter()
-                .any(|finding| finding.code == "audit_tampered");
-            inputs.anchor = trust.anchor().ok().flatten().is_some();
-        }
-    }
-    inputs
-}
-
-/** The compliance view: every control with outcome, evidence, gaps, and mappings
- * Input
-    - workspace: &Workspace - repository
-    - snapshot: &Snapshot - stores
+    - context: &Context - repository data
  * Output
     - Value
 */
-fn compliance_view(workspace: &Workspace, snapshot: &Snapshot) -> Value {
+fn compliance_view(context: &Context) -> Value {
+    let snapshot = &context.snapshot;
     let events = snapshot.events.iter().collect::<Vec<_>>();
     let ledger = snapshot.ledger.iter().collect::<Vec<_>>();
     let sessions = snapshot
@@ -708,13 +738,11 @@ fn compliance_view(workspace: &Workspace, snapshot: &Snapshot) -> Value {
         .map(|session| serde_json::to_value(session).unwrap_or_default())
         .collect::<Vec<_>>();
     let computed = metrics::compute(&events, &ledger, &sessions);
-    let controls = compliance::evaluate(
-        &compliance_inputs(workspace, snapshot),
-        &computed,
-        &events,
-        &ledger,
-        &sessions,
-    );
+    let (chain, ledger_reconciles) = chains(context);
+    let mut inputs = compliance_inputs(context);
+    inputs.events_verified = chain["status"] != "broken";
+    inputs.ledger_verified = ledger_reconciles;
+    let controls = compliance::evaluate(&inputs, &computed, &events, &ledger, &sessions);
     json!({
         "disclaimer": "Framework mappings show which requirements this evidence supports; they are not a certification.",
         "controls": controls,
@@ -722,31 +750,118 @@ fn compliance_view(workspace: &Workspace, snapshot: &Snapshot) -> Value {
     })
 }
 
-/** The repository connection without secrets
+/** Combine the members' reported compliance inputs: policy results from the latest report, and for
+ * each machine-level control the best evidence any member reported (alert delivery, valid hooks, a
+ * rollback anchor) or the worst finding (integrity, audit chain)
  * Input
-    - workspace: &Workspace - repository
+    - context: &Context - repository data
+ * Output
+    - Inputs
+*/
+fn compliance_inputs(context: &Context) -> Inputs {
+    let reported = context
+        .statuses
+        .iter()
+        .filter_map(|status| {
+            serde_json::from_value::<Inputs>(status["compliance_inputs"].clone()).ok()
+        })
+        .collect::<Vec<_>>();
+    let mut inputs: Inputs = context
+        .latest_status()
+        .and_then(|status| serde_json::from_value(status["compliance_inputs"].clone()).ok())
+        .unwrap_or_default();
+    if !reported.is_empty() {
+        inputs.alerts_configured = reported.iter().any(|item| item.alerts_configured);
+        inputs.hooks_valid = reported.iter().any(|item| item.hooks_valid);
+        inputs.anchor = reported.iter().any(|item| item.anchor);
+        inputs.audit_verified = reported.iter().all(|item| item.audit_verified);
+        inputs.integrity_findings = reported
+            .iter()
+            .map(|item| item.integrity_findings)
+            .max()
+            .unwrap_or(0);
+    }
+    inputs
+}
+
+/** Every member's configured integrations (non-secret settings), with the member
+ * Input
+    - context: &Context - repository data
+ * Output
+    - Value {integrations}
+*/
+fn integrations(context: &Context) -> Value {
+    let list = context
+        .statuses
+        .iter()
+        .flat_map(|status| {
+            let member = context.member(status["installation"].as_str().map(String::from).as_ref());
+            status["integrations"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(move |mut integration| {
+                    integration["member"] = member.clone();
+                    integration
+                })
+        })
+        .collect::<Vec<_>>();
+    json!({"integrations": list})
+}
+
+/** Alerts, newest first, with their member
+ * Input
+    - context: &Context - repository data
+ * Output
+    - Value {alerts}
+*/
+fn alerts(context: &Context) -> Value {
+    let list = context
+        .snapshot
+        .alerts
+        .iter()
+        .take(MAX_LIMIT)
+        .map(|alert| {
+            let mut alert = alert.clone();
+            alert["member"] =
+                context.member(alert["installation"].as_str().map(String::from).as_ref());
+            if let Some(object) = alert.as_object_mut() {
+                object.remove("installation");
+                object.remove("repository_id");
+            }
+            alert
+        })
+        .collect::<Vec<_>>();
+    json!({"alerts": list})
+}
+
+/** The repository connection, as last reported
+ * Input
+    - context: &Context - repository data
  * Output
     - Value
 */
-fn repo_view(workspace: &Workspace) -> Value {
-    let connection = github::load(workspace).ok().flatten();
-    json!({
-        "connection": connection.map(|connection| json!({"method": connection.method.name(), "repository": connection.normalized, "privileges": connection.privileges, "connected_at": iso_time(connection.connected_at * 1000)})),
-        "github_grant_active": github::active_grant().is_some(),
-    })
+fn repo_view(context: &Context) -> Value {
+    let mut view = context.latest_status().map_or_else(
+        || json!({"connection": null}),
+        |status| status["repo"].clone(),
+    );
+    view["remote"] = json!(context.remote);
+    view
 }
 
 /** Build a session report: summary and outcome, timeline, action graph, resource effects,
  * decisions and violations, autonomy accounting, verification results, coverage, evidence and
  * integrity, remediation, and the telemetry's limitations
  * Input
-    - workspace: &Workspace - repository
-    - snapshot: &Snapshot - stores
+    - context: &Context - repository data
     - id: &str - canonical session
  * Output
     - Value
 */
-pub(crate) fn session_report(workspace: &Workspace, snapshot: &Snapshot, id: &str) -> Value {
+fn session_report(context: &Context, id: &str) -> Value {
+    let snapshot = &context.snapshot;
     let Some(session) = snapshot.session(id) else {
         return json!({"error": "no such session"});
     };
@@ -761,12 +876,12 @@ pub(crate) fn session_report(workspace: &Workspace, snapshot: &Snapshot, id: &st
                 Enforcement::BypassConfirmed | Enforcement::DetectedAfterEffect
             )
         })
-        .map(|event| compact(event))
+        .map(|event| compact(context, event))
         .collect::<Vec<_>>();
     let gaps = events
         .iter()
         .filter(|event| event.enforcement == Enforcement::CoverageGap)
-        .map(|event| compact(event))
+        .map(|event| compact(context, event))
         .collect::<Vec<_>>();
     let outcome = if metric("bypasses_confirmed") > 0.0 {
         "BYPASS_CONFIRMED"
@@ -803,11 +918,19 @@ pub(crate) fn session_report(workspace: &Workspace, snapshot: &Snapshot, id: &st
                 .insert(resource.id.clone());
         }
     }
-    let chain = verify_chain(&snapshot.events);
+    let member = context.session_member.get(id);
+    let chain = context
+        .chains
+        .iter()
+        .find(|chain| member.is_some_and(|member| chain["member"] == member.as_str()))
+        .cloned()
+        .unwrap_or(Value::Null);
     json!({
         "report": "session",
         "generated_at": iso_time(now_millis()),
-        "repository_id": workspace.repository_id,
+        "repository_id": context.repository,
+        "remote": context.remote,
+        "member": context.member(member),
         "summary": {
             "outcome": outcome,
             "session": view["session"],
@@ -817,20 +940,20 @@ pub(crate) fn session_report(workspace: &Workspace, snapshot: &Snapshot, id: &st
             "bypasses_confirmed": metric("bypasses_confirmed"),
             "violations_after_effect": metric("violations_after_effect"),
         },
-        "timeline": events.iter().map(|event| compact(event)).collect::<Vec<_>>(),
-        "action_graph": graph(&events),
+        "timeline": events.iter().map(|event| compact(context, event)).collect::<Vec<_>>(),
+        "action_graph": graph(context, &events),
         "resource_effects": effects,
         "violations": violations,
         "autonomy": snapshot.ledger.iter().filter(|entry| entry.session == id).collect::<Vec<_>>(),
-        "verification": events.iter().filter(|event| event.event_type.starts_with("task.verif")).map(|event| compact(event)).collect::<Vec<_>>(),
+        "verification": events.iter().filter(|event| event.event_type.starts_with("task.verif")).map(|event| compact(context, event)).collect::<Vec<_>>(),
         "coverage": {
             "gaps": gaps,
             "evidence_completeness": view["metrics"]["evidence_completeness"],
         },
         "metrics": view["metrics"],
         "integrity": {
-            "event_chain": chain,
-            "ledger_reconciles": ledger::verify(&snapshot.ledger).is_ok(),
+            "event_chain": chain["event_chain"],
+            "ledger_reconciles": chain["ledger_reconciles"],
             "attestation": events.iter().rev().find(|event| event.event_type == "session.attested").map(|event| event.payload["attestation"].clone()),
             "registry_generations": events.iter().map(|event| event.bindings.registry_generation).collect::<BTreeSet<_>>(),
         },
@@ -848,14 +971,14 @@ pub(crate) fn session_report(workspace: &Workspace, snapshot: &Snapshot, id: &st
 /** Build a downloadable evidence bundle for a session: the report, the session's events and
  * ledger entries, and a manifest with the SHA-512 of every part and of the bundle
  * Input
-    - workspace: &Workspace - repository
-    - snapshot: &Snapshot - stores
+    - context: &Context - repository data
     - id: &str - canonical session
  * Output
     - Value
 */
-pub(crate) fn evidence_bundle(workspace: &Workspace, snapshot: &Snapshot, id: &str) -> Value {
-    let report = session_report(workspace, snapshot, id);
+fn evidence_bundle(context: &Context, id: &str) -> Value {
+    let snapshot = &context.snapshot;
+    let report = session_report(context, id);
     let events = snapshot
         .session_events(id)
         .into_iter()
@@ -879,7 +1002,7 @@ pub(crate) fn evidence_bundle(workspace: &Workspace, snapshot: &Snapshot, id: &s
     let manifest = json!({
         "format": 1,
         "created_at": iso_time(now_millis()),
-        "repository_id": workspace.repository_id,
+        "repository_id": context.repository,
         "session": id,
         "parts": files,
         "verification": "recompute SHA-512 (domain evidence/part/v1) over the canonical JSON of each part; each event digest is SHA-512 over its canonical JSON and chains through previous_digest",

@@ -5,6 +5,9 @@
 // mappings (OWASP LLM and agentic guidance, NIST AI RMF, SOC 2, ISO/IEC 27001:2022, GDPR) show which
 // requirements the evidence supports; they are not certification.
 
+// Evaluated by the hosted dashboard; the CLI only builds the Inputs it reports
+#![cfg_attr(not(feature = "server"), allow(dead_code))]
+
 use serde::Serialize;
 use serde_json::Value;
 
@@ -77,7 +80,8 @@ pub(crate) struct Evaluation {
     - ledger_verified: bool - the ledger reconciles
     - alerts_configured: bool - Slack or WhatsApp is configured
 */
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub(crate) struct Inputs {
     pub(crate) preserve: Option<(usize, usize)>,
     pub(crate) target: Option<(usize, usize)>,

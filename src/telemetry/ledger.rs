@@ -315,6 +315,7 @@ impl Ledger {
     - Result<(), String>
     - Error naming the first entry that fails
 */
+#[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the hosted dashboard
 pub(crate) fn verify(entries: &[Entry]) -> Result<(), String> {
     let mut previous = "genesis".to_string();
     let mut keys = std::collections::BTreeSet::new();

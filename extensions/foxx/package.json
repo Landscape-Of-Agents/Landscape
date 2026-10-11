@@ -72,6 +72,11 @@
           "default": "crane",
           "description": "Path of the Crane executable."
         },
+        "foxx.dashboardUrl": {
+          "type": "string",
+          "default": "https://agentscript-service.onrender.com",
+          "description": "Address of the hosted Foxx dashboard (sign in with GitHub)."
+        },
         "foxx.validateOnSave": {
           "type": "boolean",
           "default": true,

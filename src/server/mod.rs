@@ -7,18 +7,19 @@
 // timestamp, and body digest (see telemetry/ingest.rs). The public key is the installation's
 // identity: every stored record is tagged with it and every /v1 read is filtered by it, so an
 // installation can only add to and read its own records, and no account or enrollment is needed.
-// Uploads are rate-limited and capped (limits.rs). People who own a repository on GitHub see all
-// its installations together on the team dashboard (/team, team.rs).
+// Machines can only upload: no /v1 route returns stored records. Uploads are rate-limited and
+// capped (limits.rs). People read the evidence on the hosted dashboard at the service's root
+// (dashboard/), after signing in with GitHub, through a read-only database handle.
 //
 // Configuration comes from the service's environment only: CRANE_MONGODB_URI (required),
 // CRANE_MONGODB_DB (default foxx), CRANE_MONGODB_EVENT_RETENTION_DAYS (default 30), the limits,
-// the team dashboard settings, and the listen address from --listen ADDRESS, else 0.0.0.0:$PORT,
-// else 0.0.0.0:8080.
+// CRANE_GITHUB_CLIENT_ID and CRANE_GITHUB_CLIENT_SECRET for dashboard sign-in, and the listen
+// address from --listen ADDRESS, else 0.0.0.0:$PORT, else 0.0.0.0:8080.
 
+mod dashboard;
 mod database;
 mod limits;
 mod store;
-mod team;
 
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -52,7 +53,7 @@ type Failure = (u16, String);
     - installations: Limiter - signed requests per installation
     - addresses: Limiter - requests per client address
     - storage: Storage - database size gauge
-    - team: Option<team::Team> - team dashboard, when configured
+    - dashboard: dashboard::Dashboard - the hosted dashboard
 */
 struct Service {
     database: Database,
@@ -61,7 +62,7 @@ struct Service {
     installations: Limiter,
     addresses: Limiter,
     storage: Storage,
-    team: Option<team::Team>,
+    dashboard: dashboard::Dashboard,
 }
 
 /** A response
@@ -86,7 +87,7 @@ impl Reply {
      * Output
         - Reply
     */
-    fn json(status: u16, value: Value) -> Self {
+    pub(crate) fn json(status: u16, value: Value) -> Self {
         Self {
             status,
             content_type: "application/json",
@@ -95,23 +96,38 @@ impl Reply {
         }
     }
 
-    /** An HTML page with a strict content security policy (no scripts at all)
+    /** The dashboard page, with a strict content security policy: only its own script, same-origin
+     * requests, no frames, no forms
      * Input
-        - status: u16 - HTTP status
-        - body: String - page
+        - body: &str - page
      * Output
         - Reply
     */
-    pub(super) fn html(status: u16, body: String) -> Self {
+    pub(crate) fn page(body: &str) -> Self {
         Self {
-            status,
+            status: 200,
             content_type: "text/html; charset=utf-8",
-            body,
+            body: body.into(),
             headers: vec![
-                ("Content-Security-Policy".into(), "default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'".into()),
+                ("Content-Security-Policy".into(), "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'none'; frame-ancestors 'none'; base-uri 'none'".into()),
                 ("X-Content-Type-Options".into(), "nosniff".into()),
                 ("Referrer-Policy".into(), "no-referrer".into()),
             ],
+        }
+    }
+
+    /** The dashboard script
+     * Input
+        - body: &str - script
+     * Output
+        - Reply
+    */
+    pub(crate) fn script(body: &str) -> Self {
+        Self {
+            status: 200,
+            content_type: "text/javascript; charset=utf-8",
+            body: body.into(),
+            headers: vec![("X-Content-Type-Options".into(), "nosniff".into())],
         }
     }
 
@@ -121,7 +137,7 @@ impl Reply {
      * Output
         - Reply
     */
-    pub(super) fn redirect(location: &str) -> Self {
+    pub(crate) fn redirect(location: &str) -> Self {
         Self {
             status: 302,
             content_type: "text/plain",
@@ -137,7 +153,7 @@ impl Reply {
      * Output
         - Reply
     */
-    pub(super) fn with_header(mut self, name: &str, value: &str) -> Self {
+    pub(crate) fn with_header(mut self, name: &str, value: &str) -> Self {
         self.headers.push((name.into(), value.into()));
         self
     }
@@ -163,12 +179,16 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     let connected = database::connect(&settings)?;
     database::migrate(&connected)?;
     let limits = Limits::from_environment();
+    let auth = dashboard::auth::Auth::from_environment(&store::session_seed(&connected)?)?;
     let service = Arc::new(Service {
+        dashboard: dashboard::Dashboard::new(
+            dashboard::data::ReadOnly::new(connected.clone()),
+            auth,
+        ),
         database: connected,
         installations: Limiter::new(limits.requests_per_minute),
         addresses: Limiter::new(limits.addresses_per_minute),
         storage: Storage::new(),
-        team: team::Team::from_environment()?,
         settings,
         limits,
     });
@@ -180,9 +200,13 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         .to_ip()
         .map_or(listen, |address| address.to_string());
     println!(
-        "Foxx ingestion service listening on {address} (database {}; team dashboard {})",
+        "Foxx ingestion service listening on {address} (database {}; dashboard sign-in {})",
         service.settings.database,
-        if service.team.is_some() { "on" } else { "off" }
+        if service.dashboard.configured() {
+            "on"
+        } else {
+            "off: set CRANE_GITHUB_CLIENT_ID and CRANE_GITHUB_CLIENT_SECRET"
+        }
     );
     std::io::stdout().flush().ok();
     let workers = (0..WORKERS)
@@ -233,8 +257,8 @@ fn respond(mut request: Request, service: &Service) {
             json!({"error": "too many requests from this address; try again in a minute"}),
         )
         .with_header("Retry-After", "60")
-    } else if url == "/team" || url.starts_with("/team/") || url.starts_with("/team?") {
-        team::handle(service.team.as_ref(), &request, &service.database)
+    } else if !url.starts_with("/v1/") && !url.contains("/v1/repositories/") {
+        service.dashboard.handle(&request)
     } else {
         match handle(&mut request, service) {
             Ok(value) => Reply::json(200, value),
@@ -445,7 +469,6 @@ fn handle(request: &mut Request, service: &Service) -> Result<Value, Failure> {
         ("GET", "positions") => {
             store::positions(database, &repository, &installation).map(|positions| json!(positions))
         }
-        ("GET", "snapshot") => store::snapshot(database, &repository, &installation),
         ("POST", "batch") => {
             let batch: Batch = serde_json::from_slice(&body)
                 .map_err(|error| (400, format!("invalid batch: {error}")))?;
@@ -458,7 +481,7 @@ fn handle(request: &mut Request, service: &Service) -> Result<Value, Failure> {
                 &batch,
             )
         }
-        (_, "positions" | "snapshot" | "batch") => return Err((405, "method not allowed".into())),
+        (_, "positions" | "batch") => return Err((405, "method not allowed".into())),
         _ => return Err(not_found()),
     };
     stored.map_err(|error| {

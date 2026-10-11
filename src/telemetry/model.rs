@@ -132,6 +132,7 @@ pub(crate) enum Domain {
 
 impl Domain {
     /** Every domain, in reporting order */
+    #[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the hosted dashboard
     pub(crate) const ALL: [Domain; 12] = [
         Self::IdentityProvenance,
         Self::AuthenticationDelegation,

@@ -39,3 +39,8 @@ path = "src/main.rs"
 name = "ingestion"
 path = "tests/ingestion.rs"
 required-features = ["server"]
+
+[[test]]
+name = "dashboard"
+path = "tests/dashboard.rs"
+required-features = ["server"]

@@ -35,8 +35,9 @@ crane target  app/refunds.py  start-line 5 end-line 18 change_type logical_bn
 crane validate          # integrity, syntax, and markers
 crane test .            # run every preserve/target command
 crane agent install --profile claude
-crane dashboard
 ```
+
+Then open the dashboard at <https://agentscript-service.onrender.com> and sign in with GitHub.
 
 Commit `.crane/` with your code. Policies live in `.crane/policies/*.crane`:
 
@@ -58,7 +59,7 @@ comments); whitespace-only changes never satisfy a target.
 | Basic | `--version`, `init`, `checkpoint [NAME]`, `protect FILE ...`, `target FILE ...`, `--set default policy\|checkpoint NAME`, `parse file FILE`, `validate`, `test .`, `add policy-context file FILE [policy NAME]`, `policy-context NAME --view` |
 | Repository | `repo --ssh\|--https\|--gh-cli REMOTE [privileges]`, `repo status`, `repo --view`, `repo del`, `github`, `github days DAYS` |
 | Policies | `create policy NAME FILENAME`, `add policy NAME marker MARKER`, `policy NAME status` |
-| Runtime | `task current [ID]`, `task .`, `session current [ID]`, `session .`, `dashboard` |
+| Runtime | `task current [ID]`, `task .`, `session current [ID]`, `session .` |
 | Agents | `agent install\|uninstall\|hooks --profile claude\|codex` |
 | Admins | `admin list`, `admin add PUBLIC_KEY [name NAME]`, `admin del PUBLIC_KEY` |
 | Integrations | `integrate jira\|slack\|whatsapp\|github` |
@@ -117,6 +118,24 @@ context_packs:
   issue named in the PR title or branch. Set the repository secrets `SLACK_WEBHOOK_URL`,
   `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN`.
 
+## Dashboard
+
+One dashboard for individuals and teams: <https://agentscript-service.onrender.com>. Sign in with
+GitHub, then choose an account, a repository, and optionally one team member.
+
+- **Personal account:** the repositories your GitHub account owns.
+- **Organization:** the organization's repositories with every teammate's activity, and a member
+  filter. Organizations appear when they allow this app (organization settings, third-party
+  access).
+- **Views:** overview, agents and sessions, the action graph of every session, the event timeline
+  with filters, governance (policies, selections, checkpoints, audit trail), the autonomy ledger,
+  every metric with how it is known, compliance controls, alerts, members, health, session reports,
+  and evidence bundles.
+- **Read-only:** the dashboard reads MongoDB through a handle that cannot write, and accepts only
+  GET requests. Machines and agents can only upload: no upload route returns stored records, and
+  the dashboard answers only signed-in people. A repository appears only after an upload proves its
+  GitHub remote, so nobody can attach their uploads to someone else's repository.
+
 ## Telemetry upload (Foxx service)
 
 Crane uploads events, metrics, sessions, tool calls, alerts, and governance history to the Foxx
@@ -130,12 +149,9 @@ authoritative when the service is unreachable.
   add to and read its own records. Every teammate's machine uploads, not only the one that ran
   `crane init`, and the upload key grants no authority over the repository's rules.
 - Crane never holds database credentials. Only the service has the MongoDB connection string.
-- `crane dashboard` reads from the service, and falls back to the local evidence. It shows this
-  machine's activity.
-- **Team dashboard:** `https://agentscript-service.onrender.com/team`. Sign in with GitHub to see
-  every teammate's sessions, alerts, and metrics for repositories owned by your account or your
-  organizations. A repository appears only after an upload proves its GitHub remote, so nobody can
-  attach their uploads to someone else's repository.
+- Each machine also reports its repository status (policy results, integrity, compliance inputs,
+  connection, non-secret integration settings) every two minutes or on `crane agent sync`, for the
+  dashboard's governance and compliance views.
 - **Limits** protect the shared database: 120 requests a minute per machine, at most 2,000 records
   of each kind per upload, 250,000 stored events and 50 repositories per machine, and no uploads
   while the database is over 450 MB. A refused upload stays on the machine and is retried.
@@ -149,10 +165,10 @@ docker run -p 8080:8080 -e CRANE_MONGODB_URI='mongodb+srv://...' crane-ingest
 # or: cargo run --release --features server -- server --listen 0.0.0.0:8080
 ```
 
-For the team dashboard, create a GitHub OAuth app (GitHub, Settings, Developer settings, OAuth
-Apps) with the callback URL `https://your-host/team/callback`, and set `CRANE_GITHUB_CLIENT_ID`,
-`CRANE_GITHUB_CLIENT_SECRET`, `CRANE_PUBLIC_URL=https://your-host`, and `CRANE_SESSION_KEY` (64 hex
-characters, for example `openssl rand -hex 32`) on the service.
+For dashboard sign-in, create a GitHub OAuth app (GitHub, Settings, Developer settings, OAuth
+Apps) with the callback URL `https://your-host/auth/callback`, and set `CRANE_GITHUB_CLIENT_ID` and
+`CRANE_GITHUB_CLIENT_SECRET` on the service. The public address is detected (or set
+`CRANE_PUBLIC_URL`), and the session key is created and kept in the database.
 
 Put it behind HTTPS, then point Crane at it with `CRANE_INGEST_URL=https://your-host`, or build
 with `CRANE_DEFAULT_INGEST_URL=https://your-host` to change the default (the release workflow reads
@@ -172,12 +188,12 @@ Slack, Jira, WhatsApp, and GitHub are set with `crane integrate NAME` instead.
 | `CRANE_TASK_ID`, `CRANE_TASK_NAME` | Link agent sessions to a tracker task (Jira alerts use the ID) | none |
 | `CRANE_SESSION_ID` | Session id when the agent reports none | generated |
 | `CRANE_ENVIRONMENT` | Environment label on events | `local` (`ci` when `CI` is set) |
-| `CRANE_DASHBOARD_PORT`, `CRANE_DASHBOARD_NO_BROWSER` | Dashboard port; `1` skips opening a browser | free port, opens browser |
 | `CRANE_ALERTS_DRY_RUN` | `1` records alerts without delivering them | `0` |
 | `CRANE_INGEST_URL` | Foxx ingestion service; `off` keeps telemetry local | the release's service |
 | `CRANE_SYNC_SECONDS` | Periodic upload interval | `60` |
 | `CRANE_MONGODB_URI`, `CRANE_MONGODB_DB`, `CRANE_MONGODB_EVENT_RETENTION_DAYS` | `crane server` only (never on developer machines) | required, `foxx`, `30` |
-| `CRANE_GITHUB_CLIENT_ID`, `CRANE_GITHUB_CLIENT_SECRET`, `CRANE_PUBLIC_URL`, `CRANE_SESSION_KEY` | `crane server`: team dashboard sign-in | dashboard off |
+| `CRANE_GITHUB_CLIENT_ID`, `CRANE_GITHUB_CLIENT_SECRET` | `crane server`: dashboard sign-in (GitHub OAuth app) | sign-in off |
+| `CRANE_PUBLIC_URL` | `crane server`: public address, when it cannot be detected | `RENDER_EXTERNAL_URL` or the request host |
 | `CRANE_SERVER_REQUESTS_PER_MINUTE`, `CRANE_SERVER_ADDRESS_REQUESTS_PER_MINUTE` | `crane server`: rate per machine and per client address | `120`, `600` |
 | `CRANE_SERVER_MAX_BATCH_RECORDS`, `CRANE_SERVER_MAX_EVENTS_PER_INSTALLATION`, `CRANE_SERVER_MAX_REPOSITORIES_PER_INSTALLATION`, `CRANE_SERVER_MAX_STORAGE_MB` | `crane server`: upload limits | `2000`, `250000`, `50`, `450` |
 | `CRANE_ALLOW_LOCAL_REMOTE`, `CRANE_TEST_MONGODB_URI` | Offline mirrors and the live ingestion test suite | unset |
@@ -194,7 +210,7 @@ usage are not observed by hooks and are reported as unsupported.
 ```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --features server -- -D warnings
-cargo test --features server   # set CRANE_TEST_MONGODB_URI to include the live MongoDB test
+cargo test --features server   # set CRANE_TEST_MONGODB_URI to include the MongoDB and dashboard tests
 bash scripts/smoke_test.sh
 ```
 

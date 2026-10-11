@@ -11,7 +11,6 @@ use std::process::Command;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::governance::workspace::Workspace;
 use crate::platform::files::write_atomic;
@@ -463,56 +462,6 @@ pub(crate) fn active_grant() -> Option<Grant> {
     let text = fs::read_to_string(crane_home().ok()?.join("github-grant.json")).ok()?;
     let grant: Grant = serde_json::from_str(&text).ok()?;
     (grant.expires_at > now_unix()).then_some(grant)
-}
-
-/** Read GitHub data for a granted privilege through gh api: contributors, branches, Actions runs,
- * CODEOWNERS, workflow files, or insights; refused without the privilege or an active grant
- * Input
-    - workspace: &Workspace - repository
-    - privilege: &str - privilege shorthand
- * Output
-    - Result<Value, String> the GitHub API response
-    - Error if not granted, not connected, or the request fails
-*/
-pub(crate) fn fetch(workspace: &Workspace, privilege: &str) -> Result<Value, String> {
-    let connection = load(workspace)?.ok_or("not connected")?;
-    if !connection
-        .privileges
-        .iter()
-        .any(|granted| granted == privilege)
-    {
-        return Err(format!(
-            "the '{privilege}' privilege was not granted to Crane"
-        ));
-    }
-    active_grant()
-        .ok_or("no active GitHub grant; run 'crane github' or 'crane github days DAYS'")?;
-    let slug = connection
-        .normalized
-        .split_once('/')
-        .map(|(_, slug)| slug.to_string())
-        .ok_or("the connection has no OWNER/REPOSITORY")?;
-    let endpoint = match privilege {
-        "contributors" => format!("repos/{slug}/contributors?per_page=100"),
-        "gh-branches" => format!("repos/{slug}/branches?per_page=100"),
-        "gh-actions" => format!("repos/{slug}/actions/runs?per_page=30"),
-        "codeowners" => format!("repos/{slug}/contents/.github/CODEOWNERS"),
-        "ci-cd" => format!("repos/{slug}/contents/.github/workflows"),
-        "gh-insights" => format!("repos/{slug}/stats/participation"),
-        "rf" => format!("repos/{slug}/contents/"),
-        other => return Err(format!("unknown privilege '{other}'")),
-    };
-    let output = process::run(
-        Command::new(gh_binary()).args(["api", &endpoint]),
-        PROBE_TIMEOUT,
-    )?;
-    if !output.success {
-        return Err(format!(
-            "gh api {endpoint} failed: {}",
-            output.stderr.trim()
-        ));
-    }
-    serde_json::from_str(&output.stdout).map_err(io_error)
 }
 
 #[cfg(test)]

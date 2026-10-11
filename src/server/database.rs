@@ -14,8 +14,9 @@ use mongodb::IndexModel;
 
 use crate::platform::io_error;
 
-/** Current schema version applied by the migrations (3: records keyed by installation) */
-pub(crate) const SCHEMA_VERSION: i64 = 3;
+/** Current schema version applied by the migrations (3: records keyed by installation; 4: the
+ * members' repository status and the service's settings) */
+pub(crate) const SCHEMA_VERSION: i64 = 4;
 
 /** How the service reaches its database
  * Fields
@@ -288,6 +289,16 @@ const COLLECTIONS: &[Collection] = &[
             &[("repository_id", 1), ("installation", 1), ("stream", 1)],
             true,
         )],
+    },
+    Collection {
+        name: "repository_status",
+        required: &["repository_id", "installation", "collected_at"],
+        indexes: &[(&[("repository_id", 1), ("installation", 1)], true)],
+    },
+    Collection {
+        name: "service_settings",
+        required: &["name"],
+        indexes: &[(&[("name", 1)], true)],
     },
     Collection {
         name: "schema_migrations",

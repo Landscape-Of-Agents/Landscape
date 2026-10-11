@@ -1,8 +1,7 @@
 // When to upload evidence to the Foxx ingestion service. Data leaves the machine at the moment it is
 // complete: a tool call when it ends (post-tool hook), a session when it ends (stop and session-end
 // hooks), a governance or other Crane command when it finishes, and everything else periodically
-// (any Crane run or hook starts a sync when the last attempt is older than CRANE_SYNC_SECONDS, and
-// the dashboard syncs on a timer). A sync runs as a detached 'crane agent sync' process with its
+// (any Crane run or hook starts a sync when the last attempt is older than CRANE_SYNC_SECONDS). A sync runs as a detached 'crane agent sync' process with its
 // output discarded, so a hook or command never waits for the network and a slow or unreachable
 // service never delays or weakens enforcement. Nothing has to be configured: see ingest.rs.
 
@@ -56,6 +55,7 @@ pub(crate) fn trigger(workspace: &Workspace) {
     let mut command = Command::new(executable);
     command
         .args(["agent", "sync"])
+        .env("CRANE_SYNC_BACKGROUND", "1")
         .current_dir(&workspace.root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

@@ -5,14 +5,16 @@
 // Ed25519 upload key (created automatically on first use, separate from repository signing keys),
 // whose public key identifies the installation. Every teammate's machine therefore uploads, not
 // only the one that ran crane init. The service writes to MongoDB and only ever returns an
-// installation's own records.
+// installation. Machines can only upload: nothing is ever read back, so an agent holding this
+// machine's key cannot read evidence from the service. People read it on the hosted dashboard.
 //
 // A sync first asks the service how far each local stream already reached it (moving the local
 // checkpoint back when the service holds less, for example after a restore), then sends everything
 // newer in batches: events, ledger entries, governance changes, and alerts; the last batch also
 // carries the current sessions, tasks, selection records, signed manifest, and metric rollups for
 // the repository and for every session and tool call with new events. The outcome is kept in
-// sync-state.json, which drives the periodic sync and the dashboard's health view.
+// sync-state.json, which drives the periodic sync. The last batch also carries this machine's
+// repository status (foxx/status.rs) when it is due.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -41,6 +43,9 @@ pub(crate) const BATCH: usize = 500;
 
 /** The Foxx ingestion service every build uploads to unless told otherwise */
 pub(crate) const DEFAULT_INGEST_URL: &str = "https://agentscript-service.onrender.com";
+
+/** How often the repository status is sent, in milliseconds */
+const STATUS_EVERY: u64 = 120_000;
 
 /** Time limit of one request */
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -141,12 +146,13 @@ pub(crate) struct Rollup {
     - complete: bool - the last batch of a sync, carrying the current state below
     - remote: Option<String> - repository remote
     - root_commits: Vec<String> - root commits, so the service can check that the repository
-      identity really belongs to the remote (the team dashboard relies on it)
-    - actor: Option<String> - this machine's Git user name, shown on the team dashboard
+      identity really belongs to the remote (the dashboard relies on it)
+    - actor: Option<String> - this machine's Git user name, shown on the dashboard
     - registry_generation: u64 - signed registry generation
     - events, ledger, audit, alerts - new records of each stream
     - sessions, tasks - sessions with new records and their tasks (all of them after a reset)
     - selections, manifest - current state
+    - status: Option<Value> - this machine's repository status, when due
     - rollups: Vec<Rollup> - refreshed metric rollups
 */
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -166,24 +172,7 @@ pub(crate) struct Batch {
     pub(crate) selections: Vec<Record>,
     pub(crate) manifest: Option<Manifest>,
     pub(crate) rollups: Vec<Rollup>,
-}
-
-/** The installation's data as the service holds it, for the dashboard
- * Fields
-    - events: Vec<Event> - events in sequence order
-    - ledger: Vec<Entry> - ledger entries in sequence order
-    - sessions: Vec<SessionRecord> - sessions, most recent first
-    - tasks: Vec<TaskRecord> - tasks, most recent first
-    - alerts: Vec<Value> - alerts, newest first
-*/
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub(crate) struct Remote {
-    pub(crate) events: Vec<Event>,
-    pub(crate) ledger: Vec<Entry>,
-    pub(crate) sessions: Vec<SessionRecord>,
-    pub(crate) tasks: Vec<TaskRecord>,
-    pub(crate) alerts: Vec<Value>,
+    pub(crate) status: Option<Value>,
 }
 
 /** The result of one sync
@@ -211,6 +200,8 @@ pub(crate) struct Flushed {
     - last_error: Option<String> - why the last attempt failed
     - remote: Positions - how far the service holds each stream
     - endpoint: Option<String> - service address
+    - status_at: u64 - Unix milliseconds of the last repository status sent
+    - status_generation: u64 - registry generation of the last status sent
 */
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -220,6 +211,8 @@ pub(crate) struct SyncState {
     pub(crate) last_error: Option<String>,
     pub(crate) remote: Positions,
     pub(crate) endpoint: Option<String>,
+    pub(crate) status_at: u64,
+    pub(crate) status_generation: u64,
 }
 
 /** Read the sync status
@@ -339,18 +332,23 @@ impl Client {
  * Input
     - workspace: &Workspace - repository
     - stores: &Stores - runtime stores
+    - refresh: bool - send the repository status even when it is not due (a manual sync)
  * Output
     - Result<Flushed, String> what was sent (nothing when uploads are off)
     - Error if the upload failed (the local stores are unaffected)
 */
-pub(crate) fn sync(workspace: &Workspace, stores: &Stores) -> Result<Flushed, String> {
+pub(crate) fn sync(
+    workspace: &Workspace,
+    stores: &Stores,
+    refresh: bool,
+) -> Result<Flushed, String> {
     let _lock = Lock::acquire(&stores.directory.join("sync.lock"))?;
     let mut status = state(stores);
     status.last_attempt_at = now_millis();
     save_state(stores, &status);
     let result = Client::open(workspace).and_then(|client| match client {
         None => Ok(None),
-        Some(client) => push(&client, workspace, stores, &mut status).map(Some),
+        Some(client) => push(&client, workspace, stores, &mut status, refresh).map(Some),
     });
     match &result {
         Ok(Some(_)) => {
@@ -362,22 +360,6 @@ pub(crate) fn sync(workspace: &Workspace, stores: &Stores) -> Result<Flushed, St
     }
     save_state(stores, &status);
     result.map(Option::unwrap_or_default)
-}
-
-/** Read the installation's data back from the service
- * Input
-    - workspace: &Workspace - repository
- * Output
-    - Result<Option<Remote>, String>, None when uploads are off
-    - Error if the service cannot be read
-*/
-pub(crate) fn snapshot(workspace: &Workspace) -> Result<Option<Remote>, String> {
-    let Some(client) = Client::open(workspace)? else {
-        return Ok(None);
-    };
-    serde_json::from_value(client.call("GET", "snapshot", &[])?)
-        .map(Some)
-        .map_err(|error| format!("the ingestion service sent an unreadable snapshot: {error}"))
 }
 
 /** Compute the rollups of the repository and of the sessions and tool calls with new records
@@ -465,6 +447,7 @@ fn rollups(
     - workspace: &Workspace - repository
     - stores: &Stores - runtime stores
     - status: &mut SyncState - sync status, updated with the remote positions
+    - refresh: bool - send the repository status even when it is not due
  * Output
     - Result<Flushed, String>
 */
@@ -473,6 +456,7 @@ fn push(
     workspace: &Workspace,
     stores: &Stores,
     status: &mut SyncState,
+    refresh: bool,
 ) -> Result<Flushed, String> {
     let path = stores.directory.join("sync-checkpoint.json");
     let mut checkpoint: Positions = fs::read_to_string(&path)
@@ -526,6 +510,7 @@ fn push(
         .max()
         .unwrap_or(0)
         .max(1);
+    let mut sent_status = false;
     for round in 0..rounds {
         let range = |length: usize| (round * BATCH).min(length)..((round + 1) * BATCH).min(length);
         let mut batch = Batch {
@@ -574,7 +559,14 @@ fn push(
                 .collect();
             batch.selections = governance.registry.selections.clone();
             batch.manifest = governance.registry.manifest.clone();
+            if refresh
+                || now_millis().saturating_sub(status.status_at) >= STATUS_EVERY
+                || status.status_generation != governance.generation()
+            {
+                batch.status = Some(crate::foxx::status::collect(workspace));
+            }
         }
+        sent_status |= batch.status.is_some();
         let body = serde_json::to_vec(&batch).map_err(io_error)?;
         let answer = client.call("POST", "batch", &body)?;
         flushed.duplicates += answer["duplicates"].as_u64().unwrap_or(0) as usize;
@@ -601,6 +593,10 @@ fn push(
         )?;
     }
     status.remote = checkpoint;
+    if sent_status {
+        status.status_at = now_millis();
+        status.status_generation = governance.generation();
+    }
     status.endpoint = Some(client.base.clone());
     Ok(flushed)
 }

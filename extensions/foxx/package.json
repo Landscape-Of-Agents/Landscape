@@ -93,68 +93,8 @@
         "category": "Foxx"
       },
       {
-        "command": "foxx.createSelectionContract",
-        "title": "Create Selection Contract",
-        "category": "Foxx"
-      },
-      {
-        "command": "foxx.protectSelection",
-        "title": "Preserve Selected Lines",
-        "category": "Foxx"
-      },
-      {
-        "command": "foxx.targetSelection",
-        "title": "Target Selected Lines",
-        "category": "Foxx"
-      },
-      {
-        "command": "foxx.createZone",
-        "title": "Create Zone",
-        "category": "Foxx"
-      },
-      {
-        "command": "foxx.createFlow",
-        "title": "Create Flow",
-        "category": "Foxx"
-      },
-      {
-        "command": "foxx.attachToZone",
-        "title": "Attach to Zone",
-        "category": "Foxx"
-      },
-      {
-        "command": "foxx.attachToFlow",
-        "title": "Attach to Flow",
-        "category": "Foxx"
-      },
-      {
-        "command": "foxx.attachContextPack",
-        "title": "Attach Context Pack",
-        "category": "Foxx"
-      },
-      {
-        "command": "foxx.activateEntity",
-        "title": "Activate Zone or Flow",
-        "category": "Foxx"
-      },
-      {
-        "command": "foxx.previewImpact",
-        "title": "Preview Impact",
-        "category": "Foxx"
-      },
-      {
         "command": "foxx.undoGovernanceChange",
         "title": "Undo Last Governance Change",
-        "category": "Foxx"
-      },
-      {
-        "command": "foxx.createProposalBranch",
-        "title": "Create Proposal Branch",
-        "category": "Foxx"
-      },
-      {
-        "command": "foxx.attachPolicyContext",
-        "title": "Attach File as Policy Context",
         "category": "Foxx"
       },
       {
@@ -170,11 +110,6 @@
       {
         "command": "foxx.policyStatus",
         "title": "Policy Status",
-        "category": "Foxx"
-      },
-      {
-        "command": "foxx.openDashboard",
-        "title": "Open Dashboard",
         "category": "Foxx"
       },
       {
@@ -197,21 +132,6 @@
           "command": "foxx.openFile",
           "when": "isWorkspaceTrusted && !explorerResourceIsFolder",
           "group": "foxx@0"
-        },
-        {
-          "command": "foxx.createZone",
-          "when": "isWorkspaceTrusted",
-          "group": "foxx@1"
-        },
-        {
-          "command": "foxx.attachToZone",
-          "when": "isWorkspaceTrusted",
-          "group": "foxx@2"
-        },
-        {
-          "command": "foxx.attachPolicyContext",
-          "when": "isWorkspaceTrusted && !explorerResourceIsFolder",
-          "group": "foxx@3"
         }
       ],
       "view/title": [
@@ -231,36 +151,6 @@
           "command": "foxx.setup",
           "when": "isWorkspaceTrusted && !foxx.ready",
           "group": "1_setup@1"
-        },
-        {
-          "command": "foxx.protectSelection",
-          "when": "isWorkspaceTrusted && foxx.ready && editorHasSelection",
-          "group": "2_selection@1"
-        },
-        {
-          "command": "foxx.targetSelection",
-          "when": "isWorkspaceTrusted && foxx.ready && editorHasSelection",
-          "group": "2_selection@2"
-        },
-        {
-          "command": "foxx.createSelectionContract",
-          "when": "isWorkspaceTrusted && foxx.ready && editorHasSelection",
-          "group": "2_selection@3"
-        },
-        {
-          "command": "foxx.attachPolicyContext",
-          "when": "isWorkspaceTrusted && foxx.ready",
-          "group": "3_context@1"
-        },
-        {
-          "command": "foxx.attachToZone",
-          "when": "isWorkspaceTrusted && foxx.ready",
-          "group": "3_context@2"
-        },
-        {
-          "command": "foxx.attachToFlow",
-          "when": "isWorkspaceTrusted && foxx.ready",
-          "group": "3_context@3"
         },
         {
           "command": "foxx.createPolicy",
@@ -314,11 +204,6 @@
           "type": "string",
           "default": "crane",
           "description": "Path of the Crane executable."
-        },
-        "foxx.dashboardUrl": {
-          "type": "string",
-          "default": "https://agentscript-service.onrender.com",
-          "description": "Address of the hosted Foxx dashboard (sign in with GitHub)."
         },
         "foxx.validateOnSave": {
           "type": "boolean",

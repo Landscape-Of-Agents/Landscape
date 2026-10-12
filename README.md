@@ -114,6 +114,11 @@ context_packs:
     content: ["Payment processing must be idempotent."]
 ```
 
+After editing the file, an admin runs `crane governance sign` (Foxx does this for you). The file is
+covered by the signed manifest, so an edit nobody signed fails `crane validate` and stops agent
+changes until it is signed or restored. Criticality adds credit cost per edit (sensitive +1,
+critical +3, restricted +5), and restricted code always needs human approval.
+
 ## Integrations and alerts
 
 - `crane integrate slack|jira|whatsapp|github` stores settings outside the repository and can test

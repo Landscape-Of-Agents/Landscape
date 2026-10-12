@@ -56,6 +56,92 @@ fn write(
     )
 }
 
+/** Write .crane/governance.yaml and sign it, as an admin does after changing zones or flows
+ * Input
+    - fixture: &Fixture - repository
+    - yaml: &str - file content
+ * Output
+    - None (panics if signing fails)
+*/
+fn govern(fixture: &Fixture, yaml: &str) {
+    fixture.write(".crane/governance.yaml", yaml);
+    assert!(fixture
+        .ok(&["governance", "sign"])
+        .contains("Signed .crane/governance.yaml"));
+}
+
+/** governance.yaml is signed: an edit nobody signed fails verification and stops agent changes
+ * (fail closed) until an admin signs it; agents cannot sign, and broken rules are not signed
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn governance_yaml_is_signed() {
+    let fixture = fixture();
+    let strict = "version: 1
+zones:
+  - id: ledger-core
+    selectors:
+      files: [app/ledger.py]
+    autonomy_ceiling: observe
+";
+    govern(&fixture, strict);
+    assert!(fixture.ok(&["validate"]).contains("PASS"));
+    // Someone loosens the zone without signing: verification fails and agents are stopped
+    fixture.write(
+        ".crane/governance.yaml",
+        &strict.replace("observe", "autonomous"),
+    );
+    let changed = fixture.fails(&["validate"]);
+    assert!(changed.contains("governance_yaml_changed"), "{changed}");
+    fixture.hook("claude", "SessionStart", &json!({"session_id": "s1"}));
+    let blocked = write(
+        &fixture,
+        "s1",
+        "s-1",
+        "app/ledger.py",
+        "x = 1
+",
+    );
+    assert_eq!(blocked.status.code(), Some(2), "{}", text(&blocked));
+    let elsewhere = write(
+        &fixture,
+        "s1",
+        "s-2",
+        "web/app.js",
+        "x
+",
+    );
+    assert_eq!(elsewhere.status.code(), Some(2), "{}", text(&elsewhere));
+    // An agent can neither run the command nor get it past the hook
+    assert!(text(&fixture.as_agent(&["governance", "sign"]))
+        .contains("cannot be executed by an AI agent"));
+    // A broken file is refused; an admin signs a valid one and enforcement resumes
+    fixture.write(
+        ".crane/governance.yaml",
+        "version: 1
+zones:
+  - id: z
+    policies: [nope]
+",
+    );
+    let refused = fixture.fails(&["governance", "sign"]);
+    assert!(refused.contains("not signing"), "{refused}");
+    govern(&fixture, &strict.replace("observe", "autonomous"));
+    assert!(fixture.ok(&["validate"]).contains("PASS"));
+    let allowed = write(
+        &fixture,
+        "s1",
+        "s-3",
+        "app/ledger.py",
+        "x = 1
+",
+    );
+    assert!(allowed.status.success(), "{}", text(&allowed));
+}
+
 /** Zone ceilings restrict agent writes: observe denies, assisted asks, other files are allowed
  * Input
     - None
@@ -65,8 +151,7 @@ fn write(
 #[test]
 fn zone_ceilings_restrict_writes() {
     let fixture = fixture();
-    fixture.write(
-        ".crane/governance.yaml",
+    govern(&fixture,
         "version: 1\nzones:\n  - id: ledger-core\n    description: Ledger postings\n    selectors:\n      files: [app/ledger.py]\n    criticality: critical\n    autonomy_ceiling: observe\n  - id: payments\n    description: Payment logic\n    selectors:\n      paths: [\"app/pay*.py\"]\n    criticality: sensitive\n    autonomy_ceiling: assisted\n",
     );
     assert!(fixture.ok(&["validate"]).contains("PASS"));
@@ -91,7 +176,7 @@ fn zone_ceilings_restrict_writes() {
         "{}",
         text(&other)
     );
-    fixture.write(".crane/governance.yaml", "version: 1\nzones:\n  - id: ledger-core\n    status: proposed\n    selectors:\n      files: [app/ledger.py]\n    autonomy_ceiling: observe\n");
+    govern(&fixture, "version: 1\nzones:\n  - id: ledger-core\n    status: proposed\n    selectors:\n      files: [app/ledger.py]\n    autonomy_ceiling: observe\n");
     let proposed = write(&fixture, "z1", "w4", "app/ledger.py", "x = 3\n");
     assert!(
         proposed.status.success(),
@@ -110,8 +195,7 @@ fn zone_ceilings_restrict_writes() {
 #[test]
 fn flows_are_discovered_and_enforced() {
     let fixture = fixture();
-    fixture.write(
-        ".crane/governance.yaml",
+    govern(&fixture,
         "version: 1\nflows:\n  - id: order-submission\n    description: Order submission and charging\n    entry_points: [\"app/service.py:submit\"]\n    criticality: critical\n    autonomy_ceiling: assisted\n",
     );
     assert!(fixture.ok(&["validate"]).contains("PASS"));
@@ -154,8 +238,8 @@ fn flows_are_discovered_and_enforced() {
 #[test]
 fn configuration_problems_are_reported() {
     let fixture = fixture();
-    fixture.write(
-        ".crane/governance.yaml",
+    govern(
+        &fixture,
         "version: 1\nzones:\n  - id: gone\n    selectors:\n      paths: [\"old/**\"]\n",
     );
     let stale = fixture.ok(&["validate"]);
@@ -193,8 +277,7 @@ fn configuration_problems_are_reported() {
 #[test]
 fn context_packs_are_supplied() {
     let fixture = fixture();
-    fixture.write(
-        ".crane/governance.yaml",
+    govern(&fixture,
         "version: 1\nzones:\n  - id: payment-core\n    description: Core payment resources\n    selectors:\n      paths: [\"app/**\"]\n    context_packs: [payment-invariants]\nflows:\n  - id: order-submission\n    entry_points: [\"submit\"]\n    context_packs: [payment-invariants]\ncontext_packs:\n  - id: payment-invariants\n    version: 2\n    content:\n      - Payment processing must be idempotent.\n    files: [docs/guide.md]\n  - id: unused\n    version: 1\n    content: [Not referenced]\n",
     );
     let output = fixture.hook("claude", "SessionStart", &json!({"session_id": "p1"}));
@@ -228,8 +311,8 @@ fn context_packs_are_supplied() {
 #[test]
 fn guidance_is_given_with_each_tool_call() {
     let fixture = fixture();
-    fixture.write(
-        ".crane/governance.yaml",
+    govern(
+        &fixture,
         "version: 1
 zones:
   - id: payment-core

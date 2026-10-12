@@ -2,7 +2,7 @@
 // contracts from the editor, see where selections are and whether they pass, and manage zones,
 // flows, and context packs in .crane/governance.yaml.
 // Everything runs through the Crane CLI; decorations never modify source files, and governance
-// edits are previewed, validated by Crane, reversible, and created as proposals.
+// edits are validated and signed by Crane (only admins can sign) and reversible.
 
 import { execFile } from "child_process";
 import * as fs from "fs";
@@ -10,11 +10,10 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 import { CommandResult, Finding, parseJson, runCrane, selectionArgs, selectionIdFrom, Span, TestReport, ValidateReport } from "./core/crane";
-import { activate as activateEntity, addFlow, addZone, attachContextPack, attachToFlow, attachToZone, CEILINGS, checkId, CRITICALITY, entities, SELECTOR_KINDS, ZoneInput } from "./core/governance";
+import { activate as activateEntity, addContext, addFlow, addZone, attachToZone, entities, ZoneInput } from "./core/governance";
 import { parsePolicies, Policy } from "./core/policies";
 import { checkName, confirmation, ownerKey, repoArgs } from "./core/setup";
 import { FoxxPanel, PanelHost, PanelState, SelectionInfo } from "./panel";
-import { addContext } from "./core/governance";
 
 /** A registry record as stored in .crane/registry.json (only the fields Foxx shows). */
 interface RegistryRecord {
@@ -230,9 +229,6 @@ async function runAction(action: string, values: Record<string, string | boolean
     case "status":
       await vscode.commands.executeCommand("foxx.policyStatus");
       return { ok: true, message: "Policy status is in the Foxx output." };
-    case "dashboard":
-      await vscode.commands.executeCommand("foxx.openDashboard");
-      return { ok: true, message: "The dashboard opened in your browser." };
     default:
       return { ok: false, message: `Unknown action ${action}.` };
   }
@@ -669,15 +665,11 @@ function readGovernance(): string {
 }
 
 /**
- * Preview a governance change as a diff, write it when confirmed, validate it with Crane, and
- * restore the previous content when validation fails.
- * @param change produces the new content from the current one
- * @param summary description for the confirmation
- */
-/**
  * Write a governance change made in the Foxx panel (the person already filled in every value),
- * then validate it with Crane and restore the previous file when Crane reports a problem; the
- * change can also be undone with "Foxx: Undo Last Governance Change".
+ * validate it with Crane, and sign it with 'crane governance sign' (only admins can; an unsigned
+ * edit stops agents, since Crane cannot tell it from tampering). The previous file is restored
+ * when validation or signing fails; a kept change can be undone with "Foxx: Undo Last Governance
+ * Change".
  * @param change edit of the current text
  * @param summary what changed, for the person
  * @returns whether it was kept, and what to tell the person
@@ -691,47 +683,22 @@ async function writeGovernance(change: (text: string) => string, summary: string
     return { ok: false, message: (error as Error).message };
   }
   const file = path.join(root() ?? "", ".crane", "governance.yaml");
-  fs.writeFileSync(file, after, "utf8");
-  lastGovernanceText = before;
-  const report = await validate(true);
-  const errors = report?.findings.filter((finding) => (finding.severity === "HIGH" || finding.severity === "CRITICAL") && (finding.code.startsWith("governance") || finding.code.startsWith("flow") || finding.code.startsWith("selector"))) ?? [];
-  if (!report || errors.length) {
+  const restore = async (reason: string) => {
     fs.writeFileSync(file, before, "utf8");
-    lastGovernanceText = undefined;
     await validate(true);
-    return { ok: false, message: `The change was not kept: ${errors.map((finding) => finding.message).join("; ") || "validation did not run"}` };
-  }
+    return { ok: false, message: `The change was not kept: ${reason}` };
+  };
+  fs.writeFileSync(file, after, "utf8");
+  // The file is unsigned until signed below, so that one finding is expected here
+  const report = await validate(true);
+  const errors = report?.findings.filter((finding) => (finding.severity === "HIGH" || finding.severity === "CRITICAL") && finding.code !== "governance_yaml_changed" && (finding.code.startsWith("governance") || finding.code.startsWith("flow") || finding.code.startsWith("selector"))) ?? [];
+  if (!report || errors.length) return restore(errors.map((finding) => finding.message).join("; ") || "validation did not run");
+  const signed = await crane(["governance", "sign"]);
+  if (!signed || signed.code !== 0) return restore((signed?.stderr || signed?.stdout || "crane governance sign did not run").trim().replace(/^crane: /, ""));
+  lastGovernanceText = before;
+  await validate(true);
   tree.refresh();
-  return { ok: true, message: `${summary[0].toUpperCase()}${summary.slice(1)}. Saved in .crane/governance.yaml; commit it to share.` };
-}
-
-async function applyGovernance(change: (text: string) => string, summary: string): Promise<void> {
-  const before = readGovernance();
-  let after: string;
-  try {
-    after = change(before);
-  } catch (error) {
-    vscode.window.showErrorMessage(`Foxx: ${(error as Error).message}`);
-    return;
-  }
-  const left = await vscode.workspace.openTextDocument({ content: before, language: "yaml" });
-  const right = await vscode.workspace.openTextDocument({ content: after, language: "yaml" });
-  await vscode.commands.executeCommand("vscode.diff", left.uri, right.uri, "governance.yaml: proposed change");
-  const choice = await vscode.window.showInformationMessage(`Foxx: ${summary}. Write this change to .crane/governance.yaml?`, { modal: true }, "Write and validate");
-  if (choice !== "Write and validate") return;
-  const file = path.join(root() ?? "", ".crane", "governance.yaml");
-  fs.writeFileSync(file, after, "utf8");
-  lastGovernanceText = before;
-  const report = await validate(true);
-  const errors = report?.findings.filter((finding) => (finding.severity === "HIGH" || finding.severity === "CRITICAL") && (finding.code.startsWith("governance") || finding.code.startsWith("flow") || finding.code.startsWith("selector"))) ?? [];
-  if (!report || errors.length) {
-    fs.writeFileSync(file, before, "utf8");
-    lastGovernanceText = undefined;
-    await validate(true);
-    vscode.window.showErrorMessage(`Foxx: the change was not kept: ${errors.map((finding) => finding.message).join("; ") || "validation did not run"}`);
-    return;
-  }
-  vscode.window.showInformationMessage(`Foxx: ${summary}. Review it in Git; new zones and flows stay proposed until activated.`);
+  return { ok: true, message: `${summary[0].toUpperCase()}${summary.slice(1)}. Signed and saved in .crane/governance.yaml; commit .crane to share it.` };
 }
 
 /**
@@ -742,54 +709,6 @@ async function applyGovernance(change: (text: string) => string, summary: string
  */
 async function pick<T extends string>(values: readonly T[], placeHolder: string): Promise<T | undefined> {
   return (await vscode.window.showQuickPick([...values], { placeHolder })) as T | undefined;
-}
-
-/**
- * Ask for an entity id of a kind from governance.yaml.
- * @param kind zone or flow
- * @returns id, or undefined
- */
-async function pickEntity(kind: "zone" | "flow"): Promise<string | undefined> {
-  const ids = entities(readGovernance()).filter((entity) => entity.kind === kind).map((entity) => entity.id);
-  if (!ids.length) {
-    vscode.window.showWarningMessage(`Foxx: there is no ${kind} yet; create one first.`);
-    return undefined;
-  }
-  return pick(ids, `Choose a ${kind}`);
-}
-
-/**
- * Create a preserve or target selection from the active editor's selection.
- * @param fixed operation, or undefined to ask
- */
-async function createSelection(fixed?: "preserve" | "target"): Promise<void> {
-  const editor = vscode.window.activeTextEditor;
-  if (!editor) return;
-  if (editor.document.isDirty) {
-    await editor.document.save();
-  }
-  const operation = fixed ?? (await pick(["preserve", "target"] as const, "What must the agent do with these lines?"));
-  if (!operation) return;
-  const policy = await pick(policies().map((policy) => policy.name), "Policy (Esc for the default policy)");
-  let changeType: string | undefined;
-  if (operation === "target") {
-    const chosen = await pick(["any change", "logical_bn", "logical_cn", "logical_sn", "semantic"], "Required kind of change");
-    if (!chosen) return;
-    changeType = chosen === "any change" ? undefined : chosen;
-  }
-  const name = await vscode.window.showInputBox({ prompt: "Optional selection name", validateInput: (value) => (!value || /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value) ? undefined : "letters, digits, '_' or '-'") });
-  if (name === undefined) return;
-  const { start, end } = editor.selection;
-  const endLine = end.character === 0 && end.line > start.line ? end.line : end.line + 1;
-  const result = await crane(selectionArgs(operation, relative(editor.document.uri.fsPath), start.line + 1, endLine, { policy, changeType, name: name || undefined }));
-  if (!result) return;
-  const id = selectionIdFrom(result.stdout);
-  if (result.code !== 0 || !id) {
-    vscode.window.showErrorMessage(`Foxx: ${(result.stderr || result.stdout).trim()}`);
-    return;
-  }
-  vscode.window.showInformationMessage(`Foxx: ${operation} ${id} created; Crane inserted its anchor comments.`);
-  await validate(true);
 }
 
 /**
@@ -808,124 +727,24 @@ export function activate(context: vscode.ExtensionContext): void {
   register("foxx.createCheckpoint", () => createCheckpoint());
   register("foxx.moveToPolicy", () => moveToPolicy());
   register("foxx.installHooks", () => installHooks());
-  register("foxx.createSelectionContract", () => createSelection());
-  register("foxx.protectSelection", () => createSelection("preserve"));
-  register("foxx.targetSelection", () => createSelection("target"));
   register("foxx.validate", () => validate());
   register("foxx.test", () => test());
   register("foxx.refresh", () => validate(true));
-  register("foxx.openDashboard", () => {
-    // The dashboard is hosted by the Foxx service; sign in there with GitHub
-    const url = vscode.workspace.getConfiguration("foxx").get<string>("dashboardUrl", "https://agentscript-service.onrender.com");
-    void vscode.env.openExternal(vscode.Uri.parse(url));
-  });
   register("foxx.policyStatus", async () => {
     const policy = await pick(policies().map((policy) => policy.name), "Policy");
     if (!policy) return;
     await crane(["policy", policy, "status"]);
     output.show(true);
   });
-  register("foxx.attachPolicyContext", async (uri?: unknown) => {
-    const file = uri instanceof vscode.Uri ? uri.fsPath : vscode.window.activeTextEditor?.document.uri.fsPath;
-    if (!file) return;
-    const policy = await pick(policies().map((policy) => policy.name), "Attach as context of which policy?");
-    if (!policy) return;
-    const result = await crane(["add", "policy-context", "file", relative(file), "policy", policy]);
-    if (result) (result.code === 0 ? vscode.window.showInformationMessage : vscode.window.showErrorMessage)(`Foxx: ${(result.stdout || result.stderr).trim()}`);
-  });
-  register("foxx.createZone", async (uri?: unknown) => {
-    const id = await vscode.window.showInputBox({ prompt: "Zone id", validateInput: (value) => checkId(value) });
-    if (!id) return;
-    const description = (await vscode.window.showInputBox({ prompt: "Description" })) ?? "";
-    const owner = await vscode.window.showInputBox({ prompt: "Owner (optional)" });
-    const criticality = await pick(CRITICALITY, "Criticality");
-    const ceiling = criticality && (await pick(CEILINGS, "Autonomy ceiling"));
-    if (!criticality || !ceiling) return;
-    const target = uri instanceof vscode.Uri ? uri.fsPath : vscode.window.activeTextEditor?.document.uri.fsPath;
-    const selectors: Record<string, string[]> = {};
-    if (target) {
-      const isDirectory = fs.statSync(target).isDirectory();
-      selectors[isDirectory ? "directories" : "files"] = [relative(target)];
-    }
-    await applyGovernance((text) => addZone(text, { id, description, owner: owner || undefined, criticality, autonomy_ceiling: ceiling, selectors }), `create zone ${id} (proposed)`);
-  });
-  register("foxx.createFlow", async () => {
-    const id = await vscode.window.showInputBox({ prompt: "Flow id", validateInput: (value) => checkId(value) });
-    if (!id) return;
-    const editor = vscode.window.activeTextEditor;
-    const word = editor ? editor.document.getText(editor.document.getWordRangeAtPosition(editor.selection.active)) : "";
-    const entry = await vscode.window.showInputBox({ prompt: "Entry point (Symbol, Type.Symbol, or path:Symbol)", value: editor && word ? `${relative(editor.document.uri.fsPath)}:${word}` : "" });
-    if (!entry) return;
-    const description = (await vscode.window.showInputBox({ prompt: "Description" })) ?? "";
-    const criticality = await pick(CRITICALITY, "Criticality");
-    const ceiling = criticality && (await pick(CEILINGS, "Autonomy ceiling"));
-    if (!criticality || !ceiling) return;
-    await applyGovernance((text) => addFlow(text, { id, description, criticality, autonomy_ceiling: ceiling, entry_points: [entry] }), `create flow ${id} (proposed)`);
-  });
-  register("foxx.attachToZone", async (uri?: unknown) => {
-    const zone = await pickEntity("zone");
-    if (!zone) return;
-    const editor = vscode.window.activeTextEditor;
-    const target = uri instanceof vscode.Uri ? uri.fsPath : editor?.document.uri.fsPath;
-    const kind = await pick(SELECTOR_KINDS, "Selector kind");
-    if (!kind) return;
-    const suggestion = kind === "symbols" && editor ? `${relative(editor.document.uri.fsPath)}:${editor.document.getText(editor.document.getWordRangeAtPosition(editor.selection.active))}` : target ? relative(target) : "";
-    const value = await vscode.window.showInputBox({ prompt: `Value for ${kind}`, value: suggestion });
-    if (!value) return;
-    await applyGovernance((text) => attachToZone(text, zone, kind, value), `attach ${value} to zone ${zone}`);
-  });
-  register("foxx.attachToFlow", async () => {
-    const flow = await pickEntity("flow");
-    if (!flow) return;
-    const field = await pick(["entry_points", "include", "exclude"] as const, "What to attach");
-    if (!field) return;
-    const editor = vscode.window.activeTextEditor;
-    const value = await vscode.window.showInputBox({ prompt: field === "entry_points" ? "Entry point (path:Symbol)" : "Path glob", value: editor ? relative(editor.document.uri.fsPath) : "" });
-    if (!value) return;
-    await applyGovernance((text) => attachToFlow(text, flow, field, value), `attach ${value} to flow ${flow}`);
-  });
-  register("foxx.attachContextPack", async () => {
-    const kind = await pick(["zone", "flow"] as const, "Attach to a zone or a flow?");
-    const id = kind && (await pickEntity(kind));
-    if (!kind || !id) return;
-    const pack = await vscode.window.showInputBox({ prompt: "Context pack id (existing or new)", validateInput: (value) => checkId(value) });
-    if (!pack) return;
-    const line = await vscode.window.showInputBox({ prompt: "First guidance line for a new pack (optional)" });
-    await applyGovernance((text) => attachContextPack(text, kind, id, pack, line ? [line] : []), `attach context pack ${pack} to ${kind} ${id}`);
-  });
-  register("foxx.activateEntity", async () => {
-    const kind = await pick(["zone", "flow"] as const, "Activate a zone or a flow?");
-    const id = kind && (await pickEntity(kind));
-    if (!kind || !id) return;
-    await applyGovernance((text) => activateEntity(text, kind, id), `activate ${kind} ${id} (it will be enforced for agents)`);
-  });
-  register("foxx.previewImpact", async () => {
-    const report = await validate(true);
-    if (!report) return;
-    const governanceFindings = report.findings.filter((finding) => /^(governance|flow|selector|scope|resources|context)/.test(finding.code));
-    output.appendLine("Impact preview:");
-    for (const finding of governanceFindings) output.appendLine(`  ${finding.severity} [${finding.code}] ${finding.message}`);
-    if (!governanceFindings.length) output.appendLine("  no zone, flow, or context findings");
-    output.show(true);
-  });
   register("foxx.undoGovernanceChange", async () => {
-    if (lastGovernanceText === undefined) {
+    const previous = lastGovernanceText;
+    if (previous === undefined) {
       vscode.window.showInformationMessage("Foxx: there is no governance change to undo.");
       return;
     }
-    fs.writeFileSync(path.join(root() ?? "", ".crane", "governance.yaml"), lastGovernanceText, "utf8");
+    const result = await writeGovernance(() => previous, "the last governance change was undone");
     lastGovernanceText = undefined;
-    await validate(true);
-    vscode.window.showInformationMessage("Foxx: the last governance change was undone.");
-  });
-  register("foxx.createProposalBranch", async () => {
-    const name = await vscode.window.showInputBox({ prompt: "Branch for the governance proposal", value: `foxx/governance-${new Date().toISOString().slice(0, 10)}`, validateInput: (value) => (/^[A-Za-z0-9._/-]+$/.test(value) ? undefined : "invalid branch name") });
-    if (!name) return;
-    const confirm = await vscode.window.showWarningMessage(`Create branch ${name} and commit .crane/governance.yaml?`, { modal: true }, "Create and commit");
-    if (confirm !== "Create and commit") return;
-    const terminal = vscode.window.createTerminal({ name: "Foxx proposal", cwd: root() });
-    terminal.sendText(`git checkout -b ${name} && git add .crane/governance.yaml && git commit -m "Foxx: governance proposal"`);
-    terminal.show();
+    (result.ok ? vscode.window.showInformationMessage : vscode.window.showErrorMessage)(`Foxx: ${result.message}`);
   });
   context.subscriptions.push(
     output,

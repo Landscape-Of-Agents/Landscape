@@ -4,15 +4,70 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::platform::git;
+use serde::{Deserialize, Serialize};
+
+use crate::platform::files::write_atomic;
+use crate::platform::{git, now_millis};
 use crate::trust::crypto::digest;
-use crate::trust::TrustStore;
+use crate::trust::{crane_home, TrustStore};
 
 /** Name of the metadata directory at the repository top level */
 pub(crate) const CRANE_DIR: &str = ".crane";
 
 /** Digest domain of the repository identity */
 const IDENTITY_DOMAIN: &str = "repository/identity/v1";
+
+/** How long a cached repository identity is reused, in milliseconds */
+const IDENTITY_TTL_MS: u64 = 10 * 60 * 1000;
+
+/** A repository identity remembered between Crane runs, so a hook does not start Git three times
+ * (one of them walking the whole history) on every tool call. It is kept in the trust directory,
+ * which agents can neither read nor write, never in .git, where an agent could point Crane at
+ * another repository's identity.
+ * Fields
+    - root: String - Git top level as Git reports it
+    - remote: Option<String> - normalized origin remote
+    - root_commits: Vec<String> - root commits
+    - config: String - digest of .git/config when cached (a changed remote invalidates the entry)
+    - at: u64 - Unix milliseconds when cached
+*/
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedIdentity {
+    root: String,
+    remote: Option<String>,
+    root_commits: Vec<String>,
+    config: String,
+    at: u64,
+}
+
+/** Find the cache entry of the repository containing the current directory: the nearest ancestor
+ * with a .git directory, unless Git is redirected by GIT_DIR or GIT_WORK_TREE (then no cache)
+ * Input
+    - None
+ * Output
+    - Option<(PathBuf, String)> cache file and the digest of .git/config
+*/
+fn identity_cache() -> Option<(PathBuf, String)> {
+    if std::env::var_os("GIT_DIR").is_some() || std::env::var_os("GIT_WORK_TREE").is_some() {
+        return None;
+    }
+    let current = std::env::current_dir().ok()?;
+    let repository = current
+        .ancestors()
+        .find(|directory| directory.join(".git").is_dir())?;
+    let config = std::fs::read(repository.join(".git").join("config")).ok()?;
+    let key = digest(
+        "repository/identity-cache/v1",
+        &[repository.to_string_lossy().as_bytes()],
+    );
+    Some((
+        crane_home()
+            .ok()?
+            .join("workspaces")
+            .join(format!("{}.json", &key[..32])),
+        digest("repository/git-config/v1", &[&config]),
+    ))
+}
 
 /** A repository Crane operates on
  * Fields
@@ -51,7 +106,8 @@ pub(crate) fn identity(roots: &[String], remote: Option<&str>) -> String {
 
 impl Workspace {
     /** Locate the repository from the current directory without requiring .crane, computing its
-     * identity from Git
+     * identity from Git (or reusing it from the trust directory for IDENTITY_TTL_MS while
+     * .git/config is unchanged)
      * Input
         - None
      * Output
@@ -59,12 +115,43 @@ impl Workspace {
         - Error if not inside a Git repository with at least one commit
     */
     pub(crate) fn discover() -> Result<Self, String> {
+        let cache = identity_cache();
+        let cached = cache.as_ref().and_then(|(file, config)| {
+            let entry: CachedIdentity = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
+            (entry.config == *config && now_millis().saturating_sub(entry.at) < IDENTITY_TTL_MS)
+                .then_some(entry)
+        });
+        if let Some(entry) = cached {
+            let root = PathBuf::from(&entry.root);
+            return Ok(Self {
+                crane: root.join(CRANE_DIR),
+                repository_id: identity(&entry.root_commits, entry.remote.as_deref()),
+                root,
+                remote: entry.remote,
+                root_commits: entry.root_commits,
+            });
+        }
         let root = git::toplevel()?;
         let remote = git::origin_url(&root).and_then(|url| git::normalize_remote(&url));
         let roots = git::root_commits(&root).map_err(|_| {
             "the repository has no commits yet; commit before using Crane".to_string()
         })?;
         let repository_id = identity(&roots, remote.as_deref());
+        if let Some((file, config)) = cache {
+            let entry = CachedIdentity {
+                root: root.to_string_lossy().into_owned(),
+                remote: remote.clone(),
+                root_commits: roots.clone(),
+                config,
+                at: now_millis(),
+            };
+            if let Some(parent) = file.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(text) = serde_json::to_vec(&entry) {
+                let _ = write_atomic(&file, &text);
+            }
+        }
         Ok(Self {
             crane: root.join(CRANE_DIR),
             root,

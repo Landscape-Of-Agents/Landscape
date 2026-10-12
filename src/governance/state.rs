@@ -40,6 +40,8 @@ const MANIFEST_DOMAIN: &str = "registry/manifest/v1";
     - config_digest: String - digest of .crane/config.json
     - context_digest: String - digest of .crane/context.json
     - audit_head: String - head of .crane/audit.jsonl
+    - governance_digest: String - digest of .crane/governance.yaml (zones, flows, context packs);
+      empty in manifests signed before it was covered, so their heads still verify
     - updated_at: u64 - Unix seconds
     - updated_by: String - actor
     - head: String - SHA-512 of this manifest without head and signature
@@ -57,6 +59,8 @@ pub(crate) struct Manifest {
     pub(crate) config_digest: String,
     pub(crate) context_digest: String,
     pub(crate) audit_head: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) governance_digest: String,
     pub(crate) updated_at: u64,
     pub(crate) updated_by: String,
     pub(crate) head: String,
@@ -98,6 +102,8 @@ pub(crate) struct RegistryFile {
     - context: Bindings - .crane/context.json
     - registry: RegistryFile - .crane/registry.json
     - audit: Vec<Entry> - .crane/audit.jsonl
+    - governance_digest: String - digest of .crane/governance.yaml as it is now
+    - governance_present: bool - .crane/governance.yaml exists
 */
 #[derive(Debug, Clone, Default)]
 pub(crate) struct State {
@@ -106,6 +112,33 @@ pub(crate) struct State {
     pub(crate) context: Bindings,
     pub(crate) registry: RegistryFile,
     pub(crate) audit: Vec<Entry>,
+    pub(crate) governance_digest: String,
+    pub(crate) governance_present: bool,
+}
+
+/** Audit action of 'crane governance sign', the only change allowed to sign over an edited
+ * .crane/governance.yaml */
+pub(crate) const GOVERNANCE_SIGNED: &str = "governance.signed";
+
+/** Finding code of a .crane/governance.yaml that differs from the signed manifest */
+pub(crate) const GOVERNANCE_CHANGED: &str = "governance_yaml_changed";
+
+/** Digest .crane/governance.yaml by its meaning (the parsed zones, flows, and context packs), so
+ * comments, formatting, and line endings do not matter but every rule does
+ * Input
+    - workspace: &Workspace - repository
+ * Output
+    - String digest; "unreadable" when the file cannot be read or parsed (never equal to a
+      signed digest)
+*/
+fn governance_digest(workspace: &Workspace) -> String {
+    super::zones::load(workspace)
+        .ok()
+        .and_then(|governance| serde_json::to_value(governance).ok())
+        .map_or_else(
+            || "unreadable".into(),
+            |value| digest_json("governance/zones/v1", &value),
+        )
 }
 
 /** Read and parse a JSON file of .crane, using the default value when the file is missing
@@ -183,6 +216,8 @@ impl State {
             context: read_json(workspace, "context.json")?,
             registry: read_json(workspace, "registry.json")?,
             audit,
+            governance_digest: governance_digest(workspace),
+            governance_present: workspace.file(super::zones::FILE).exists(),
         })
     }
 
@@ -370,6 +405,20 @@ pub(crate) fn integrity(workspace: &Workspace, state: &State, trust: &TrustStore
             ));
         }
     }
+    if manifest.governance_digest.is_empty() {
+        if state.governance_present {
+            findings.push(Finding::new(
+                "governance_yaml_unsigned",
+                Severity::Medium,
+                ".crane/governance.yaml (zones and flows) is not covered by the signed manifest yet; an admin can run 'crane governance sign' to protect it".into(),
+            ));
+        }
+    } else if manifest.governance_digest != state.governance_digest {
+        findings.push(critical(
+            GOVERNANCE_CHANGED,
+            ".crane/governance.yaml (zones and flows) changed since it was signed; if an admin made the change, run 'crane governance sign', otherwise restore it with 'git checkout .crane/governance.yaml'".into(),
+        ));
+    }
     let mut seen = std::collections::BTreeSet::new();
     for record in &state.registry.selections {
         if !seen.insert(record.id.as_str()) {
@@ -410,8 +459,17 @@ pub(crate) fn integrity(workspace: &Workspace, state: &State, trust: &TrustStore
     if let Err(error) = state.checkpoints.verify_chain() {
         findings.push(critical("checkpoints_tampered", error));
     }
+    // Checkpoint commits already seen locally are remembered in the trust directory, so a hook
+    // does not start Git for each checkpoint on every tool call
+    let known_file = trust.repo_dir.join("known-commits");
+    let known = fs::read_to_string(&known_file).unwrap_or_default();
     for checkpoint in &state.checkpoints.checkpoints {
-        if !git::commit_exists(&workspace.root, &checkpoint.commit) {
+        if known.lines().any(|line| line == checkpoint.commit) {
+            continue;
+        }
+        if git::commit_exists(&workspace.root, &checkpoint.commit) {
+            let _ = append_line(&known_file, &checkpoint.commit);
+        } else {
             findings.push(Finding::new(
                 "checkpoint_commit_missing",
                 Severity::High,
@@ -504,6 +562,7 @@ pub(crate) fn commit(
         let blocking = integrity(workspace, &state, &trust)
             .into_iter()
             .filter(|finding| finding.severity >= Severity::High)
+            .filter(|finding| !(action == GOVERNANCE_SIGNED && finding.code == GOVERNANCE_CHANGED))
             .map(|finding| finding.message)
             .collect::<Vec<_>>();
         if !blocking.is_empty() {
@@ -538,6 +597,7 @@ pub(crate) fn commit(
         config_digest,
         context_digest,
         audit_head,
+        governance_digest: state.governance_digest.clone(),
         updated_at: now_unix(),
         updated_by: who,
         head: String::new(),

@@ -71,6 +71,7 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["agent", ..] => agent::run(&rest(1)),
         ["integrate", ..] => repo::integrate(&rest(1)),
         ["admin", ..] => governance::admin(&rest(1)),
+        ["governance", ..] => governance::governance(&rest(1)),
         #[cfg(feature = "server")]
         ["server", ..] => crate::server::run(&rest(1)),
         [command, ..] => Err(format!("unknown command '{command}'; run 'crane help'")),
@@ -116,6 +117,9 @@ Tasks and sessions
   crane session .
 
 
+Zones and flows (.crane/governance.yaml)
+  crane governance sign
+
 Admins
   crane admin list
   crane admin add PUBLIC_KEY [name NAME]
@@ -133,6 +137,6 @@ Selections are created only by protect and target: Crane inserts language-approp
 comments around the lines (the whole file when no lines are given), generates the 8-character
 marker, signs the registry record, and adds 'preserve MARKER;' or 'target MARKER;' to the policy.
 checkpoint, protect, target, the defaults, policy changes, repo and github changes, integrations,
-admin changes, and agent uninstall cannot be executed by an AI agent; the installed hooks also deny them, and
+admin changes, governance sign, and agent uninstall cannot be executed by an AI agent; the installed hooks also deny them, and
 deny every agent change to .crane (including .crane/map), even when approval is requested.
 "#;

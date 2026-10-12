@@ -302,7 +302,10 @@ fn sign_in_scopes_personal_and_organization_accounts() {
         403,
         "an organization member cannot see a personal repository"
     );
-    let forged = format!("{}00", &alice[..alice.len() - 2]);
+    // Change the signature's last character (always to a different one)
+    let last = if alice.ends_with('0') { '1' } else { '0' };
+    let forged = format!("{}{last}", &alice[..alice.len() - 1]);
+    assert_ne!(forged, alice);
     assert_eq!(get(&format!("{base}/api/me"), Some(&forged)).status, 401);
     let out = get(&format!("{base}/auth/logout"), Some(&alice));
     assert_eq!(out.status, 302);

@@ -19,15 +19,15 @@ Install: search for **Foxx** in the Extensions view, or
 
 ## Where to find Foxx
 
-- **Status bar:** the **Foxx** item (bottom left) shows the repository's state; click it for every
-  action.
+- **The fox icon at the top right of the editor** (or **Ctrl+Alt+F**): select a block of code first,
+  then click it. The Foxx panel opens beside the code with a search box: type what you want
+  (preserve, target, zone, flow, context, …) and fill in the form. Without a selection, Foxx asks
+  you to select a code block first.
+- **Right-click a file in the Explorer → Open in Foxx:** the same panel for the whole file.
 - **Right-click in the editor → Foxx:** preserve or target the selected lines, attach the file as
   policy context, create a policy, and more.
-- **Lightbulb (Ctrl+.) on a selection:** *Preserve these lines* or *Target these lines*.
+- **Status bar:** the **Foxx** item (bottom left) shows the repository's state.
 - **Command palette (Ctrl+Shift+P):** type "Foxx".
-
-Choosing preserve or target then asks, at the top of the window, for the policy, the kind of change
-(for target), and an optional name.
 
 ## Getting started without the command line
 

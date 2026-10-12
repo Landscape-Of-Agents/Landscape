@@ -34,7 +34,6 @@ let records: RegistryRecord[] = [];
 let status: vscode.StatusBarItem;
 let extensionUri: vscode.Uri;
 let lastSelection: SelectionInfo | undefined;
-let foxxMark: vscode.TextEditorDecorationType;
 
 /**
  * Describe an editor's selection for the panel: file, lines, the enclosing function (from the
@@ -68,27 +67,42 @@ async function describeSelection(editor: vscode.TextEditor | undefined): Promise
 }
 
 /**
- * Show the Foxx icon in the gutter next to a selection (with an "Open Foxx" link on hover).
- * @param editor text editor
+ * Describe a whole file for the panel, as if every line of it were selected.
+ * @param uri file
+ * @returns the file as a selection, or undefined when it cannot be opened as text
  */
-function markSelection(editor: vscode.TextEditor | undefined): void {
-  if (!editor) return;
-  if (editor.selection.isEmpty || !root()) {
-    editor.setDecorations(foxxMark, []);
-    return;
+async function describeFile(uri: vscode.Uri): Promise<SelectionInfo | undefined> {
+  try {
+    const document = await vscode.workspace.openTextDocument(uri);
+    const text = document.getText();
+    return { uri: uri.toString(), file: relative(uri.fsPath), start: 1, end: Math.max(1, document.lineCount), empty: false, preview: text.length > 400 ? `${text.slice(0, 400)}…` : text };
+  } catch {
+    return undefined;
   }
-  const hover = new vscode.MarkdownString("[$(rocket) Open Foxx for these lines](command:foxx.menu)", true);
-  hover.isTrusted = { enabledCommands: ["foxx.menu"] };
-  const line = editor.selection.start.line;
-  editor.setDecorations(foxxMark, [{ range: new vscode.Range(line, 0, line, 0), hoverMessage: hover }]);
 }
 
 /**
- * Open the Foxx panel for the active editor's selection.
+ * Open the Foxx panel (the editor title button, Ctrl+Alt+F, and the menus). It works on a block of
+ * code: the active editor's selection, or a whole file chosen in the Explorer; with neither, it
+ * asks for a selection instead.
+ * @param file file chosen in the Explorer, if any
  */
-async function openPanel(): Promise<void> {
-  const editor = vscode.window.activeTextEditor;
-  if (editor) lastSelection = await describeSelection(editor);
+async function openPanel(file?: vscode.Uri): Promise<void> {
+  if (file?.scheme === "file") {
+    const whole = await describeFile(file);
+    if (!whole) {
+      void vscode.window.showErrorMessage("Foxx: this file cannot be opened as text.");
+      return;
+    }
+    lastSelection = whole;
+  } else {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.uri.scheme !== "file" || editor.selection.isEmpty) {
+      void vscode.window.showErrorMessage("Please select a code block first.");
+      return;
+    }
+    lastSelection = await describeSelection(editor);
+  }
   FoxxPanel.show(extensionUri, panelHost, lastSelection);
 }
 
@@ -786,7 +800,9 @@ export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel("Foxx");
   diagnostics = vscode.languages.createDiagnosticCollection("crane");
   const register = (command: string, callback: (...args: unknown[]) => unknown) => context.subscriptions.push(vscode.commands.registerCommand(command, callback));
+  // The title button passes the editor's file, so only the Explorer entry opens a whole file
   register("foxx.menu", () => openPanel());
+  register("foxx.openFile", (uri) => openPanel(uri instanceof vscode.Uri ? uri : undefined));
   register("foxx.setup", () => setUp());
   register("foxx.createPolicy", () => createPolicy());
   register("foxx.createCheckpoint", () => createCheckpoint());
@@ -922,12 +938,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
   extensionUri = context.extensionUri;
-  foxxMark = vscode.window.createTextEditorDecorationType({ gutterIconPath: vscode.Uri.joinPath(context.extensionUri, "images", "gutter.png"), gutterIconSize: "contain" });
   context.subscriptions.push(
-    foxxMark,
     vscode.window.onDidChangeTextEditorSelection(async (event) => {
       if (event.textEditor.document.uri.scheme !== "file") return;
-      markSelection(event.textEditor);
       lastSelection = await describeSelection(event.textEditor);
       FoxxPanel.select(lastSelection);
     }),

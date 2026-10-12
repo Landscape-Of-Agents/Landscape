@@ -151,7 +151,11 @@ ul.suggestions li.active mark { color: inherit; text-decoration: underline; }
 form { max-width: var(--width); margin-top: 14px; padding: 12px 14px; border: 1px solid var(--vscode-panel-border); border-radius: 8px; }
 form h2 { margin: 0 0 4px; font-size: 14px; }
 input[type=text], select { width: 100%; padding: 6px 8px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 6px; font: inherit; }
-.row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+/* Criticality takes a compact column so the autonomy ceiling beside it has room; long option text
+   is cut with an ellipsis instead of widening its column */
+.row { display: grid; grid-template-columns: minmax(0, 11rem) minmax(0, 1fr); gap: 12px; }
+.row > div { min-width: 0; }
+select { text-overflow: ellipsis; }
 .choice { display: flex; gap: 14px; flex-wrap: wrap; }
 .buttons { display: flex; gap: 8px; margin-top: 14px; }
 button { padding: 6px 14px; border-radius: 6px; border: 1px solid transparent; font: inherit; cursor: pointer; color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); }

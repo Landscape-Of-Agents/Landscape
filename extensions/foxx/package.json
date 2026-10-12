@@ -59,6 +59,15 @@
         }
       },
       {
+        "command": "foxx.openFile",
+        "title": "Open in Foxx",
+        "category": "Foxx",
+        "icon": {
+          "light": "images/title.png",
+          "dark": "images/title.png"
+        }
+      },
+      {
         "command": "foxx.setup",
         "title": "Set Up Crane in This Repository",
         "category": "Foxx"
@@ -185,6 +194,11 @@
       ],
       "explorer/context": [
         {
+          "command": "foxx.openFile",
+          "when": "isWorkspaceTrusted && !explorerResourceIsFolder",
+          "group": "foxx@0"
+        },
+        {
           "command": "foxx.createZone",
           "when": "isWorkspaceTrusted",
           "group": "foxx@1"
@@ -267,8 +281,14 @@
       "editor/title": [
         {
           "command": "foxx.menu",
-          "when": "isWorkspaceTrusted && foxx.ready && editorHasSelection",
+          "when": "isWorkspaceTrusted && resourceScheme == file",
           "group": "navigation@-100"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "foxx.openFile",
+          "when": "false"
         }
       ]
     },

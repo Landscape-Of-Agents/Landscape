@@ -265,6 +265,12 @@ bash scripts/smoke_test.sh
 
 The VS Code extension lives in [extensions/foxx](extensions/foxx).
 
+**Releasing.** Bump `version` in `Cargo.toml`, commit, then tag and push (`git tag vX.Y.Z && git
+push origin vX.Y.Z`). The release workflow builds Crane for every platform and packages Foxx with the
+tag's version. When `extensions/foxx` changed since the previous release, it publishes Foxx to the
+VS Code Marketplace (repository secret `VSCE_PAT`) and to Open VSX (optional secret `OVSX_PAT`);
+VS Code then updates installed copies automatically.
+
 ## License
 
 Apache-2.0

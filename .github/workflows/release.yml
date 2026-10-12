@@ -102,6 +102,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_TAG }}
+          # Full history and tags, to compare the extension with the previous release
+          fetch-depth: 0
 
       - name: Verify release tag matches Cargo version
         shell: bash
@@ -133,16 +135,53 @@ jobs:
           node-version: 22
 
       - name: Package the Foxx extension
+        id: extension
         shell: bash
         working-directory: extensions/foxx
         run: |
           set -euo pipefail
-          version="$(node -p "require('./package.json').version")"
-          test "v${version}" = "${RELEASE_TAG}" || { echo "extensions/foxx/package.json is ${version}, the tag is ${RELEASE_TAG}"; exit 1; }
+          # The tag decides the extension's version, so only Cargo.toml is bumped by hand
           npm ci --no-audit --no-fund
+          npm version "${RELEASE_TAG#v}" --no-git-tag-version --allow-same-version
           npm test
           npm run package
           mv foxx.vsix "../../dist/foxx-${RELEASE_TAG}.vsix"
+          # Publish only when the extension changed since the previous release (or there is none)
+          previous="$(git describe --tags --abbrev=0 --match 'v*' "${RELEASE_TAG}^" 2>/dev/null || true)"
+          if [ -z "${previous}" ] || ! git diff --quiet "${previous}" "${RELEASE_TAG}" -- .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "The extension changed since ${previous:-the beginning}; it will be published."
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "The extension did not change since ${previous}; the Marketplace keeps its current version."
+          fi
+
+      - name: Publish the Foxx extension to the VS Code Marketplace
+        if: steps.extension.outputs.changed == 'true'
+        shell: bash
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VSCE_PAT}" ]; then
+            echo "::warning::VSCE_PAT is not set; the extension was not published to the Marketplace."
+            exit 0
+          fi
+          cd extensions/foxx
+          npx vsce publish --packagePath "../../dist/foxx-${RELEASE_TAG}.vsix" --pat "${VSCE_PAT}"
+
+      - name: Publish the Foxx extension to Open VSX
+        if: steps.extension.outputs.changed == 'true'
+        shell: bash
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OVSX_PAT}" ]; then
+            echo "OVSX_PAT is not set; skipping Open VSX."
+            exit 0
+          fi
+          npx --yes ovsx@0.10.1 publish "dist/foxx-${RELEASE_TAG}.vsix" --pat "${OVSX_PAT}"
 
       - name: Create release
         uses: softprops/action-gh-release@v2

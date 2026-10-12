@@ -35,38 +35,31 @@ Install: search for **Foxx** in the Extensions view, or
    In a new repository you become the owner and a `baseline` checkpoint is recorded; in a
    repository a teammate set up, Foxx shows the owner key's fingerprint and asks you to confirm it.
 2. **Foxx: Create Policy**: name it and choose its file in `.crane/policies`.
-3. Select lines in the editor and run **Foxx: Create Selection Contract** (or right-click): choose
-   preserve or target and the policy.
+3. Select lines in the editor and click the fox icon at the top right (or Ctrl+Alt+F). In the Foxx
+   panel, search for what you want: preserve or target the lines, make them a zone or a flow (with
+   criticality, autonomy ceiling, and context for the agent), or add context to an existing one.
 4. **Foxx: Install Agent Hooks** for Claude Code or Codex, then commit the `.crane` folder.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
+| Foxx: Open Foxx | The Foxx panel for the selected lines (or, from the Explorer, a whole file) |
 | Foxx: Set Up Crane in This Repository | Connect the clone (`crane repo`), `crane init` (confirming the owner key when joining), and a `baseline` checkpoint for a new repository |
 | Foxx: Create Policy | `crane create policy NAME FILE` |
 | Foxx: Create Checkpoint | `crane checkpoint NAME`: record the current commit as trusted |
 | Foxx: Move Selection to Policy | `crane add policy NAME marker ID` |
 | Foxx: Install Agent Hooks | `crane agent install --profile claude\|codex` |
-| Foxx: Create Selection Contract | Preserve or target the selected lines (`crane protect` / `crane target`), choosing the policy, change type, and an optional name |
-| Foxx: Preserve Selected Lines / Target Selected Lines | Shortcuts for the two operations |
 | Foxx: Validate Governance | `crane validate --json`; findings become diagnostics |
 | Foxx: Test Policies | `crane test . --json`; failing and unresolved commands become diagnostics and CodeLens outcomes |
 | Foxx: Policy Status | `crane policy NAME status` in the Foxx output |
-| Foxx: Attach File as Policy Context | `crane add policy-context file FILE policy NAME` |
-| Foxx: Create Zone / Create Flow | Add a **proposed** zone or flow |
-| Foxx: Attach to Zone / Attach to Flow | Add a selector (path, file, directory, symbol, selection) or an entry point / include / exclude |
-| Foxx: Attach Context Pack | Create or reuse a context pack and attach it to a zone or flow |
-| Foxx: Activate Zone or Flow | Turn a proposed entity into an enforced one (an explicit authority change) |
-| Foxx: Preview Impact | Zone, flow, selector, and context findings of the current configuration |
-| Foxx: Undo Last Governance Change | Restore the previous `governance.yaml` |
-| Foxx: Create Proposal Branch | Commit `governance.yaml` on a new branch for review |
-| Foxx: Open Dashboard | Open the hosted Foxx dashboard (setting `foxx.dashboardUrl`) |
+| Foxx: Undo Last Governance Change | Restore (and sign) the previous `governance.yaml` |
 
-Every governance edit is shown as a diff first, written only after you confirm, validated by
-Crane, and reverted automatically if Crane reports a zone, flow, or selector error. Decorations
-and CodeLens never modify source files; only `crane protect` and `crane target` insert anchor
-comments.
+Zone, flow, and context changes made in the panel are validated by Crane and signed with
+`crane governance sign`; only the repository's owner and admins can sign, and the change is
+reverted if validation or signing fails. An edit to `governance.yaml` that nobody signed fails
+verification and stops agent changes until an admin signs it. Decorations and CodeLens never
+modify source files; only `crane protect` and `crane target` insert anchor comments.
 
 ## Development
 

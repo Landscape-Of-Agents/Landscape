@@ -1,5 +1,6 @@
 // Governance commands, one file per responsibility: init and joining (init.rs), admins (admin.rs),
-// checkpoints and selections (selections.rs), verification (checks.rs), and policies (policies.rs).
+// checkpoints and selections (selections.rs), verification (checks.rs), policies (policies.rs), and
+// signing zones and flows (zones.rs).
 // The helpers they share (policy block text, key fingerprints, this machine's role) live here.
 
 mod admin;
@@ -7,6 +8,7 @@ mod checks;
 mod init;
 mod policies;
 mod selections;
+mod zones;
 
 pub(crate) use admin::admin;
 pub(crate) use checks::{test, validate};
@@ -15,6 +17,7 @@ pub(crate) use policies::{add_context, create_policy, move_marker, policy_status
 pub(crate) use selections::{
     checkpoint, parse, select, set_default_checkpoint, set_default_policy,
 };
+pub(crate) use zones::governance;
 
 use crate::governance::admins::{self};
 use crate::governance::state::State;

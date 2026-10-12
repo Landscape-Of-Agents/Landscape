@@ -6,6 +6,10 @@ every selection is and whether it passes, and edits zones, flows, and context pa
 `crane test . --json`, `crane protect`, `crane target`, ...) and never reads Crane's trust
 directory, signing keys, or integration secrets.
 
+Install: search for **Foxx** in the Extensions view, or
+`code --install-extension agentscript.foxx`
+([Marketplace](https://marketplace.visualstudio.com/items?itemName=agentscript.foxx)).
+
 ## Requirements
 
 - `crane` 0.4.3 or later on `PATH` (or set `foxx.cranePath`); download it from the

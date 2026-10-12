@@ -22,6 +22,11 @@ crane --version
 
 `gh` is needed for `crane github`; `curl` for Slack, Jira, and WhatsApp delivery.
 
+The **Foxx** VS Code extension sets up Crane, creates policies, and marks selections from the
+editor: install it from the
+[Marketplace](https://marketplace.visualstudio.com/items?itemName=agentscript.foxx)
+(`code --install-extension agentscript.foxx`), or from the `.vsix` on each release.
+
 ## Quick start
 
 ```bash

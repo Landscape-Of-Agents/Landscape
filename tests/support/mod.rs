@@ -44,6 +44,26 @@ impl Service {
     pub fn logs(&self) -> String {
         self.logs.lock().unwrap().clone()
     }
+
+    /** Wait for a log line containing a text: the service writes it before answering, but the
+     * log reaches the test through a pipe and a reader thread, so it can arrive a moment later
+     * Input
+        - text: &str - text the line contains
+     * Output
+        - Option<String> the line, None after five seconds without it
+    */
+    pub fn log_line(&self, text: &str) -> Option<String> {
+        let started = std::time::Instant::now();
+        loop {
+            if let Some(line) = self.logs().lines().find(|line| line.contains(text)) {
+                return Some(line.to_string());
+            }
+            if started.elapsed() > std::time::Duration::from_secs(5) {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
 }
 
 impl Drop for Service {

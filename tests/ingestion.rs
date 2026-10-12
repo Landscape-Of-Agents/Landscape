@@ -205,7 +205,9 @@ fn live_pipeline_reaches_mongodb_without_setup() {
         id.as_str(),
         "errors name their request"
     );
-    assert!(running.logs().contains(&format!("\"request_id\":\"{id}\"")));
+    assert!(running
+        .log_line(&format!("\"request_id\":\"{id}\""))
+        .is_some());
     // Let the detached syncs started by the hooks finish before simulating data loss
     std::thread::sleep(std::time::Duration::from_secs(5));
     database

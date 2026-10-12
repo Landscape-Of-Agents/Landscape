@@ -228,11 +228,8 @@ fn sign_in_scopes_personal_and_organization_accounts() {
     assert_eq!(traced.header("x-request-id"), Some("trace-0001"));
     let line = world
         .service
-        .logs()
-        .lines()
-        .find(|line| line.contains("\"request_id\":\"trace-0001\""))
-        .expect("the request is logged with its correlation id")
-        .to_string();
+        .log_line("\"request_id\":\"trace-0001\"")
+        .expect("the request is logged with its correlation id");
     let entry: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(entry["path"], "/api/me");
     assert_eq!(entry["status"], 401);

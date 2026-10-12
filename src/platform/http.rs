@@ -68,7 +68,7 @@ fn spawn(config: &str, capture: bool) -> Result<Child, String> {
             Stdio::null()
         }
     };
-    let mut child = Command::new("curl")
+    let mut child = super::process::hidden(&mut Command::new("curl"))
         .args(["-K", "-"])
         .stdin(Stdio::piped())
         .stdout(output())

@@ -24,6 +24,28 @@ pub(crate) struct Output {
     pub(crate) duration_ms: u64,
 }
 
+/** Windows process creation flag: run a console program with a hidden console of its own */
+#[cfg(windows)]
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/** Keep a non-interactive child (git, curl, gh, test commands) from opening a console window. On
+ * Windows a console program started by a process without a console (an editor, an agent host, or
+ * the background sync) otherwise gets a new visible console that flashes open and closed; its
+ * output is captured or discarded, so the window is never needed. Nothing changes elsewhere.
+ * Input
+    - command: &mut Command - command to configure
+ * Output
+    - &mut Command, for chaining
+*/
+pub(crate) fn hidden(command: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 /** Run a command with captured output and a time limit; output is read on helper threads so a
  * chatty child cannot block on a full pipe
  * Input
@@ -35,7 +57,7 @@ pub(crate) struct Output {
 */
 pub(crate) fn run(command: &mut Command, timeout: Duration) -> Result<Output, String> {
     let started = Instant::now();
-    let mut child = command
+    let mut child = hidden(command)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

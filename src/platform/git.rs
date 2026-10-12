@@ -46,7 +46,7 @@ pub(crate) fn git_bytes(directory: Option<&Path>, args: &[&str]) -> Result<Vec<u
     if let Some(directory) = directory {
         command.current_dir(directory);
     }
-    let output = command
+    let output = super::process::hidden(&mut command)
         .args(args)
         .stdin(Stdio::null())
         .output()
@@ -264,7 +264,7 @@ pub(crate) fn list_files(root: &Path) -> Result<Vec<String>, String> {
     - Error with git's message, or a timeout message
 */
 pub(crate) fn remote_reachable(url: &str, timeout: Duration) -> Result<(), String> {
-    let mut child = Command::new("git")
+    let mut child = super::process::hidden(&mut Command::new("git"))
         .args(["ls-remote", "--heads", url])
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())

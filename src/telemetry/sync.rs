@@ -64,8 +64,10 @@ pub(crate) fn trigger(workspace: &Workspace) {
     {
         use std::os::windows::process::CommandExt;
         disinherit_standard_handles();
-        // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: no console, not stopped with the parent
-        command.creation_flags(0x0000_0008 | 0x0000_0200);
+        // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP: a hidden console, not stopped with the
+        // parent. Not DETACHED_PROCESS: without any console, every git and curl the sync starts
+        // would open (and flash) a console window of its own
+        command.creation_flags(crate::platform::process::CREATE_NO_WINDOW | 0x0000_0200);
     }
     let _ = command.spawn();
 }

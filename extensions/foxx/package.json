@@ -2,7 +2,7 @@
   "name": "foxx",
   "displayName": "Foxx",
   "description": "Set up Crane, create policies and selection contracts, and see whether AI agents respect them, from the editor.",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "publisher": "agentscript",
   "license": "Apache-2.0",
   "icon": "images/icon.png",
@@ -37,7 +37,8 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "workspaceContains:.crane/registry.json"
+    "workspaceContains:.crane/registry.json",
+    "workspaceContains:.git"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -48,6 +49,11 @@
   },
   "contributes": {
     "commands": [
+      {
+        "command": "foxx.menu",
+        "title": "Show Actions",
+        "category": "Foxx"
+      },
       {
         "command": "foxx.setup",
         "title": "Set Up Crane in This Repository",
@@ -168,19 +174,9 @@
     "menus": {
       "editor/context": [
         {
-          "command": "foxx.createSelectionContract",
-          "when": "editorHasSelection && isWorkspaceTrusted",
-          "group": "foxx@1"
-        },
-        {
-          "command": "foxx.attachToZone",
-          "when": "isWorkspaceTrusted",
-          "group": "foxx@2"
-        },
-        {
-          "command": "foxx.attachToFlow",
-          "when": "isWorkspaceTrusted",
-          "group": "foxx@3"
+          "submenu": "foxx.editor",
+          "group": "foxx@1",
+          "when": "isWorkspaceTrusted"
         }
       ],
       "explorer/context": [
@@ -205,6 +201,62 @@
           "command": "foxx.refresh",
           "when": "view == foxx.governance",
           "group": "navigation"
+        }
+      ],
+      "foxx.editor": [
+        {
+          "command": "foxx.setup",
+          "when": "isWorkspaceTrusted && !foxx.ready",
+          "group": "1_setup@1"
+        },
+        {
+          "command": "foxx.protectSelection",
+          "when": "isWorkspaceTrusted && foxx.ready && editorHasSelection",
+          "group": "2_selection@1"
+        },
+        {
+          "command": "foxx.targetSelection",
+          "when": "isWorkspaceTrusted && foxx.ready && editorHasSelection",
+          "group": "2_selection@2"
+        },
+        {
+          "command": "foxx.createSelectionContract",
+          "when": "isWorkspaceTrusted && foxx.ready && editorHasSelection",
+          "group": "2_selection@3"
+        },
+        {
+          "command": "foxx.attachPolicyContext",
+          "when": "isWorkspaceTrusted && foxx.ready",
+          "group": "3_context@1"
+        },
+        {
+          "command": "foxx.attachToZone",
+          "when": "isWorkspaceTrusted && foxx.ready",
+          "group": "3_context@2"
+        },
+        {
+          "command": "foxx.attachToFlow",
+          "when": "isWorkspaceTrusted && foxx.ready",
+          "group": "3_context@3"
+        },
+        {
+          "command": "foxx.createPolicy",
+          "when": "isWorkspaceTrusted && foxx.ready",
+          "group": "4_policy@1"
+        },
+        {
+          "command": "foxx.policyStatus",
+          "when": "isWorkspaceTrusted && foxx.ready",
+          "group": "4_policy@2"
+        },
+        {
+          "command": "foxx.test",
+          "when": "isWorkspaceTrusted && foxx.ready",
+          "group": "4_policy@3"
+        },
+        {
+          "command": "foxx.menu",
+          "group": "9_more@1"
         }
       ]
     },
@@ -242,7 +294,13 @@
           "description": "Run 'crane validate' after a file is saved and show findings as diagnostics."
         }
       }
-    }
+    },
+    "submenus": [
+      {
+        "id": "foxx.editor",
+        "label": "Foxx"
+      }
+    ]
   },
   "scripts": {
     "compile": "tsc -p .",

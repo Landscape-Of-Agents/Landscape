@@ -29,6 +29,85 @@ let lastGovernanceText: string | undefined;
 const outcomes = new Map<string, CommandResult["outcome"]>();
 let spans: Record<string, Span | null> = {};
 let records: RegistryRecord[] = [];
+let status: vscode.StatusBarItem;
+
+/** One entry of the Foxx actions menu. */
+interface Action extends vscode.QuickPickItem {
+  command: string;
+  needsSelection?: boolean;
+}
+
+/** Every Foxx action, in the order the menu shows them once Crane is set up. */
+const ACTIONS: Action[] = [
+  { label: "$(shield) Preserve selected lines", description: "the agent must not change them", command: "foxx.protectSelection", needsSelection: true },
+  { label: "$(target) Target selected lines", description: "the agent must change them", command: "foxx.targetSelection", needsSelection: true },
+  { label: "$(book) Attach this file as policy context", description: "guidance shown to the agent", command: "foxx.attachPolicyContext" },
+  { label: "$(new-file) Create policy", command: "foxx.createPolicy" },
+  { label: "$(arrow-swap) Move a selection to another policy", command: "foxx.moveToPolicy" },
+  { label: "$(history) Create checkpoint", description: "record the current commit as trusted", command: "foxx.createCheckpoint" },
+  { label: "$(pass) Validate governance", command: "foxx.validate" },
+  { label: "$(beaker) Test policies", command: "foxx.test" },
+  { label: "$(list-unordered) Policy status", command: "foxx.policyStatus" },
+  { label: "$(symbol-namespace) Create zone", command: "foxx.createZone" },
+  { label: "$(git-merge) Create flow", command: "foxx.createFlow" },
+  { label: "$(plug) Install agent hooks", description: "Claude Code or Codex", command: "foxx.installHooks" },
+  { label: "$(globe) Open dashboard", command: "foxx.openDashboard" },
+];
+
+/**
+ * Show the Foxx actions that make sense now: setting Crane up when it is not, and otherwise every
+ * action (the selection ones only while lines are selected).
+ */
+async function showActions(): Promise<void> {
+  const selected = Boolean(vscode.window.activeTextEditor && !vscode.window.activeTextEditor.selection.isEmpty);
+  const items: Action[] = root()
+    ? ACTIONS.filter((action) => !action.needsSelection || selected)
+    : [{ label: "$(rocket) Set up Crane in this repository", description: "connect to GitHub and create or join its rules", command: "foxx.setup" }];
+  const chosen = await vscode.window.showQuickPick(items, { placeHolder: selected ? "Foxx: what should happen with the selected lines?" : "Foxx" });
+  if (chosen) await vscode.commands.executeCommand(chosen.command);
+}
+
+/**
+ * Show the repository's state in the status bar.
+ * @param report the latest validation, when there is one
+ */
+function updateStatus(report?: ValidateReport): void {
+  if (!root()) {
+    status.text = "$(shield) Foxx: set up";
+    status.tooltip = "Crane is not set up in this repository. Click to set it up.";
+  } else if (!report) {
+    status.text = "$(shield) Foxx";
+    status.tooltip = "Foxx actions";
+  } else {
+    const errors = report.findings.filter((finding) => finding.severity === "HIGH" || finding.severity === "CRITICAL").length;
+    status.text = errors ? `$(warning) Foxx: ${errors} issue${errors === 1 ? "" : "s"}` : "$(shield) Foxx";
+    status.tooltip = `${Object.keys(report.selections).length} selections, registry generation ${report.generation}. Click for Foxx actions.`;
+  }
+  status.show();
+}
+
+/** Offers Preserve and Target as quick actions (the lightbulb, Ctrl+.) on a selection. */
+class SelectionActions implements vscode.CodeActionProvider {
+  static readonly kind = vscode.CodeActionKind.Refactor.append("foxx");
+
+  /**
+   * Return the actions for a selected range.
+   * @param _document document
+   * @param range selected range
+   * @returns actions, none for an empty selection or before Crane is set up
+   */
+  provideCodeActions(_document: vscode.TextDocument, range: vscode.Range | vscode.Selection): vscode.CodeAction[] {
+    if (range.isEmpty || !root()) return [];
+    return [
+      ["Foxx: Preserve these lines (the agent must not change them)", "foxx.protectSelection"],
+      ["Foxx: Target these lines (the agent must change them)", "foxx.targetSelection"],
+    ].map(([title, command]) => {
+      const action = new vscode.CodeAction(title, SelectionActions.kind);
+      action.command = { command, title };
+      return action;
+    });
+  }
+}
 
 const preserveDecoration = vscode.window.createTextEditorDecorationType({
   backgroundColor: new vscode.ThemeColor("diffEditor.unchangedRegionBackground"),
@@ -290,6 +369,7 @@ async function validate(quiet = false): Promise<ValidateReport | undefined> {
   }
   spans = report.selections;
   records = loadRecords();
+  updateStatus(report);
   publish(report.findings, []);
   decorateAll();
   tree.refresh();
@@ -540,6 +620,7 @@ export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel("Foxx");
   diagnostics = vscode.languages.createDiagnosticCollection("crane");
   const register = (command: string, callback: (...args: unknown[]) => unknown) => context.subscriptions.push(vscode.commands.registerCommand(command, callback));
+  register("foxx.menu", () => showActions());
   register("foxx.setup", () => setUp());
   register("foxx.createPolicy", () => createPolicy());
   register("foxx.createCheckpoint", () => createCheckpoint());
@@ -674,6 +755,13 @@ export function activate(context: vscode.ExtensionContext): void {
       if (vscode.workspace.getConfiguration("foxx").get<boolean>("validateOnSave", true)) void validate(true);
     }),
   );
+  status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
+  status.command = "foxx.menu";
+  context.subscriptions.push(
+    status,
+    vscode.languages.registerCodeActionsProvider({ scheme: "file" }, new SelectionActions(), { providedCodeActionKinds: [SelectionActions.kind] }),
+  );
+  updateStatus();
   void vscode.commands.executeCommand("setContext", "foxx.ready", Boolean(root()));
   if (root()) void validate(true);
 }

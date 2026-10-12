@@ -17,6 +17,18 @@ Install: search for **Foxx** in the Extensions view, or
 - A clone of a GitHub repository, opened as a trusted workspace (Foxx runs the Crane CLI, so it is
   disabled in restricted mode).
 
+## Where to find Foxx
+
+- **Status bar:** the **Foxx** item (bottom left) shows the repository's state; click it for every
+  action.
+- **Right-click in the editor → Foxx:** preserve or target the selected lines, attach the file as
+  policy context, create a policy, and more.
+- **Lightbulb (Ctrl+.) on a selection:** *Preserve these lines* or *Target these lines*.
+- **Command palette (Ctrl+Shift+P):** type "Foxx".
+
+Choosing preserve or target then asks, at the top of the window, for the policy, the kind of change
+(for target), and an optional name.
+
 ## Getting started without the command line
 
 1. **Foxx: Set Up Crane in This Repository**: connects the clone to GitHub and runs `crane init`.

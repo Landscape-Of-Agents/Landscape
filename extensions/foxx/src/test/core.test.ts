@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { selectionArgs, selectionIdFrom } from "../core/crane";
 import { activate, addFlow, addZone, attachContextPack, attachToFlow, attachToZone, entities } from "../core/governance";
 import { parsePolicies } from "../core/policies";
+import { checkName, confirmation, ownerKey, repoArgs } from "../core/setup";
 
 test("parses policies and commands", () => {
   const policies = parsePolicies(".crane/policies/p.crane", "# c\npolicy default {\n}\npolicy Payments {\n    preserve K7M2P9RX; // keep\n    target ABCD2345 change_type logical_bn;\n}\n");
@@ -45,4 +46,20 @@ test("attaches selectors, entry points, and context packs without duplicates", (
   text = activate(text, "zone", "z");
   assert.equal(entities(text).find((entity) => entity.id === "z")?.status, "active");
   assert.throws(() => attachToZone(text, "missing", "files", "a"), /no zone/);
+});
+
+test("sets up a repository: remote arguments, owner key, and confirmations", () => {
+  assert.deepEqual(repoArgs("https://github.com/acme/widgets.git"), ["repo", "--https", "https://github.com/acme/widgets.git"]);
+  assert.deepEqual(repoArgs("git@github.com:acme/widgets.git"), ["repo", "--ssh", "git@github.com:acme/widgets.git"]);
+  assert.equal(repoArgs("C:/local/mirror.git"), undefined);
+  const key = Array.from({ length: 16 }, () => "ab12").join(" ");
+  const joined = `This repository's rules are signed, but this machine does not trust their owner yet.
+  owner key:   ${key}
+Trust this owner key for this repository? (y/N): `;
+  assert.equal(ownerKey(joined), key);
+  assert.equal(confirmation(joined), "trust_owner");
+  assert.equal(confirmation("Accept the current signed rules? (y/N): "), "accept_rules");
+  assert.equal(confirmation("Crane is already initialized"), undefined);
+  assert.equal(checkName("payments"), undefined);
+  assert.notEqual(checkName("9lives"), undefined);
 });

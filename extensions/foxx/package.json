@@ -1,10 +1,33 @@
 {
   "name": "foxx",
   "displayName": "Foxx",
-  "description": "Create and inspect Crane selection contracts, zones, flows, and context packs from the editor.",
-  "version": "0.4.0",
+  "description": "Set up Crane, create policies and selection contracts, and see whether AI agents respect them, from the editor.",
+  "version": "0.4.3",
   "publisher": "agentscript",
   "license": "Apache-2.0",
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#0c0a09",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/VishuKalier2003/Agentscript.git",
+    "directory": "extensions/foxx"
+  },
+  "homepage": "https://github.com/VishuKalier2003/Agentscript#readme",
+  "bugs": {
+    "url": "https://github.com/VishuKalier2003/Agentscript/issues"
+  },
+  "keywords": [
+    "crane",
+    "ai agents",
+    "claude code",
+    "codex",
+    "security",
+    "governance",
+    "policy"
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -25,43 +48,179 @@
   },
   "contributes": {
     "commands": [
-      { "command": "foxx.createSelectionContract", "title": "Create Selection Contract", "category": "Foxx" },
-      { "command": "foxx.protectSelection", "title": "Preserve Selected Lines", "category": "Foxx" },
-      { "command": "foxx.targetSelection", "title": "Target Selected Lines", "category": "Foxx" },
-      { "command": "foxx.createZone", "title": "Create Zone", "category": "Foxx" },
-      { "command": "foxx.createFlow", "title": "Create Flow", "category": "Foxx" },
-      { "command": "foxx.attachToZone", "title": "Attach to Zone", "category": "Foxx" },
-      { "command": "foxx.attachToFlow", "title": "Attach to Flow", "category": "Foxx" },
-      { "command": "foxx.attachContextPack", "title": "Attach Context Pack", "category": "Foxx" },
-      { "command": "foxx.activateEntity", "title": "Activate Zone or Flow", "category": "Foxx" },
-      { "command": "foxx.previewImpact", "title": "Preview Impact", "category": "Foxx" },
-      { "command": "foxx.undoGovernanceChange", "title": "Undo Last Governance Change", "category": "Foxx" },
-      { "command": "foxx.createProposalBranch", "title": "Create Proposal Branch", "category": "Foxx" },
-      { "command": "foxx.attachPolicyContext", "title": "Attach File as Policy Context", "category": "Foxx" },
-      { "command": "foxx.validate", "title": "Validate Governance", "category": "Foxx" },
-      { "command": "foxx.test", "title": "Test Policies", "category": "Foxx" },
-      { "command": "foxx.policyStatus", "title": "Policy Status", "category": "Foxx" },
-      { "command": "foxx.openDashboard", "title": "Open Dashboard", "category": "Foxx" },
-      { "command": "foxx.refresh", "title": "Refresh", "category": "Foxx", "icon": "$(refresh)" }
+      {
+        "command": "foxx.setup",
+        "title": "Set Up Crane in This Repository",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.createPolicy",
+        "title": "Create Policy",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.createCheckpoint",
+        "title": "Create Checkpoint",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.moveToPolicy",
+        "title": "Move Selection to Policy",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.installHooks",
+        "title": "Install Agent Hooks",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.createSelectionContract",
+        "title": "Create Selection Contract",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.protectSelection",
+        "title": "Preserve Selected Lines",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.targetSelection",
+        "title": "Target Selected Lines",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.createZone",
+        "title": "Create Zone",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.createFlow",
+        "title": "Create Flow",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.attachToZone",
+        "title": "Attach to Zone",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.attachToFlow",
+        "title": "Attach to Flow",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.attachContextPack",
+        "title": "Attach Context Pack",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.activateEntity",
+        "title": "Activate Zone or Flow",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.previewImpact",
+        "title": "Preview Impact",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.undoGovernanceChange",
+        "title": "Undo Last Governance Change",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.createProposalBranch",
+        "title": "Create Proposal Branch",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.attachPolicyContext",
+        "title": "Attach File as Policy Context",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.validate",
+        "title": "Validate Governance",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.test",
+        "title": "Test Policies",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.policyStatus",
+        "title": "Policy Status",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.openDashboard",
+        "title": "Open Dashboard",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.refresh",
+        "title": "Refresh",
+        "category": "Foxx",
+        "icon": "$(refresh)"
+      }
     ],
     "menus": {
       "editor/context": [
-        { "command": "foxx.createSelectionContract", "when": "editorHasSelection && isWorkspaceTrusted", "group": "foxx@1" },
-        { "command": "foxx.attachToZone", "when": "isWorkspaceTrusted", "group": "foxx@2" },
-        { "command": "foxx.attachToFlow", "when": "isWorkspaceTrusted", "group": "foxx@3" }
+        {
+          "command": "foxx.createSelectionContract",
+          "when": "editorHasSelection && isWorkspaceTrusted",
+          "group": "foxx@1"
+        },
+        {
+          "command": "foxx.attachToZone",
+          "when": "isWorkspaceTrusted",
+          "group": "foxx@2"
+        },
+        {
+          "command": "foxx.attachToFlow",
+          "when": "isWorkspaceTrusted",
+          "group": "foxx@3"
+        }
       ],
       "explorer/context": [
-        { "command": "foxx.createZone", "when": "isWorkspaceTrusted", "group": "foxx@1" },
-        { "command": "foxx.attachToZone", "when": "isWorkspaceTrusted", "group": "foxx@2" },
-        { "command": "foxx.attachPolicyContext", "when": "isWorkspaceTrusted && !explorerResourceIsFolder", "group": "foxx@3" }
+        {
+          "command": "foxx.createZone",
+          "when": "isWorkspaceTrusted",
+          "group": "foxx@1"
+        },
+        {
+          "command": "foxx.attachToZone",
+          "when": "isWorkspaceTrusted",
+          "group": "foxx@2"
+        },
+        {
+          "command": "foxx.attachPolicyContext",
+          "when": "isWorkspaceTrusted && !explorerResourceIsFolder",
+          "group": "foxx@3"
+        }
       ],
       "view/title": [
-        { "command": "foxx.refresh", "when": "view == foxx.governance", "group": "navigation" }
+        {
+          "command": "foxx.refresh",
+          "when": "view == foxx.governance",
+          "group": "navigation"
+        }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "foxx.governance",
+        "contents": "Crane is not set up in this repository yet.\n[Set Up Crane](command:foxx.setup)\nThis connects the clone to its GitHub repository and creates (or joins) its signed rules.",
+        "when": "workspaceFolderCount > 0 && !foxx.ready"
+      }
+    ],
     "views": {
       "explorer": [
-        { "id": "foxx.governance", "name": "Foxx Governance" }
+        {
+          "id": "foxx.governance",
+          "name": "Foxx Governance"
+        }
       ]
     },
     "configuration": {
@@ -88,7 +247,8 @@
   "scripts": {
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
-    "test": "tsc -p . && node --test \"out/test/*.test.js\""
+    "test": "tsc -p . && node --test \"out/test/*.test.js\"",
+    "package": "vsce package --out foxx.vsix"
   },
   "dependencies": {
     "yaml": "2.5.1"
@@ -96,6 +256,7 @@
   "devDependencies": {
     "@types/node": "20.14.10",
     "@types/vscode": "1.85.0",
+    "@vscode/vsce": "3.2.2",
     "typescript": "5.5.4"
   }
 }

@@ -8,13 +8,30 @@ directory, signing keys, or integration secrets.
 
 ## Requirements
 
-- `crane` 0.4 on `PATH` (or set `foxx.cranePath`), in a repository where `crane init` has run.
-- A trusted workspace: Foxx is disabled in restricted mode because it runs the Crane CLI.
+- `crane` 0.4.3 or later on `PATH` (or set `foxx.cranePath`); download it from the
+  [releases](https://github.com/VishuKalier2003/Agentscript/releases).
+- A clone of a GitHub repository, opened as a trusted workspace (Foxx runs the Crane CLI, so it is
+  disabled in restricted mode).
+
+## Getting started without the command line
+
+1. **Foxx: Set Up Crane in This Repository**: connects the clone to GitHub and runs `crane init`.
+   In a new repository you become the owner and a `baseline` checkpoint is recorded; in a
+   repository a teammate set up, Foxx shows the owner key's fingerprint and asks you to confirm it.
+2. **Foxx: Create Policy**: name it and choose its file in `.crane/policies`.
+3. Select lines in the editor and run **Foxx: Create Selection Contract** (or right-click): choose
+   preserve or target and the policy.
+4. **Foxx: Install Agent Hooks** for Claude Code or Codex, then commit the `.crane` folder.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
+| Foxx: Set Up Crane in This Repository | Connect the clone (`crane repo`), `crane init` (confirming the owner key when joining), and a `baseline` checkpoint for a new repository |
+| Foxx: Create Policy | `crane create policy NAME FILE` |
+| Foxx: Create Checkpoint | `crane checkpoint NAME`: record the current commit as trusted |
+| Foxx: Move Selection to Policy | `crane add policy NAME marker ID` |
+| Foxx: Install Agent Hooks | `crane agent install --profile claude\|codex` |
 | Foxx: Create Selection Contract | Preserve or target the selected lines (`crane protect` / `crane target`), choosing the policy, change type, and an optional name |
 | Foxx: Preserve Selected Lines / Target Selected Lines | Shortcuts for the two operations |
 | Foxx: Validate Governance | `crane validate --json`; findings become diagnostics |

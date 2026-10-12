@@ -2,3 +2,6 @@ src/**
 out/test/**
 **/*.map
 tsconfig.json
+node_modules/yaml/browser/**
+node_modules/yaml/dist/**/*.d.ts
+*.vsix

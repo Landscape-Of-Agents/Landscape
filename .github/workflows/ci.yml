@@ -94,3 +94,6 @@ jobs:
 
       - name: Compile and test
         run: npm test
+
+      - name: Package the extension
+        run: npm run package

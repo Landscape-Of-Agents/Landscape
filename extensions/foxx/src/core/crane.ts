@@ -56,18 +56,22 @@ export interface TestReport {
 }
 
 /**
- * Run Crane with arguments in a directory, without a shell.
+ * Run Crane with arguments in a directory, without a shell. Standard input always ends after the
+ * given answers, so a question Crane asks can never leave it waiting.
  * @param cranePath executable
  * @param cwd working directory (the repository)
  * @param args arguments
+ * @param input answers to Crane's questions, one per line (none by default)
  * @returns exit code and output; a missing executable is reported as code 127
  */
-export function runCrane(cranePath: string, cwd: string, args: string[]): Promise<CraneResult> {
+export function runCrane(cranePath: string, cwd: string, args: string[], input = ""): Promise<CraneResult> {
   return new Promise((resolve) => {
-    execFile(cranePath, args, { cwd, maxBuffer: 32 * 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
+    const child = execFile(cranePath, args, { cwd, maxBuffer: 32 * 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
       const code = error && typeof (error as NodeJS.ErrnoException).code === "string" ? 127 : error ? ((error as { code?: number }).code ?? 1) : 0;
       resolve({ code, stdout: String(stdout), stderr: String(stderr) || (error && code === 127 ? `could not run ${cranePath}: ${error.message}` : "") });
     });
+    child.stdin?.on("error", () => undefined);
+    child.stdin?.end(input);
   });
 }
 

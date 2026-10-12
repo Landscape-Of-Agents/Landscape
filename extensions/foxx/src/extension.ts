@@ -1,8 +1,10 @@
-// Foxx for VS Code: create selection contracts from the editor, see where selections are and
-// whether they pass, and manage zones, flows, and context packs in .crane/governance.yaml.
+// Foxx for VS Code: set up Crane in a repository, create policies, checkpoints, and selection
+// contracts from the editor, see where selections are and whether they pass, and manage zones,
+// flows, and context packs in .crane/governance.yaml.
 // Everything runs through the Crane CLI; decorations never modify source files, and governance
 // edits are previewed, validated by Crane, reversible, and created as proposals.
 
+import { execFile } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
@@ -10,6 +12,7 @@ import * as vscode from "vscode";
 import { CommandResult, Finding, parseJson, runCrane, selectionArgs, selectionIdFrom, Span, TestReport, ValidateReport } from "./core/crane";
 import { activate as activateEntity, addFlow, addZone, attachContextPack, attachToFlow, attachToZone, CEILINGS, checkId, CRITICALITY, entities, SELECTOR_KINDS } from "./core/governance";
 import { parsePolicies, Policy } from "./core/policies";
+import { checkName, confirmation, ownerKey, repoArgs } from "./core/setup";
 
 /** A registry record as stored in .crane/registry.json (only the fields Foxx shows). */
 interface RegistryRecord {
@@ -49,22 +52,164 @@ function root(): string | undefined {
 }
 
 /**
- * Run Crane in the repository and log the invocation.
+ * Return the first open workspace folder that is a Git repository (for setting Crane up).
+ * @returns folder path, or undefined
+ */
+function gitFolder(): string | undefined {
+  return vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath).find((folder) => fs.existsSync(path.join(folder, ".git")));
+}
+
+/**
+ * Run Crane in a directory and log the invocation and its output.
+ * @param directory working directory
+ * @param args arguments
+ * @param input answers to Crane's questions, one per line
+ * @returns result
+ */
+async function craneIn(directory: string, args: string[], input = "") {
+  const executable = vscode.workspace.getConfiguration("foxx").get<string>("cranePath", "crane");
+  output.appendLine(`$ crane ${args.join(" ")}`);
+  const result = await runCrane(executable, directory, args, input);
+  if (result.stdout.trim()) output.appendLine(result.stdout.trimEnd());
+  if (result.stderr.trim()) output.appendLine(result.stderr.trimEnd());
+  return result;
+}
+
+/**
+ * Run Crane in the repository.
  * @param args arguments
  * @returns result, or undefined when there is no repository
  */
 async function crane(args: string[]) {
   const directory = root();
   if (!directory) {
-    vscode.window.showErrorMessage("Foxx: no folder with a .crane directory is open; run 'crane init' first.");
+    vscode.window.showErrorMessage("Foxx: Crane is not set up in this folder; run 'Foxx: Set Up Crane in This Repository'.");
     return undefined;
   }
-  const executable = vscode.workspace.getConfiguration("foxx").get<string>("cranePath", "crane");
-  output.appendLine(`$ crane ${args.join(" ")}`);
-  const result = await runCrane(executable, directory, args);
-  if (result.stdout.trim()) output.appendLine(result.stdout.trimEnd());
-  if (result.stderr.trim()) output.appendLine(result.stderr.trimEnd());
-  return result;
+  return craneIn(directory, args);
+}
+
+/**
+ * Run a Crane command that changes governance, report its outcome, and refresh the views.
+ * @param args arguments
+ * @param success message shown when it succeeds
+ * @returns whether it succeeded
+ */
+async function change(args: string[], success: string): Promise<boolean> {
+  const result = await crane(args);
+  if (!result) return false;
+  if (result.code !== 0) {
+    vscode.window.showErrorMessage(`Foxx: ${(result.stderr || result.stdout).trim().replace(/^crane: /, "")}`);
+    return false;
+  }
+  vscode.window.showInformationMessage(`Foxx: ${success}`);
+  await validate(true);
+  return true;
+}
+
+/**
+ * Read the clone's origin remote.
+ * @param directory repository
+ * @returns the remote URL, or undefined
+ */
+function originRemote(directory: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    execFile("git", ["remote", "get-url", "origin"], { cwd: directory, windowsHide: true }, (error, stdout) => resolve(error ? undefined : String(stdout).trim()));
+  });
+}
+
+/**
+ * Set Crane up in the open repository: connect the clone to its GitHub remote, then 'crane init'.
+ * A new repository gets its owner key and a "baseline" checkpoint; joining a repository that is
+ * already set up shows the owner key's fingerprint and trusts it only after the person confirms
+ * (the same for accepting another admin's signed rules after a merge). Then offers the agent hooks.
+ */
+async function setUp(): Promise<void> {
+  const directory = root() ?? gitFolder();
+  if (!directory) {
+    vscode.window.showErrorMessage("Foxx: open the folder of a Git repository (a clone of a GitHub repository) first.");
+    return;
+  }
+  const connect = repoArgs((await originRemote(directory)) ?? "");
+  if (!connect) {
+    vscode.window.showErrorMessage("Foxx: this repository has no GitHub 'origin' remote (HTTPS or SSH). Add one with 'git remote add origin URL'.");
+    return;
+  }
+  const fresh = !fs.existsSync(path.join(directory, ".crane", "registry.json"));
+  const fail = (result: { stdout: string; stderr: string }) =>
+    vscode.window.showErrorMessage(`Foxx: ${(result.stderr || result.stdout).trim().replace(/^crane: /, "")}`);
+  const connected = await craneIn(directory, connect);
+  if (connected.code !== 0) return void fail(connected);
+  let initialized = await craneIn(directory, ["init"], "n\n");
+  const asked = confirmation(initialized.stdout + initialized.stderr);
+  if (asked) {
+    const message =
+      asked === "trust_owner"
+        ? `This repository's rules are signed by the owner key\n\n${ownerKey(initialized.stdout) ?? "(see the Foxx output)"}\n\nTrust it only if it matches the key the owner sees with 'crane admin list'. Until it is trusted, agent changes stay blocked.`
+        : "The signed rules differ from the version this machine last signed. This is expected after merging another admin's change. Accept the current signed rules?";
+    const answer = await vscode.window.showWarningMessage(message, { modal: true }, asked === "trust_owner" ? "Trust owner key" : "Accept rules");
+    if (!answer) {
+      vscode.window.showInformationMessage("Foxx: nothing changed.");
+      return;
+    }
+    initialized = await craneIn(directory, ["init"], "y\n");
+  }
+  if (initialized.code !== 0) return void fail(initialized);
+  if (fresh) {
+    const checkpoint = await craneIn(directory, ["checkpoint", "baseline"]);
+    if (checkpoint.code !== 0) return void fail(checkpoint);
+  }
+  await vscode.commands.executeCommand("setContext", "foxx.ready", true);
+  await validate(true);
+  tree.refresh();
+  const hooks = await vscode.window.showInformationMessage(
+    fresh ? "Foxx: Crane is set up (owner key created, baseline checkpoint recorded). Commit the .crane folder, then install the agent hooks:" : "Foxx: this machine now verifies the repository's rules. Install the agent hooks:",
+    "Claude Code",
+    "Codex",
+  );
+  if (hooks) await installHooks(hooks === "Codex" ? "codex" : "claude");
+}
+
+/**
+ * Install the Crane hooks for an agent.
+ * @param kind agent profile, or undefined to ask
+ */
+async function installHooks(kind?: "claude" | "codex"): Promise<void> {
+  const profile = kind ?? (await pick(["claude", "codex"] as const, "Which agent?"));
+  if (!profile) return;
+  await change(["agent", "install", "--profile", profile], `hooks installed for ${profile === "claude" ? "Claude Code" : "Codex"}; Crane now checks every tool call.`);
+}
+
+/** Record HEAD as a trusted checkpoint. */
+async function createCheckpoint(): Promise<void> {
+  const name = await vscode.window.showInputBox({ prompt: "Checkpoint name (records the current commit as trusted)", value: `checkpoint-${new Date().toISOString().slice(0, 10)}`, validateInput: (value) => checkName(value) });
+  if (!name) return;
+  await change(["checkpoint", name], `checkpoint ${name} recorded.`);
+}
+
+/** Create a policy in a new or existing policy file. */
+async function createPolicy(): Promise<void> {
+  const existing = policies().map((policy) => policy.name.toLowerCase());
+  const name = await vscode.window.showInputBox({
+    prompt: "Policy name",
+    validateInput: (value) => checkName(value) ?? (existing.includes(value.toLowerCase()) ? "a policy with this name exists" : undefined),
+  });
+  if (!name) return;
+  const file = await vscode.window.showInputBox({ prompt: "Policy file in .crane/policies (without .crane)", value: name.toLowerCase(), validateInput: (value) => checkName(value) });
+  if (!file) return;
+  await change(["create", "policy", name, file], `policy ${name} created in .crane/policies/${file}.crane. Add lines to it with 'Foxx: Create Selection Contract'.`);
+}
+
+/** Move a selection's statement to another policy. */
+async function moveToPolicy(): Promise<void> {
+  const choice = await vscode.window.showQuickPick(
+    loadRecords().map((record) => ({ label: record.id, description: `${record.operation}${record.name ? ` · ${record.name}` : ""}`, detail: `in policy ${record.policy}`, record })),
+    { placeHolder: "Selection to move" },
+  );
+  if (!choice) return;
+  const target = await pick(policies().map((policy) => policy.name).filter((name) => name !== choice.record.policy), `Move ${choice.label} to which policy?`);
+  if (!target) return;
+  await change(["add", "policy", target, "marker", choice.label], `${choice.label} moved to policy ${target}.`);
 }
 
 /**
@@ -395,6 +540,11 @@ export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel("Foxx");
   diagnostics = vscode.languages.createDiagnosticCollection("crane");
   const register = (command: string, callback: (...args: unknown[]) => unknown) => context.subscriptions.push(vscode.commands.registerCommand(command, callback));
+  register("foxx.setup", () => setUp());
+  register("foxx.createPolicy", () => createPolicy());
+  register("foxx.createCheckpoint", () => createCheckpoint());
+  register("foxx.moveToPolicy", () => moveToPolicy());
+  register("foxx.installHooks", () => installHooks());
   register("foxx.createSelectionContract", () => createSelection());
   register("foxx.protectSelection", () => createSelection("preserve"));
   register("foxx.targetSelection", () => createSelection("target"));
@@ -524,7 +674,8 @@ export function activate(context: vscode.ExtensionContext): void {
       if (vscode.workspace.getConfiguration("foxx").get<boolean>("validateOnSave", true)) void validate(true);
     }),
   );
-  void validate(true);
+  void vscode.commands.executeCommand("setContext", "foxx.ready", Boolean(root()));
+  if (root()) void validate(true);
 }
 
 /** Nothing to clean up beyond the disposables. */

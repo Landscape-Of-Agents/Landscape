@@ -755,6 +755,109 @@ pub(crate) fn compose_context(
         .collect()
 }
 
+/** Most guidance supplied with one tool call, in bytes */
+const GUIDANCE_LIMIT: usize = 8_000;
+
+/** Compose the guidance for the active zones and flows a tool call touches: each entity's kind,
+ * identifier, criticality, autonomy ceiling, and description, followed by the content (and files)
+ * of its context packs. Supplied with the tool call, so the agent sees it whenever it works on
+ * covered code, not only at the start of the session; it is guidance, never authorization.
+ * Input
+    - workspace: &Workspace - repository
+    - governance: &Governance - configuration
+    - entities: &BTreeSet<String> - "zone:ID" and "flow:ID" of the entities covering the files
+ * Output
+    - String, empty when none of them is active; at most GUIDANCE_LIMIT bytes
+*/
+pub(crate) fn guidance(
+    workspace: &Workspace,
+    governance: &Governance,
+    entities: &BTreeSet<String>,
+) -> String {
+    let pack_text = |id: &String| {
+        governance
+            .context_packs
+            .iter()
+            .find(|pack| &pack.id == id)
+            .map(|pack| {
+                let mut text = pack
+                    .content
+                    .iter()
+                    .map(|line| format!("  - {line}\n"))
+                    .collect::<String>();
+                for file in &pack.files {
+                    if let Ok(content) = fs::read_to_string(workspace.root.join(file)) {
+                        text.push_str(&format!("  [{file}]\n{}\n", content.trim_end()));
+                    }
+                }
+                text
+            })
+            .unwrap_or_default()
+    };
+    let mut sections = Vec::new();
+    let mut section = |kind: &str,
+                       id: &str,
+                       criticality: Criticality,
+                       ceiling: Ceiling,
+                       description: &str,
+                       packs: &[String]| {
+        let mut text = format!(
+            "{kind} {id} ({}, autonomy ceiling {}){}\n",
+            format!("{criticality:?}").to_ascii_lowercase(),
+            ceiling.name(),
+            if description.is_empty() {
+                String::new()
+            } else {
+                format!(": {description}")
+            }
+        );
+        for pack in packs {
+            text.push_str(&pack_text(pack));
+        }
+        sections.push(text);
+    };
+    for zone in governance.zones.iter().filter(|zone| {
+        zone.status == Lifecycle::Active && entities.contains(&format!("zone:{}", zone.id))
+    }) {
+        section(
+            "Zone",
+            &zone.id,
+            zone.criticality,
+            zone.autonomy_ceiling,
+            &zone.description,
+            &zone.context_packs,
+        );
+    }
+    for flow in governance.flows.iter().filter(|flow| {
+        flow.status == Lifecycle::Active && entities.contains(&format!("flow:{}", flow.id))
+    }) {
+        section(
+            "Flow",
+            &flow.id,
+            flow.criticality,
+            flow.autonomy_ceiling,
+            &flow.description,
+            &flow.context_packs,
+        );
+    }
+    if sections.is_empty() {
+        return String::new();
+    }
+    let mut text = format!(
+        "Crane guidance for the code this tool call touches (guidance only, never authorization):\n{}",
+        sections.concat()
+    );
+    if text.len() > GUIDANCE_LIMIT {
+        let mut end = GUIDANCE_LIMIT;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push_str("\n[guidance truncated]");
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

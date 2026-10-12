@@ -61,6 +61,29 @@ impl Hook {
             zone_error,
         };
         let mut decided: Decided = guard.decide(&action);
+        // Guidance of the active zones and flows covering the files this call reads or writes
+        let touched = action
+            .files
+            .iter()
+            .map(|change| change.path.as_str())
+            .chain(action.reads.iter().map(String::as_str))
+            .filter_map(|raw| guard.relative(raw))
+            .collect::<std::collections::BTreeSet<_>>();
+        let entities = touched
+            .iter()
+            .filter_map(|file| limits.get(file))
+            .flat_map(|limit| limit.entities.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>();
+        let guidance = if entities.is_empty() {
+            None
+        } else {
+            crate::governance::zones::load(&self.workspace)
+                .ok()
+                .map(|governance| {
+                    crate::governance::zones::guidance(&self.workspace, &governance, &entities)
+                })
+                .filter(|text| !text.is_empty())
+        };
         let mut reserved = 0;
         if decided.verdict.decision == Decision::Allow && decided.verdict.cost > 0 {
             reserved = self.ledger(
@@ -257,7 +280,10 @@ impl Hook {
                 self.emit(session, event, Some("low_credits"))?;
             }
         }
-        let verdict = Verdict { ..decided.verdict };
+        let verdict = Verdict {
+            context: guidance,
+            ..decided.verdict
+        };
         if self.event == HookEvent::PermissionRequest {
             self.adapter.respond_permission(&verdict)
         } else {

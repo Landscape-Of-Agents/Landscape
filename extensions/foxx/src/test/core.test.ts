@@ -3,8 +3,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { parse } from "yaml";
+
 import { selectionArgs, selectionIdFrom } from "../core/crane";
-import { activate, addFlow, addZone, attachContextPack, attachToFlow, attachToZone, entities } from "../core/governance";
+import { ACTIONS, search } from "../core/actions";
+import { activate, addContext, addFlow, addZone, attachContextPack, attachToFlow, attachToZone, contextPackOf, entities } from "../core/governance";
 import { parsePolicies } from "../core/policies";
 import { checkName, confirmation, ownerKey, repoArgs } from "../core/setup";
 
@@ -62,4 +65,35 @@ Trust this owner key for this repository? (y/N): `;
   assert.equal(confirmation("Crane is already initialized"), undefined);
   assert.equal(checkName("payments"), undefined);
   assert.notEqual(checkName("9lives"), undefined);
+});
+
+test("searches actions by prefix: every typed word must start a word of the action", () => {
+  const ids = (query: string) => search(query, ACTIONS).map((action) => action.id);
+  assert.equal(ids("").length, ACTIONS.length);
+  assert.equal(ids("pres")[0], "preserve");
+  assert.equal(ids("prot")[0], "preserve", "keywords match too");
+  assert.equal(ids("zone")[0], "zone", "the label that starts closest to the word comes first");
+  assert.ok(ids("zone").includes("zone_attach"));
+  assert.ok(ids("context").includes("context") && ids("context").includes("policy_context"));
+  assert.deepEqual(ids("context zone"), ["context"], "every word must match");
+  assert.ok(ids("auto").includes("zone") && ids("auto").includes("flow"));
+  assert.deepEqual(ids("xyz"), []);
+});
+
+test("adds context to a zone or flow in its own pack, appending without duplicates", () => {
+  let text = addZone("", { id: "charge-zone", description: "", criticality: "critical", autonomy_ceiling: "assisted", selectors: { symbols: ["app/payments.py:charge"] } });
+  text = addContext(text, "zone", "charge-zone", ["Charges must be idempotent.", "", "  Never retry a capture.  "]);
+  text = addContext(text, "zone", "charge-zone", ["Never retry a capture.", "Log every refund."]);
+  text = activate(text, "zone", "charge-zone");
+  const pack = contextPackOf("charge-zone");
+  assert.equal(pack, "charge-zone-context");
+  assert.equal((text.match(/Never retry a capture\./g) ?? []).length, 1);
+  assert.match(text, /Log every refund\./);
+  const parsed = parse(text);
+  assert.deepEqual(parsed.zones[0].context_packs, ["charge-zone-context"]);
+  assert.deepEqual(parsed.context_packs[0].content, ["Charges must be idempotent.", "Never retry a capture.", "Log every refund."]);
+  assert.equal(entities(text).find((entity) => entity.id === pack)?.status, "v2");
+  assert.equal(entities(text).find((entity) => entity.id === "charge-zone")?.status, "active");
+  assert.throws(() => addContext(text, "flow", "missing", ["x"]), /no flow/);
+  assert.throws(() => addContext(text, "zone", "charge-zone", ["  "]), /write the context/);
 });

@@ -217,3 +217,68 @@ fn context_packs_are_supplied() {
     let session = fixture.ok(&["session", "current"]);
     assert!(session.contains("pack:payment-invariants@v2"), "{session}");
 }
+
+/** The guidance of the zones and flows a tool call touches is given to the agent with that call
+ * (PreToolUse additionalContext), every time; a call outside them gets none
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn guidance_is_given_with_each_tool_call() {
+    let fixture = fixture();
+    fixture.write(
+        ".crane/governance.yaml",
+        "version: 1
+zones:
+  - id: payment-core
+    description: Core payment resources
+    selectors:
+      files: [\"app/payments.py\"]
+    criticality: critical
+    autonomy_ceiling: autonomous
+    context_packs: [payment-invariants]
+context_packs:
+  - id: payment-invariants
+    version: 1
+    content:
+      - Charges must be idempotent; never retry a capture.
+",
+    );
+    fixture.hook("claude", "SessionStart", &json!({"session_id": "g1"}));
+    let read = |call: &str, path: &str| {
+        fixture.hook(
+            "claude",
+            "pre-tool-use",
+            &json!({"session_id": "g1", "tool_use_id": call, "cwd": fixture.work.to_string_lossy(), "tool_name": "Read", "tool_input": {"file_path": fixture.work.join(path).to_string_lossy()}}),
+        )
+    };
+    for call in ["r1", "r2"] {
+        let inside = read(call, "app/payments.py");
+        assert!(inside.status.success(), "{}", text(&inside));
+        let answer: Value = serde_json::from_slice(&inside.stdout).unwrap();
+        assert_eq!(answer["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+        assert!(
+            answer["hookSpecificOutput"]
+                .get("permissionDecision")
+                .is_none(),
+            "guidance never decides: {answer}"
+        );
+        let context = answer["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(context.contains("never retry a capture"), "{context}");
+        assert!(
+            context.contains("Zone payment-core (critical, autonomy ceiling autonomous)"),
+            "{context}"
+        );
+    }
+    let outside = read("r3", "app/ledger.py");
+    assert!(outside.status.success(), "{}", text(&outside));
+    assert!(
+        outside.stdout.is_empty(),
+        "no guidance outside the zone: {}",
+        text(&outside)
+    );
+}

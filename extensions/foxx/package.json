@@ -51,8 +51,12 @@
     "commands": [
       {
         "command": "foxx.menu",
-        "title": "Show Actions",
-        "category": "Foxx"
+        "title": "Open Foxx",
+        "category": "Foxx",
+        "icon": {
+          "light": "images/title.png",
+          "dark": "images/title.png"
+        }
       },
       {
         "command": "foxx.setup",
@@ -205,6 +209,11 @@
       ],
       "foxx.editor": [
         {
+          "command": "foxx.menu",
+          "when": "isWorkspaceTrusted",
+          "group": "0_open@1"
+        },
+        {
           "command": "foxx.setup",
           "when": "isWorkspaceTrusted && !foxx.ready",
           "group": "1_setup@1"
@@ -253,10 +262,13 @@
           "command": "foxx.test",
           "when": "isWorkspaceTrusted && foxx.ready",
           "group": "4_policy@3"
-        },
+        }
+      ],
+      "editor/title": [
         {
           "command": "foxx.menu",
-          "group": "9_more@1"
+          "when": "isWorkspaceTrusted && foxx.ready && editorHasSelection",
+          "group": "navigation@-100"
         }
       ]
     },
@@ -299,6 +311,14 @@
       {
         "id": "foxx.editor",
         "label": "Foxx"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "foxx.menu",
+        "key": "ctrl+alt+f",
+        "mac": "cmd+alt+f",
+        "when": "editorTextFocus && isWorkspaceTrusted"
       }
     ]
   },

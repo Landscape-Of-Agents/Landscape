@@ -10,9 +10,11 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 import { CommandResult, Finding, parseJson, runCrane, selectionArgs, selectionIdFrom, Span, TestReport, ValidateReport } from "./core/crane";
-import { activate as activateEntity, addFlow, addZone, attachContextPack, attachToFlow, attachToZone, CEILINGS, checkId, CRITICALITY, entities, SELECTOR_KINDS } from "./core/governance";
+import { activate as activateEntity, addFlow, addZone, attachContextPack, attachToFlow, attachToZone, CEILINGS, checkId, CRITICALITY, entities, SELECTOR_KINDS, ZoneInput } from "./core/governance";
 import { parsePolicies, Policy } from "./core/policies";
 import { checkName, confirmation, ownerKey, repoArgs } from "./core/setup";
+import { FoxxPanel, PanelHost, PanelState, SelectionInfo } from "./panel";
+import { addContext } from "./core/governance";
 
 /** A registry record as stored in .crane/registry.json (only the fields Foxx shows). */
 interface RegistryRecord {
@@ -30,41 +32,196 @@ const outcomes = new Map<string, CommandResult["outcome"]>();
 let spans: Record<string, Span | null> = {};
 let records: RegistryRecord[] = [];
 let status: vscode.StatusBarItem;
-
-/** One entry of the Foxx actions menu. */
-interface Action extends vscode.QuickPickItem {
-  command: string;
-  needsSelection?: boolean;
-}
-
-/** Every Foxx action, in the order the menu shows them once Crane is set up. */
-const ACTIONS: Action[] = [
-  { label: "$(shield) Preserve selected lines", description: "the agent must not change them", command: "foxx.protectSelection", needsSelection: true },
-  { label: "$(target) Target selected lines", description: "the agent must change them", command: "foxx.targetSelection", needsSelection: true },
-  { label: "$(book) Attach this file as policy context", description: "guidance shown to the agent", command: "foxx.attachPolicyContext" },
-  { label: "$(new-file) Create policy", command: "foxx.createPolicy" },
-  { label: "$(arrow-swap) Move a selection to another policy", command: "foxx.moveToPolicy" },
-  { label: "$(history) Create checkpoint", description: "record the current commit as trusted", command: "foxx.createCheckpoint" },
-  { label: "$(pass) Validate governance", command: "foxx.validate" },
-  { label: "$(beaker) Test policies", command: "foxx.test" },
-  { label: "$(list-unordered) Policy status", command: "foxx.policyStatus" },
-  { label: "$(symbol-namespace) Create zone", command: "foxx.createZone" },
-  { label: "$(git-merge) Create flow", command: "foxx.createFlow" },
-  { label: "$(plug) Install agent hooks", description: "Claude Code or Codex", command: "foxx.installHooks" },
-  { label: "$(globe) Open dashboard", command: "foxx.openDashboard" },
-];
+let extensionUri: vscode.Uri;
+let lastSelection: SelectionInfo | undefined;
+let foxxMark: vscode.TextEditorDecorationType;
 
 /**
- * Show the Foxx actions that make sense now: setting Crane up when it is not, and otherwise every
- * action (the selection ones only while lines are selected).
+ * Describe an editor's selection for the panel: file, lines, the enclosing function (from the
+ * language's document symbols), and a short preview.
+ * @param editor text editor
+ * @returns the selection, or undefined for a non-file editor
  */
-async function showActions(): Promise<void> {
-  const selected = Boolean(vscode.window.activeTextEditor && !vscode.window.activeTextEditor.selection.isEmpty);
-  const items: Action[] = root()
-    ? ACTIONS.filter((action) => !action.needsSelection || selected)
-    : [{ label: "$(rocket) Set up Crane in this repository", description: "connect to GitHub and create or join its rules", command: "foxx.setup" }];
-  const chosen = await vscode.window.showQuickPick(items, { placeHolder: selected ? "Foxx: what should happen with the selected lines?" : "Foxx" });
-  if (chosen) await vscode.commands.executeCommand(chosen.command);
+async function describeSelection(editor: vscode.TextEditor | undefined): Promise<SelectionInfo | undefined> {
+  if (!editor || editor.document.uri.scheme !== "file") return undefined;
+  const { selection, document } = editor;
+  const start = selection.start.line + 1;
+  const end = selection.end.character === 0 && selection.end.line > selection.start.line ? selection.end.line : selection.end.line + 1;
+  let symbol: string | undefined;
+  try {
+    const symbols = (await vscode.commands.executeCommand<vscode.DocumentSymbol[]>("vscode.executeDocumentSymbolProvider", document.uri)) ?? [];
+    const functions = [vscode.SymbolKind.Function, vscode.SymbolKind.Method, vscode.SymbolKind.Constructor];
+    // The innermost function or method containing the start of the selection
+    const visit = (list: vscode.DocumentSymbol[]): void => {
+      for (const item of list) {
+        if (!item.range.contains(selection.start)) continue;
+        if (functions.includes(item.kind)) symbol = item.name.replace(/\(.*$/, "");
+        visit(item.children ?? []);
+      }
+    };
+    visit(symbols);
+  } catch {
+    symbol = undefined;
+  }
+  const text = document.getText(selection.isEmpty ? document.lineAt(selection.start.line).range : selection);
+  return { uri: document.uri.toString(), file: relative(document.uri.fsPath), start, end, empty: selection.isEmpty, symbol, preview: text.length > 400 ? `${text.slice(0, 400)}…` : text };
+}
+
+/**
+ * Show the Foxx icon in the gutter next to a selection (with an "Open Foxx" link on hover).
+ * @param editor text editor
+ */
+function markSelection(editor: vscode.TextEditor | undefined): void {
+  if (!editor) return;
+  if (editor.selection.isEmpty || !root()) {
+    editor.setDecorations(foxxMark, []);
+    return;
+  }
+  const hover = new vscode.MarkdownString("[$(rocket) Open Foxx for these lines](command:foxx.menu)", true);
+  hover.isTrusted = { enabledCommands: ["foxx.menu"] };
+  const line = editor.selection.start.line;
+  editor.setDecorations(foxxMark, [{ range: new vscode.Range(line, 0, line, 0), hoverMessage: hover }]);
+}
+
+/**
+ * Open the Foxx panel for the active editor's selection.
+ */
+async function openPanel(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (editor) lastSelection = await describeSelection(editor);
+  FoxxPanel.show(extensionUri, panelHost, lastSelection);
+}
+
+/** The extension side of the Foxx panel. */
+const panelHost: PanelHost = {
+  state(): PanelState {
+    const ready = Boolean(root());
+    return {
+      ready,
+      policies: ready ? policies().map((policy) => policy.name) : [],
+      entities: ready
+        ? entities(readGovernance())
+            .filter((entity) => entity.kind !== "context_pack")
+            .map((entity) => ({ kind: entity.kind as "zone" | "flow", id: entity.id, status: entity.status }))
+        : [],
+      selections: ready ? loadRecords().map((record) => ({ id: record.id, label: `${record.operation}${record.name ? ` ${record.name}` : ""}`, policy: record.policy })) : [],
+    };
+  },
+  run: (action, values, selection) => runAction(action, values, selection),
+};
+
+/**
+ * Run an action chosen in the Foxx panel.
+ * @param action action id (core/actions)
+ * @param values the form's values
+ * @param selection the selected code, when any
+ * @returns whether it worked, and what to tell the person
+ */
+async function runAction(action: string, values: Record<string, string | boolean>, selection: SelectionInfo | undefined): Promise<{ ok: boolean; message: string }> {
+  const value = (key: string) => (typeof values[key] === "string" ? (values[key] as string).trim() : "");
+  const lines = value("context").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const outcome = async (args: string[], success: string) => {
+    const result = await crane(args);
+    if (!result) return { ok: false, message: "Crane is not set up in this repository." };
+    if (result.code !== 0) return { ok: false, message: (result.stderr || result.stdout).trim().replace(/^crane: /, "") };
+    await validate(true);
+    return { ok: true, message: success };
+  };
+  const needSelection = () => (!selection || selection.empty ? { ok: false, message: "Select the lines in the editor first." } : undefined);
+  // What a zone or flow covers: the enclosing function when chosen and known, else the file
+  const cover = (): Partial<Record<"symbols" | "files", string[]>> =>
+    values.cover === "symbol" && selection?.symbol ? { symbols: [`${selection.file}:${selection.symbol}`] } : { files: [selection?.file ?? ""] };
+  switch (action) {
+    case "preserve":
+    case "target": {
+      const missing = needSelection();
+      if (missing || !selection) return missing ?? { ok: false, message: "" };
+      const document = vscode.workspace.textDocuments.find((open) => open.uri.toString() === selection.uri);
+      if (document?.isDirty) await document.save();
+      const operation = action === "preserve" ? "preserve" : "target";
+      const result = await crane(selectionArgs(operation, selection.file, selection.start, selection.end, { policy: value("policy") || undefined, changeType: value("changeType") || undefined, name: value("name") || undefined }));
+      if (!result) return { ok: false, message: "Crane is not set up in this repository." };
+      const id = selectionIdFrom(result.stdout);
+      if (result.code !== 0 || !id) return { ok: false, message: (result.stderr || result.stdout).trim().replace(/^crane: /, "") };
+      await validate(true);
+      return { ok: true, message: `${operation === "preserve" ? "Preserved" : "Targeted"} ${selection.file} lines ${selection.start}-${selection.end} as ${id}. Crane inserted its anchor comments.` };
+    }
+    case "zone": {
+      const missing = needSelection();
+      if (missing) return missing;
+      const id = value("id");
+      const zone: ZoneInput = { id, description: value("description"), criticality: value("criticality") as ZoneInput["criticality"], autonomy_ceiling: value("ceiling") as ZoneInput["autonomy_ceiling"], selectors: cover() };
+      return writeGovernance((text) => {
+        let next = addZone(text, zone);
+        if (lines.length) next = addContext(next, "zone", id, lines);
+        return values.enforce ? activateEntity(next, "zone", id) : next;
+      }, `zone ${id} created${values.enforce ? " and enforced" : " as a proposal"}, autonomy ceiling ${zone.autonomy_ceiling}${lines.length ? `, with ${lines.length} line${lines.length === 1 ? "" : "s"} of context` : ""}`);
+    }
+    case "flow": {
+      const id = value("id");
+      const entry = value("entry");
+      if (!entry) return { ok: false, message: "Give the flow an entry point (path:function)." };
+      const ceiling = value("ceiling") as ZoneInput["autonomy_ceiling"];
+      return writeGovernance((text) => {
+        let next = addFlow(text, { id, description: value("description"), criticality: value("criticality") as ZoneInput["criticality"], autonomy_ceiling: ceiling, entry_points: [entry] });
+        if (lines.length) next = addContext(next, "flow", id, lines);
+        return values.enforce ? activateEntity(next, "flow", id) : next;
+      }, `flow ${id} created from ${entry}${values.enforce ? " and enforced" : " as a proposal"}, autonomy ceiling ${ceiling}`);
+    }
+    case "context": {
+      const [kind, id] = value("target").split(":");
+      if (!id) return { ok: false, message: "Choose a zone or flow." };
+      return writeGovernance((text) => addContext(text, kind as "zone" | "flow", id, lines), `context added to ${kind} ${id}; the agent receives it whenever a tool call touches that code`);
+    }
+    case "zone_attach": {
+      const missing = needSelection();
+      if (missing) return missing;
+      const zone = value("zone");
+      if (!zone) return { ok: false, message: "Choose a zone." };
+      const [kind, target] = Object.entries(cover())[0] as ["symbols" | "files", string[]];
+      return writeGovernance((text) => attachToZone(text, zone, kind, target[0]), `${target[0]} added to zone ${zone}`);
+    }
+    case "policy_context": {
+      const file = selection?.file;
+      if (!file) return { ok: false, message: "Open the file to attach first." };
+      const policy = value("policy") || policies()[0]?.name;
+      if (!policy) return { ok: false, message: "Create a policy first." };
+      return outcome(["add", "policy-context", "file", file, "policy", policy], `${file} attached as context of policy ${policy}.`);
+    }
+    case "policy": {
+      const name = value("name");
+      const error = checkName(name);
+      if (error) return { ok: false, message: `Policy name: ${error}` };
+      const file = value("file") || name.toLowerCase();
+      return outcome(["create", "policy", name, file], `Policy ${name} created in .crane/policies/${file}.crane.`);
+    }
+    case "move":
+      return outcome(["add", "policy", value("policy"), "marker", value("selection")], `${value("selection")} moved to policy ${value("policy")}.`);
+    case "checkpoint": {
+      const error = checkName(value("name"));
+      if (error) return { ok: false, message: `Checkpoint name: ${error}` };
+      return outcome(["checkpoint", value("name")], `Checkpoint ${value("name")} recorded.`);
+    }
+    case "hooks":
+      return outcome(["agent", "install", "--profile", value("profile") || "claude"], "Hooks installed; Crane now checks every tool call.");
+    case "setup":
+      await setUp();
+      return { ok: true, message: root() ? "Crane is set up." : "Setup did not finish; see the Foxx output." };
+    case "validate":
+      await validate(false);
+      return { ok: true, message: "Validation finished; findings are shown as problems." };
+    case "test":
+      await test();
+      return { ok: true, message: "Policy tests finished; failures are shown as problems." };
+    case "status":
+      await vscode.commands.executeCommand("foxx.policyStatus");
+      return { ok: true, message: "Policy status is in the Foxx output." };
+    case "dashboard":
+      await vscode.commands.executeCommand("foxx.openDashboard");
+      return { ok: true, message: "The dashboard opened in your browser." };
+    default:
+      return { ok: false, message: `Unknown action ${action}.` };
+  }
 }
 
 /**
@@ -86,28 +243,6 @@ function updateStatus(report?: ValidateReport): void {
   status.show();
 }
 
-/** Offers Preserve and Target as quick actions (the lightbulb, Ctrl+.) on a selection. */
-class SelectionActions implements vscode.CodeActionProvider {
-  static readonly kind = vscode.CodeActionKind.Refactor.append("foxx");
-
-  /**
-   * Return the actions for a selected range.
-   * @param _document document
-   * @param range selected range
-   * @returns actions, none for an empty selection or before Crane is set up
-   */
-  provideCodeActions(_document: vscode.TextDocument, range: vscode.Range | vscode.Selection): vscode.CodeAction[] {
-    if (range.isEmpty || !root()) return [];
-    return [
-      ["Foxx: Preserve these lines (the agent must not change them)", "foxx.protectSelection"],
-      ["Foxx: Target these lines (the agent must change them)", "foxx.targetSelection"],
-    ].map(([title, command]) => {
-      const action = new vscode.CodeAction(title, SelectionActions.kind);
-      action.command = { command, title };
-      return action;
-    });
-  }
-}
 
 const preserveDecoration = vscode.window.createTextEditorDecorationType({
   backgroundColor: new vscode.ThemeColor("diffEditor.unchangedRegionBackground"),
@@ -525,6 +660,37 @@ function readGovernance(): string {
  * @param change produces the new content from the current one
  * @param summary description for the confirmation
  */
+/**
+ * Write a governance change made in the Foxx panel (the person already filled in every value),
+ * then validate it with Crane and restore the previous file when Crane reports a problem; the
+ * change can also be undone with "Foxx: Undo Last Governance Change".
+ * @param change edit of the current text
+ * @param summary what changed, for the person
+ * @returns whether it was kept, and what to tell the person
+ */
+async function writeGovernance(change: (text: string) => string, summary: string): Promise<{ ok: boolean; message: string }> {
+  const before = readGovernance();
+  let after: string;
+  try {
+    after = change(before);
+  } catch (error) {
+    return { ok: false, message: (error as Error).message };
+  }
+  const file = path.join(root() ?? "", ".crane", "governance.yaml");
+  fs.writeFileSync(file, after, "utf8");
+  lastGovernanceText = before;
+  const report = await validate(true);
+  const errors = report?.findings.filter((finding) => (finding.severity === "HIGH" || finding.severity === "CRITICAL") && (finding.code.startsWith("governance") || finding.code.startsWith("flow") || finding.code.startsWith("selector"))) ?? [];
+  if (!report || errors.length) {
+    fs.writeFileSync(file, before, "utf8");
+    lastGovernanceText = undefined;
+    await validate(true);
+    return { ok: false, message: `The change was not kept: ${errors.map((finding) => finding.message).join("; ") || "validation did not run"}` };
+  }
+  tree.refresh();
+  return { ok: true, message: `${summary[0].toUpperCase()}${summary.slice(1)}. Saved in .crane/governance.yaml; commit it to share.` };
+}
+
 async function applyGovernance(change: (text: string) => string, summary: string): Promise<void> {
   const before = readGovernance();
   let after: string;
@@ -620,7 +786,7 @@ export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel("Foxx");
   diagnostics = vscode.languages.createDiagnosticCollection("crane");
   const register = (command: string, callback: (...args: unknown[]) => unknown) => context.subscriptions.push(vscode.commands.registerCommand(command, callback));
-  register("foxx.menu", () => showActions());
+  register("foxx.menu", () => openPanel());
   register("foxx.setup", () => setUp());
   register("foxx.createPolicy", () => createPolicy());
   register("foxx.createCheckpoint", () => createCheckpoint());
@@ -755,12 +921,20 @@ export function activate(context: vscode.ExtensionContext): void {
       if (vscode.workspace.getConfiguration("foxx").get<boolean>("validateOnSave", true)) void validate(true);
     }),
   );
+  extensionUri = context.extensionUri;
+  foxxMark = vscode.window.createTextEditorDecorationType({ gutterIconPath: vscode.Uri.joinPath(context.extensionUri, "images", "gutter.png"), gutterIconSize: "contain" });
+  context.subscriptions.push(
+    foxxMark,
+    vscode.window.onDidChangeTextEditorSelection(async (event) => {
+      if (event.textEditor.document.uri.scheme !== "file") return;
+      markSelection(event.textEditor);
+      lastSelection = await describeSelection(event.textEditor);
+      FoxxPanel.select(lastSelection);
+    }),
+  );
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   status.command = "foxx.menu";
-  context.subscriptions.push(
-    status,
-    vscode.languages.registerCodeActionsProvider({ scheme: "file" }, new SelectionActions(), { providedCodeActionKinds: [SelectionActions.kind] }),
-  );
+  context.subscriptions.push(status);
   updateStatus();
   void vscode.commands.executeCommand("setContext", "foxx.ready", Boolean(root()));
   if (root()) void validate(true);

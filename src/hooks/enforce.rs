@@ -154,6 +154,7 @@ impl Guard<'_> {
                 reasons: Vec::new(),
                 bypass: false,
                 cost: 0,
+                context: None,
             },
             resources: Vec::new(),
             selections: Vec::new(),

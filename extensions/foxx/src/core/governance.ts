@@ -240,6 +240,48 @@ export function attachContextPack(text: string, kind: "zone" | "flow", id: strin
 }
 
 /**
+ * Name the context pack that holds a zone's or flow's own guidance.
+ * @param id entity id
+ * @returns pack id ("ID-context", shortened to fit the identifier limit)
+ */
+export function contextPackOf(id: string): string {
+  return `${id.slice(0, 56)}-context`;
+}
+
+/**
+ * Add guidance lines to a zone's or flow's own context pack, creating and attaching the pack when
+ * needed; existing lines are kept and repeated lines are not added twice. The agent receives the
+ * pack whenever a tool call touches code the entity covers.
+ * @param text current content
+ * @param kind zone or flow
+ * @param id entity id
+ * @param lines guidance lines (blank lines are ignored)
+ * @returns new content
+ */
+export function addContext(text: string, kind: "zone" | "flow", id: string, lines: string[]): string {
+  const guidance = lines.map((line) => line.trim()).filter(Boolean);
+  if (!guidance.length) throw new Error("write the context first");
+  const document = load(text);
+  const entity = find(document, kind === "zone" ? "zones" : "flows", id);
+  if (!entity) throw new Error(`no ${kind} '${id}'`);
+  const packId = contextPackOf(id);
+  const pack = find(document, "context_packs", packId);
+  if (pack) {
+    const content = pack.get("content", true);
+    const existing = isSeq(content) ? content.items.map((item) => String((item as { value?: unknown }).value ?? item)) : [];
+    const added = guidance.filter((line) => !existing.includes(line));
+    if (isSeq(content)) for (const line of added) content.add(line);
+    else pack.set("content", document.createNode(guidance));
+    pack.set("version", Number(pack.get("version") ?? 0) + 1);
+  } else {
+    if (allIds(document).has(packId)) throw new Error(`'${packId}' is already used by a zone or flow`);
+    sequence(document, "context_packs").add(document.createNode({ id: packId, version: 1, description: `Guidance for ${kind} ${id}`, content: guidance }));
+  }
+  appendUnique(entity, ["context_packs"], packId, document);
+  return document.toString();
+}
+
+/**
  * Activate a proposed zone or flow (an explicit, reviewable authority change).
  * @param text current content
  * @param kind zone or flow

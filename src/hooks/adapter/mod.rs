@@ -262,6 +262,8 @@ fn provider_event(payload: &Value, action: Option<AgentAction>) -> ProviderEvent
     - reasons: Vec<String> - why
     - bypass: bool - the action tried to bypass Crane (metadata, trust, markers, commands)
     - cost: u64 - autonomy credits the action costs
+    - context: Option<String> - guidance of the zones and flows the action touches, given to the
+      agent with this tool call where the agent supports it
 */
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Verdict {
@@ -269,6 +271,7 @@ pub(crate) struct Verdict {
     pub(crate) reasons: Vec<String>,
     pub(crate) bypass: bool,
     pub(crate) cost: u64,
+    pub(crate) context: Option<String>,
 }
 
 /** What Crane tells the agent after verification

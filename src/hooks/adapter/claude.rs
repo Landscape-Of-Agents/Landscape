@@ -72,7 +72,8 @@ impl AgentAdapter for ClaudeAdapter {
         })
     }
 
-    /** Answer PreToolUse the Claude Code way: silence to allow, exit code 2 with the reason to
+    /** Answer PreToolUse the Claude Code way: silence to allow (or, when the call touches active
+     * zones or flows, their guidance as additionalContext), exit code 2 with the reason to
      * deny (a denial is final; "ask" is never offered for a denied action), and permissionDecision
      * "ask" when approval is required
      * Input
@@ -83,16 +84,26 @@ impl AgentAdapter for ClaudeAdapter {
     fn respond_action(&self, verdict: &Verdict) -> Result<(), String> {
         let reasons = verdict.reasons.join("; ");
         match verdict.decision {
-            Decision::Allow => Ok(()),
+            Decision::Allow => {
+                // Allowed calls stay silent unless there is zone or flow guidance to give
+                if let Some(context) = &verdict.context {
+                    println!(
+                        "{}",
+                        json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": context}})
+                    );
+                }
+                Ok(())
+            }
             Decision::RequireApproval => {
-                println!(
-                    "{}",
-                    json!({"hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "ask",
-                        "permissionDecisionReason": format!("Crane requires approval: {reasons}"),
-                    }})
-                );
+                let mut output = json!({"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "ask",
+                    "permissionDecisionReason": format!("Crane requires approval: {reasons}"),
+                }});
+                if let Some(context) = &verdict.context {
+                    output["hookSpecificOutput"]["additionalContext"] = json!(context);
+                }
+                println!("{output}");
                 Ok(())
             }
             _ => Err(block(format!("Crane denied this tool call: {reasons}"))),

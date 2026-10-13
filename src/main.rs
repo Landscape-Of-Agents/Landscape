@@ -31,9 +31,45 @@ mod trust;
     - Exits the process with code 2 for hook blocks, 1 for other failures
 */
 fn main() {
+    restore_broken_pipe_default();
     if let Err(error) = cli::run() {
         let blocked = hooks::outcome::blocked(&error);
         eprintln!("crane: {}", blocked.unwrap_or(&error));
         std::process::exit(if blocked.is_some() { 2 } else { 1 });
     }
 }
+
+/** Let a closed output pipe end the process quietly, as it does for other command-line tools
+ * ("crane validate | head" stops when head has enough). Rust ignores SIGPIPE, so a write into a
+ * closed pipe fails and println! panics instead; this restores the default action. Windows has no
+ * SIGPIPE
+ * Input
+    - None
+ * Output
+    - None
+*/
+#[cfg(unix)]
+fn restore_broken_pipe_default() {
+    extern "C" {
+        /** Set the action of a signal (POSIX) */
+        fn signal(signal: i32, handler: usize) -> usize;
+    }
+    /** SIGPIPE on Linux and macOS */
+    const SIGPIPE: i32 = 13;
+    /** The default action (SIG_DFL) */
+    const DEFAULT: usize = 0;
+    // SAFETY: signal only changes this process's action for SIGPIPE, before any other thread or
+    // output exists; SIG_DFL is a valid handler value
+    unsafe {
+        signal(SIGPIPE, DEFAULT);
+    }
+}
+
+/** Nothing to restore where there is no SIGPIPE
+ * Input
+    - None
+ * Output
+    - None
+*/
+#[cfg(not(unix))]
+fn restore_broken_pipe_default() {}

@@ -3,6 +3,7 @@
 // (it is how every pre and post hook passes through Crane) and is refused when an agent runs it.
 
 mod agent;
+mod alert;
 mod args;
 mod audit;
 mod governance;
@@ -71,6 +72,7 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["session", ..] => runtime::session(&rest(1)),
         ["agent", ..] => agent::run(&rest(1)),
         ["integrate", ..] => repo::integrate(&rest(1)),
+        ["alert", ..] => alert::alert(&rest(1)),
         ["admin", ..] => governance::admin(&rest(1)),
         ["governance", ..] => governance::governance(&rest(1)),
         ["foxx", "event", ..] => audit::foxx_event(&rest(2)),
@@ -136,6 +138,15 @@ Agent
 
 Integrations
   crane integrate jira|whatsapp|slack|github
+
+Alert rules (evaluated by the background sync; shown on the dashboard)
+  crane alert add NAME metric METRIC above|at_least|below|at_most|equals N [window 15m]
+                  [channels slack,whatsapp] [severity high] [cooldown 30]
+                  [where PATH OPERATOR VALUES]... [quiet-resolve]
+  crane alert list|check [--json]
+  crane alert remove|enable|disable|test NAME
+  crane alert log [--json]
+  crane alert metrics
 
 Selections are created only by protect and target: Crane inserts language-appropriate anchor
 comments around the lines (the whole file when no lines are given), generates the 8-character

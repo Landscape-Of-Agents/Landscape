@@ -10,7 +10,7 @@
 // before marking a pending request confirmed. The GitHub token is used for that one question and
 // never kept.
 //
-// Routes (GET only): /, /app.js, /logo.png, and /favicon.png (the page), /auth/login, /auth/approve, /auth/callback, /auth/logout,
+// Routes (GET only): /, /app.js, /charts.js, /glossary.js, /logo.png, and /favicon.png (the page), /auth/login, /auth/approve, /auth/callback, /auth/logout,
 // /api/me (the viewer, accounts, and repositories), /api/accounts/NAME (a summary of an account's
 // repositories), and /api/ROUTE?repository=ID[&members=KEY,...] (api.rs). Responses carry a
 // strict Content-Security-Policy; the page loads only its own script.
@@ -40,6 +40,12 @@ const PAGE: &str = include_str!("app.html");
 
 /** The page's script */
 const SCRIPT: &str = include_str!("app.js");
+
+/** The page's chart library (SVG; the page loads no other script) */
+const CHARTS: &str = include_str!("charts.js");
+
+/** The glossary the info icons read (generated from DASHBOARD.md) */
+const GLOSSARY: &str = include_str!("glossary.js");
 
 /** The Foxx logo (256 px, transparent background) */
 const LOGO: &[u8] = include_bytes!("logo.png");
@@ -118,10 +124,13 @@ impl Dashboard {
         match path.as_str() {
             "/" | "/index.html" => Reply::page(PAGE),
             "/app.js" => Reply::script(SCRIPT),
+            "/charts.js" => Reply::script(CHARTS),
+            "/glossary.js" => Reply::script(GLOSSARY),
             "/logo.png" => Reply::image(LOGO, "image/png"),
             "/favicon.png" | "/favicon.ico" => Reply::image(FAVICON, "image/png"),
             "/auth/login" => self.login(request),
             "/auth/approve" => self.approve(request, &query),
+            "/auth/grant" => self.start_grant(request, &query),
             "/auth/callback" => self.callback(request, &query),
             "/auth/logout" => {
                 // F00.8
@@ -248,6 +257,7 @@ impl Dashboard {
             action,
             code,
             state: state.clone(),
+            grant: None,
         };
         let private = query.get("private").is_some_and(|value| value == "1");
         Reply::redirect(&auth.authorize_url(request, &state, private))
@@ -259,6 +269,173 @@ impl Dashboard {
                 "Set-Cookie",
                 &Auth::cookie(request, "foxx_intent", &auth.seal(&intent), 600),
             )
+    }
+
+    /** Start a credit grant: check what was asked, then GitHub sign-in carrying it in a signed
+     * cookie; GitHub decides at the callback whether the person administers the repository
+     * Input
+        - request: &Request - request
+        - query: &BTreeMap<String, String> - repository, session, amount (1 to 1000), reason,
+          private=1 to also ask for repository access
+     * Output
+        - Reply
+    */
+    fn start_grant(&self, request: &Request, query: &BTreeMap<String, String>) -> Reply {
+        let Some(auth) = &self.auth else {
+            return Reply::redirect("/");
+        };
+        let repository = query.get("repository").cloned().unwrap_or_default();
+        let session = query.get("session").cloned().unwrap_or_default();
+        let reason = query
+            .get("reason")
+            .map(|reason| reason.trim().chars().take(200).collect::<String>())
+            .unwrap_or_default();
+        let amount = query
+            .get("amount")
+            .and_then(|amount| amount.parse::<u64>().ok())
+            .unwrap_or(0);
+        let session_ok = !session.is_empty()
+            && session.len() <= 128
+            && session
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "_-:.".contains(character));
+        if !is_digest(&repository)
+            || !session_ok
+            || !(1..=1000).contains(&amount)
+            || reason.is_empty()
+        {
+            return Reply::json(
+                400,
+                json!({"error": "a grant needs a repository, a session, an amount from 1 to 1000, and a reason"}),
+            );
+        }
+        let state = random_bytes(16)
+            .map(|bytes| hex(&bytes))
+            .unwrap_or_default();
+        let intent = Intent {
+            action: "grant".into(),
+            code: String::new(),
+            state: state.clone(),
+            grant: Some(
+                json!({"repository": repository, "session": session, "amount": amount, "reason": reason}),
+            ),
+        };
+        let private = query.get("private").is_some_and(|value| value == "1");
+        Reply::redirect(&auth.authorize_url(request, &state, private))
+            .with_header(
+                "Set-Cookie",
+                &Auth::cookie(request, "foxx_oauth", &state, 600),
+            )
+            .with_header(
+                "Set-Cookie",
+                &Auth::cookie(request, "foxx_intent", &auth.seal(&intent), 600),
+            )
+    }
+
+    /** Carry out a credit grant: find the session's machine, ask GitHub whether the person
+     * administers the repository, and record the grant
+     * Input
+        - auth: &Auth - sign-in settings
+        - intent: &Intent - the grant asked for
+        - viewer: &Viewer - who signed in
+        - token: &str - their GitHub token (used for one question, then dropped)
+     * Output
+        - (bool, String) success and the message for the person
+    */
+    fn carry_out_grant(
+        &self,
+        auth: &Auth,
+        intent: &Intent,
+        viewer: &Viewer,
+        token: &str,
+    ) -> (bool, String) {
+        let asked = intent.grant.clone().unwrap_or_default();
+        let repository = asked["repository"].as_str().unwrap_or_default().to_string();
+        let session = asked["session"].as_str().unwrap_or_default().to_string();
+        let remote = match data::verified_repositories(&self.read) {
+            Ok(list) => list
+                .into_iter()
+                .find(|(id, _)| *id == repository)
+                .map(|(_, remote)| remote),
+            Err(error) => return (false, error),
+        };
+        let Some(remote) = remote else {
+            return (false, "that repository is not known to the service".into());
+        };
+        let record = match self.read.find(
+            "sessions",
+            mongodb::bson::doc! {"repository_id": &repository, "foxx_session_id": &session},
+            mongodb::bson::doc! {"last_seen_at": -1},
+            1,
+        ) {
+            Ok(rows) => rows.into_iter().next().map(data::json),
+            Err(error) => return (false, error),
+        };
+        let Some(record) = record else {
+            return (false, format!("no session '{session}' in this repository"));
+        };
+        let access = match auth.access(token, &remote) {
+            Ok(access) => access,
+            Err(error) => return (false, error),
+        };
+        let grant = approve::Grant {
+            repository: repository.clone(),
+            remote: remote.clone(),
+            session: session.clone(),
+            installation: record["installation"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            agent: record["agent_id"].as_str().unwrap_or_default().to_string(),
+            amount: asked["amount"].as_u64().unwrap_or(0),
+            reason: asked["reason"].as_str().unwrap_or_default().to_string(),
+        };
+        let outcome = self.approvals.grant(&grant, &viewer.login, access);
+        // F27 (Part 4): a grant approved or refused on the dashboard
+        let mut spec = service_events::dashboard(
+            if outcome.is_ok() {
+                "CREDITS_GRANT_APPROVED"
+            } else {
+                "CREDITS_GRANT_REFUSED"
+            },
+            "F27",
+            "GRANT_CREDITS",
+            Some(&viewer.login),
+            Some((&repository, &remote)),
+        );
+        spec.respond(
+            if outcome.is_ok() { "OK" } else { "REFUSED" },
+            if outcome.is_ok() { "NA" } else { "NOT_ADMIN" },
+            if outcome.is_ok() {
+                "Admin granted credits to an agent session."
+            } else {
+                "Credit grant refused: not an admin."
+            },
+        )
+        .set("session", "session_type", "AGENT_SESSION")
+        .set("session", "session_id", &session)
+        .set("agent", "agent_id", &grant.agent)
+        .set("assessment", "assessment_checks", ["GITHUB_ADMIN_ROLE"])
+        .set(
+            "decision",
+            "decision",
+            if outcome.is_ok() { "ALLOW" } else { "DENY" },
+        )
+        .set("decision", "decision_rule", "GITHUB_ADMIN_REQUIRED")
+        .set("resource", "resource", ["CREDITS"])
+        .set("eval", "credits_granted", grant.amount)
+        .set("other", "reason", &grant.reason)
+        .severity(
+            if outcome.is_ok() { "LOW" } else { "MEDIUM" },
+            "OUTCOME",
+            "NONE",
+        );
+        self.log
+            .record(spec, Some(&repository), Some(&grant.installation));
+        match outcome {
+            Ok(message) => (true, message),
+            Err(error) => (false, error),
+        }
     }
 
     /** Carry out an approval with the token of the sign-in that was started for it
@@ -514,11 +691,17 @@ impl Dashboard {
                     .filter(|intent| Some(&intent.state) == expected.as_ref())
                 {
                     Some(intent) => {
-                        let (ok, message) = self.carry_out(auth, &intent, &viewer, &token);
+                        let grant = intent.action == "grant";
+                        let (ok, message) = if grant {
+                            self.carry_out_grant(auth, &intent, &viewer, &token)
+                        } else {
+                            self.carry_out(auth, &intent, &viewer, &token)
+                        };
                         format!(
-                            "/?approval={}&ok={}#/settings",
+                            "/?approval={}&ok={}#/{}",
                             auth::encode(&message),
-                            u8::from(ok)
+                            u8::from(ok),
+                            if grant { "credits" } else { "settings" }
                         )
                     }
                     None => "/".into(),

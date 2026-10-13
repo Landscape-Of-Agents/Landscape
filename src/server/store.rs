@@ -245,6 +245,89 @@ pub(super) fn hold_approval(
     Ok(json!({"expires_in_seconds": CODE_LIFETIME_MILLIS / 1000}))
 }
 
+/** The credit grants approved on the dashboard for one machine and not yet applied (only that
+ * machine's own; nothing else is ever read back)
+ * Input
+    - database: &Database - MongoDB
+    - repository: &str - repository identity
+    - installation: &str - the machine
+ * Output
+    - Result<Value, String> {grants: [{grant_id, session, amount, reason, approved_by, approved_at}]}
+*/
+pub(super) fn pending_grants(
+    database: &Database,
+    repository: &str,
+    installation: &str,
+) -> Result<Value, String> {
+    let found = database
+        .collection::<Document>("credit_grants")
+        .find(doc! {"repository_id": repository, "installation": installation, "status": "PENDING", "expires_at": {"$gt": now_millis() as i64}})
+        .sort(doc! {"approved_at": 1})
+        .limit(50)
+        .run()
+        .map_err(io_error)?;
+    let mut grants = Vec::new();
+    for document in found {
+        let document = document.map_err(io_error)?;
+        grants.push(json!({
+            "grant_id": document.get_str("grant_id").unwrap_or_default(),
+            "session": document.get_str("session").unwrap_or_default(),
+            "amount": number(document.get("amount")),
+            "reason": document.get_str("reason").unwrap_or_default(),
+            "approved_by": document.get_str("approved_by").unwrap_or_default(),
+            "approved_at": number(document.get("approved_at")),
+        }));
+    }
+    Ok(json!({"grants": grants}))
+}
+
+/** Record what a machine did with its grants: applied to its ledger (with the entry) or rejected
+ * (with why); only the machine's own pending grants change
+ * Input
+    - database: &Database - MongoDB
+    - repository: &str - repository identity
+    - installation: &str - the machine
+    - body: &Value - {results: [{grant_id, status: APPLIED|REJECTED, entry_id, detail}]}
+ * Output
+    - Result<Value, String> {settled}
+*/
+pub(super) fn settle_grants(
+    database: &Database,
+    repository: &str,
+    installation: &str,
+    body: &Value,
+) -> Result<Value, String> {
+    let mut settled = 0;
+    for result in body["results"].as_array().into_iter().flatten().take(50) {
+        let status = match result["status"].as_str() {
+            Some("APPLIED") => "APPLIED",
+            _ => "REJECTED",
+        };
+        let detail = result["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .take(300)
+            .collect::<String>();
+        let entry = result["entry_id"]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .take(64)
+            .collect::<String>();
+        let changed = database
+            .collection::<Document>("credit_grants")
+            .update_one(
+                doc! {"grant_id": result["grant_id"].as_str().unwrap_or_default(), "repository_id": repository, "installation": installation, "status": "PENDING"},
+                doc! {"$set": {"status": status, "settled_at": now_millis() as i64, "ledger_entry": entry, "detail": detail}},
+            )
+            .run()
+            .map_err(io_error)?;
+        settled += changed.modified_count;
+    }
+    Ok(json!({"settled": settled}))
+}
+
 /** Return the repository's owner key most recently confirmed by a GitHub admin of its remote
  * (public information: a public key and who confirmed it)
  * Input

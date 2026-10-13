@@ -128,10 +128,33 @@ pub(super) fn compliance_view(context: &Context) -> Value {
         snapshot.ledger.len(),
         &sessions,
     );
+    let mut outcomes: BTreeMap<&str, usize> = BTreeMap::new();
+    for control in &controls {
+        *outcomes.entry(control.outcome).or_default() += 1;
+    }
+    // What hooks can only infer is observability, not a control: network destinations (F36)
+    let mut destinations: BTreeMap<String, u64> = BTreeMap::new();
+    for spec in context
+        .specs
+        .iter()
+        .filter(|spec| spec["event_name"] == "NETWORK_DESTINATION_INFERRED")
+    {
+        for host in crate::telemetry::query::values(spec, "resource.resource_ids") {
+            *destinations.entry(host).or_default() += 1;
+        }
+    }
     json!({
         "disclaimer": "Framework mappings show which requirements this evidence supports; they are not a certification.",
         "controls": controls,
+        "outcomes": outcomes,
+        "evaluated_at": crate::platform::now_millis(),
+        "inputs_reported": !context.statuses.is_empty(),
         "unsupported_telemetry": compliance::UNSUPPORTED,
+        "inferred": compliance::INFERRED.iter().map(|(name, meaning)| json!({
+            "name": name,
+            "meaning": meaning,
+            "values": destinations.iter().map(|(host, count)| json!({"value": host, "count": count})).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
     })
 }
 

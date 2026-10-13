@@ -179,13 +179,69 @@ fn failed(status: u16, body: &str) -> String {
     - String, "queued", "dry-run", or why it could not be sent
 */
 fn send_alert(url: &str, headers: &[String], body: &Value) -> String {
+    send(url, headers, body, false)
+}
+
+/** Send an alert request, waiting for the service's answer when asked (alert rules run in the
+ * background sync, so they can wait and record whether the message was really accepted)
+ * Input
+    - url: &str - endpoint
+    - headers: &[String] - headers (may contain credentials)
+    - body: &Value - JSON body
+    - wait: bool - wait for the answer
+ * Output
+    - String: "delivered (HTTP 200)", "queued", "dry-run", or "HTTP 4xx: …" and other failures
+*/
+fn send(url: &str, headers: &[String], body: &Value, wait: bool) -> String {
     if std::env::var("CRANE_ALERTS_DRY_RUN").is_ok_and(|value| value == "1") {
         return "dry-run".into();
     }
-    match post_detached(url, headers, &body.to_string()) {
-        Ok(()) => "queued".into(),
+    if !wait {
+        return match post_detached(url, headers, &body.to_string()) {
+            Ok(()) => "queued".into(),
+            Err(error) => error,
+        };
+    }
+    let mut all = vec!["Content-Type: application/json".to_string()];
+    all.extend(headers.iter().cloned());
+    match crate::platform::http::request("POST", url, &all, Some(&body.to_string())) {
+        // Slack's API answers 200 with "ok": false on errors
+        Ok((status, answer))
+            if (200..300).contains(&status) && !answer.contains("\"ok\":false") =>
+        {
+            format!("delivered (HTTP {status})")
+        }
+        Ok((status, answer)) => failed(status, &answer),
         Err(error) => error,
     }
+}
+
+/** Deliver a message to one channel now and record the outcome (alert rules)
+ * Input
+    - workspace: &Workspace - repository
+    - channel: &str - slack or whatsapp
+    - text: &str - message
+ * Output
+    - Value {channel, result, status, ms}
+*/
+pub(crate) fn deliver_now(workspace: &Workspace, channel: &str, text: &str) -> Value {
+    let started = std::time::Instant::now();
+    let result = match (channel, load(workspace, channel)) {
+        (_, None) => format!("not configured; run 'crane integrate {channel}'"),
+        ("slack", Some(integration)) => slack::deliver_text(workspace, &integration, text, true),
+        ("whatsapp", Some(integration)) => {
+            whatsapp::deliver_text(workspace, &integration, text, true)
+        }
+        (other, Some(_)) => format!("{other} does not take alerts; use slack or whatsapp"),
+    };
+    let status = result.split("HTTP ").nth(1).and_then(|rest| {
+        rest.chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse::<u64>()
+            .ok()
+    });
+    serde_json::json!({"channel": channel, "result": result, "status": status, "ms": started.elapsed().as_millis() as u64})
 }
 
 /** Read a string setting

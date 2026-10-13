@@ -67,7 +67,7 @@ impl Provider for WhatsApp {
         alert: &Alert,
     ) -> Option<Value> {
         (alert.severity >= severity_rank("high"))
-            .then(|| json!({"channel": "whatsapp", "result": deliver_text(workspace, integration, alert.text)}))
+            .then(|| json!({"channel": "whatsapp", "result": deliver_text(workspace, integration, alert.text, false)}))
     }
 }
 
@@ -201,7 +201,12 @@ fn verify(integration: &Integration, secrets: &Map<String, Value>) -> Result<Str
  * Output
     - String delivery result
 */
-pub(super) fn deliver_text(workspace: &Workspace, whatsapp: &Integration, text: &str) -> String {
+pub(super) fn deliver_text(
+    workspace: &Workspace,
+    whatsapp: &Integration,
+    text: &str,
+    wait: bool,
+) -> String {
     let secrets = secrets(workspace, "whatsapp");
     let (Some(token), Some(version), Some(phone)) = (
         secrets.get("access_token").and_then(Value::as_str),
@@ -242,10 +247,11 @@ pub(super) fn deliver_text(workspace: &Workspace, whatsapp: &Integration, text: 
         } else {
             json!({"messaging_product": "whatsapp", "to": recipient, "type": "text", "text": {"body": text}})
         };
-        results.push(send_alert(
+        results.push(send(
             &url,
             &[format!("Authorization: Bearer {token}")],
             &body,
+            wait,
         ));
     }
     results.join(", ")

@@ -48,7 +48,8 @@ pub(crate) fn interval_seconds() -> u64 {
     - None (failures to start are ignored; the next trigger retries)
 */
 pub(crate) fn trigger(workspace: &Workspace, reason: &str) {
-    if !configured() {
+    // Alert rules are evaluated by the sync too, so it runs for them even when uploads are off
+    if !configured() && !super::rules::exist(workspace) {
         return;
     }
     let Ok(executable) = std::env::current_exe() else {
@@ -118,7 +119,7 @@ fn disinherit_standard_handles() {
     - None
 */
 pub(crate) fn trigger_if_due(workspace: &Workspace, stores: &Stores) {
-    if !configured() {
+    if !configured() && !super::rules::exist(workspace) {
         return;
     }
     let last = ingest::state(stores).last_attempt_at;

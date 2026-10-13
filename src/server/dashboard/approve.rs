@@ -1,10 +1,12 @@
 // Approvals a person makes on the dashboard after GitHub confirms their role: linking a machine's
-// upload key to their GitHub account (they can read the repository) and confirming the repository
-// owner's key (they administer the repository). Each starts on the person's machine ('crane agent
-// link', 'crane admin register'), which leaves a request with a one-time code at the service; the
-// person opens /auth/approve with the code, signs in with GitHub, and GitHub's answer for that
-// repository decides. This is the only place the dashboard writes, and it can only mark a pending
-// request in member_links or owner_keys as confirmed: evidence stays read-only (data.rs).
+// upload key to their GitHub account (they can read the repository), confirming the repository
+// owner's key (they administer the repository), and granting autonomy credits to an agent's session
+// (they administer the repository). Links and owner keys start on the person's machine ('crane agent
+// link', 'crane admin register'), which leaves a request with a one-time code at the service; a
+// grant starts on the dashboard. Either way the person signs in with GitHub, and GitHub's answer for
+// that repository decides. This is the only place the dashboard writes: it can mark a pending
+// request in member_links or owner_keys as confirmed, and record a pending credit grant, which the
+// session's machine applies to its own ledger at its next sync. Evidence stays read-only (data.rs).
 
 use mongodb::bson::{doc, Document};
 use mongodb::sync::Database;
@@ -114,4 +116,81 @@ impl Approvals {
             )
         })
     }
+
+    /** Record a credit grant an admin approved; the session's machine applies it to its own ledger
+     * at its next sync and reports back
+     * Input
+        - grant: &Grant - what was granted, to which session and machine
+        - login: &str - the admin's GitHub login
+        - access: Access - their access to the repository, from GitHub
+     * Output
+        - Result<String, String> what was recorded, for the person
+    */
+    pub(crate) fn grant(
+        &self,
+        grant: &Grant,
+        login: &str,
+        access: Access,
+    ) -> Result<String, String> {
+        if !access.admin {
+            return Err(format!("GitHub does not show @{login} as an admin of {}; only admins and owners can grant credits", grant.remote));
+        }
+        let now = now_millis();
+        let grant_id = format!(
+            "grt_{}",
+            &digest(
+                "dashboard/grant-id/v1",
+                &[
+                    grant.repository.as_bytes(),
+                    grant.session.as_bytes(),
+                    login.as_bytes(),
+                    now.to_string().as_bytes()
+                ]
+            )[..24]
+        );
+        self.database
+            .collection::<Document>("credit_grants")
+            .insert_one(doc! {
+                "grant_id": &grant_id,
+                "repository_id": &grant.repository,
+                "installation": &grant.installation,
+                "session": &grant.session,
+                "agent_id": &grant.agent,
+                "amount": grant.amount as i64,
+                "reason": &grant.reason,
+                "approved_by": login,
+                "approved_at": now as i64,
+                "expires_at": (now + GRANT_LIFETIME_MILLIS) as i64,
+                "status": "PENDING",
+            })
+            .run()
+            .map_err(io_error)?;
+        Ok(format!(
+            "{} credits for session {} are approved by @{login} ({grant_id}). The agent's machine applies them at its next sync, within about a minute while the agent is active.",
+            grant.amount, grant.session
+        ))
+    }
+}
+
+/** How long a grant waits for its machine before it lapses */
+const GRANT_LIFETIME_MILLIS: u64 = 7 * 24 * 60 * 60 * 1000;
+
+/** A credit grant asked for on the dashboard
+ * Fields
+    - repository: String - repository identity
+    - remote: String - its verified remote
+    - session: String - the agent session to credit
+    - installation: String - the machine the session runs on
+    - agent: String - the agent identity
+    - amount: u64 - credits, 1 to 1000
+    - reason: String - why, shown in the ledger
+*/
+pub(crate) struct Grant {
+    pub(crate) repository: String,
+    pub(crate) remote: String,
+    pub(crate) session: String,
+    pub(crate) installation: String,
+    pub(crate) agent: String,
+    pub(crate) amount: u64,
+    pub(crate) reason: String,
 }

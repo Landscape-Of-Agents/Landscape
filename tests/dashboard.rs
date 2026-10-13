@@ -491,6 +491,194 @@ fn dashboard_shows_every_view_for_a_team() {
         )));
     let text = api("events?q=PREVENTED").json();
     assert!(text["total"].as_u64().unwrap() >= 1, "{text}");
+    // Any attribute, any operator, combined: the JSON filter and the shortcuts together
+    let encode = |clauses: Value| {
+        clauses
+            .to_string()
+            .replace('%', "%25")
+            .replace('"', "%22")
+            .replace(' ', "%20")
+            .replace('{', "%7B")
+            .replace('}', "%7D")
+            .replace('[', "%5B")
+            .replace(']', "%5D")
+            .replace(',', "%2C")
+            .replace(':', "%3A")
+    };
+    let combined = api(&format!(
+        "events?limit=500&flow=F05,F06&filter={}",
+        encode(json!([
+            {"path": "severity.severity_status", "op": "not", "values": ["CRITICAL"]},
+            {"path": "action.action_tool", "op": "exists"},
+            {"path": "event_name", "op": "prefix", "values": ["TOOL_CALL"]},
+        ]))
+    ))
+    .json();
+    let list = combined["events"].as_array().unwrap();
+    assert!(!list.is_empty(), "{combined}");
+    assert!(list.iter().all(
+        |event| ["F05", "F06"].contains(&event["flow"].as_str().unwrap())
+            && event["severity"]["severity_status"] != "CRITICAL"
+            && !event["action"]["action_tool"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty()
+            && event["event_name"]
+                .as_str()
+                .unwrap()
+                .starts_with("TOOL_CALL")
+    ));
+    let none = api(&format!("events?filter={}", encode(json!([{"path": "flow", "op": "is", "values": ["F05"]}, {"path": "flow", "op": "not", "values": ["F05"]}])))).json();
+    assert_eq!(none["total"], 0, "contradictory clauses match nothing");
+    let bad = get(
+        &format!(
+            "{base}/api/events?repository={}&filter=%5Bnot-json",
+            world.widgets
+        ),
+        Some(&alice),
+    );
+    assert_eq!(
+        bad.status, 400,
+        "a malformed filter is refused: {}",
+        bad.body
+    );
+    // The attribute catalog offers every path the filter builder can use
+    let catalog = api("attributes").json();
+    let paths = catalog["attributes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|attribute| attribute["path"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    for path in [
+        "severity.severity_status",
+        "decision.decision",
+        "flow",
+        "event_name",
+        "action.action_tool",
+        "response.response_statement",
+    ] {
+        assert!(
+            paths.iter().any(|known| known == path),
+            "{path} in {paths:?}"
+        );
+    }
+    let digest = catalog["attributes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|attribute| attribute["path"] == "digest")
+        .unwrap();
+    assert!(
+        digest["values"].as_array().unwrap().is_empty(),
+        "identifiers are filterable by presence, not listed by value"
+    );
+    // The deeper views, all under the same filter
+    let gantt = api("gantt?rows=session&color=decision").json();
+    let bars = gantt["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|row| row["bars"].as_array().unwrap().clone())
+        .collect::<Vec<_>>();
+    assert!(!bars.is_empty(), "{gantt}");
+    assert!(bars
+        .iter()
+        .all(|bar| bar["end"].as_u64() >= bar["start"].as_u64()));
+    assert!(bars.iter().any(|bar| bar["color"] == "DENY"), "{gantt}");
+    let by_tool = api("gantt?rows=tool&color=severity").json();
+    assert!(
+        by_tool["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["key"] == "BASH"),
+        "{by_tool}"
+    );
+    let timeline = api("timeline?lanes=flow&color=severity").json();
+    assert_eq!(
+        timeline["points"].as_array().unwrap().len() as u64,
+        timeline["total"].as_u64().unwrap()
+    );
+    let traces = api("traces?limit=500").json();
+    let trace_list = traces["traces"].as_array().unwrap();
+    let call = trace_list
+        .iter()
+        .find(|trace| trace["spans"].as_u64().unwrap() >= 2)
+        .expect("a tool call with its decision and verification");
+    let detail = api(&format!("traces/{}", call["id"].as_str().unwrap())).json();
+    assert_eq!(
+        detail["spans"].as_array().unwrap().len() as u64,
+        call["spans"].as_u64().unwrap()
+    );
+    let failed = api("traces?outcome=FAILED&limit=500").json();
+    assert!(failed["traces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|trace| trace["outcome"] == "FAILED"));
+    assert!(
+        failed["total"].as_u64().unwrap() >= 1,
+        "the denied edit is a failed trace"
+    );
+    let long = api("traces?min_spans=2&limit=500").json();
+    assert!(long["traces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|trace| trace["spans"].as_u64().unwrap() >= 2));
+    let topology = api("topology").json();
+    assert!(
+        topology["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|edge| edge["to"] == "2:BASH"),
+        "{topology}"
+    );
+    let dependencies = api("dependencies").json();
+    // Decisions are followed by credit settlement and verification (order only, never a cause)
+    assert!(
+        dependencies["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|edge| edge["from"] == "F05"
+                && ["F06", "F27"].contains(&edge["to"].as_str().unwrap())),
+        "{dependencies}"
+    );
+    assert!(dependencies["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|edge| edge["from"] != edge["to"] && edge["count"].as_u64().unwrap() > 0));
+    let histogram = api("histogram?field=events_per_session&bins=5").json();
+    assert_eq!(
+        histogram["bins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|bin| bin["count"].as_u64().unwrap())
+            .sum::<u64>(),
+        histogram["count"].as_u64().unwrap()
+    );
+    let semantics = api("semantics").json();
+    assert!(
+        !semantics["groups"]["statements"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{semantics}"
+    );
+    assert!(
+        semantics["groups"]["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|rule| rule["value"] == "PRESERVED_SELECTION"),
+        "{}",
+        semantics["groups"]["rules"]
+    );
     let compliance = api("compliance").json();
     assert!(compliance["disclaimer"]
         .as_str()
@@ -506,7 +694,27 @@ fn dashboard_shows_every_view_for_a_team() {
             .clone()
     };
     assert_eq!(outcome("CR-01"), "SATISFIED", "{compliance}");
-    assert_eq!(outcome("CR-10"), "UNSUPPORTED");
+    // Network egress is not a control (hooks cannot observe it); it is inferred observability
+    assert!(compliance["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|control| control["control"]["id"] != "CR-10"));
+    assert!(compliance["inferred"][0]["meaning"]
+        .as_str()
+        .unwrap()
+        .contains("not observed"));
+    assert!(compliance["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|control| control["control"]["fix"].is_string() && control["limitations"].is_array()));
+    assert_eq!(
+        outcome("CR-09"),
+        "SATISFIED",
+        "redaction is by design; its limit is a limitation, not a gap"
+    );
+    assert!(compliance["outcomes"].is_object());
     let report = api(&format!("reports/session/{session}")).json();
     assert!(report["limitations"].as_array().unwrap().len() >= 3);
     assert_eq!(
@@ -887,5 +1095,123 @@ fn approvals_are_decided_by_github() {
     assert!(
         output.contains("this owner key was confirmed by @alice"),
         "{output}"
+    );
+}
+
+/** Credits granted on the dashboard: only an admin of the repository may grant, bad requests are
+ * refused, and the session's machine applies the grant to its own ledger exactly once at its next
+ * sync and reports back; alert rules built on that machine and their firings reach the alerting
+ * view through the same sync
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn credits_and_alerting_round_trip() {
+    let Some(world) = world("credits") else {
+        return;
+    };
+    let base = world.service.url.clone();
+    let session = world
+        .database
+        .collection::<Document>("sessions")
+        .find_one(doc! {"provider_session_id": "dash-1"})
+        .run()
+        .unwrap()
+        .unwrap()
+        .get_str("foxx_session_id")
+        .unwrap()
+        .to_string();
+    let path = |amount: &str| {
+        format!(
+            "/auth/grant?repository={}&session={session}&amount={amount}&reason=release%20week",
+            world.widgets
+        )
+    };
+    // Bad requests never reach GitHub
+    for bad in [
+        path("0"),
+        path("5000"),
+        format!("/auth/grant?repository=nope&session={session}&amount=5&reason=x"),
+    ] {
+        assert_eq!(get(&format!("{base}{bad}"), None).status, 400, "{bad}");
+    }
+    // bob can push but is not an admin; alice is
+    let (ok, message) = support::approve_path(&base, "bob", &path("25"));
+    assert!(
+        !ok && message.contains("only admins and owners"),
+        "{message}"
+    );
+    let (ok, message) = support::approve_path(&base, "alice", &path("25"));
+    assert!(ok && message.contains("25 credits"), "{message}");
+    let grants = world.database.collection::<Document>("credit_grants");
+    assert_eq!(
+        grants
+            .count_documents(doc! {"status": "PENDING"})
+            .run()
+            .unwrap(),
+        1
+    );
+    // The machine applies it at its next sync, once
+    world.team.ok(&["agent", "sync"]);
+    world.team.ok(&["agent", "sync"]);
+    let grant = grants.find_one(doc! {}).run().unwrap().unwrap();
+    assert_eq!(grant.get_str("status").unwrap(), "APPLIED", "{grant:?}");
+    assert!(grant.get_str("ledger_entry").unwrap().starts_with("led_"));
+    let entries = world
+        .database
+        .collection::<Document>("autonomy_ledger")
+        .count_documents(doc! {"reason": {"$regex": "^granted on the dashboard by @alice"}})
+        .run()
+        .unwrap();
+    assert_eq!(entries, 1, "applied exactly once and uploaded");
+    // An alert rule on alice's machine fires (before the first read: the dashboard caches a view for
+    // 20 seconds); its firing, delivery, and evaluations reach the view
+    world.team.ok(&[
+        "alert", "add", "denials", "metric", "denied", "at_least", "1", "window", "1d", "channels",
+        "slack",
+    ]);
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    world.team.ok(&["alert", "check"]);
+    world.team.ok(&["agent", "sync"]);
+    let alice = sign_in(&base, &world.github, "alice");
+    let api = |route: &str| {
+        let separator = if route.contains('?') { '&' } else { '?' };
+        let answer = get(
+            &format!("{base}/api/{route}{separator}repository={}", world.widgets),
+            Some(&alice),
+        );
+        assert_eq!(answer.status, 200, "{route}: {}", answer.body);
+        answer.json()
+    };
+    let credits = api("grants");
+    assert_eq!(credits["grants"][0]["status"], "APPLIED", "{credits}");
+    assert_eq!(credits["grants"][0]["approved_by"], "alice");
+    let row = credits["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["session"] == session.as_str())
+        .unwrap();
+    assert!(row["balance"]["granted"].as_u64().unwrap() >= 25, "{row}");
+    assert_eq!(credits["ledger"].as_array().unwrap().len(), 1);
+    let alerting = api("alerting");
+    assert_eq!(alerting["rules"][0]["name"], "denials", "{alerting}");
+    assert_eq!(alerting["rules"][0]["state"], "FIRING", "{alerting}");
+    assert!(alerting["evaluations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|evaluation| evaluation["rule"] == "denials"));
+    assert_eq!(alerting["firings"][0]["rule"], "denials", "{alerting}");
+    assert_eq!(
+        alerting["deliveries"][0]["outcome"], "DRY_RUN",
+        "{alerting}"
+    );
+    let fired = api("events?event=ALERT_RULE_FIRED");
+    assert!(
+        fired["total"].as_u64().unwrap() >= 1,
+        "the firing is an event of the stream (F14)"
     );
 }

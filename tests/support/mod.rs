@@ -367,10 +367,24 @@ pub fn sign_in(base: &str, github: &str, user: &str) -> String {
     - (bool, String) whether it was confirmed, and the message shown to the person
 */
 pub fn approve(base: &str, user: &str, action: &str, code: &str) -> (bool, String) {
-    let start = get(
-        &format!("{base}/auth/approve?action={action}&code={code}"),
-        None,
-    );
+    approve_path(
+        base,
+        user,
+        &format!("/auth/approve?action={action}&code={code}"),
+    )
+}
+
+/** Start any approval path on the dashboard (an approval code or a credit grant) as a stand-in
+ * GitHub user, and finish the GitHub sign-in it starts
+ * Input
+    - base: &str - service URL
+    - user: &str - login (also the OAuth code)
+    - path: &str - the path that starts it, with its query
+ * Output
+    - (bool, String) whether it was approved, and the message shown to the person
+*/
+pub fn approve_path(base: &str, user: &str, path: &str) -> (bool, String) {
+    let start = get(&format!("{base}{path}"), None);
     assert_eq!(start.status, 302, "{}", start.body);
     let location = start.location.clone().unwrap();
     let state = location.split("state=").nth(1).unwrap().to_string();

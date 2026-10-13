@@ -119,3 +119,76 @@ export function selectionArgs(
 export function selectionIdFrom(output: string): string | undefined {
   return /as selection ([A-Z0-9]{8})/.exec(output)?.[1];
 }
+
+/** The oldest Crane that has every command Foxx runs ('crane governance sign' arrived in 0.4.8). */
+export const MIN_CRANE = "0.4.8";
+
+/** The oldest Crane that records the editor's own events ('crane foxx event'). */
+export const EVENTS_SINCE = "0.4.10";
+
+/** Where Crane releases are published. */
+export const RELEASES_URL = "https://github.com/VishuKalier2003/Agentscript/releases/latest";
+
+/** Whether the configured Crane can be used. */
+export interface CraneStatus {
+  state: "ok" | "missing" | "outdated";
+  version?: string;
+  /** The executable as configured (a name on the PATH, or a full path). */
+  executable: string;
+  /** Where it was found, when known. */
+  location?: string;
+  /** Whether it records the editor's own events. */
+  events: boolean;
+  /** What to tell the person when it cannot be used. */
+  message?: string;
+}
+
+/**
+ * Read the version from the output of `crane --version` (for example "crane 0.4.10").
+ * @param output command output
+ * @returns the version, or undefined
+ */
+export function parseVersion(output: string): string | undefined {
+  return /(\d+)\.(\d+)\.(\d+)/.exec(output)?.[0];
+}
+
+/**
+ * Compare two versions numerically, part by part.
+ * @param version version to check
+ * @param minimum the oldest acceptable version
+ * @returns whether version is minimum or newer
+ */
+export function atLeast(version: string, minimum: string): boolean {
+  const a = version.split(".").map(Number);
+  const b = minimum.split(".").map(Number);
+  for (let index = 0; index < 3; index += 1) {
+    if ((a[index] ?? 0) !== (b[index] ?? 0)) return (a[index] ?? 0) > (b[index] ?? 0);
+  }
+  return true;
+}
+
+/**
+ * Decide whether a Crane can be used, from its `--version` invocation.
+ * @param executable the configured executable
+ * @param result the `--version` invocation
+ * @param location where it was found, when known
+ * @returns status, with a message for the person when it cannot be used
+ */
+export function craneStatus(executable: string, result: CraneResult, location?: string): CraneStatus {
+  const where = location ?? executable;
+  if (result.code === 127) {
+    return { state: "missing", executable, events: false, message: `Crane was not found (${executable}). Install Crane ${MIN_CRANE} or newer, or set "foxx.cranePath" to its full path.` };
+  }
+  const version = parseVersion(result.stdout + result.stderr);
+  if (!version || !atLeast(version, MIN_CRANE)) {
+    return {
+      state: "outdated",
+      version,
+      executable,
+      location,
+      events: false,
+      message: `Foxx needs Crane ${MIN_CRANE} or newer, but ${where} is ${version ? "Crane " + version : "an unknown version"}. It cannot sign governance changes ('crane governance sign'), so zones, flows, and context would be reverted. Install the latest Crane, or set "foxx.cranePath" to a newer one.`,
+    };
+  }
+  return { state: "ok", version, executable, location, events: atLeast(version, EVENTS_SINCE) };
+}

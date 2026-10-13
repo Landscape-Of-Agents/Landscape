@@ -44,14 +44,18 @@ pub(super) fn health(context: &Context) -> Value {
 /** The overview page: activity, evals, integrity, coverage, and recent alerts and violations
  * Input
     - context: &Context - repository data
-    - query: &BTreeMap<String, String> - the global filter (filter.rs)
+    - filter: &Query - the global filter
     - kind: &str - PERSONAL or ORGANIZATION
  * Output
     - Value
 */
-pub(super) fn overview(context: &Context, query: &BTreeMap<String, String>, kind: &str) -> Value {
+pub(super) fn overview(
+    context: &Context,
+    filter: &crate::telemetry::query::Query,
+    kind: &str,
+) -> Value {
     let snapshot = &context.snapshot;
-    let specs = super::filter::filtered(context, query, None);
+    let specs = super::filter::filtered(context, filter, None);
     json!({
         "active_sessions": snapshot.sessions.iter().filter(|session| session.ended_at.is_none() && !context.stale(session)).count(),
         "stale_sessions": snapshot.sessions.iter().filter(|session| context.stale(session)).count(),

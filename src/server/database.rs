@@ -16,7 +16,7 @@ use crate::platform::io_error;
 
 /** Current schema version applied by the migrations (3: records keyed by installation; 4: the
  * members' repository status and the service's settings) */
-pub(crate) const SCHEMA_VERSION: i64 = 6;
+pub(crate) const SCHEMA_VERSION: i64 = 7;
 
 /** How the service reaches its database
  * Fields
@@ -289,6 +289,25 @@ const COLLECTIONS: &[Collection] = &[
             (&[("event_id", 1)], true),
             (&[("repository_id", 1), ("occurred_at", -1)], false),
             (&[("action.action_user", 1), ("occurred_at", -1)], false),
+        ],
+    },
+    Collection {
+        name: "credit_grants",
+        required: &[
+            "grant_id",
+            "repository_id",
+            "installation",
+            "session",
+            "amount",
+            "status",
+        ],
+        indexes: &[
+            (&[("grant_id", 1)], true),
+            (
+                &[("repository_id", 1), ("installation", 1), ("status", 1)],
+                false,
+            ),
+            (&[("repository_id", 1), ("approved_at", -1)], false),
         ],
     },
     Collection {

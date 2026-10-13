@@ -1,9 +1,13 @@
 // Compliance evidence. Each control states its objective, enforcement rule, required evidence,
-// verification method, and framework mappings, and is evaluated only from evidence Crane actually
-// holds: SATISFIED needs positive evidence, missing evidence is NO_EVIDENCE, controls Crane cannot
-// instrument are UNSUPPORTED, and partial coverage is PARTIAL with its gaps listed. Framework
-// mappings (OWASP LLM and agentic guidance, NIST AI RMF, SOC 2, ISO/IEC 27001:2022, GDPR) show which
-// requirements the evidence supports; they are not certification.
+// verification method, the flows (DASHBOARD.md) its evidence comes from, how to satisfy it, and
+// framework mappings, and is evaluated only from evidence Crane actually holds: SATISFIED needs
+// positive evidence, missing evidence is NO_EVIDENCE, a control with nothing to apply to (no
+// preserve rules defined) is NOT_APPLICABLE, and partial coverage is PARTIAL. Gaps are things a
+// person can fix; limitations are inherent to the method and never lower an outcome by themselves.
+// Network egress is not a control: hooks cannot observe it, so it is reported as inferred
+// observability instead. Framework mappings (OWASP LLM and agentic guidance, NIST AI RMF, SOC 2,
+// ISO/IEC 27001:2022, GDPR) show which requirements the evidence supports; they are not
+// certification.
 
 // Evaluated by the hosted dashboard; the CLI only builds the Inputs it reports
 #![cfg_attr(not(feature = "server"), allow(dead_code))]
@@ -20,6 +24,8 @@ use serde_json::Value;
     - evidence: &'static str - evidence required
     - method: &'static str - how the evidence is verified
     - mappings: &'static [&'static str] - framework references the evidence supports
+    - flows: &'static [&'static str] - flows whose events are its evidence
+    - fix: &'static str - how a person satisfies it
 */
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Control {
@@ -30,31 +36,33 @@ pub(crate) struct Control {
     pub(crate) evidence: &'static str,
     pub(crate) method: &'static str,
     pub(crate) mappings: &'static [&'static str],
+    pub(crate) flows: &'static [&'static str],
+    pub(crate) fix: &'static str,
 }
 
 /** The controls Crane reports */
 pub(crate) const CONTROLS: &[Control] = &[
-    Control { id: "CR-01", version: 1, objective: "Protected code stays identical to its trusted baseline", rule: "preserve commands; pre-write simulation denies changes; post-action verification detects others", evidence: "passing preserve commands with signed records", method: "content digest against the signed origin digest", mappings: &["OWASP LLM06 Excessive Agency", "NIST AI RMF MANAGE 2.4", "SOC 2 CC8.1", "ISO/IEC 27001 A.8.32"] },
-    Control { id: "CR-02", version: 1, objective: "Required changes happen within their selection and are meaningful", rule: "target commands with change-type semantics; whitespace-only changes are rejected", evidence: "passing target commands", method: "lexical change classification against the checkpoint baseline", mappings: &["NIST AI RMF MEASURE 2.3", "SOC 2 CC8.1"] },
-    Control { id: "CR-03", version: 1, objective: "Governance state is authentic, current, and not rolled back", rule: "Ed25519-signed manifest and records, SHA-512 digests, rollback anchor outside the repository", evidence: "no integrity findings; rollback anchor present", method: "signature, digest, and generation verification", mappings: &["OWASP Agentic T3 Privilege Compromise", "NIST AI RMF GOVERN 1.4", "SOC 2 CC6.1", "ISO/IEC 27001 A.8.24"] },
-    Control { id: "CR-04", version: 1, objective: "Every agent action is authorized before it runs", rule: "pre-tool hooks for every tool; failures deny (fail closed)", evidence: "valid hooks and a decision for every tool call", method: "hook validation and decision/verification correlation", mappings: &["OWASP Agentic T2 Tool Misuse", "NIST AI RMF MANAGE 2.2", "SOC 2 CC6.1", "ISO/IEC 27001 A.5.15"] },
-    Control { id: "CR-05", version: 1, objective: "Actual effects are verified after every action", rule: "post-tool verification of written files or the whole work tree", evidence: "a verification for every allowed tool call", method: "evidence completeness of tool calls", mappings: &["NIST AI RMF MEASURE 2.7", "SOC 2 CC7.2", "ISO/IEC 27001 A.8.16"] },
-    Control { id: "CR-06", version: 1, objective: "Audit evidence is tamper-evident and reconstructable", rule: "hash-chained events, audit trail, and ledger; signed session attestations", evidence: "verified chains and signed attestations", method: "chain verification", mappings: &["OWASP Agentic T8 Repudiation", "SOC 2 CC7.2", "ISO/IEC 27001 A.8.15", "ISO/IEC 27001 A.5.28"] },
-    Control { id: "CR-07", version: 1, objective: "Agents cannot change their own authority", rule: "denial of writes to .crane, trust material, hook settings, markers, and governance commands", evidence: "bypass attempts prevented and no confirmed bypass", method: "decision and post-action outcomes", mappings: &["OWASP Agentic T3 Privilege Compromise", "OWASP LLM06 Excessive Agency", "SOC 2 CC6.8", "ISO/IEC 27001 A.8.2"] },
-    Control { id: "CR-08", version: 1, objective: "Autonomy is bounded by a reconcilable credit budget", rule: "atomic, idempotent ledger; exhausted credits require approval", evidence: "ledger chain and balances reconcile", method: "ledger verification", mappings: &["OWASP LLM10 Unbounded Consumption", "OWASP Agentic T4 Resource Overload", "NIST AI RMF MANAGE 2.4"] },
-    Control { id: "CR-09", version: 1, objective: "Secrets are not persisted in evidence", rule: "redaction before persistence; raw tool inputs and prompts are never stored", evidence: "redaction applied to every stored event", method: "design (only digests of inputs and prompts are stored) and redaction counters", mappings: &["OWASP LLM02 Sensitive Information Disclosure", "GDPR Art. 25", "GDPR Art. 32", "ISO/IEC 27001 A.8.12"] },
-    Control { id: "CR-10", version: 1, objective: "Network egress by agents is visible", rule: "destinations inferred from commands and tool arguments", evidence: "observed network telemetry", method: "network instrumentation (not available in hooks)", mappings: &["OWASP Agentic T2 Tool Misuse", "ISO/IEC 27001 A.8.16"] },
-    Control { id: "CR-11", version: 1, objective: "Every action is attributable to a canonical identity", rule: "canonical session and task identifiers with provider provenance", evidence: "sessions with provider-reported identities", method: "identity provenance", mappings: &["OWASP Agentic T9 Identity Spoofing", "NIST AI RMF GOVERN 1.4", "SOC 2 CC6.1"] },
-    Control { id: "CR-12", version: 1, objective: "Humans are alerted and can intervene", rule: "approvals, quarantine, and alert delivery", evidence: "an alert channel and recorded interventions", method: "integration configuration and alert log", mappings: &["NIST AI RMF MANAGE 4.1", "SOC 2 CC7.3", "ISO/IEC 27001 A.5.24"] },
-    Control { id: "CR-13", version: 1, objective: "Instruction-integrity attacks are screened", rule: "prompt phrase screening (heuristic)", evidence: "screened prompts", method: "heuristic only; not a guarantee", mappings: &["OWASP LLM01 Prompt Injection", "OWASP Agentic T6 Intent Breaking"] },
+    Control { id: "CR-01", version: 1, objective: "Protected code stays identical to its trusted baseline", rule: "preserve commands; pre-write simulation denies changes; post-action verification detects others", evidence: "passing preserve commands with signed records", method: "content digest against the signed origin digest", mappings: &["OWASP LLM06 Excessive Agency", "NIST AI RMF MANAGE 2.4", "SOC 2 CC8.1", "ISO/IEC 27001 A.8.32"], flows: &["F01", "F05", "F06", "F19"], fix: "Preserve the code that must not change ('crane protect' or Foxx), then run 'crane test .'." },
+    Control { id: "CR-02", version: 1, objective: "Required changes happen within their selection and are meaningful", rule: "target commands with change-type semantics; whitespace-only changes are rejected", evidence: "passing target commands", method: "lexical change classification against the checkpoint baseline", mappings: &["NIST AI RMF MEASURE 2.3", "SOC 2 CC8.1"], flows: &["F01", "F07", "F19"], fix: "Target the code a task must change ('crane target'); the task passes once it changes meaningfully." },
+    Control { id: "CR-03", version: 1, objective: "Governance state is authentic, current, and not rolled back", rule: "Ed25519-signed manifest and records, SHA-512 digests, rollback anchor outside the repository", evidence: "no integrity findings; rollback anchor present", method: "signature, digest, and generation verification", mappings: &["OWASP Agentic T3 Privilege Compromise", "NIST AI RMF GOVERN 1.4", "SOC 2 CC6.1", "ISO/IEC 27001 A.8.24"], flows: &["F12", "F19", "F25", "F28"], fix: "Keep governance signed ('crane governance sign') and let every member upload so the rollback anchor is reported." },
+    Control { id: "CR-04", version: 1, objective: "Every agent action is authorized before it runs", rule: "pre-tool hooks for every tool; failures deny (fail closed)", evidence: "valid hooks and a decision for every tool call", method: "hook validation and decision/verification correlation", mappings: &["OWASP Agentic T2 Tool Misuse", "NIST AI RMF MANAGE 2.2", "SOC 2 CC6.1", "ISO/IEC 27001 A.5.15"], flows: &["F05", "F06", "F11"], fix: "Install the hooks ('crane agent install --profile claude' or codex) on every machine an agent runs on." },
+    Control { id: "CR-05", version: 1, objective: "Actual effects are verified after every action", rule: "post-tool verification of written files or the whole work tree", evidence: "a verification for every allowed tool call", method: "evidence completeness of tool calls", mappings: &["NIST AI RMF MEASURE 2.7", "SOC 2 CC7.2", "ISO/IEC 27001 A.8.16"], flows: &["F05", "F06"], fix: "Keep the post-tool hook installed; allowed calls are verified after they run." },
+    Control { id: "CR-06", version: 1, objective: "Audit evidence is tamper-evident and reconstructable", rule: "hash-chained events, audit trail, and ledger; signed session attestations", evidence: "verified chains and signed attestations", method: "chain verification", mappings: &["OWASP Agentic T8 Repudiation", "SOC 2 CC7.2", "ISO/IEC 27001 A.8.15", "ISO/IEC 27001 A.5.28"], flows: &["F08", "F09", "F12"], fix: "End agent sessions normally so the SessionEnd hook signs them; keep uploads on." },
+    Control { id: "CR-07", version: 1, objective: "Agents cannot change their own authority", rule: "denial of writes to .crane, trust material, hook settings, markers, and governance commands", evidence: "bypass attempts prevented and no confirmed bypass", method: "decision and post-action outcomes", mappings: &["OWASP Agentic T3 Privilege Compromise", "OWASP LLM06 Excessive Agency", "SOC 2 CC6.8", "ISO/IEC 27001 A.8.2"], flows: &["F05", "F06", "F16"], fix: "Nothing to configure: Crane denies writes to its own files; investigate any confirmed bypass." },
+    Control { id: "CR-08", version: 1, objective: "Autonomy is bounded by a reconcilable credit budget", rule: "atomic, idempotent ledger; exhausted credits require approval", evidence: "ledger chain and balances reconcile", method: "ledger verification", mappings: &["OWASP LLM10 Unbounded Consumption", "OWASP Agentic T4 Resource Overload", "NIST AI RMF MANAGE 2.4"], flows: &["F27"], fix: "Keep the ledger intact; a ledger that does not reconcile was edited outside Crane." },
+    Control { id: "CR-09", version: 1, objective: "Secrets are not persisted in evidence", rule: "redaction before persistence; raw tool inputs and prompts are never stored", evidence: "redaction applied to every stored event", method: "design (only digests of inputs and prompts are stored) and redaction counters", mappings: &["OWASP LLM02 Sensitive Information Disclosure", "GDPR Art. 25", "GDPR Art. 32", "ISO/IEC 27001 A.8.12"], flows: &["F05", "F06"], fix: "Nothing to configure: inputs and prompts are stored only as digests." },
+    Control { id: "CR-11", version: 1, objective: "Every action is attributable to a canonical identity", rule: "canonical session and task identifiers with provider provenance", evidence: "sessions with provider-reported identities", method: "identity provenance", mappings: &["OWASP Agentic T9 Identity Spoofing", "NIST AI RMF GOVERN 1.4", "SOC 2 CC6.1"], flows: &["F03", "F17"], fix: "Use agents that report their session identity (Claude Code, Codex); set CRANE_SESSION_ID otherwise." },
+    Control { id: "CR-12", version: 1, objective: "Humans are alerted and can intervene", rule: "approvals, quarantine, and alert delivery", evidence: "an alert channel and recorded interventions", method: "integration configuration and alert log", mappings: &["NIST AI RMF MANAGE 4.1", "SOC 2 CC7.3", "ISO/IEC 27001 A.5.24"], flows: &["F14", "F22"], fix: "Configure Slack or WhatsApp ('crane integrate slack') or add an alert rule ('crane alert add')." },
+    Control { id: "CR-13", version: 1, objective: "Instruction-integrity attacks are screened", rule: "prompt phrase screening (heuristic)", evidence: "screened prompts", method: "heuristic only; not a guarantee", mappings: &["OWASP LLM01 Prompt Injection", "OWASP Agentic T6 Intent Breaking"], flows: &["F04"], fix: "Keep the UserPromptSubmit hook installed so every prompt is screened." },
 ];
 
 /** The evaluation of one control
  * Fields
     - control: &'static Control - definition
-    - outcome: &'static str - SATISFIED, PARTIAL, NOT_SATISFIED, NO_EVIDENCE, or UNSUPPORTED
+    - outcome: &'static str - SATISFIED, PARTIAL, NOT_SATISFIED, NO_EVIDENCE, or NOT_APPLICABLE
     - evidence: Vec<String> - evidence found
-    - gaps: Vec<String> - what is missing
+    - gaps: Vec<String> - what is missing and can be fixed
+    - limitations: Vec<String> - what the method cannot prove (never lowers the outcome alone)
 */
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Evaluation {
@@ -62,6 +70,7 @@ pub(crate) struct Evaluation {
     pub(crate) outcome: &'static str,
     pub(crate) evidence: Vec<String>,
     pub(crate) gaps: Vec<String>,
+    pub(crate) limitations: Vec<String>,
 }
 
 /** What the evaluation can draw on
@@ -75,6 +84,7 @@ pub(crate) struct Evaluation {
     - audit_verified: bool - the governance audit chain verifies
     - ledger_verified: bool - the ledger reconciles
     - alerts_configured: bool - Slack or WhatsApp is configured
+    - alert_rules: usize - enabled alert rules ('crane alert add')
 */
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -88,10 +98,14 @@ pub(crate) struct Inputs {
     pub(crate) audit_verified: bool,
     pub(crate) ledger_verified: bool,
     pub(crate) alerts_configured: bool,
+    pub(crate) alert_rules: usize,
 }
 
 /** Telemetry Crane cannot collect from hooks, reported as such */
 pub(crate) const UNSUPPORTED: &[&str] = &["network_bytes_sent", "cpu_ms", "llm_tokens"];
+
+/** What hooks can only infer, reported as observability rather than as a control */
+pub(crate) const INFERRED: &[(&str, &str)] = &[("network_destinations", "Destinations parsed from commands and tool arguments (F36); traffic itself is not observed, and an unrestricted shell can reach the network unseen.")];
 
 /** Evaluate every control from the evals of the repository's specification events
  * Input
@@ -120,9 +134,11 @@ pub(crate) fn evaluate(
                     vec![format!("no {label} commands have been evaluated")],
                 ),
                 Some((_, 0)) => (
-                    "NO_EVIDENCE",
+                    "NOT_APPLICABLE",
+                    vec![format!(
+                        "no {label} rules are defined, so there is nothing to check yet"
+                    )],
                     Vec::new(),
-                    vec![format!("no {label} commands exist")],
                 ),
                 Some((passed, total)) if passed == total => (
                     "SATISFIED",
@@ -141,6 +157,8 @@ pub(crate) fn evaluate(
     let confirmed = metric("bypasses_confirmed").unwrap_or(0.0);
     let prevented = evals["by_enforcement"]["PREVENTED"].as_f64();
     let signed = metric("attestations_signed").unwrap_or(0.0);
+    let prompts = evals["by_event"]["TASK_STARTED"].as_f64().unwrap_or(0.0)
+        + metric("suspicious_prompts").unwrap_or(0.0);
     let generated = sessions
         .iter()
         .filter(|session| session["provenance"] == "generated")
@@ -148,6 +166,7 @@ pub(crate) fn evaluate(
     CONTROLS
         .iter()
         .map(|control| {
+            let mut limitations: Vec<String> = Vec::new();
             let (outcome, evidence, gaps): (&'static str, Vec<String>, Vec<String>) = match control.id {
                 "CR-01" => ratio(inputs.preserve, "preserve"),
                 "CR-02" => ratio(inputs.target, "target"),
@@ -185,17 +204,33 @@ pub(crate) fn evaluate(
                     (false, true) => ("SATISFIED", vec![format!("{ledger} ledger entries reconcile")], Vec::new()),
                     (false, false) => ("NOT_SATISFIED", Vec::new(), vec!["the ledger does not reconcile".into()]),
                 },
-                "CR-09" => ("PARTIAL", vec!["raw tool inputs and prompts are stored only as SHA-512 digests".into(), format!("{} secrets redacted", metric("secrets_redacted").unwrap_or(0.0))], vec!["pattern redaction cannot prove that no secret remains in reasons or resource names".into()]),
-                "CR-10" => ("UNSUPPORTED", vec![format!("{} destinations inferred", evals["network_destinations"].as_array().map_or(0, Vec::len))], vec!["Crane does not observe network traffic; destinations are parsed from commands, and unrestricted shells can reach the network unobserved".into()]),
+                "CR-09" => {
+                    limitations.push("pattern redaction cannot prove that no secret remains in reasons or resource names".into());
+                    match events {
+                        0 => ("NO_EVIDENCE", Vec::new(), vec!["no events recorded yet".into()]),
+                        _ => ("SATISFIED", vec!["raw tool inputs and prompts are stored only as SHA-512 digests".into(), format!("redaction ran on all {events} stored events; {} secrets redacted", metric("secrets_redacted").unwrap_or(0.0))], Vec::new()),
+                    }
+                }
                 "CR-11" => match (sessions.len(), generated) {
                     (0, _) => ("NO_EVIDENCE", Vec::new(), vec!["no sessions yet".into()]),
                     (total, 0) => ("SATISFIED", vec![format!("{total} sessions with provider-reported identities")], Vec::new()),
                     (total, generated) => ("PARTIAL", vec![format!("{} of {total} sessions with provider identities", total - generated)], vec![format!("{generated} sessions have Crane-generated identities")]),
                 },
-                "CR-12" => if inputs.alerts_configured { ("SATISFIED", vec!["an alert channel is configured".into()], Vec::new()) } else { ("PARTIAL", vec!["approvals and quarantine are enforced by the hooks".into()], vec!["no Slack or WhatsApp alert channel is configured".into()]) },
-                _ => ("PARTIAL", vec![format!("{} prompts flagged", metric("suspicious_prompts").unwrap_or(0.0))], vec!["screening is heuristic and is not a defense by itself".into()]),
+                "CR-12" => match (inputs.alerts_configured, inputs.alert_rules) {
+                    (true, rules) => ("SATISFIED", vec!["an alert channel is configured".into(), format!("{rules} alert rules enabled")], Vec::new()),
+                    (false, 0) => ("PARTIAL", vec!["approvals and quarantine are enforced by the hooks".into()], vec!["no Slack or WhatsApp alert channel is configured".into()]),
+                    (false, rules) => ("PARTIAL", vec![format!("{rules} alert rules enabled")], vec!["the rules' channels are not configured on any reporting machine".into()]),
+                },
+                _ => {
+                    limitations.push("screening is heuristic and is not a defense by itself".into());
+                    if prompts == 0.0 {
+                        ("NO_EVIDENCE", Vec::new(), vec!["no prompts recorded; is the UserPromptSubmit hook installed?".into()])
+                    } else {
+                        ("SATISFIED", vec![format!("{prompts} prompts screened, {} flagged", metric("suspicious_prompts").unwrap_or(0.0))], Vec::new())
+                    }
+                }
             };
-            Evaluation { control, outcome, evidence, gaps }
+            Evaluation { control, outcome, evidence, gaps, limitations }
         })
         .collect()
 }

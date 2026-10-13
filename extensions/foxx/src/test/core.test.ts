@@ -5,7 +5,7 @@ import { test } from "node:test";
 
 import { parse } from "yaml";
 
-import { selectionArgs, selectionIdFrom } from "../core/crane";
+import { atLeast, craneStatus, parseVersion, selectionArgs, selectionIdFrom } from "../core/crane";
 import { ACTIONS, search } from "../core/actions";
 import { activate, addContext, addFlow, addZone, attachContextPack, attachToFlow, attachToZone, contextPackOf, entities } from "../core/governance";
 import { parsePolicies } from "../core/policies";
@@ -96,4 +96,20 @@ test("adds context to a zone or flow in its own pack, appending without duplicat
   assert.equal(entities(text).find((entity) => entity.id === "charge-zone")?.status, "active");
   assert.throws(() => addContext(text, "flow", "missing", ["x"]), /no flow/);
   assert.throws(() => addContext(text, "zone", "charge-zone", ["  "]), /write the context/);
+});
+
+test("checks the Crane version before running anything", () => {
+  assert.equal(parseVersion("crane 0.4.10\n"), "0.4.10");
+  assert.equal(atLeast("0.4.10", "0.4.8"), true, "compared as numbers, not text");
+  assert.equal(atLeast("0.4.3", "0.4.8"), false);
+  assert.equal(atLeast("1.0.0", "0.4.8"), true);
+  const old = craneStatus("crane", { code: 0, stdout: "crane 0.4.3", stderr: "" }, "/opt/tools/crane");
+  assert.equal(old.state, "outdated");
+  assert.match(old.message ?? "", /0\.4\.3/);
+  assert.match(old.message ?? "", /\/opt\/tools\/crane/, "says which executable is too old");
+  assert.equal(craneStatus("crane", { code: 127, stdout: "", stderr: "" }).state, "missing");
+  const current = craneStatus("crane", { code: 0, stdout: "crane 0.4.10", stderr: "" });
+  assert.equal(current.state, "ok");
+  assert.equal(current.events, true);
+  assert.equal(craneStatus("crane", { code: 0, stdout: "crane 0.4.8", stderr: "" }).events, false, "editor events need 0.4.10");
 });

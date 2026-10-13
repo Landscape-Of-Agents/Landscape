@@ -284,7 +284,14 @@ pub(super) fn handle(
             store::hold_approval(database, &repository, &installation, operation, &approval)
         }
         ("GET", "owner") => store::confirmed_owner(database, &repository),
-        (_, "positions" | "batch" | "link" | "owner") => {
+        // Credit grants an admin approved on the dashboard, for this machine only
+        ("GET", "grants") => store::pending_grants(database, &repository, &installation),
+        ("POST", "grants") => {
+            let results: Value = serde_json::from_slice(&body)
+                .map_err(|error| (400, format!("invalid grant results: {error}")))?;
+            store::settle_grants(database, &repository, &installation, &results)
+        }
+        (_, "positions" | "batch" | "link" | "owner" | "grants") => {
             return Err((405, "method not allowed".into()))
         }
         _ => return Err(not_found()),

@@ -82,12 +82,18 @@ pub(super) fn sessions(context: &Context, query: &BTreeMap<String, String>) -> V
 /** The event timeline, newest first, filtered by any attribute and paginated
  * Input
     - context: &Context - repository data
-    - query: &BTreeMap<String, String> - the global filter (filter.rs), cursor, limit
+    - filter: &Query - the global filter
+    - query: &BTreeMap<String, String> - cursor, limit
     - kind: &str - PERSONAL or ORGANIZATION
  * Output
     - Value {events, next_cursor, total}
 */
-pub(super) fn events(context: &Context, query: &BTreeMap<String, String>, kind: &str) -> Value {
+pub(super) fn events(
+    context: &Context,
+    filter: &crate::telemetry::query::Query,
+    query: &BTreeMap<String, String>,
+    kind: &str,
+) -> Value {
     let limit = query
         .get("limit")
         .and_then(|value| value.parse::<usize>().ok())
@@ -97,7 +103,7 @@ pub(super) fn events(context: &Context, query: &BTreeMap<String, String>, kind: 
         .get("cursor")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
-    let matching = super::filter::filtered(context, query, None)
+    let matching = super::filter::filtered(context, filter, None)
         .into_iter()
         .rev()
         .collect::<Vec<_>>();

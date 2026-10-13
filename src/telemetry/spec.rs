@@ -1609,6 +1609,27 @@ pub(crate) fn from_alert(alert: &Value, repository: &str) -> Vec<Value> {
         spec.set("other", "triggering_event_id", &alert["event_id"])
             .set("other", "alert_key", &alert["key"])
             .set("other", "alert_title", &alert["title"]);
+        // A threshold rule built with 'crane alert add' (DASHBOARD.md F14, Part 4)
+        if let Some(rule) = alert["rule"].as_object() {
+            for key in [
+                "name",
+                "metric",
+                "op",
+                "threshold",
+                "window_minutes",
+                "channels",
+                "filter",
+            ] {
+                if let Some(value) = rule.get(key) {
+                    spec.set("other", &format!("rule_{key}"), value);
+                }
+            }
+            spec.set("eval", "rule_value", &alert["value"]).set(
+                "eval",
+                "rule_threshold",
+                &rule["threshold"],
+            );
+        }
         spec
     };
     let mut out = Vec::new();
@@ -1628,7 +1649,13 @@ pub(crate) fn from_alert(alert: &Value, repository: &str) -> Vec<Value> {
         ));
         return out;
     }
-    let mut raised = common("ALERT_RAISED");
+    let rule_state = (alert["kind"] == "rule").then(|| alert["state"].as_str().unwrap_or("FIRING"));
+    let mut raised = common(match rule_state {
+        Some("RESOLVED") => "ALERT_RULE_RESOLVED",
+        Some("TEST") => "ALERT_RULE_TESTED",
+        Some(_) => "ALERT_RULE_FIRED",
+        None => "ALERT_RAISED",
+    });
     raised
         .respond(
             alert["state"].as_str().unwrap_or("OPEN"),
@@ -1655,14 +1682,18 @@ pub(crate) fn from_alert(alert: &Value, repository: &str) -> Vec<Value> {
         let delivered = result.starts_with("sent")
             || result.starts_with("ok")
             || result.starts_with("delivered");
-        let dry = result.contains("dry");
+        // Sent in the background without waiting for the answer: not a failure, not confirmed
+        let queued = result.starts_with("queued");
+        let dry = result.contains("dry") || queued;
         let mut spec = common(if delivered || dry {
             "ALERT_DELIVERED"
         } else {
             "ALERT_DELIVERY_FAILED"
         });
         spec.respond(
-            if dry {
+            if queued {
+                "QUEUED"
+            } else if dry {
                 "DRY_RUN"
             } else if delivered {
                 "DELIVERED"
@@ -1672,6 +1703,10 @@ pub(crate) fn from_alert(alert: &Value, repository: &str) -> Vec<Value> {
             if delivered || dry { "NA" } else { "HTTP_ERROR" },
             if delivered {
                 "Alert delivered."
+            } else if queued {
+                "Alert sent; delivery not confirmed."
+            } else if dry {
+                "Alert delivery skipped (dry run)."
             } else {
                 "Alert delivery failed."
             },
@@ -1689,6 +1724,12 @@ pub(crate) fn from_alert(alert: &Value, repository: &str) -> Vec<Value> {
         )
         .set("other", "channel", &channel)
         .set("other", "result", &delivery["result"]);
+        if let Some(status) = delivery["status"].as_u64() {
+            spec.set("eval", "http_status", status);
+        }
+        if let Some(ms) = delivery["ms"].as_u64() {
+            spec.set("eval", "delivery_ms", ms);
+        }
         out.push(envelope_detached(
             spec,
             &format!("{id}-d{index}"),

@@ -3060,17 +3060,31 @@ A tool from an external (MCP) server or a tool Crane does not know.
 
 ## Part 3: Where events appear on the dashboard
 
-| Tab | Built from |
+Pages are grouped in the left rail (Monitor, Investigate, Operate, Govern, Organization). Each page is split
+into zones, one metric or table per panel, and the zones are listed under the page in the rail. Every
+panel has an info icon (hover for the explanation, click for the details sidebar), refresh, expand,
+monitor view (full screen, refreshed every 30 seconds), and collapse. Every time is shown as
+`DD:MM:YYYY:HH:MM:SS`.
+
+| Page | Built from |
 |---|---|
 | **Header and scope** | F00 (sign-in, account, repository, member), F02.7 (linked members) |
 | **Repositories** | per repository: count of F02.9 machines, F03 sessions, all events, F05.3 to F05.7 denials, F06.5 bypasses, F14.1 alerts, newest `occurred_at` |
-| **Overview** | Activity: F03, F04, F05, F10; Security outcomes: F05.4, F06.3 to F06.5, F07.1, F27; Integrity: F12, F28; Recent violations: F06.4, F06.5; Recent alerts: F14 |
-| **Agents & Autonomy** | Agents: F03 grouped by `agent_id`; Sessions: F03, F08, F10, F17, F27 |
+| **Overview** | Activity: F03, F04, F05, F10; Security outcomes: F05.4, F06.3 to F06.5, F07.1, F27; Integrity: F12, F28; Recent violations: F06.4, F06.5; Recent alerts: F14; All evals |
+| **Event explorer** | every event, as volume over time (split by any attribute) and as a stream |
+| **Timeline** | Gantt chart: traces (an F05 decision and the events with the same `action_id`) and sessions as bars, rows and colors by any attribute; Event timeline: every event as a dot in lanes |
+| **Logs** | every event as a log line, with its severity, flow, statement, and attributes |
+| **Traces** | events grouped by `action.action_id`; duration histogram and a table filtered by kind, outcome, duration, and span count; a waterfall for one trace |
+| **Topology** | Who used what: agents, sessions, tools, and paths, sized by events and colored by denials; Flow dependencies: which flow follows which within a session |
+| **Distributions** | histograms of trace duration, gap between session events, events per session, and any numeric `eval.*` attribute; breakdowns by any attribute |
+| **Texts and reasons** | the words of `statement`, `reason`, and `response_statement`, the distinct texts, and log lines |
+| **Sessions, Agents** | Agents: F03 grouped by `agent_id`; Sessions: F03, F08, F10, F17, F27 |
 | **Session page** | tiles: F03, F05.10, F06.4, F06.5, F27; action graph: every event with that `session_id` in `sequence` order; tasks: F04, F07; downloads: F30.3 |
-| **Observability** | every event, filterable by any attribute group |
+| **Alerting** | rules built with `crane alert` (from the newest status report), rule values over time, firings, deliveries, alert events (F14), hook alerts |
+| **Credits** | balances per session (F27), grants made on the dashboard and their outcome |
+| **Audit trail** | F13.3, F18 to F20, F28, and every command event, with the time of each change |
 | **Governance** | F01, F13.3, F18, F19, F20, F28 (newest report per repository) |
-| **Compliance** | controls evaluated from F05, F06, F07, F08, F09.6, F12, F14, F22, F27 |
-| **Alerts** | F14 (with F09.6 and F10.1 as service- and dashboard-raised alerts) |
+| **Compliance** | controls evaluated from F05, F06, F07, F08, F09.6, F12, F14, F22, F27; outcomes; inferred observability; what Crane cannot observe |
 | **Settings** | Approvals: F02.4 to F02.7, F30.4, F30.5; Members: F02.7, F02.9, F09, F28; Health: F09, F12, F27.10, F29; Connection: F21, F02.5; Integrations: F22 |
 
 ### Action graph encoding (session page)
@@ -3146,3 +3160,85 @@ returns the specification version and the 13 groups.
 - **Notes:** facts found deep in the code (keys, checkpoint checks, owner keys, policy results) are
   attached to the next event the same Crane process stores. If that process stores no event, the
   facts are not recorded.
+
+### Filters
+
+Every page and every API route takes the same filter, applied to the event stream before anything
+is counted (`telemetry/query.rs`; the alert rules use the same code).
+
+- `filter`: a JSON list of clauses `{"path": "...", "op": "...", "values": [...], "group": N}`. The
+  path is any attribute (`decision.decision`, `actor.agent_id`, `eval.latency_ms`, ...) or a facet
+  name (`flow`, `severity`, `decision`, `agent`, `session`, `tool`, `status`, `origin`, `event`,
+  `failure_state`, `enforcement`, `alert_kind`).
+- Operators: `is`, `not`, `contains`, `not_contains`, `prefix`, `gt`, `gte`, `lt`, `lte`, `exists`,
+  `missing`. Comparisons are numeric when both sides are numbers, else by text, ignoring case.
+- Combination: the values of one clause are OR-ed; clauses are AND-ed; clauses that share a `group`
+  number are OR-ed with each other. Any mix of these can be active at once.
+- `since` and `until` (Unix milliseconds), `q` (text anywhere in the event), and the shortcuts
+  `session`, `task`, `name`, and one parameter per facet (`?flow=F05,F06`) are AND-ed with the
+  list.
+- `/api/attributes` lists every attribute present in the filtered events: its kind, how many events
+  have it, its distinct values (identifiers excepted), and the range of numbers.
+
+On the dashboard, the filter bar shows each clause as a pill that can be edited, switched off, or
+removed. The condition builder chooses the attribute, an operator that fits its kind, the values,
+and whether it is AND-ed or OR-ed with the clause before. The filter is kept for the browser tab.
+
+### New API routes
+
+`/api/gantt`, `/api/timeline`, `/api/traces`, `/api/traces/{action_id}`, `/api/topology`,
+`/api/dependencies`, `/api/histogram`, `/api/semantics`, `/api/attributes`, `/api/alerting`, and
+`/api/grants`. They are read-only and take the filter above. The Gantt chart and the event timeline
+take `rows`, `lanes`, and `color` (a facet or a path), and the histogram takes `field` and `bins`.
+
+### Alert rules (`crane alert`)
+
+Rules are built from the command line, never on the dashboard, and only by a person (an agent is
+refused):
+
+```
+crane alert add NAME metric METRIC above|at_least|below|at_most|equals N [window 15m]
+                [channels slack,whatsapp] [severity high] [cooldown 30]
+                [where PATH OPERATOR VALUES]... [quiet-resolve]
+crane alert list|check [--json]
+crane alert remove|enable|disable|test NAME
+crane alert log [--json]
+crane alert metrics
+```
+
+- A metric is any number of the evals (`crane alert metrics` lists them), computed over the events
+  of the window that match the rule's `where` clauses.
+- Rules are kept in the trust directory (`alert-rules.json`). The background sync evaluates them
+  (and `crane alert check` does so at once). A rule is `OK` or `FIRING`. A ratio or percentile with no events in the window has no value, and the state stays as it was. When it starts
+  firing, Crane sends the message to the rule's channels (`crane integrate slack|whatsapp` holds the
+  destination) and records the HTTP status and time taken. Crane sends a reminder after each
+  cooldown while the rule keeps firing, and a resolved message when it stops, unless
+  `quiet-resolve` is given.
+- Each evaluation is logged (`alert-evaluations.jsonl`, the newest 1000), and each message is
+  recorded as an F14 alert of kind `rule`. The newest status report carries the rules, their
+  state, and the history to the dashboard.
+
+New F14 event names: `ALERT_RULE_FIRED`, `ALERT_RULE_RESOLVED`, `ALERT_RULE_TESTED`. Their `other`
+group carries `rule_name`, `rule_metric`, `rule_op`, `rule_threshold`, `rule_window_minutes`,
+`rule_channels`, and `rule_filter`. Their `eval` group carries `rule_value`, `rule_threshold`, `http_status`, and
+`delivery_ms`. A delivery that was sent without waiting is `QUEUED` (no longer counted as failed).
+
+### Credit grants
+
+An admin or owner of the repository (GitHub admin access, checked again when the grant is made) can
+grant credits to a session on the Credits page. The grant goes through the same sign-in approval as
+other dashboard changes. It is stored as `PENDING` in `credit_grants` (schema version 7) and
+expires after 7 days. The service records `CREDITS_GRANT_APPROVED` or `CREDITS_GRANT_REFUSED`
+(F27). The next upload of the machine that owns the session applies the grant to the credit ledger.
+The ledger entry reads "granted on the dashboard by @login". The grant becomes `APPLIED`, or
+`REJECTED` when the session is not on that machine. Amounts are 1 to 1000.
+
+### Compliance
+
+- **CR-10** is removed: it repeated CR-09.
+- A control whose inputs do not exist is `NOT_APPLICABLE`, not failed. Example: alerting controls
+  when no rule or integration is set up.
+- Each control lists the flows it is evaluated from, how to fix it, and its limitations. Example:
+  CR-13 can only screen prompts that pass through the hooks.
+- **Inferred observability** lists network destinations inferred from tool calls
+  (`NETWORK_DESTINATION_INFERRED`). They are inferred, not observed.

@@ -484,6 +484,10 @@ pub(crate) fn sync(
         },
     };
     let refresh = trigger == Trigger::Manual;
+    // Alert rules first, so their notifications are uploaded by this sync (telemetry/rules.rs)
+    if let Err(error) = super::rules::evaluate(workspace, stores, "SYNC") {
+        crate::platform::notes::note("ALERT_RULES_FAILED", json!({"error": error}));
+    }
     let mut status = state(stores);
     let previous_attempt = status.last_attempt_at;
     status.last_attempt_at = now_millis();
@@ -510,6 +514,66 @@ pub(crate) fn sync(
     }
     save_state(stores, &status);
     result.map(Option::unwrap_or_default)
+}
+
+/** Apply the credit grants an admin approved on the dashboard for this machine: each grant is a
+ * Grant entry in the session's ledger, idempotent by its grant id (a retried sync never credits
+ * twice), and rejected when the session is not on this machine; the service is told the outcome
+ * Input
+    - client: &Client - service connection
+    - workspace: &Workspace - repository
+    - stores: &Stores - runtime stores
+ * Output
+    - Result<usize, String> grants settled
+*/
+fn apply_grants(client: &Client, workspace: &Workspace, stores: &Stores) -> Result<usize, String> {
+    let answer = client.call("GET", "grants", &[])?;
+    let grants = answer["grants"].as_array().cloned().unwrap_or_default();
+    if grants.is_empty() {
+        return Ok(0);
+    }
+    let sessions = stores.identity.sessions();
+    let generation = State::load(workspace)
+        .map(|state| state.generation())
+        .unwrap_or(0);
+    let mut results = Vec::new();
+    for grant in &grants {
+        let id = grant["grant_id"].as_str().unwrap_or_default();
+        let session = grant["session"].as_str().unwrap_or_default();
+        let amount = grant["amount"].as_u64().unwrap_or(0).min(1000);
+        if id.is_empty() || amount == 0 {
+            continue;
+        }
+        if !sessions
+            .iter()
+            .any(|record| record.foxx_session_id == session)
+        {
+            results.push(json!({"grant_id": id, "status": "REJECTED", "detail": "the session is not on this machine"}));
+            continue;
+        }
+        let reason = format!(
+            "granted on the dashboard by @{}: {}",
+            grant["approved_by"].as_str().unwrap_or("an admin"),
+            grant["reason"].as_str().unwrap_or_default()
+        );
+        let key = format!("grant:{id}");
+        match stores.ledger.apply(super::ledger::Operation {
+            session,
+            task: None,
+            tool_call_id: None,
+            kind: super::ledger::Kind::Grant,
+            amount,
+            reason: &reason,
+            registry_generation: generation,
+            idempotency_key: &key,
+        }) {
+            Ok((entry, _)) => results.push(json!({"grant_id": id, "status": "APPLIED", "entry_id": entry.entry_id, "detail": format!("{} credits available now", entry.after.available)})),
+            Err(error) => results.push(json!({"grant_id": id, "status": "REJECTED", "detail": error})),
+        }
+    }
+    let body = serde_json::to_vec(&json!({"results": results})).map_err(io_error)?;
+    client.call("POST", "grants", &body)?;
+    Ok(results.len())
 }
 
 /** Reconcile and upload: see the module comment
@@ -549,6 +613,11 @@ fn push(
             *local = remote;
             flushed.reset = true;
         }
+    }
+    // Credits an admin granted on the dashboard: applied before the ledger is read, so the new
+    // entries are uploaded by this sync (a failure only delays them to the next one)
+    if let Err(error) = apply_grants(client, workspace, stores) {
+        crate::platform::notes::note("CREDIT_GRANTS_FAILED", json!({"error": error}));
     }
     let all_events = stores.events.read_all()?;
     let ledger = stores.ledger.entries()?;

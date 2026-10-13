@@ -179,6 +179,7 @@ pub(crate) fn verified_repositories(read: &ReadOnly) -> Result<Vec<(String, Stri
     - links: BTreeMap<String, String> - member to the GitHub login that linked it
     - owner: Value - the owner key most recently confirmed by a GitHub admin (null when none)
     - specs: Vec<Value> - the repository's event stream (DASHBOARD.md), oldest first
+    - grants: Vec<Value> - credit grants approved on the dashboard, newest first
     - truncated: bool - a member had more events than are loaded
 */
 pub(crate) struct Context {
@@ -195,6 +196,7 @@ pub(crate) struct Context {
     pub(crate) links: BTreeMap<String, String>,
     pub(crate) owner: Value,
     pub(crate) specs: Vec<Value>,
+    pub(crate) grants: Vec<Value>,
     pub(crate) truncated: bool,
 }
 
@@ -397,6 +399,16 @@ pub(crate) fn load(
         .into_iter()
         .map(json)
         .collect::<Vec<_>>();
+    let grants = read
+        .find(
+            "credit_grants",
+            doc! {"repository_id": repository},
+            doc! {"approved_at": -1},
+            500,
+        )?
+        .into_iter()
+        .map(json)
+        .collect::<Vec<_>>();
     let statuses = read
         .find("repository_status", among, doc! {"collected_at": -1}, 500)?
         .into_iter()
@@ -430,6 +442,7 @@ pub(crate) fn load(
         links,
         owner,
         specs,
+        grants,
         truncated,
     })
 }

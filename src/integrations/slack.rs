@@ -72,7 +72,7 @@ impl Provider for Slack {
             .and_then(Value::as_str)
             .unwrap_or("high");
         (alert.severity >= severity_rank(minimum))
-            .then(|| json!({"channel": "slack", "result": deliver_text(workspace, integration, alert.text)}))
+            .then(|| json!({"channel": "slack", "result": deliver_text(workspace, integration, alert.text, false)}))
     }
 }
 
@@ -218,22 +218,28 @@ fn verify(integration: &Integration, secrets: &Map<String, Value>) -> Result<Str
  * Output
     - String delivery result
 */
-pub(super) fn deliver_text(workspace: &Workspace, slack: &Integration, text: &str) -> String {
+pub(super) fn deliver_text(
+    workspace: &Workspace,
+    slack: &Integration,
+    text: &str,
+    wait: bool,
+) -> String {
     let secrets = secrets(workspace, "slack");
     match slack.settings.get("mode").and_then(Value::as_str) {
         Some("bot") => match (
             secrets.get("bot_token").and_then(Value::as_str),
             slack.settings.get("channel").and_then(Value::as_str),
         ) {
-            (Some(token), Some(channel)) => send_alert(
+            (Some(token), Some(channel)) => send(
                 "https://slack.com/api/chat.postMessage",
                 &[format!("Authorization: Bearer {token}")],
                 &json!({"channel": channel, "text": text}),
+                wait,
             ),
             _ => "missing bot token or channel".into(),
         },
         _ => match secrets.get("webhook_url").and_then(Value::as_str) {
-            Some(url) => send_alert(url, &[], &json!({"text": text})),
+            Some(url) => send(url, &[], &json!({"text": text}), wait),
             None => "missing webhook URL".into(),
         },
     }

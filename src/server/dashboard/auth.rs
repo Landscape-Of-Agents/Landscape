@@ -29,15 +29,18 @@ const INTENT_DOMAIN: &str = "foxx/dashboard/intent/v1";
 
 /** What a person asked to approve, carried through GitHub sign-in in a signed cookie
  * Fields
-    - action: String - link (a machine's upload key) or owner (the owner key)
-    - code: String - the one-time code
+    - action: String - link (a machine's upload key), owner (the owner key), or grant (credits)
+    - code: String - the one-time code (empty for a grant)
     - state: String - the sign-in state it belongs to
+    - grant: Option<Value> - for a grant: {repository, session, amount, reason}
 */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Intent {
     pub(crate) action: String,
     pub(crate) code: String,
     pub(crate) state: String,
+    #[serde(default)]
+    pub(crate) grant: Option<Value>,
 }
 
 /** The viewer's access to a repository, as GitHub reports it

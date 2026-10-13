@@ -26,7 +26,7 @@ use crate::telemetry::compliance::Inputs;
     - workspace: &Workspace - repository
  * Output
     - Value {collected_at, crane_version, registry_generation, integrity, governance,
-      compliance_inputs, repo, integrations}
+      compliance_inputs, repo, integrations, alerting}
 */
 pub(crate) fn collect(workspace: &Workspace) -> Value {
     let state = State::load(workspace);
@@ -47,6 +47,7 @@ pub(crate) fn collect(workspace: &Workspace) -> Value {
         "compliance_inputs": compliance_inputs(workspace),
         "repo": repo(workspace),
         "integrations": integrations::configured(workspace),
+        "alerting": workspace.trust().map(|trust| crate::telemetry::rules::report(workspace, &crate::telemetry::Stores::open(&trust.runtime()))).unwrap_or(Value::Null),
     })
 }
 
@@ -120,7 +121,7 @@ fn governance(workspace: &Workspace) -> Result<Value, String> {
         "passed": report.passed,
         "governance_config": crate::governance::zones::load(workspace).ok(),
         "zones_and_flows": report.zones,
-        "audit": state.audit.iter().rev().take(50).map(|entry| json!({"seq": entry.seq, "at": iso_time(entry.at * 1000), "actor": entry.actor, "action": entry.action, "detail": entry.detail})).collect::<Vec<_>>(),
+        "audit": state.audit.iter().rev().take(500).map(|entry| json!({"seq": entry.seq, "at": iso_time(entry.at * 1000), "at_ms": entry.at * 1000, "actor": entry.actor, "action": entry.action, "detail": entry.detail})).collect::<Vec<_>>(),
     }))
 }
 
@@ -134,6 +135,10 @@ fn governance(workspace: &Workspace) -> Result<Value, String> {
 fn compliance_inputs(workspace: &Workspace) -> Inputs {
     let mut inputs = Inputs {
         alerts_configured: alerts::configured(workspace),
+        alert_rules: crate::telemetry::rules::load(workspace)
+            .iter()
+            .filter(|rule| rule.enabled)
+            .count(),
         hooks_valid: [AgentKind::Claude, AgentKind::Codex]
             .into_iter()
             .any(|kind| install::validate(kind).is_ok_and(|report| report["valid"] == true)),

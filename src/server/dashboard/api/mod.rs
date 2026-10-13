@@ -7,6 +7,8 @@
 mod activity;
 mod controls;
 mod filter;
+mod insights;
+mod operate;
 mod reports;
 mod timeline;
 
@@ -22,6 +24,7 @@ use serde_json::{json, Value};
 use crate::foxx::views::{agents, session_view_with, task_view_with};
 use crate::server::dashboard::data::Context;
 use crate::telemetry::compliance::{self};
+use crate::telemetry::query::Query;
 use crate::telemetry::spec::{GROUPS, SPEC_VERSION};
 
 /** Largest page of events */
@@ -61,6 +64,11 @@ pub(crate) fn route(
 ) -> Answer {
     let snapshot = &context.snapshot;
     let segments = path.trim_end_matches('/').split('/').collect::<Vec<_>>();
+    // The global filter (telemetry/query.rs), shared by every event view
+    let filter = match Query::from_params(query) {
+        Ok(filter) => filter,
+        Err(message) => return error(400, message),
+    };
     let session_detail = |id: &str| {
         snapshot.session(id).map(|session| {
             let mut view = session_view_with(snapshot, session, &context.specs);
@@ -77,7 +85,7 @@ pub(crate) fn route(
     };
     match segments.as_slice() {
         ["health"] => (200, health(context), None),
-        ["overview"] => (200, overview(context, query, kind), None),
+        ["overview"] => (200, overview(context, &filter, kind), None),
         ["members"] => (200, members(context), None),
         ["agents"] => (
             200,
@@ -98,9 +106,34 @@ pub(crate) fn route(
             Some(task) => (200, task_view_with(snapshot, task, &context.specs), None),
             None => error(404, format!("no task '{id}'")),
         },
-        ["events"] => (200, events(context, query, kind), None),
-        ["series"] => (200, filter::series(context, query), None),
-        ["facets"] => (200, filter::facets(context, query), None),
+        ["events"] => (200, events(context, &filter, query, kind), None),
+        ["series"] => (
+            200,
+            filter::series(
+                context,
+                &filter,
+                query
+                    .get("by")
+                    .map(String::as_str)
+                    .filter(|by| !by.is_empty()),
+            ),
+            None,
+        ),
+        ["facets"] => (200, filter::facets(context, &filter), None),
+        ["attributes"] => (200, filter::attributes(context, &filter), None),
+        ["gantt"] => (200, insights::gantt(context, &filter, query), None),
+        ["timeline"] => (200, insights::timeline(context, &filter, query), None),
+        ["traces"] => (200, insights::trace_table(context, &filter, query), None),
+        ["traces", id] => match insights::trace_detail(context, id, kind) {
+            Some(view) => (200, view, None),
+            None => error(404, format!("no trace '{id}'")),
+        },
+        ["topology"] => (200, insights::topology(context, &filter), None),
+        ["dependencies"] => (200, insights::dependencies(context, &filter), None),
+        ["histogram"] => (200, insights::histogram(context, &filter, query), None),
+        ["semantics"] => (200, insights::semantics(context, &filter), None),
+        ["alerting"] => (200, operate::alerting(context, kind), None),
+        ["grants"] => (200, operate::grants(context), None),
         ["graph", id] => match snapshot.session(id) {
             Some(session) => (200, graph(context, &session.foxx_session_id, kind), None),
             None => error(404, format!("no session '{id}'")),
@@ -109,7 +142,7 @@ pub(crate) fn route(
         ["ledger"] => (200, ledger_view(context, query), None),
         ["definitions"] => (
             200,
-            json!({"spec_version": SPEC_VERSION, "groups": GROUPS, "facets": filter::FACETS, "controls": compliance::CONTROLS, "domains": crate::telemetry::model::Domain::ALL}),
+            json!({"spec_version": SPEC_VERSION, "groups": GROUPS, "facets": crate::telemetry::query::FACETS.iter().map(|(name, path)| json!({"name": name, "path": path})).collect::<Vec<_>>(), "controls": compliance::CONTROLS, "domains": crate::telemetry::model::Domain::ALL}),
             None,
         ),
         ["compliance"] => (200, compliance_view(context), None),
@@ -138,17 +171,6 @@ pub(crate) fn route(
         },
         _ => error(404, format!("no API route /api/{path}")),
     }
-}
-
-/** Parse a time filter given as Unix milliseconds
- * Input
-    - query: &BTreeMap<String, String> - query
-    - key: &str - since or until
- * Output
-    - Option<u64>
-*/
-fn time_filter(query: &BTreeMap<String, String>, key: &str) -> Option<u64> {
-    query.get(key).and_then(|value| value.parse::<u64>().ok())
 }
 
 /** Combine the members' event chain and ledger results

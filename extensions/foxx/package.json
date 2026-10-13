@@ -100,12 +100,14 @@
       {
         "command": "foxx.validate",
         "title": "Validate Governance",
-        "category": "Foxx"
+        "category": "Foxx",
+        "icon": "$(check-all)"
       },
       {
         "command": "foxx.test",
         "title": "Test Policies",
-        "category": "Foxx"
+        "category": "Foxx",
+        "icon": "$(beaker)"
       },
       {
         "command": "foxx.policyStatus",
@@ -117,6 +119,17 @@
         "title": "Refresh",
         "category": "Foxx",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "foxx.revealSelection",
+        "title": "Reveal Selection",
+        "category": "Foxx"
+      },
+      {
+        "command": "foxx.openSidebar",
+        "title": "Show Overview",
+        "category": "Foxx",
+        "icon": "$(dashboard)"
       }
     ],
     "menus": {
@@ -136,9 +149,19 @@
       ],
       "view/title": [
         {
+          "command": "foxx.test",
+          "when": "view == foxx.sidebar || view == foxx.governance",
+          "group": "navigation@1"
+        },
+        {
+          "command": "foxx.validate",
+          "when": "view == foxx.sidebar",
+          "group": "navigation@2"
+        },
+        {
           "command": "foxx.refresh",
-          "when": "view == foxx.governance",
-          "group": "navigation"
+          "when": "view == foxx.sidebar || view == foxx.governance",
+          "group": "navigation@3"
         }
       ],
       "foxx.editor": [
@@ -179,6 +202,10 @@
         {
           "command": "foxx.openFile",
           "when": "false"
+        },
+        {
+          "command": "foxx.revealSelection",
+          "when": "false"
         }
       ]
     },
@@ -190,10 +217,16 @@
       }
     ],
     "views": {
-      "explorer": [
+      "foxx": [
+        {
+          "type": "webview",
+          "id": "foxx.sidebar",
+          "name": "Overview"
+        },
         {
           "id": "foxx.governance",
-          "name": "Foxx Governance"
+          "name": "Governance",
+          "icon": "images/activity.svg"
         }
       ]
     },
@@ -209,6 +242,11 @@
           "type": "boolean",
           "default": true,
           "description": "Run 'crane validate' after a file is saved and show findings as diagnostics."
+        },
+        "foxx.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the selection, its policy and its last test outcome above every preserved or targeted block."
         }
       }
     },
@@ -224,6 +262,76 @@
         "key": "ctrl+alt+f",
         "mac": "cmd+alt+f",
         "when": "editorTextFocus && isWorkspaceTrusted"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "foxx",
+          "title": "Foxx",
+          "icon": "images/activity.svg"
+        }
+      ]
+    },
+    "walkthroughs": [
+      {
+        "id": "foxx.start",
+        "title": "Get started with Foxx",
+        "description": "Protect code from AI agents, describe the risky parts of your repository, and watch every tool call.",
+        "steps": [
+          {
+            "id": "crane",
+            "title": "Install Crane 0.4.10 or newer",
+            "description": "Foxx runs the Crane CLI. Download it, put it on PATH or set its path.\n[Download Crane](https://github.com/VishuKalier2003/Agentscript/releases)\n[Set Crane path](command:workbench.action.openSettings?%22foxx.cranePath%22)",
+            "media": {
+              "markdown": "media/walkthrough/crane.md"
+            }
+          },
+          {
+            "id": "setup",
+            "title": "Set up this repository",
+            "description": "Connect the clone to its GitHub repository and create (or join) its signed rules.\n[Set Up Crane](command:foxx.setup)",
+            "media": {
+              "markdown": "media/walkthrough/setup.md"
+            },
+            "completionEvents": [
+              "onContext:foxx.ready"
+            ]
+          },
+          {
+            "id": "select",
+            "title": "Preserve or target code",
+            "description": "Select lines and press Ctrl+Alt+F. Preserved lines may not be changed by agents; targeted lines are the ones they should change.\n[Open Foxx](command:foxx.menu)",
+            "media": {
+              "markdown": "media/walkthrough/select.md"
+            },
+            "completionEvents": [
+              "onCommand:foxx.menu"
+            ]
+          },
+          {
+            "id": "hooks",
+            "title": "Install the agent hooks",
+            "description": "Crane checks every tool call of Claude Code or Codex once its hooks are installed.\n[Install hooks](command:foxx.installHooks)",
+            "media": {
+              "markdown": "media/walkthrough/hooks.md"
+            },
+            "completionEvents": [
+              "onCommand:foxx.installHooks"
+            ]
+          },
+          {
+            "id": "overview",
+            "title": "Watch the overview",
+            "description": "The Foxx overview shows every selection, whether it passes, zones and flows, findings and what you did.\n[Show Overview](command:foxx.openSidebar)",
+            "media": {
+              "markdown": "media/walkthrough/overview.md"
+            },
+            "completionEvents": [
+              "onView:foxx.sidebar"
+            ]
+          }
+        ]
       }
     ]
   },

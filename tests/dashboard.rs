@@ -313,7 +313,8 @@ fn sign_in_scopes_personal_and_organization_accounts() {
 }
 
 /** Every view of the old local dashboard, now for a team: governance from the status reports,
- * events with filters and pagination and their member, the action graph, metrics, compliance,
+ * events (DASHBOARD.md) with filters and pagination and their member, the action graph, evals,
+ * compliance,
  * reports and evidence bundles, integrations without secrets, members, per-member chains, and the
  * member filter
  * Input
@@ -367,7 +368,45 @@ fn dashboard_shows_every_view_for_a_team() {
     assert_ne!(next["events"][0]["event_id"], page["events"][0]["event_id"]);
     let denied = api("events?decision=DENY").json();
     assert_eq!(denied["events"].as_array().unwrap().len(), 1, "{denied}");
-    assert_eq!(denied["events"][0]["enforcement"], "PREVENTED");
+    assert_eq!(denied["events"][0]["decision"]["enforcement"], "PREVENTED");
+    assert_eq!(denied["events"][0]["flow"], "F05");
+    // Every event carries the envelope and all thirteen attribute groups
+    for group in [
+        "action",
+        "repository",
+        "session",
+        "agent",
+        "resource",
+        "response",
+        "assessment",
+        "decision",
+        "eval",
+        "severity",
+        "bindings",
+        "telemetry",
+        "other",
+    ] {
+        assert!(denied["events"][0][group].is_object(), "{group}: {denied}");
+    }
+    assert!(
+        denied["events"][0]["event_id"].is_string() && denied["events"][0]["occurred_at"].is_u64()
+    );
+    assert_eq!(denied["events"][0]["origin"], "MACHINE");
+    let flows = api("events?flow=F05&limit=500").json();
+    assert!(flows["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|event| event["flow"] == "F05"));
+    let service = api("events?origin=SERVICE&limit=500").json();
+    assert!(
+        service["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["event_name"] == "SYNC_COMPLETED"),
+        "the service's own events are in the stream: {service}"
+    );
     assert!(denied["events"][0]["member"]["key"].as_str().unwrap() != world.bob);
     let sessions = api("sessions").json();
     assert_eq!(
@@ -401,12 +440,57 @@ fn dashboard_shows_every_view_for_a_team() {
             .unwrap()
             .iter()
             .any(|flag| flag == "denied")));
-    let metrics = api(&format!("metrics?scope=session&id={session}")).json();
-    assert!(metrics["metrics"]
+    assert_eq!(detail["evals"]["denied"], 1, "{}", detail["evals"]);
+    assert_eq!(
+        detail["evals"]["by_enforcement"]["PREVENTED"], 1,
+        "{}",
+        detail["evals"]
+    );
+    let definitions = api("definitions").json();
+    assert_eq!(definitions["groups"].as_array().unwrap().len(), 13);
+    // The graphs: events over time grouped by a facet, and the count of every facet value
+    let series = api("series?by=decision").json();
+    let total = series["total"].as_u64().unwrap();
+    assert!(total > 0, "{series}");
+    let summed = series["series"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|metric| metric["name"] == "prevented_actions" && metric["value"] == 1));
+        .map(|item| {
+            item["points"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|point| point.as_u64().unwrap())
+                .sum::<u64>()
+        })
+        .sum::<u64>();
+    assert_eq!(
+        summed, total,
+        "every event lands in one bucket of one series"
+    );
+    assert!(series["series"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["key"] == "DENY"));
+    let facets = api("facets?decision=DENY").json();
+    assert_eq!(facets["total"], 1, "{facets}");
+    assert!(
+        facets["facets"]["decision"].as_array().unwrap().len() > 1,
+        "a facet ignores its own filter so its other values stay choosable: {facets}"
+    );
+    let several = api("events?decision=DENY,ALLOW&limit=500").json();
+    assert!(several["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|event| matches!(
+            event["decision"]["decision"].as_str(),
+            Some("DENY" | "ALLOW")
+        )));
+    let text = api("events?q=PREVENTED").json();
+    assert!(text["total"].as_u64().unwrap() >= 1, "{text}");
     let compliance = api("compliance").json();
     assert!(compliance["disclaimer"]
         .as_str()
@@ -436,7 +520,8 @@ fn dashboard_shows_every_view_for_a_team() {
         .unwrap_or_default()
         .contains("crane-evidence-"));
     let bundle: Value = serde_json::from_str(&bundle.body).unwrap();
-    assert_eq!(bundle["manifest"]["parts"].as_array().unwrap().len(), 3);
+    assert_eq!(bundle["manifest"]["parts"].as_array().unwrap().len(), 4);
+    assert!(!bundle["spec_events"].as_array().unwrap().is_empty());
     assert_eq!(bundle["bundle_digest"].as_str().unwrap().len(), 128);
     let integrations = api("integrations").json();
     assert!(
@@ -458,7 +543,6 @@ fn dashboard_shows_every_view_for_a_team() {
         "agents",
         "tasks",
         "ledger",
-        "metrics",
         "definitions",
         "alerts",
         "repo",
@@ -529,11 +613,13 @@ fn dashboard_is_read_only_and_machines_cannot_read() {
     };
     let base = world.service.url.clone();
     let alice = sign_in(&base, &world.github, "alice");
+    // The service's own event log (DASHBOARD.md F30) records what was viewed; nothing else changes
     let counts = || {
         let mut names = world.database.list_collection_names().run().unwrap();
         names.sort();
         names
             .into_iter()
+            .filter(|name| name != "service_events")
             .map(|name| {
                 let count = world
                     .database
@@ -563,7 +649,6 @@ fn dashboard_is_read_only_and_machines_cannot_read() {
         "events",
         "governance",
         "ledger",
-        "metrics",
         "definitions",
         "compliance",
         "alerts",
@@ -598,6 +683,16 @@ fn dashboard_is_read_only_and_machines_cannot_read() {
         }
     }
     assert_eq!(before, counts(), "reading the dashboard changed nothing");
+    assert!(
+        world
+            .database
+            .collection::<Document>("service_events")
+            .count_documents(doc! {"event_name": "DASH_VIEW_OPENED", "action.action_user": "alice"})
+            .run()
+            .unwrap()
+            >= 1,
+        "views are recorded as service events"
+    );
     // A machine's own upload key can upload, but no route returns records to it
     let seed = std::fs::read_to_string(world.team.home.join("installation.key")).unwrap();
     let seed: [u8; 32] = (0..32)

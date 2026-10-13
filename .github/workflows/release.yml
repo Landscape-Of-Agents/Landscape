@@ -98,6 +98,10 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
+      - name: Note the start time
+        shell: bash
+        run: echo "STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Check out source for release smoke test
         uses: actions/checkout@v4
         with:
@@ -106,6 +110,7 @@ jobs:
           fetch-depth: 0
 
       - name: Verify release tag matches Cargo version
+        id: verify
         shell: bash
         run: |
           set -euo pipefail
@@ -113,6 +118,7 @@ jobs:
           test "v${version}" = "${RELEASE_TAG}"
 
       - name: Download packaged binaries
+        id: download
         uses: actions/download-artifact@v4
         with:
           path: dist
@@ -120,6 +126,7 @@ jobs:
           merge-multiple: true
 
       - name: Run packaged Linux binary smoke test
+        id: smoke
         shell: bash
         run: |
           set -euo pipefail
@@ -157,6 +164,7 @@ jobs:
           fi
 
       - name: Publish the Foxx extension to the VS Code Marketplace
+        id: marketplace
         if: steps.extension.outputs.changed == 'true'
         shell: bash
         env:
@@ -165,12 +173,14 @@ jobs:
           set -euo pipefail
           if [ -z "${VSCE_PAT}" ]; then
             echo "::warning::VSCE_PAT is not set; the extension was not published to the Marketplace."
+            echo "skipped=NO_TOKEN" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           cd extensions/foxx
           npx vsce publish --packagePath "../../dist/foxx-${RELEASE_TAG}.vsix" --pat "${VSCE_PAT}"
 
       - name: Publish the Foxx extension to Open VSX
+        id: openvsx
         if: steps.extension.outputs.changed == 'true'
         shell: bash
         env:
@@ -179,13 +189,54 @@ jobs:
           set -euo pipefail
           if [ -z "${OVSX_PAT}" ]; then
             echo "OVSX_PAT is not set; skipping Open VSX."
+            echo "skipped=NO_TOKEN" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           npx --yes ovsx@0.10.1 publish "dist/foxx-${RELEASE_TAG}.vsix" --pat "${OVSX_PAT}"
 
       - name: Create release
+        id: release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           generate_release_notes: true
           files: dist/*
+
+      # DASHBOARD.md F33.2 and F33.3: the outcomes as event lines in this log
+      - name: Record the outcome
+        if: always() && steps.verify.outcome != 'skipped'
+        shell: bash
+        env:
+          VERIFY: ${{ steps.verify.outcome }}
+          BUILD: ${{ steps.download.outcome }} ${{ steps.smoke.outcome }} ${{ steps.extension.outcome }}
+          UPLOAD: ${{ steps.release.outcome }}
+          CHANGED: ${{ steps.extension.outputs.changed }}
+          MARKETPLACE: ${{ steps.marketplace.outcome }}
+          MARKETPLACE_SKIPPED: ${{ steps.marketplace.outputs.skipped }}
+          OPENVSX: ${{ steps.openvsx.outcome }}
+          OPENVSX_SKIPPED: ${{ steps.openvsx.outputs.skipped }}
+        run: |
+          event() { python3 scripts/workflow_event.py "$@" action.action_source=CI "resource.resource_ids=[\"${GITHUB_SHA}\", \"${RELEASE_TAG}\"]" "other.version=${RELEASE_TAG#v}"; }
+          failure=NA
+          if [ "$VERIFY" = failure ]; then failure=VERSION_MISMATCH
+          elif [[ "$BUILD" == *failure* ]]; then failure=BUILD
+          elif [ "$UPLOAD" != success ]; then failure=UPLOAD
+          fi
+          if [ "$failure" = NA ]; then set -- SUCCESS INFO OK "Release published with every binary."; else set -- FAILURE HIGH FAILED "Release was not published."; fi
+          event RELEASE_PUBLISHED F33 action.action_type=RELEASE \
+            "response.response_status=$1" "response.failure_state=$failure" "response.response_statement=$4" \
+            "severity.severity_status=$2" "bindings.binding_result=$3" 'bindings.third_party=["GITHUB_ACTIONS", "GITHUB"]' \
+            "eval.assets=$(ls dist 2>/dev/null | wc -l)" "eval.duration_ms=$(( ($(date +%s) - STARTED_AT) * 1000 ))" \
+            'other.targets=["X86_64_LINUX_GNU", "X86_64_WINDOWS_MSVC", "X86_64_APPLE_DARWIN", "AARCH64_APPLE_DARWIN"]'
+          for registry in MARKETPLACE OPEN_VSX; do
+            if [ "$registry" = MARKETPLACE ]; then outcome="$MARKETPLACE"; skipped="$MARKETPLACE_SKIPPED"; else outcome="$OPENVSX"; skipped="$OPENVSX_SKIPPED"; fi
+            if [ "$CHANGED" != true ]; then set -- SKIPPED UNCHANGED INFO SKIPPED "Extension unchanged since the previous release."
+            elif [ -n "$skipped" ]; then set -- SKIPPED "$skipped" MEDIUM SKIPPED "No publishing token; extension not published."
+            elif [ "$outcome" = success ]; then set -- PUBLISHED NA INFO OK "Extension published."
+            else set -- FAILED REJECTED MEDIUM FAILED "Registry rejected the extension."
+            fi
+            event EXTENSION_PUBLISHED F33 action.action_type=PUBLISH_EXTENSION \
+              "response.response_status=$1" "response.failure_state=$2" "response.response_statement=$5" \
+              "severity.severity_status=$3" "bindings.binding_result=$4" 'bindings.third_party=["VSCODE_MARKETPLACE", "OPEN_VSX"]' \
+              "other.registry=$registry"
+          done

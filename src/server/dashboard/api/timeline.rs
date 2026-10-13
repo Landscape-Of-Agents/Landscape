@@ -1,54 +1,47 @@
-// Timeline views: compact events with their member, sessions, the event timeline with filters and
-// pagination, and the action graph of a session.
+// Timeline views over the repository's event stream (DASHBOARD.md): served events with their
+// member, sessions with their evals, the event timeline with filters and pagination, and the action
+// graph of a session.
 
 use super::*;
-use crate::foxx::views::session_view;
-use crate::platform::render::iso_time;
+use crate::foxx::views::session_view_with;
 use crate::server::dashboard::data::Context;
-use crate::telemetry::events::Event;
-use crate::telemetry::model::{Decision, Enforcement};
+use crate::telemetry::evals::field;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-/** A compact event for lists and timelines, with its member
+/** An event as served: with the repository's kind (personal or organization) and its member
  * Input
     - context: &Context - repository data
-    - event: &Event - event
+    - spec: &Value - event from the stream
+    - kind: &str - PERSONAL or ORGANIZATION
  * Output
     - Value
 */
-pub(super) fn compact(context: &Context, event: &Event) -> Value {
-    json!({
-        "event_id": event.event_id,
-        "sequence": event.sequence,
-        "type": event.event_type,
-        "at": iso_time(event.occurred_at),
-        "occurred_at": event.occurred_at,
-        "member": context.member(context.event_member.get(&event.event_id)),
-        "session": event.scope.foxx_session_id,
-        "task": event.scope.foxx_task_id,
-        "tool_call": event.scope.tool_call_id,
-        "provider": event.scope.provider,
-        "model": event.scope.model,
-        "severity": event.severity,
-        "domain": event.domain,
-        "decision": event.decision,
-        "execution": event.execution,
-        "assessment": event.assessment,
-        "enforcement": event.enforcement,
-        "telemetry": event.telemetry,
-        "policies": event.bindings.policies,
-        "selections": event.bindings.selections,
-        "registry_generation": event.bindings.registry_generation,
-        "resources": event.resources,
-        "reasons": event.reasons,
-        "measurements": event.measurements,
-        "evidence": event.evidence,
-        "digest": event.digest,
-    })
+pub(super) fn served(context: &Context, spec: &Value, kind: &str) -> Value {
+    let mut value = spec.clone();
+    if value["repository"].is_object() {
+        value["repository"]["repo"] = json!(kind);
+    }
+    value["member"] = context.member(spec["member_key"].as_str().map(String::from).as_ref());
+    value
 }
 
-/** List sessions with filters (agent, provider, safety)
+/** The events of one session in the stream
+ * Input
+    - context: &Context - repository data
+    - session: &str - canonical session
+ * Output
+    - Vec<&Value>
+*/
+pub(super) fn of_session<'a>(context: &'a Context, session: &str) -> Vec<&'a Value> {
+    context
+        .specs
+        .iter()
+        .filter(|spec| spec["session"]["session_id"].as_str() == Some(session))
+        .collect()
+}
+
+/** List sessions with their evals, filtered by agent, provider, or safety
  * Input
     - context: &Context - repository data
     - query: &BTreeMap<String, String> - filters
@@ -77,7 +70,7 @@ pub(super) fn sessions(context: &Context, query: &BTreeMap<String, String>) -> V
         })
         .take(MAX_LIMIT)
         .map(|session| {
-            let mut view = session_view(snapshot, session);
+            let mut view = session_view_with(snapshot, session, &context.specs);
             view["member"] = context.member(context.session_member.get(&session.foxx_session_id));
             view["stale"] = json!(context.stale(session));
             view
@@ -86,16 +79,15 @@ pub(super) fn sessions(context: &Context, query: &BTreeMap<String, String>) -> V
     json!({"sessions": list})
 }
 
-/** List events with filters, paginated by position (members' sequences are independent)
+/** The event timeline, newest first, filtered by any attribute and paginated
  * Input
     - context: &Context - repository data
-    - query: &BTreeMap<String, String> - session, task, agent, provider, model, type, decision,
-      severity, domain, enforcement, tool_call, selection, policy, since, until, cursor, limit
+    - query: &BTreeMap<String, String> - the global filter (filter.rs), cursor, limit
+    - kind: &str - PERSONAL or ORGANIZATION
  * Output
-    - Value {events, next_cursor}
+    - Value {events, next_cursor, total}
 */
-pub(super) fn events(context: &Context, query: &BTreeMap<String, String>) -> Value {
-    let snapshot = &context.snapshot;
+pub(super) fn events(context: &Context, query: &BTreeMap<String, String>, kind: &str) -> Value {
     let limit = query
         .get("limit")
         .and_then(|value| value.parse::<usize>().ok())
@@ -105,168 +97,104 @@ pub(super) fn events(context: &Context, query: &BTreeMap<String, String>) -> Val
         .get("cursor")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
-    let since = time_filter(query, "since").unwrap_or(0);
-    let until = time_filter(query, "until").unwrap_or(u64::MAX);
-    let agent_sessions = query.get("agent").map(|agent| {
-        snapshot
-            .sessions
-            .iter()
-            .filter(|session| &session.agent_id == agent)
-            .map(|session| session.foxx_session_id.clone())
-            .collect::<BTreeSet<_>>()
-    });
-    let matches = |event: &&Event| {
-        let text = |value: Value| {
-            value
-                .as_str()
-                .map(String::from)
-                .unwrap_or_else(|| value.to_string())
-        };
-        event.occurred_at >= since
-            && event.occurred_at <= until
-            && query
-                .get("session")
-                .is_none_or(|value| event.scope.foxx_session_id.as_deref() == Some(value.as_str()))
-            && query
-                .get("task")
-                .is_none_or(|value| event.scope.foxx_task_id.as_deref() == Some(value.as_str()))
-            && query
-                .get("provider")
-                .is_none_or(|value| event.scope.provider.as_deref() == Some(value.as_str()))
-            && query
-                .get("model")
-                .is_none_or(|value| event.scope.model.as_deref() == Some(value.as_str()))
-            && query
-                .get("tool_call")
-                .is_none_or(|value| event.scope.tool_call_id.as_deref() == Some(value.as_str()))
-            && query
-                .get("type")
-                .is_none_or(|value| event.event_type.starts_with(value.as_str()))
-            && query.get("decision").is_none_or(|value| {
-                event
-                    .decision
-                    .is_some_and(|decision| text(json!(decision)).eq_ignore_ascii_case(value))
-            })
-            && query
-                .get("severity")
-                .is_none_or(|value| text(json!(event.severity)).eq_ignore_ascii_case(value))
-            && query
-                .get("domain")
-                .is_none_or(|value| text(json!(event.domain)) == *value)
-            && query
-                .get("enforcement")
-                .is_none_or(|value| text(json!(event.enforcement)).eq_ignore_ascii_case(value))
-            && query
-                .get("selection")
-                .is_none_or(|value| event.bindings.selections.contains(value))
-            && query
-                .get("policy")
-                .is_none_or(|value| event.bindings.policies.contains(value))
-            && agent_sessions.as_ref().is_none_or(|ids| {
-                event
-                    .scope
-                    .foxx_session_id
-                    .as_ref()
-                    .is_some_and(|id| ids.contains(id))
-            })
-    };
-    let page = snapshot
-        .events
-        .iter()
-        .filter(matches)
-        .skip(cursor)
-        .take(limit + 1)
+    let matching = super::filter::filtered(context, query, None)
+        .into_iter()
+        .rev()
         .collect::<Vec<_>>();
-    let more = page.len() > limit;
-    let page = &page[..page.len().min(limit)];
+    let page = matching
+        .iter()
+        .skip(cursor)
+        .take(limit)
+        .map(|spec| served(context, spec, kind))
+        .collect::<Vec<_>>();
+    let more = matching.len() > cursor + limit;
     json!({
-        "events": page.iter().map(|event| compact(context, event)).collect::<Vec<_>>(),
+        "events": page,
+        "total": matching.len(),
         "next_cursor": if more { Some(cursor + limit) } else { None },
     })
 }
 
-/** Build the action graph of a session: tool calls in order, each with its decision and its
- * post-action verification; "verified_by" edges join a decision to the verification of the same
- * tool call (established by the tool call identifier), and "followed_by" edges only record order,
+/** The action graph of a session: its events in order; "verified_by" edges join a decision to the
+ * verification of the same tool call (by its action_id), and "followed_by" edges only record order,
  * never a claimed cause
  * Input
     - context: &Context - repository data
-    - events: &[&Event] - session events
+    - session: &str - canonical session
+    - kind: &str - PERSONAL or ORGANIZATION
  * Output
     - Value {nodes, edges}
 */
-pub(super) fn graph(context: &Context, events: &[&Event]) -> Value {
+pub(super) fn graph(context: &Context, session: &str, kind: &str) -> Value {
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     let mut previous: Option<String> = None;
     let mut decided: BTreeMap<String, String> = BTreeMap::new();
-    for event in events {
-        let kind = match event.event_type.as_str() {
-            "tool_call.decided" => "decision",
-            "tool_call.verified" => "verification",
-            "task.started" | "task.verified" | "task.verification_failed" => "task",
-            "session.started" | "session.attested" | "session.quarantined" | "session.created" => {
-                "session"
-            }
-            "hook.missing_decision" | "tool_call.unsettled" | "hook.failed" => "gap",
-            "credits.low" | "prompt.suspicious" => "signal",
+    for spec in of_session(context, session) {
+        let name = spec["event_name"].as_str().unwrap_or_default();
+        let flow = spec["flow"].as_str().unwrap_or_default();
+        let id = spec["event_id"].as_str().unwrap_or_default().to_string();
+        let gap = field(spec, "decision", "enforcement") == "COVERAGE_GAP" || flow == "F11";
+        let node_kind = match flow {
+            _ if gap => "gap",
+            "F05" | "F16" => "decision",
+            "F06" => "verification",
+            "F04" if name == "PROMPT_SUSPICIOUS" => "signal",
+            "F04" | "F07" => "task",
+            "F03" | "F08" | "F17" | "F10" => "session",
+            "F27" if name == "CREDITS_LOW" => "signal",
+            "F27" => "credit",
+            "F14" => "alert",
             _ => "other",
         };
         let flags = [
             (
-                event
-                    .decision
-                    .is_some_and(|decision| decision != Decision::Allow),
+                matches!(
+                    field(spec, "decision", "decision"),
+                    "DENY" | "QUARANTINE" | "ERROR"
+                ),
                 "denied",
             ),
             (
-                event.measurement("bypass_attempt") == Some(1.0),
+                field(spec, "severity", "alert_kind") == "BYPASS_ATTEMPT",
                 "bypass_attempt",
             ),
+            (name == "BYPASS_CONFIRMED", "bypass_confirmed"),
+            (name == "VIOLATION_AFTER_EFFECT", "violation"),
             (
-                event.enforcement == Enforcement::BypassConfirmed,
-                "bypass_confirmed",
-            ),
-            (
-                event.enforcement == Enforcement::DetectedAfterEffect,
-                "violation",
-            ),
-            (
-                event.enforcement == Enforcement::CoverageGap,
+                field(spec, "decision", "enforcement") == "COVERAGE_GAP",
                 "coverage_gap",
             ),
             (
-                event.assessment == Some(crate::telemetry::model::Assessment::Unresolved),
+                field(spec, "assessment", "assessment") == "UNRESOLVED",
                 "unresolved",
             ),
         ]
         .into_iter()
         .filter_map(|(present, flag)| present.then_some(flag))
         .collect::<Vec<_>>();
+        let tool = field(spec, "action", "action_tool");
         nodes.push(json!({
-            "id": event.event_id,
-            "kind": kind,
-            "label": event.payload.get("tool").and_then(Value::as_str).map(String::from).unwrap_or_else(|| event.event_type.clone()),
-            "event": compact(context, event),
+            "id": id,
+            "kind": node_kind,
+            "label": if tool.is_empty() { name.to_string() } else { format!("{name} {tool}") },
+            "event": served(context, spec, kind),
             "flags": flags,
         }));
         if let Some(previous) = &previous {
-            edges.push(json!({"from": previous, "to": event.event_id, "kind": "followed_by", "evidence": "event order"}));
+            edges.push(json!({"from": previous, "to": id, "kind": "followed_by", "evidence": "event order"}));
         }
-        if let Some(call) = &event.scope.tool_call_id {
-            match event.event_type.as_str() {
-                "tool_call.decided" => {
-                    decided.insert(call.clone(), event.event_id.clone());
+        let call = field(spec, "action", "action_id").to_string();
+        if !call.is_empty() {
+            if flow == "F05" && !decided.contains_key(&call) {
+                decided.insert(call.clone(), id.clone());
+            } else if flow == "F06" {
+                if let Some(decision) = decided.get(&call) {
+                    edges.push(json!({"from": decision, "to": id, "kind": "verified_by", "evidence": format!("tool call {call}")}));
                 }
-                "tool_call.verified" | "hook.missing_decision" => {
-                    if let Some(decision) = decided.get(call) {
-                        edges.push(json!({"from": decision, "to": event.event_id, "kind": "verified_by", "evidence": format!("tool call {call}")}));
-                    }
-                }
-                _ => {}
             }
         }
-        previous = Some(event.event_id.clone());
+        previous = Some(id);
     }
     json!({"nodes": nodes, "edges": edges})
 }

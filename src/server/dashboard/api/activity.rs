@@ -1,13 +1,11 @@
-// Activity views: health (versions, per-member chains, sizes), the overview (activity, outcomes,
+// Activity views: health (versions, per-member chains, sizes), the overview (activity, evals,
 // integrity, recent violations and alerts), the members of a repository, and alerts.
 
 use super::*;
-use crate::foxx::views::metric_map;
 use crate::platform::now_millis;
 use crate::platform::render::iso_time;
 use crate::server::dashboard::data::Context;
-use crate::telemetry::metrics::{self};
-use crate::telemetry::model::Enforcement;
+use crate::telemetry::evals::summarize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,7 +22,8 @@ pub(super) fn health(context: &Context) -> Value {
         "crane_version": env!("CARGO_PKG_VERSION"),
         "reported_crane_version": latest.map(|status| status["crane_version"].clone()),
         "schema_version": crate::telemetry::events::SCHEMA_VERSION,
-        "metric_formula_version": metrics::FORMULA_VERSION,
+        "spec_version": crate::telemetry::spec::SPEC_VERSION,
+        "spec_events": context.specs.len(),
         "repository_id": context.repository,
         "remote": context.remote,
         "registry_generation": latest.map(|status| status["registry_generation"].clone()),
@@ -42,29 +41,17 @@ pub(super) fn health(context: &Context) -> Value {
     })
 }
 
-/** The overview page: activity, outcomes, autonomy, integrity, coverage, and recent alerts
+/** The overview page: activity, evals, integrity, coverage, and recent alerts and violations
  * Input
     - context: &Context - repository data
-    - query: &BTreeMap<String, String> - since/until filters
+    - query: &BTreeMap<String, String> - the global filter (filter.rs)
+    - kind: &str - PERSONAL or ORGANIZATION
  * Output
     - Value
 */
-pub(super) fn overview(context: &Context, query: &BTreeMap<String, String>) -> Value {
+pub(super) fn overview(context: &Context, query: &BTreeMap<String, String>, kind: &str) -> Value {
     let snapshot = &context.snapshot;
-    let since = time_filter(query, "since").unwrap_or(0);
-    let until = time_filter(query, "until").unwrap_or(u64::MAX);
-    let events = snapshot
-        .events
-        .iter()
-        .filter(|event| event.occurred_at >= since && event.occurred_at <= until)
-        .collect::<Vec<_>>();
-    let sessions = snapshot
-        .sessions
-        .iter()
-        .map(|session| serde_json::to_value(session).unwrap_or_default())
-        .collect::<Vec<_>>();
-    let ledger = snapshot.ledger.iter().collect::<Vec<_>>();
-    let computed = metrics::compute(&events, &ledger, &sessions);
+    let specs = super::filter::filtered(context, query, None);
     json!({
         "active_sessions": snapshot.sessions.iter().filter(|session| session.ended_at.is_none() && !context.stale(session)).count(),
         "stale_sessions": snapshot.sessions.iter().filter(|session| context.stale(session)).count(),
@@ -73,11 +60,11 @@ pub(super) fn overview(context: &Context, query: &BTreeMap<String, String>) -> V
         "tasks_by_status": snapshot.tasks.iter().fold(BTreeMap::<String, usize>::new(), |mut counts, task| { *counts.entry(task.status.clone()).or_default() += 1; counts }),
         "agents": snapshot.sessions.iter().map(|session| session.agent_id.clone()).collect::<BTreeSet<_>>().len(),
         "members": context.selected.len(),
-        "metrics": metric_map(&computed),
+        "evals": summarize(&specs),
         "integrity": integrity(context),
         "event_chain": chains(context).0,
         "recent_alerts": alerts(context)["alerts"].as_array().map(|alerts| alerts.iter().take(10).cloned().collect::<Vec<_>>()).unwrap_or_default(),
-        "recent_violations": snapshot.events.iter().rev().filter(|event| matches!(event.enforcement, Enforcement::BypassConfirmed | Enforcement::DetectedAfterEffect)).take(10).map(|event| compact(context, event)).collect::<Vec<_>>(),
+        "recent_violations": specs.iter().rev().filter(|spec| matches!(spec["event_name"].as_str(), Some("BYPASS_CONFIRMED" | "VIOLATION_AFTER_EFFECT"))).take(10).map(|spec| served(context, spec, kind)).collect::<Vec<_>>(),
     })
 }
 

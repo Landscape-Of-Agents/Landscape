@@ -183,12 +183,14 @@ const TREE_DELETION: &[&str] = &[
     - deny: bool - denied (otherwise a human must approve)
     - bypass: bool - an attempt on Crane itself
     - reason: String - explanation for the agent and the record
+    - code: &'static str - rule code (DASHBOARD.md decision_rule)
 */
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Risk {
     pub(super) deny: bool,
     pub(super) bypass: bool,
     pub(super) reason: String,
+    pub(super) code: &'static str,
 }
 
 /** Code a command runs
@@ -446,6 +448,7 @@ pub(super) fn command_risks(command: &str) -> Vec<Risk> {
         risks.push(Risk {
             deny: true,
             bypass: false,
+            code: "ENCODED_POWERSHELL",
             reason: "the command runs encoded PowerShell, which cannot be checked before it runs"
                 .into(),
         });
@@ -467,6 +470,7 @@ fn execution_risks(text: &str, what: &str) -> Vec<Risk> {
         risks.push(Risk {
             deny: true,
             bypass: false,
+            code: "SCRIPT_DOWNLOAD_EXECUTE",
             reason: format!(
                 "{what} downloads code and runs it, which cannot be checked before it runs"
             ),
@@ -475,6 +479,7 @@ fn execution_risks(text: &str, what: &str) -> Vec<Risk> {
         risks.push(Risk {
             deny: false,
             bypass: false,
+            code: "SCRIPT_DOWNLOAD_EVALUATE",
             reason: format!("{what} downloads data and evaluates code; a human must approve it"),
         });
     }
@@ -482,6 +487,7 @@ fn execution_risks(text: &str, what: &str) -> Vec<Risk> {
         risks.push(Risk {
             deny: true,
             bypass: false,
+            code: "SCRIPT_DECODE_EXECUTE",
             reason: format!(
                 "{what} decodes hidden code and runs it, which cannot be checked before it runs"
             ),
@@ -513,6 +519,7 @@ pub(super) fn code_risks(
         risks.push(Risk {
             deny: true,
             bypass: true,
+            code: "SCRIPT_NAMES_METADATA",
             reason: format!("{what} names protected Crane metadata (.crane, the trust directory, or hook settings)"),
         });
     }
@@ -530,6 +537,7 @@ pub(super) fn code_risks(
                 risks.push(Risk {
                     deny: true,
                     bypass: false,
+                    code: "SCRIPT_MODIFIES_PRESERVED_FILE",
                     reason: format!("{what} would modify {path}, which holds preserved selections; change it with the file edit tools so Crane can check the change"),
                 });
             }
@@ -540,6 +548,7 @@ pub(super) fn code_risks(
         risks.push(Risk {
             deny: false,
             bypass: false,
+            code: "SCRIPT_SECRETS_NETWORK",
             reason: format!(
                 "{what} reads credential files and uses the network; a human must approve it"
             ),
@@ -549,6 +558,7 @@ pub(super) fn code_risks(
         risks.push(Risk {
             deny: false,
             bypass: false,
+            code: "SCRIPT_HISTORY_REWRITE",
             reason: format!("{what} rewrites or discards Git history; a human must approve it"),
         });
     }
@@ -556,6 +566,7 @@ pub(super) fn code_risks(
         risks.push(Risk {
             deny: false,
             bypass: false,
+            code: "SCRIPT_TREE_DELETION",
             reason: format!("{what} deletes whole directory trees; a human must approve it"),
         });
     }

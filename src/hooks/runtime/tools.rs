@@ -109,6 +109,7 @@ impl Hook {
                     "autonomy credits were exhausted by concurrent actions; a human must approve"
                         .into(),
                 );
+                decided.rules.push("CREDITS_SHORT");
             }
         }
         let threshold = self.state.config.autonomy.quarantine_after_bypass_attempts;
@@ -269,6 +270,29 @@ impl Hook {
         event.payload["network"] = json!(decided.network);
         event.payload["tool_call_id_provenance"] =
             json!(if provided { "provider" } else { "generated" });
+        event.payload["rules"] = json!(decided.rules);
+        if !decided.scripts.is_empty() {
+            event.payload["scripts"] = json!(decided.scripts);
+        }
+        if let Some(text) = &guidance {
+            if decided.verdict.decision != Decision::Deny
+                && decided.verdict.decision != Decision::Quarantine
+            {
+                event.payload["guidance_bytes"] = json!(text.len());
+            }
+        }
+        // The strictest zone or flow limits among the files this call touches
+        let touched_limits = touched
+            .iter()
+            .filter_map(|file| limits.get(file))
+            .collect::<Vec<_>>();
+        if let Some(criticality) = touched_limits.iter().map(|limit| limit.criticality).max() {
+            event.payload["criticality"] = json!(criticality);
+        }
+        if let Some(ceiling) = touched_limits.iter().map(|limit| limit.ceiling).min() {
+            event.payload["ceiling"] = json!(ceiling);
+        }
+        event.payload["credits_available"] = json!(available);
         let alert = if decided.verdict.bypass {
             Some("bypass_attempt")
         } else {
@@ -339,9 +363,11 @@ impl Hook {
         let (call, provided) = self.tool_call_id(session, &action);
         let record = self.with_calls(session, |calls| calls.calls.get(&call).cloned())?;
         let failed = self.provider.tool_failed;
+        let mut attributed_files = None;
         if let Some(before) = record.as_ref().and_then(|record| record.before.as_ref()) {
             if let Ok(after) = tree(&self.workspace) {
                 let changed = tree_changes(before, &after);
+                attributed_files = Some(changed.len());
                 self.with_calls(session, |calls| calls.attributed.extend(changed))?;
             }
         }
@@ -477,6 +503,15 @@ impl Hook {
         ));
         event.payload["tool"] = json!(action.tool);
         event.payload["operation"] = json!(action.operation.name());
+        event.payload["tool_failed"] = json!(failed);
+        event.payload["scan_mode"] = json!(match action.operation {
+            Operation::Write => "PATHS",
+            Operation::Read => "NONE",
+            _ => "FULL",
+        });
+        if let Some(files) = attributed_files {
+            event.payload["attributed_files"] = json!(files);
+        }
         if new.is_empty() {
             event.assessment = Some(if violations.is_empty() {
                 Assessment::Compliant

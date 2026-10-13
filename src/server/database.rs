@@ -16,7 +16,7 @@ use crate::platform::io_error;
 
 /** Current schema version applied by the migrations (3: records keyed by installation; 4: the
  * members' repository status and the service's settings) */
-pub(crate) const SCHEMA_VERSION: i64 = 5;
+pub(crate) const SCHEMA_VERSION: i64 = 6;
 
 /** How the service reaches its database
  * Fields
@@ -249,29 +249,6 @@ const COLLECTIONS: &[Collection] = &[
         ],
     },
     Collection {
-        name: "metric_rollups",
-        required: &[
-            "repository_id",
-            "installation",
-            "scope",
-            "id",
-            "metrics",
-            "computed_at",
-        ],
-        indexes: &[
-            (
-                &[
-                    ("repository_id", 1),
-                    ("installation", 1),
-                    ("scope", 1),
-                    ("id", 1),
-                ],
-                true,
-            ),
-            (&[("scope", 1), ("computed_at", -1)], false),
-        ],
-    },
-    Collection {
         name: "ingestion_checkpoints",
         required: &["repository_id", "installation", "stream"],
         indexes: &[(
@@ -303,6 +280,15 @@ const COLLECTIONS: &[Collection] = &[
         indexes: &[
             (&[("code_digest", 1)], true),
             (&[("repository_id", 1), ("confirmed_at", -1)], false),
+        ],
+    },
+    Collection {
+        name: "service_events",
+        required: &["event_id", "event_name", "flow", "occurred_at"],
+        indexes: &[
+            (&[("event_id", 1)], true),
+            (&[("repository_id", 1), ("occurred_at", -1)], false),
+            (&[("action.action_user", 1), ("occurred_at", -1)], false),
         ],
     },
     Collection {
@@ -380,20 +366,32 @@ pub(crate) fn migrate(database: &Database) -> Result<i64, String> {
             .run()
             .map_err(io_error)?;
     }
-    database
-        .collection::<Document>("events")
-        .create_index(
-            IndexModel::builder()
-                .keys(doc! {"expires_at": 1})
-                .options(
-                    IndexOptions::builder()
-                        .expire_after(Duration::from_secs(0))
-                        .build(),
-                )
-                .build(),
-        )
-        .run()
-        .map_err(io_error)?;
+    // Metric rollups were replaced by evals computed from the event stream (DASHBOARD.md); they
+    // were derived data, so nothing is lost
+    if existing.iter().any(|name| name == "metric_rollups") {
+        database
+            .collection::<Document>("metric_rollups")
+            .drop()
+            .run()
+            .map_err(io_error)?;
+    }
+    // Routine telemetry expires; security evidence is kept
+    for collection in ["events", "service_events"] {
+        database
+            .collection::<Document>(collection)
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! {"expires_at": 1})
+                    .options(
+                        IndexOptions::builder()
+                            .expire_after(Duration::from_secs(0))
+                            .build(),
+                    )
+                    .build(),
+            )
+            .run()
+            .map_err(io_error)?;
+    }
     database
         .collection::<Document>("schema_migrations")
         .insert_one(

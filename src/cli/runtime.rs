@@ -54,7 +54,7 @@ pub(crate) fn task(args: &[String]) -> Result<(), String> {
                 .filter(|task| task.foxx_session_id == session.foxx_session_id)
                 .map(|task| {
                     let view = task_view(&snapshot, task);
-                    let metric = |name: &str| view["metrics"][name]["value"].clone();
+                    let eval = |name: &str| view["evals"][name].clone();
                     json!({
                         "foxx_task_id": task.foxx_task_id,
                         "external_task_id": task.external_task_id,
@@ -62,10 +62,10 @@ pub(crate) fn task(args: &[String]) -> Result<(), String> {
                         "status": task.status,
                         "started_at": view["task"]["started_at"],
                         "ended_at": view["task"]["ended_at"],
-                        "tool_calls_decided": metric("tool_calls_decided"),
-                        "actions_denied": metric("actions_denied"),
-                        "bypass_attempts": metric("bypass_attempts"),
-                        "credits_consumed": metric("credits_consumed"),
+                        "tool_calls_decided": eval("tool_calls_decided"),
+                        "denied": eval("denied"),
+                        "bypass_attempts": eval("bypass_attempts"),
+                        "credits_consumed": view["evals"]["credits"]["consumed"],
                     })
                 })
                 .collect::<Vec<_>>();
@@ -115,8 +115,8 @@ pub(crate) fn session(args: &[String]) -> Result<(), String> {
                         "safety": session.safety,
                         "tasks": session.tasks.len(),
                         "credits_available": view["credits"]["available"],
-                        "actions_denied": view["metrics"]["actions_denied"]["value"],
-                        "bypass_attempts": view["metrics"]["bypass_attempts"]["value"],
+                        "denied": view["evals"]["denied"],
+                        "bypass_attempts": view["evals"]["bypass_attempts"],
                     })
                 })
                 .collect::<Vec<_>>();

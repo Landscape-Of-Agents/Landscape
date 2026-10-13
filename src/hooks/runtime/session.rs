@@ -36,13 +36,30 @@ impl Hook {
         )?;
         let (context, supplied) = self.context_text(session)?;
         // The files already changed when the session starts are not the agent's doing
+        let mut baseline_files = None;
         if self.with_calls(session, |calls| calls.baseline.is_none())? {
             if let Ok(baseline) = tree(&self.workspace) {
+                baseline_files = Some(baseline.len());
                 self.with_calls(session, |calls| {
                     calls.baseline.get_or_insert(baseline);
                 })?;
             }
         }
+        // Whether the rules verify: when they do not, every change of this session is denied
+        let blocking = self
+            .workspace
+            .trust()
+            .map(|trust| {
+                crate::governance::state::integrity(&self.workspace, &self.state, &trust)
+                    .into_iter()
+                    .filter(crate::governance::Finding::blocking)
+                    .map(|finding| finding.code.to_ascii_uppercase())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let policies = PolicySet::load(&self.workspace)
+            .map(|policies| policies.blocks().len())
+            .unwrap_or(0);
         self.update_session(session, |session| {
             session.context = supplied.clone();
             if session.ended_at.is_some() {
@@ -75,6 +92,15 @@ impl Hook {
         };
         event.payload["source"] = json!(self.provider.source);
         event.payload["context"] = json!(supplied);
+        event.payload["policies"] = json!(policies);
+        event.payload["selections"] = json!(self.state.registry.selections.len());
+        event.payload["integrity_ok"] = json!(blocking.is_empty());
+        if !blocking.is_empty() {
+            event.payload["finding_codes"] = json!(blocking);
+        }
+        if let Some(files) = baseline_files {
+            event.payload["baseline_files"] = json!(files);
+        }
         event.evidence = supplied
             .iter()
             .map(|context| format!("context:{}:{}", context.path, &context.digest[..16]))
@@ -595,6 +621,10 @@ impl Hook {
             "signed": signature.is_some(),
             "signer": "installation",
         });
+        event.payload["end_reason"] = json!(self.provider.end_reason);
+        event.payload["final_safety"] = json!(session.safety);
+        event.payload["session_duration_ms"] =
+            json!(now_millis().saturating_sub(session.started_at));
         self.emit(session, event, None)
     }
 }

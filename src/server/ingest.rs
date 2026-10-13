@@ -97,7 +97,6 @@ fn admit(
         batch.sessions.len(),
         batch.tasks.len(),
         batch.selections.len(),
-        batch.rollups.len(),
     ]
     .into_iter()
     .max()
@@ -254,13 +253,29 @@ pub(super) fn handle(
             let batch: Batch = serde_json::from_slice(&body)
                 .map_err(|error| (400, format!("invalid batch: {error}")))?;
             admit(service, &repository, &installation, &batch)?;
-            store::ingest(
+            let before = super::observe::before(database, &repository, &installation);
+            let stored = store::ingest(
                 database,
                 &service.settings,
                 &repository,
                 &installation,
                 &batch,
-            )
+            );
+            if let Ok(stored) = &stored {
+                let verified = !batch.root_commits.is_empty()
+                    && batch.remote.is_some()
+                    && identity(&batch.root_commits, batch.remote.as_deref()) == repository;
+                super::observe::batch(
+                    &service.log,
+                    &repository,
+                    &installation,
+                    &batch,
+                    before,
+                    stored,
+                    verified,
+                );
+            }
+            stored
         }
         ("POST", operation @ ("link" | "owner")) => {
             let approval: ApprovalRequest = serde_json::from_slice(&body)

@@ -25,6 +25,9 @@ jobs:
           - 27017:27017
 
     steps:
+      - name: Note the start time
+        run: echo "STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Check out repository
         uses: actions/checkout@v4
 
@@ -46,23 +49,29 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Check formatting
+        id: format
         run: cargo fmt --all -- --check
 
       - name: Compile
+        id: compile
         run: cargo check --locked
 
       - name: Run Clippy
+        id: clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Run Clippy with the ingestion service
+        id: clippy_server
         run: cargo clippy --locked --all-targets --features server -- -D warnings
 
       - name: Test the ingestion service and the hosted dashboard (live MongoDB)
+        id: test_server
         env:
           CRANE_TEST_MONGODB_URI: mongodb://127.0.0.1:27017
         run: cargo test --locked --features server --test ingestion --test dashboard
 
       - name: Run tests
+        id: test
         run: cargo test --locked
 
       - name: Build debug CLI for smoke test
@@ -72,7 +81,29 @@ jobs:
         run: cargo build --release --locked
 
       - name: Run smoke test
+        id: smoke
         run: bash scripts/smoke_test.sh
+
+      # DASHBOARD.md F33.1: the outcome as an event line in this log
+      - name: Record the outcome
+        if: always() && steps.format.outcome != 'skipped'
+        env:
+          FORMAT: ${{ steps.format.outcome }}
+          LINT: ${{ steps.compile.outcome }} ${{ steps.clippy.outcome }} ${{ steps.clippy_server.outcome }}
+          TESTS: ${{ steps.test_server.outcome }} ${{ steps.test.outcome }}
+          SMOKE: ${{ steps.smoke.outcome }}
+        run: |
+          failure=NA
+          if [ "$FORMAT" = failure ]; then failure=FORMAT
+          elif [[ "$LINT" == *failure* ]]; then failure=LINT
+          elif [[ "$TESTS" == *failure* ]]; then failure=TESTS
+          elif [ "$SMOKE" = failure ]; then failure=SMOKE_TEST
+          fi
+          if [ "$failure" = NA ]; then set -- SUCCESS INFO OK "CI checks passed."; else set -- FAILURE HIGH FAILED "CI checks failed."; fi
+          python3 scripts/workflow_event.py CI_CHECKS_COMPLETED F33 \
+            "response.response_status=$1" "response.failure_state=$failure" "response.response_statement=$4" \
+            "severity.severity_status=$2" "bindings.binding_result=$3" \
+            "eval.duration_ms=$(( ($(date +%s) - STARTED_AT) * 1000 ))" other.job=CORE
 
   extension:
     name: Foxx extension
@@ -81,6 +112,9 @@ jobs:
       run:
         working-directory: extensions/foxx
     steps:
+      - name: Note the start time
+        run: echo "STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Check out repository
         uses: actions/checkout@v4
 
@@ -90,10 +124,25 @@ jobs:
           node-version: 22
 
       - name: Install dependencies
+        id: install
         run: npm install --no-audit --no-fund
 
       - name: Compile and test
+        id: test
         run: npm test
 
       - name: Package the extension
+        id: package
         run: npm run package
+
+      # DASHBOARD.md F33.1: the outcome as an event line in this log
+      - name: Record the outcome
+        if: always() && steps.install.outcome != 'skipped'
+        env:
+          OUTCOMES: ${{ steps.install.outcome }} ${{ steps.test.outcome }} ${{ steps.package.outcome }}
+        run: |
+          if [[ "$OUTCOMES" == *failure* ]]; then set -- FAILURE EXTENSION HIGH FAILED "Extension checks failed."; else set -- SUCCESS NA INFO OK "Extension checks passed."; fi
+          python3 ../../scripts/workflow_event.py CI_CHECKS_COMPLETED F33 \
+            "response.response_status=$1" "response.failure_state=$2" "response.response_statement=$5" \
+            "severity.severity_status=$3" "bindings.binding_result=$4" \
+            "eval.duration_ms=$(( ($(date +%s) - STARTED_AT) * 1000 ))" other.job=EXTENSION

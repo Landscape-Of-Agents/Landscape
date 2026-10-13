@@ -211,6 +211,8 @@ impl Measurement {
     - idempotency_key: String - deduplication key
     - previous_digest: String - digest of the previous event
     - digest: String - SHA-512 of this event without the digest field
+    - spec: Vec<Value> - the event's specification events (DASHBOARD.md: the 13 attribute groups),
+      computed when it is stored and covered by its digest; empty in events stored before them
 */
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Event {
@@ -240,6 +242,8 @@ pub(crate) struct Event {
     pub(crate) idempotency_key: String,
     pub(crate) previous_digest: String,
     pub(crate) digest: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) spec: Vec<Value>,
 }
 
 impl Event {
@@ -285,6 +289,7 @@ impl Event {
             idempotency_key: idempotency_key.into(),
             previous_digest: String::new(),
             digest: String::new(),
+            spec: Vec::new(),
         }
     }
 
@@ -422,6 +427,14 @@ impl EventStore {
         if head.keys.iter().any(|key| *key == event.idempotency_key) {
             return Ok(None);
         }
+        // Facts noted deep inside Crane belong to the next stored event
+        let notes = crate::platform::notes::drain();
+        if !notes.is_empty() {
+            if !event.payload.is_object() {
+                event.payload = json!({});
+            }
+            event.payload["notes"] = json!(notes);
+        }
         let mut secrets = 0;
         for reason in &mut event.reasons {
             let (redacted, count) = redact(reason);
@@ -465,6 +478,7 @@ impl EventStore {
                 ]
             )[..32]
         );
+        event.spec = super::spec::project(&event);
         event.digest = event.compute_digest();
         append_line(
             &self.log_path(),

@@ -29,6 +29,7 @@ pub(crate) fn record(words: &[String], result: &Result<(), String>, started: u64
         first,
         "" | "help" | "--help" | "-h" | "--version" | "-V" | "server"
     ) || (first == "agent" && matches!(second, "hook" | "sync"))
+        || first == "foxx"
     {
         return;
     }
@@ -70,7 +71,12 @@ pub(crate) fn record(words: &[String], result: &Result<(), String>, started: u64
         "command": command.chars().take(300).collect::<String>(),
         "name": format!("{first} {second}").trim().to_string(),
         "agent_environment": agent_environment(),
+        "user": workspace.user,
+        "email": workspace.email,
     });
+    if workspace.identity_cache != "HIT" {
+        event.payload["identity_cache"] = json!(workspace.identity_cache);
+    }
     if let Err(error) = result {
         event.reasons.push(error.chars().take(500).collect());
     }
@@ -81,5 +87,74 @@ pub(crate) fn record(words: &[String], result: &Result<(), String>, started: u64
         "command wall clock",
     ));
     let _ = EventStore::open(&trust.runtime()).append(event);
-    sync::trigger(&workspace);
+    sync::trigger(&workspace, "COMMAND");
+}
+
+/** Names the Foxx extension may record (DASHBOARD.md F31) */
+const FOXX_EVENTS: &[&str] = &[
+    "FOXX_SETUP",
+    "FOXX_PANEL_OPENED",
+    "FOXX_PANEL_REFUSED",
+    "FOXX_ACTION_RUN",
+    "FOXX_GOVERNANCE_REVERTED",
+    "FOXX_GOVERNANCE_UNDONE",
+    "FOXX_VALIDATED_ON_SAVE",
+];
+
+/** crane foxx event NAME [key=value ...]: record an event of the Foxx editor extension (refused to
+ * agents; only the F31 names are accepted, and values are short text)
+ * Input
+    - args: &[String] - NAME and key=value pairs
+ * Output
+    - Result<(), String>
+*/
+pub(crate) fn foxx_event(args: &[String]) -> Result<(), String> {
+    crate::trust::require_human("crane foxx event")?;
+    let (name, pairs) = args
+        .split_first()
+        .ok_or("usage: crane foxx event NAME [key=value ...]")?;
+    if !FOXX_EVENTS.contains(&name.as_str()) {
+        return Err(format!("unknown Foxx event '{name}'"));
+    }
+    let workspace = Workspace::locate()?;
+    let trust = workspace.trust()?;
+    let mut payload = json!({"name": name, "user": workspace.user, "email": workspace.email});
+    for pair in pairs {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("'{pair}' is not key=value"))?;
+        let key = key.trim();
+        if key.is_empty()
+            || !key
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        {
+            return Err(format!("'{key}' is not a valid key"));
+        }
+        let value: String = value.chars().take(200).collect();
+        payload[key] = match value.as_str() {
+            "true" => json!(true),
+            "false" => json!(false),
+            _ => value
+                .parse::<f64>()
+                .ok()
+                .filter(|_| {
+                    key.ends_with("_lines")
+                        || key.ends_with("_ms")
+                        || key == "diagnostics"
+                        || key == "selections_failing"
+                })
+                .map_or_else(|| json!(value), |number| json!(number)),
+        };
+    }
+    let mut event = Event::new(
+        "foxx.event",
+        Domain::AuditCompliance,
+        &workspace.repository_id,
+        &format!("foxx:{name}:{}:{}", std::process::id(), now_millis()),
+    );
+    event.source = Source::FoxxExtension;
+    event.payload = payload;
+    EventStore::open(&trust.runtime()).append(event)?;
+    Ok(())
 }

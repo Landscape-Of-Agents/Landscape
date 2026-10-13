@@ -30,6 +30,8 @@ const IDENTITY_TTL_MS: u64 = 10 * 60 * 1000;
     - root_commits: Vec<String> - root commits
     - config: String - digest of .git/config when cached (a changed remote invalidates the entry)
     - at: u64 - Unix milliseconds when cached
+    - user: Option<String> - Git user.name
+    - email: Option<String> - Git user.email
 */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CachedIdentity {
@@ -38,10 +40,13 @@ struct CachedIdentity {
     root_commits: Vec<String>,
     config: String,
     at: u64,
+    #[serde(default)]
+    user: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
 }
 
-/** Find the cache entry of the repository containing the current directory: the nearest ancestor
- * with a .git directory, unless Git is redirected by GIT_DIR or GIT_WORK_TREE (then no cache)
+/** Find the cache entry of the repository containing the current directory: the nearest ancestor with a .git directory, unless Git is redirected by GIT_DIR or GIT_WORK_TREE (then no cache)
  * Input
     - None
  * Output
@@ -76,6 +81,10 @@ fn identity_cache() -> Option<(PathBuf, String)> {
     - repository_id: String - repository identity digest
     - remote: Option<String> - normalized origin remote, if any
     - root_commits: Vec<String> - the root commits the identity is computed from
+    - user: Option<String> - Git user.name (who acts on this machine)
+    - email: Option<String> - Git user.email
+    - identity_cache: &'static str - how the identity was found: HIT (cached), MISS (computed
+      and cached), REFRESHED (cache expired or Git settings changed), NONE (no cache possible)
 */
 #[derive(Debug, Clone)]
 pub(crate) struct Workspace {
@@ -84,6 +93,9 @@ pub(crate) struct Workspace {
     pub(crate) repository_id: String,
     pub(crate) remote: Option<String>,
     pub(crate) root_commits: Vec<String>,
+    pub(crate) user: Option<String>,
+    pub(crate) email: Option<String>,
+    pub(crate) identity_cache: &'static str,
 }
 
 /** Compute a repository identity from its root commits and normalized remote (the ingestion
@@ -105,22 +117,25 @@ pub(crate) fn identity(roots: &[String], remote: Option<&str>) -> String {
 }
 
 impl Workspace {
-    /** Locate the repository from the current directory without requiring .crane, computing its
-     * identity from Git (or reusing it from the trust directory for IDENTITY_TTL_MS while
-     * .git/config is unchanged)
-     * Input
+    /** Locate the repository from the current directory without requiring .crane, computing its identity from Git (or reusing it from the trust directory for IDENTITY_TTL_MS while .git/config is unchanged)
+    * Input
         - None
-     * Output
+    * Output
         - Result<Workspace, String>
         - Error if not inside a Git repository with at least one commit
     */
     pub(crate) fn discover() -> Result<Self, String> {
         let cache = identity_cache();
-        let cached = cache.as_ref().and_then(|(file, config)| {
-            let entry: CachedIdentity = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
-            (entry.config == *config && now_millis().saturating_sub(entry.at) < IDENTITY_TTL_MS)
-                .then_some(entry)
+        let previous = cache.as_ref().and_then(|(file, _)| {
+            serde_json::from_slice::<CachedIdentity>(&std::fs::read(file).ok()?).ok()
         });
+        let cached = previous
+            .clone()
+            .zip(cache.as_ref())
+            .and_then(|(entry, (_, config))| {
+                (entry.config == *config && now_millis().saturating_sub(entry.at) < IDENTITY_TTL_MS)
+                    .then_some(entry)
+            });
         if let Some(entry) = cached {
             let root = PathBuf::from(&entry.root);
             return Ok(Self {
@@ -129,6 +144,9 @@ impl Workspace {
                 root,
                 remote: entry.remote,
                 root_commits: entry.root_commits,
+                user: entry.user,
+                email: entry.email,
+                identity_cache: "HIT",
             });
         }
         let root = git::toplevel()?;
@@ -137,6 +155,17 @@ impl Workspace {
             "the repository has no commits yet; commit before using Crane".to_string()
         })?;
         let repository_id = identity(&roots, remote.as_deref());
+        let setting = |key: &str| {
+            git::git_in(&root, &["config", key])
+                .ok()
+                .filter(|value| !value.is_empty())
+        };
+        let (user, email) = (setting("user.name"), setting("user.email"));
+        let identity_cache = match (&cache, &previous) {
+            (None, _) => "NONE",
+            (Some(_), None) => "MISS",
+            (Some(_), Some(_)) => "REFRESHED",
+        };
         if let Some((file, config)) = cache {
             let entry = CachedIdentity {
                 root: root.to_string_lossy().into_owned(),
@@ -144,6 +173,8 @@ impl Workspace {
                 root_commits: roots.clone(),
                 config,
                 at: now_millis(),
+                user: user.clone(),
+                email: email.clone(),
             };
             if let Some(parent) = file.parent() {
                 let _ = std::fs::create_dir_all(parent);
@@ -158,6 +189,9 @@ impl Workspace {
             repository_id,
             remote,
             root_commits: roots,
+            user,
+            email,
+            identity_cache,
         })
     }
 

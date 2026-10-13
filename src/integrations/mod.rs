@@ -215,7 +215,12 @@ fn setting(integration: &Integration, key: &str) -> Result<String, String> {
 pub(crate) fn verify(workspace: &Workspace, integration: &Integration) -> Result<String, String> {
     let provider = provider(&integration.name)
         .ok_or_else(|| format!("unknown integration '{}'", integration.name))?;
-    provider.verify(integration, &secrets(workspace, &integration.name))
+    let result = provider.verify(integration, &secrets(workspace, &integration.name));
+    crate::platform::notes::note(
+        "INTEGRATION_TESTED",
+        serde_json::json!({"integration": integration.name, "result": if result.is_ok() { "OK" } else { "FAILED" }}),
+    );
+    result
 }
 
 /** Deliver an alert to every configured service that takes it
@@ -500,6 +505,9 @@ mod tests {
             repository_id: "r".into(),
             remote: None,
             root_commits: Vec::new(),
+            user: None,
+            email: None,
+            identity_cache: "NONE",
         };
         let alert = |severity: &str, issue: Option<&'static str>| Alert {
             text: "t",

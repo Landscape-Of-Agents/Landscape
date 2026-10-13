@@ -177,12 +177,11 @@ fn sync() -> Result<(), String> {
         return Ok(());
     }
     println!(
-        "Synchronized {} events, {} ledger entries, {} governance changes, {} alerts, {} metric rollups ({} already present{})",
+        "Synchronized {} events, {} ledger entries, {} governance changes, {} alerts ({} already present{})",
         flushed.events,
         flushed.ledger,
         flushed.audit,
         flushed.alerts,
-        flushed.rollups,
         flushed.duplicates,
         if flushed.reset { "; re-sent records missing from the service" } else { "" }
     );

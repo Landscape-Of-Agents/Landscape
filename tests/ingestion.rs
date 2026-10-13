@@ -91,7 +91,7 @@ fn service_outage_does_not_weaken_enforcement() {
     );
     let session = fixture.ok(&["session", "current"]);
     assert!(
-        session.contains("status: ENDED") && session.contains("actions_denied"),
+        session.contains("status: ENDED") && session.contains("denied:"),
         "{session}"
     );
     // The upload fails; under load the hooks' own retries may still hold the sync lock
@@ -113,7 +113,7 @@ fn service_outage_does_not_weaken_enforcement() {
 }
 
 /** The live pipeline (needs CRANE_TEST_MONGODB_URI): with only the service address set, hooks and
- * commands reach MongoDB through signed uploads, rollups, alerts, and the repository status are
+ * commands reach MongoDB through signed uploads, alerts, and the repository status are
  * stored, the remote is verified, forged requests are refused, and records missing from MongoDB
  * are re-sent
  * Input
@@ -164,8 +164,16 @@ fn live_pipeline_reaches_mongodb_without_setup() {
     assert!(count("events", doc! {"event_type": "command.executed"}) >= 2);
     assert!(count("events", doc! {"event_type": "tool_call.verified"}) >= 1);
     assert!(count("alerts", doc! {"kind": "bypass_attempt"}) >= 1);
-    assert!(count("metric_rollups", doc! {"scope": "session"}) >= 1);
-    assert!(count("metric_rollups", doc! {"scope": "tool_call"}) >= 1);
+    // The service records what each upload showed (DASHBOARD.md F02, F09, F34)
+    assert_eq!(
+        count("service_events", doc! {"event_name": "MACHINE_FIRST_SEEN"}),
+        1
+    );
+    assert!(count("service_events", doc! {"event_name": "SYNC_COMPLETED"}) >= 1);
+    assert!(count("service_events", doc! {"event_name": "STATUS_REPORTED"}) >= 1);
+    // Every stored event carries its specification events, covered by its digest
+    assert!(count("events", doc! {"spec.event_name": "TOOL_CALL_ALLOWED"}) >= 1);
+    assert!(count("events", doc! {"spec.event_name": "COMMAND_EXECUTED"}) >= 2);
     assert_eq!(count("sessions", doc! {}), 1);
     assert!(count("governance_changes", doc! {}) >= 3);
     assert_eq!(count("policy_versions", doc! {}), 1);

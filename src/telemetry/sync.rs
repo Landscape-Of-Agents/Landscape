@@ -39,13 +39,15 @@ pub(crate) fn interval_seconds() -> u64 {
         .max(5)
 }
 
-/** Start a detached sync now, when uploads are on
+/** Start a detached sync now, when uploads are on; the sync reports what started it, so the service
+ * records the trigger (DASHBOARD.md F34) without this process writing an event of its own
  * Input
     - workspace: &Workspace - repository
+    - reason: &str - POST_TOOL, STOP, SESSION_END, COMMAND, or INTERVAL
  * Output
     - None (failures to start are ignored; the next trigger retries)
 */
-pub(crate) fn trigger(workspace: &Workspace) {
+pub(crate) fn trigger(workspace: &Workspace, reason: &str) {
     if !configured() {
         return;
     }
@@ -56,6 +58,7 @@ pub(crate) fn trigger(workspace: &Workspace) {
     command
         .args(["agent", "sync"])
         .env("CRANE_SYNC_BACKGROUND", "1")
+        .env("CRANE_SYNC_TRIGGER", reason)
         .current_dir(&workspace.root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -120,6 +123,6 @@ pub(crate) fn trigger_if_due(workspace: &Workspace, stores: &Stores) {
     }
     let last = ingest::state(stores).last_attempt_at;
     if now_millis().saturating_sub(last) >= interval_seconds() * 1000 {
-        trigger(workspace);
+        trigger(workspace, "INTERVAL");
     }
 }

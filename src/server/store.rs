@@ -1,7 +1,7 @@
 // Storing and reading an installation's records. Streams (events, ledger entries, governance
 // changes, alerts) are inserted unordered with duplicates skipped, so a retried upload never
 // duplicates evidence; current state (repository, sessions, agents, tasks, selection records, the
-// signed manifest, metric rollups) is upserted. Every document carries the repository identity and
+// signed manifest) is upserted. Every document carries the repository identity and
 // the installation key, and every filter includes the installation. Nothing here serves reads to
 // machines: the dashboard reads through its own read-only handle (dashboard/data.rs).
 
@@ -113,16 +113,16 @@ fn upsert(
     - installation: &str - installation key
     - events: &[Event] - uploaded events
  * Output
-    - Result<(), String>
+    - Result<Vec<Value>, String> the problems found: {sequence, kind (gap, rewrite, fork), detail}
 */
 fn continuity(
     database: &Database,
     repository: &str,
     installation: &str,
     events: &[Event],
-) -> Result<(), String> {
+) -> Result<Vec<Value>, String> {
     if events.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let heads = database.collection::<Document>("chain_heads");
     let scope = doc! {"repository_id": repository, "installation": installation};
@@ -176,6 +176,10 @@ fn continuity(
             .map_err(io_error)?;
     }
     let now = now_millis() / 1000;
+    let found = problems
+        .iter()
+        .map(|(sequence, kind, detail)| json!({"sequence": sequence, "kind": kind, "detail": detail}))
+        .collect::<Vec<_>>();
     let alerts = problems
         .into_iter()
         .map(|(sequence, kind, detail)| {
@@ -197,7 +201,7 @@ fn continuity(
         })
         .collect::<Vec<_>>();
     insert(database, "alerts", alerts)?;
-    Ok(())
+    Ok(found)
 }
 
 /** Hold an approval request until a person uses its code on the dashboard (the code itself is
@@ -347,7 +351,7 @@ pub(super) fn ingest(
         };
     }
     let mut duplicates = 0;
-    continuity(database, repository, installation, &batch.events)?;
+    let chain_problems = continuity(database, repository, installation, &batch.events)?;
     let events = batch
         .events
         .iter()
@@ -449,14 +453,6 @@ pub(super) fn ingest(
                 tag!(manifest)?,
             )?;
         }
-        for rollup in &batch.rollups {
-            upsert(
-                database,
-                "metric_rollups",
-                within(doc! {"scope": &rollup.scope, "id": &rollup.id}),
-                tag!(rollup)?,
-            )?;
-        }
     }
     if let Some(status) = batch.status.as_ref().filter(|status| status.is_object()) {
         let mut status = status.clone();
@@ -469,7 +465,7 @@ pub(super) fn ingest(
         within(doc! {"stream": "uploads"}),
         tag!(&json!({"stream": "uploads", "at": now_millis()}))?,
     )?;
-    Ok(json!({"duplicates": duplicates}))
+    Ok(json!({"duplicates": duplicates, "chain_problems": chain_problems}))
 }
 
 /** Read a BSON number as u64

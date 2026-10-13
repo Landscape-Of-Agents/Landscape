@@ -11,10 +11,6 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use super::events::Event;
-use super::ledger::Entry;
-use super::metrics::Metric;
-
 /** A control definition
  * Fields
     - id: &'static str - control identifier
@@ -94,37 +90,27 @@ pub(crate) struct Inputs {
     pub(crate) alerts_configured: bool,
 }
 
-/** Read a numeric metric
- * Input
-    - metrics: &[Metric] - computed metrics
-    - name: &str - metric name
- * Output
-    - Option<f64>, None when unobserved
-*/
-fn metric(metrics: &[Metric], name: &str) -> Option<f64> {
-    metrics
-        .iter()
-        .find(|metric| metric.name == name)
-        .and_then(|metric| metric.value.as_f64())
-}
+/** Telemetry Crane cannot collect from hooks, reported as such */
+pub(crate) const UNSUPPORTED: &[&str] = &["network_bytes_sent", "cpu_ms", "llm_tokens"];
 
-/** Evaluate every control
+/** Evaluate every control from the evals of the repository's specification events
  * Input
     - inputs: &Inputs - verification results
-    - metrics: &[Metric] - repository metrics
-    - events: &[&Event] - events
-    - ledger: &[&Entry] - ledger entries
+    - evals: &Value - evals::summarize of the repository's events
+    - events: usize - events recorded
+    - ledger: usize - ledger entries recorded
     - sessions: &[Value] - session records
  * Output
     - Vec<Evaluation> in control order
 */
 pub(crate) fn evaluate(
     inputs: &Inputs,
-    metrics: &[Metric],
-    events: &[&Event],
-    ledger: &[&Entry],
+    evals: &Value,
+    events: usize,
+    ledger: usize,
     sessions: &[Value],
 ) -> Vec<Evaluation> {
+    let metric = |name: &str| evals[name].as_f64();
     let ratio =
         |pair: Option<(usize, usize)>, label: &str| -> (&'static str, Vec<String>, Vec<String>) {
             match pair {
@@ -150,11 +136,11 @@ pub(crate) fn evaluate(
                 ),
             }
         };
-    let completeness = metric(metrics, "evidence_completeness");
-    let bypass_attempts = metric(metrics, "bypass_attempts");
-    let confirmed = metric(metrics, "bypasses_confirmed").unwrap_or(0.0);
-    let prevented = metric(metrics, "prevented_actions");
-    let signed = metric(metrics, "attestations_signed").unwrap_or(0.0);
+    let completeness = metric("evidence_completeness");
+    let bypass_attempts = metric("bypass_attempts");
+    let confirmed = metric("bypasses_confirmed").unwrap_or(0.0);
+    let prevented = evals["by_enforcement"]["PREVENTED"].as_f64();
+    let signed = metric("attestations_signed").unwrap_or(0.0);
     let generated = sessions
         .iter()
         .filter(|session| session["provenance"] == "generated")
@@ -170,7 +156,7 @@ pub(crate) fn evaluate(
                     (0, false) => ("PARTIAL", vec!["signatures and digests verify".into()], vec!["no rollback anchor on this machine yet".into()]),
                     (count, _) => ("NOT_SATISFIED", Vec::new(), vec![format!("{count} blocking integrity findings")]),
                 },
-                "CR-04" => match (inputs.hooks_valid, metric(metrics, "missing_decisions").map(|missing| missing as u64)) {
+                "CR-04" => match (inputs.hooks_valid, metric("missing_decisions").map(|missing| missing as u64)) {
                     (false, _) => ("NOT_SATISFIED", Vec::new(), vec!["no valid agent hooks are installed".into()]),
                     (true, None) => ("NO_EVIDENCE", vec!["hooks validate".into()], vec!["no agent activity recorded yet".into()]),
                     (true, Some(0)) => ("SATISFIED", vec!["hooks validate".into(), "every executed tool call had a pre-tool decision".into()], Vec::new()),
@@ -187,27 +173,27 @@ pub(crate) fn evaluate(
                     if !inputs.audit_verified { gaps.push("the governance audit chain does not verify".to_string()); }
                     if signed == 0.0 { gaps.push("no signed session attestation yet".to_string()); }
                     let outcome = if !inputs.events_verified || !inputs.audit_verified { "NOT_SATISFIED" } else if gaps.is_empty() { "SATISFIED" } else { "PARTIAL" };
-                    (outcome, vec![format!("{} events, {} signed attestations", events.len(), signed)], gaps)
+                    (outcome, vec![format!("{events} events, {signed} signed attestations")], gaps)
                 }
                 "CR-07" => match (bypass_attempts, confirmed > 0.0) {
                     (_, true) => ("NOT_SATISFIED", Vec::new(), vec![format!("{confirmed} confirmed bypasses")]),
                     (None, false) => ("NO_EVIDENCE", Vec::new(), vec!["no agent activity recorded yet".into()]),
                     (Some(attempts), false) => ("SATISFIED", vec![format!("{attempts} bypass attempts, {} prevented actions, no confirmed bypass", prevented.unwrap_or(0.0))], Vec::new()),
                 },
-                "CR-08" => match (ledger.is_empty(), inputs.ledger_verified) {
+                "CR-08" => match (ledger == 0, inputs.ledger_verified) {
                     (true, _) => ("NO_EVIDENCE", Vec::new(), vec!["no ledger entries yet".into()]),
-                    (false, true) => ("SATISFIED", vec![format!("{} ledger entries reconcile", ledger.len())], Vec::new()),
+                    (false, true) => ("SATISFIED", vec![format!("{ledger} ledger entries reconcile")], Vec::new()),
                     (false, false) => ("NOT_SATISFIED", Vec::new(), vec!["the ledger does not reconcile".into()]),
                 },
-                "CR-09" => ("PARTIAL", vec!["raw tool inputs and prompts are stored only as SHA-512 digests".into(), format!("{} secrets redacted", metric(metrics, "secrets_redacted").unwrap_or(0.0))], vec!["pattern redaction cannot prove that no secret remains in reasons or resource names".into()]),
-                "CR-10" => ("UNSUPPORTED", vec![format!("{} destinations inferred", metrics.iter().find(|metric| metric.name == "network_destinations").and_then(|metric| metric.value.as_array().map(Vec::len)).unwrap_or(0))], vec!["Crane does not observe network traffic; destinations are parsed from commands, and unrestricted shells can reach the network unobserved".into()]),
+                "CR-09" => ("PARTIAL", vec!["raw tool inputs and prompts are stored only as SHA-512 digests".into(), format!("{} secrets redacted", metric("secrets_redacted").unwrap_or(0.0))], vec!["pattern redaction cannot prove that no secret remains in reasons or resource names".into()]),
+                "CR-10" => ("UNSUPPORTED", vec![format!("{} destinations inferred", evals["network_destinations"].as_array().map_or(0, Vec::len))], vec!["Crane does not observe network traffic; destinations are parsed from commands, and unrestricted shells can reach the network unobserved".into()]),
                 "CR-11" => match (sessions.len(), generated) {
                     (0, _) => ("NO_EVIDENCE", Vec::new(), vec!["no sessions yet".into()]),
                     (total, 0) => ("SATISFIED", vec![format!("{total} sessions with provider-reported identities")], Vec::new()),
                     (total, generated) => ("PARTIAL", vec![format!("{} of {total} sessions with provider identities", total - generated)], vec![format!("{generated} sessions have Crane-generated identities")]),
                 },
                 "CR-12" => if inputs.alerts_configured { ("SATISFIED", vec!["an alert channel is configured".into()], Vec::new()) } else { ("PARTIAL", vec!["approvals and quarantine are enforced by the hooks".into()], vec!["no Slack or WhatsApp alert channel is configured".into()]) },
-                _ => ("PARTIAL", vec![format!("{} prompts flagged", metric(metrics, "suspicious_prompts").unwrap_or(0.0))], vec!["screening is heuristic and is not a defense by itself".into()]),
+                _ => ("PARTIAL", vec![format!("{} prompts flagged", metric("suspicious_prompts").unwrap_or(0.0))], vec!["screening is heuristic and is not a defense by itself".into()]),
             };
             Evaluation { control, outcome, evidence, gaps }
         })

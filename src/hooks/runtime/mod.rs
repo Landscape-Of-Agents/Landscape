@@ -286,9 +286,9 @@ impl Hook {
         };
         // A tool call is complete after post-tool use, a session after stop or session end
         match self.event {
-            HookEvent::PostToolUse | HookEvent::Stop | HookEvent::SessionEnd => {
-                sync::trigger(&self.workspace)
-            }
+            HookEvent::PostToolUse => sync::trigger(&self.workspace, "POST_TOOL"),
+            HookEvent::Stop => sync::trigger(&self.workspace, "STOP"),
+            HookEvent::SessionEnd => sync::trigger(&self.workspace, "SESSION_END"),
             _ => sync::trigger_if_due(&self.workspace, &self.stores),
         }
         result
@@ -463,8 +463,19 @@ impl Hook {
             "ms",
             "hook process wall clock",
         ));
-        event.payload =
-            json!({"hook_event": self.event.name(), "identity_provenance": session.provenance});
+        event.payload = json!({
+            "hook_event": self.event.name(),
+            "identity_provenance": session.provenance,
+            "user": self.workspace.user,
+            "email": self.workspace.email,
+        });
+        // How the repository identity was found, reported once per hook process
+        static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if self.workspace.identity_cache != "HIT"
+            && !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            event.payload["identity_cache"] = json!(self.workspace.identity_cache);
+        }
         event
     }
 
@@ -482,6 +493,10 @@ impl Hook {
         event: Event,
         alert: Option<&str>,
     ) -> Result<(), String> {
+        let mut event = event;
+        if let Some(kind) = alert {
+            event.payload["alert"] = json!(kind);
+        }
         let stored = self.stores.events.append(event)?;
         if let (Some(kind), Some(event)) = (alert, stored) {
             alerts::raise(&self.workspace, &self.stores, kind, session, &event);

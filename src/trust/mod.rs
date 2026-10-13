@@ -273,8 +273,33 @@ impl TrustStore {
         let Some(text) = self.key_file()? else {
             return Ok(None);
         };
-        let identity =
-            keys::open(&text).map_err(|error| format!("{}: {error}", self.key_path.display()))?;
+        let protection = keys::protection(&text);
+        let name = |protection: keys::Protection| format!("{protection:?}").to_ascii_uppercase();
+        let identity = match keys::open(&text) {
+            Ok(identity) => identity,
+            Err(error) => {
+                let failure = if error.contains("wrong passphrase") {
+                    "WRONG_PASSPHRASE"
+                } else if error.contains("another Windows user")
+                    || error.contains("only be used there")
+                {
+                    "OTHER_WINDOWS_USER"
+                } else if error.contains("console") {
+                    "NO_CONSOLE"
+                } else {
+                    "MALFORMED_KEY_FILE"
+                };
+                crate::platform::notes::note(
+                    "KEY_UNLOCK_FAILED",
+                    serde_json::json!({"key_kind": "SIGNING", "protection": name(protection), "failure_state": failure}),
+                );
+                return Err(format!("{}: {error}", self.key_path.display()));
+            }
+        };
+        crate::platform::notes::note(
+            "KEY_UNLOCKED",
+            serde_json::json!({"key_kind": "SIGNING", "protection": name(protection), "public_key": identity.public_hex()}),
+        );
         let stronger = matches!(
             (keys::protection(&text), keys::wanted()),
             (
@@ -288,6 +313,10 @@ impl TrustStore {
                 keys::seal(&identity, keys::wanted())?.as_bytes(),
             )?;
             restrict_to_owner(&self.key_path)?;
+            crate::platform::notes::note(
+                "KEY_PROTECTION_UPGRADED",
+                serde_json::json!({"key_kind": "SIGNING", "from_protection": name(protection), "to_protection": name(keys::wanted()), "public_key": identity.public_hex()}),
+            );
         }
         Ok(Some(identity))
     }
@@ -311,6 +340,10 @@ impl TrustStore {
             keys::seal(&identity, keys::wanted())?.as_bytes(),
         )?;
         restrict_to_owner(&self.key_path)?;
+        crate::platform::notes::note(
+            "KEY_CREATED",
+            serde_json::json!({"key_kind": "SIGNING", "protection": format!("{:?}", keys::wanted()).to_ascii_uppercase(), "public_key": identity.public_hex()}),
+        );
         Ok(identity)
     }
 

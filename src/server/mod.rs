@@ -22,6 +22,8 @@ mod http;
 mod ingest;
 mod limits;
 mod log;
+mod observe;
+pub(crate) mod service_events;
 mod store;
 
 use std::io::Write;
@@ -47,6 +49,7 @@ const WORKERS: usize = 8;
     - addresses: Limiter - requests per client address
     - storage: Storage - database size gauge
     - dashboard: dashboard::Dashboard - the hosted dashboard
+    - log: service_events::ServiceLog - the service's event log (DASHBOARD.md)
 */
 struct Service {
     database: Database,
@@ -56,6 +59,7 @@ struct Service {
     addresses: Limiter,
     storage: Storage,
     dashboard: dashboard::Dashboard,
+    log: service_events::ServiceLog,
 }
 
 /** Run the service until it is stopped
@@ -83,8 +87,10 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         dashboard: dashboard::Dashboard::new(
             dashboard::data::ReadOnly::new(connected.clone()),
             dashboard::approve::Approvals::new(connected.clone()),
+            service_events::ServiceLog::new(connected.clone(), settings.retention_days),
             auth,
         ),
+        log: service_events::ServiceLog::new(connected.clone(), settings.retention_days),
         database: connected,
         installations: Limiter::new(limits.requests_per_minute),
         addresses: Limiter::new(limits.addresses_per_minute),
@@ -95,6 +101,21 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     let server = Arc::new(
         Server::http(&listen).map_err(|error| format!("cannot listen on {listen}: {error}"))?,
     );
+    // F29.1: the service started (its database layout upgraded)
+    let mut started = service_events::event("SERVICE_STARTED", "F29", "SERVICE_START", "SERVICE");
+    started
+        .respond("OK", "NA", "Service started; database layout up to date.")
+        .severity("INFO", "OUTCOME", "NONE")
+        .set("bindings", "third_party", ["MONGODB", "RENDER"])
+        .set("eval", "schema_version", database::SCHEMA_VERSION)
+        .set("eval", "workers", WORKERS)
+        .set("other", "migration_applied", true)
+        .set(
+            "other",
+            "sign_in_configured",
+            service.dashboard.configured(),
+        );
+    service.log.record(started, None, None);
     let address = server
         .server_addr()
         .to_ip()
@@ -133,6 +154,92 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/** Record a refused or failed request: an upload refusal (F09.4), a limited request (F29.3), or a
+ * failed one (F29.4)
+ * Input
+    - service: &Service - shared state
+    - method: &str - HTTP method
+    - path: &str - path
+    - status: u16 - status sent
+    - duration_ms: u64 - time taken
+ * Output
+    - None
+*/
+fn record_refusal(service: &Service, method: &str, path: &str, status: u16, duration_ms: u64) {
+    let upload = path.contains("/v1/");
+    let repository = path
+        .split('/')
+        .skip_while(|part| *part != "repositories")
+        .nth(1)
+        .filter(|id| crate::trust::crypto::is_digest(id))
+        .map(String::from);
+    let (name, flow, response, failure) = match (upload, status) {
+        (true, 401) => ("SYNC_REFUSED", "F09", "UNAUTHORIZED", "SIGNATURE_INVALID"),
+        (true, 413) => ("SYNC_REFUSED", "F09", "TOO_LARGE", "BATCH_TOO_LARGE"),
+        (true, 429) => ("SYNC_REFUSED", "F09", "RATE_LIMITED", "MACHINE_RATE"),
+        (true, 507) => ("SYNC_REFUSED", "F09", "STORAGE_FULL", "DATABASE_SIZE"),
+        (true, 400) => ("SYNC_REFUSED", "F09", "BAD_REQUEST", "MALFORMED_BATCH"),
+        (true, 403) => ("SYNC_REFUSED", "F09", "QUOTA_REACHED", "REPOSITORY_QUOTA"),
+        (true, code) if code >= 500 => ("SYNC_REFUSED", "F09", "SERVER_ERROR", "STORE_FAILED"),
+        (true, _) => ("SYNC_REFUSED", "F09", "BAD_REQUEST", "MALFORMED_BATCH"),
+        (false, 429) => ("REQUEST_LIMITED", "F29", "RATE_LIMITED", "ADDRESS_RATE"),
+        (false, 413) => ("REQUEST_LIMITED", "F29", "TOO_LARGE", "BODY_TOO_LARGE"),
+        (false, 404) => ("REQUEST_FAILED", "F29", "NOT_FOUND", "ROUTE_UNKNOWN"),
+        (false, 405) => (
+            "REQUEST_FAILED",
+            "F29",
+            "METHOD_NOT_ALLOWED",
+            "WRITE_TO_DASHBOARD",
+        ),
+        (false, code) if code >= 500 => ("REQUEST_FAILED", "F29", "SERVER_ERROR", "STORE_FAILED"),
+        _ => return,
+    };
+    let mut spec = service_events::event(
+        name,
+        flow,
+        if upload {
+            "UPLOAD"
+        } else {
+            "DASHBOARD_REQUEST"
+        },
+        "SERVICE",
+    );
+    spec.respond(response, failure, "Request refused or failed.")
+        .severity(
+            if status >= 500 { "HIGH" } else { "MEDIUM" },
+            "FAILURE_STREAK",
+            "NONE",
+        )
+        .set("eval", "http_status", status)
+        .set("eval", "duration_ms", duration_ms)
+        .set("other", "path", path.chars().take(200).collect::<String>())
+        .set("other", "method", method.to_ascii_uppercase());
+    if name != "SYNC_REFUSED" {
+        spec.set(
+            "decision",
+            "decision",
+            if status == 429 || status == 413 {
+                "DENY"
+            } else {
+                "NOT_REQUIRED"
+            },
+        );
+    } else {
+        spec.set("decision", "decision", "DENY")
+            .set(
+                "decision",
+                "decision_rule",
+                if status == 401 {
+                    "UPLOAD_AUTH"
+                } else {
+                    "UPLOAD_LIMIT"
+                },
+            )
+            .set("decision", "enforcement", "PREVENTED");
+    }
+    service.log.record(spec, repository.as_deref(), None);
+}
+
 /** Answer one request, logging it with its correlation identifier
  * Input
     - request: Request - the request
@@ -149,7 +256,36 @@ fn respond(mut request: Request, service: &Service) {
     // The service's own health check (also behind a path prefix), not the dashboard's /api/health
     let health = path == "/health" || (path.ends_with("/health") && !path.starts_with("/api/"));
     let reply = if health {
-        match database::ping(&service.database) {
+        let ping = database::ping(&service.database);
+        // F29.2: recorded when the health changes (checks arrive every few seconds)
+        static HEALTHY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+        let state = if ping.is_ok() { 1 } else { 2 };
+        if HEALTHY.swap(state, std::sync::atomic::Ordering::Relaxed) != state {
+            let mut checked = service_events::event("HEALTH_CHECKED", "F29", "HEALTH", "SERVICE");
+            checked
+                .respond(
+                    if ping.is_ok() { "OK" } else { "UNAVAILABLE" },
+                    if ping.is_ok() {
+                        "NA"
+                    } else {
+                        "DATABASE_UNREACHABLE"
+                    },
+                    if ping.is_ok() {
+                        "Service healthy."
+                    } else {
+                        "Database unreachable; service unhealthy."
+                    },
+                )
+                .severity(
+                    if ping.is_ok() { "INFO" } else { "HIGH" },
+                    "OUTCOME",
+                    "NONE",
+                )
+                .set("bindings", "third_party", ["MONGODB", "RENDER"])
+                .set("eval", "ping_ms", started.elapsed().as_millis() as u64);
+            service.log.record(checked, None, None);
+        }
+        match ping {
             Ok(()) => Reply::json(
                 200,
                 json!({"status": "ok", "schema_version": database::SCHEMA_VERSION}),
@@ -178,6 +314,18 @@ fn respond(mut request: Request, service: &Service) {
             }
         }
     };
+    // F09.4, F29.3, F29.4: refused uploads and limited or failed requests
+    if !health && reply.status >= 400 && reply.status != 401
+        || (!health && reply.status == 401 && url.contains("/v1/"))
+    {
+        record_refusal(
+            service,
+            &method,
+            &path,
+            reply.status,
+            started.elapsed().as_millis() as u64,
+        );
+    }
     // Health checks arrive every few seconds from the platform; they are not logged
     if !health {
         log::write(

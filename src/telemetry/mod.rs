@@ -4,13 +4,15 @@
 
 pub(crate) mod alerts;
 pub(crate) mod compliance;
+pub(crate) mod evals;
 pub(crate) mod events;
 pub(crate) mod identity;
 pub(crate) mod ingest;
 pub(crate) mod ledger;
-pub(crate) mod metrics;
 pub(crate) mod model;
 pub(crate) mod redact;
+pub(crate) mod spec;
+pub(crate) mod spec_commands;
 pub(crate) mod sync;
 
 use std::path::{Path, PathBuf};

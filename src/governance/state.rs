@@ -469,7 +469,15 @@ pub(crate) fn integrity(workspace: &Workspace, state: &State, trust: &TrustStore
         }
         if git::commit_exists(&workspace.root, &checkpoint.commit) {
             let _ = append_line(&known_file, &checkpoint.commit);
+            crate::platform::notes::note(
+                "CHECKPOINT_COMMIT_CHECKED",
+                json!({"result": "VERIFIED_AND_REMEMBERED", "checkpoint": checkpoint.name, "commit": checkpoint.commit}),
+            );
         } else {
+            crate::platform::notes::note(
+                "CHECKPOINT_COMMIT_CHECKED",
+                json!({"result": "MISSING", "checkpoint": checkpoint.name, "commit": checkpoint.commit}),
+            );
             findings.push(Finding::new(
                 "checkpoint_commit_missing",
                 Severity::High,

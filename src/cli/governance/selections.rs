@@ -126,6 +126,7 @@ pub(crate) fn select(operation: Operation, args: &[String]) -> Result<(), String
             .transpose()?,
     };
     let record = create(&request)?;
+    crate::platform::notes::note("SELECTION_ID", json!({"id": record.id}));
     println!(
         "{} {} lines {}-{} as selection {} (policy {}, checkpoint {})",
         match operation {

@@ -17,12 +17,9 @@ use crate::trust::{require_human, TrustStore};
 use serde_json::json;
 use std::fs;
 
-/** Initialize Crane: require a clone with a live GitHub connection, create .crane with the
- * default policy, configuration, empty checkpoint log, registry, map, and audit trail, create the
- * signing key in the trust directory, and sign generation 1; in a repository that is already
- * initialized, join it instead (see join)
+/** Initialize Crane: require a clone with a live GitHub connection, create .crane with the default policy, configuration, empty checkpoint log, registry, map, and audit trail, create the signing key in the trust directory, and sign generation 1; in a repository that is already initialized, join it instead (see join)
  * Input
-    - args: &[String] - no arguments are accepted
+    - args: &\[String] - no arguments are accepted
  * Output
     - Result<(), String>
     - Error if not a clone, not connected, or the state fails verification
@@ -187,9 +184,12 @@ pub(super) fn join(workspace: &Workspace, state: &State) -> Result<(), String> {
         if mismatch {
             println!("Answer 'n' unless the owner confirmed to you that their key changed.");
         }
+        crate::platform::notes::note("JOIN", json!({"owner_key": owner}));
         if !Prompter::new().confirm("Trust this owner key for this repository?", false)? {
+            crate::platform::notes::note("OWNER_KEY_DECLINED", json!({"owner_key": owner}));
             return Err("the owner key was not trusted; nothing changed, and agent changes stay blocked until it is".into());
         }
+        crate::platform::notes::note("OWNER_KEY_TRUSTED", json!({"owner_key": owner}));
         trust.pin(&owner)?;
         let identity = trust.signing_key_or_create()?;
         trust.set_anchor(&identity, manifest.generation, &manifest.head)?;
@@ -209,6 +209,10 @@ pub(super) fn join(workspace: &Workspace, state: &State) -> Result<(), String> {
         }
         let identity = trust.require_signing_key()?;
         trust.set_anchor(&identity, manifest.generation, &manifest.head)?;
+        crate::platform::notes::note(
+            "FOREIGN_RULES_ACCEPTED",
+            json!({"generation": manifest.generation, "signed_by": manifest.public_key}),
+        );
         println!(
             "Accepted generation {}. Re-apply your own change with crane to sign it on top.",
             manifest.generation

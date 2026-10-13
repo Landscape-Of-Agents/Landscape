@@ -1,11 +1,12 @@
-// The dashboard's JSON API for one repository (and the selected members): every view the old local
-// dashboard had (overview, agents and sessions, the action graph, the event timeline, governance,
-// the autonomy ledger, metrics, compliance, alerts, health, the repository connection, integrations,
-// session reports, and evidence bundles), built from the uploaded records and the members' latest
-// repository status. No route changes anything. Lists are bounded and paginated.
+// The dashboard's JSON API for one repository (and the selected members): the overview, agents and
+// sessions, the action graph, the event timeline, governance, the autonomy ledger, compliance,
+// alerts, health, the repository connection, integrations, session reports, and evidence bundles.
+// Every count comes from the repository's event stream (DASHBOARD.md) and its evals. No route
+// changes anything. Lists are bounded and paginated.
 
 mod activity;
 mod controls;
+mod filter;
 mod reports;
 mod timeline;
 
@@ -18,10 +19,10 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
-use crate::foxx::views::{agents, session_view, task_view};
+use crate::foxx::views::{agents, session_view_with, task_view_with};
 use crate::server::dashboard::data::Context;
 use crate::telemetry::compliance::{self};
-use crate::telemetry::metrics::DEFINITIONS;
+use crate::telemetry::spec::{GROUPS, SPEC_VERSION};
 
 /** Largest page of events */
 const MAX_LIMIT: usize = 500;
@@ -48,31 +49,41 @@ pub(crate) fn error(status: u16, message: String) -> Answer {
     - context: &Context - the repository's data
     - path: &str - request path after /api/
     - query: &BTreeMap<String, String> - query parameters
+    - kind: &str - PERSONAL or ORGANIZATION (whose account owns the repository)
  * Output
     - Answer
 */
-pub(crate) fn route(context: &Context, path: &str, query: &BTreeMap<String, String>) -> Answer {
+pub(crate) fn route(
+    context: &Context,
+    path: &str,
+    query: &BTreeMap<String, String>,
+    kind: &str,
+) -> Answer {
     let snapshot = &context.snapshot;
     let segments = path.trim_end_matches('/').split('/').collect::<Vec<_>>();
     let session_detail = |id: &str| {
         snapshot.session(id).map(|session| {
-            let mut view = session_view(snapshot, session);
+            let mut view = session_view_with(snapshot, session, &context.specs);
             view["member"] = context.member(context.session_member.get(&session.foxx_session_id));
             view["stale"] = json!(context.stale(session));
             view["tasks"] = json!(snapshot
                 .tasks
                 .iter()
                 .filter(|task| task.foxx_session_id == session.foxx_session_id)
-                .map(|task| task_view(snapshot, task))
+                .map(|task| task_view_with(snapshot, task, &context.specs))
                 .collect::<Vec<_>>());
             view
         })
     };
     match segments.as_slice() {
         ["health"] => (200, health(context), None),
-        ["overview"] => (200, overview(context, query), None),
+        ["overview"] => (200, overview(context, query, kind), None),
         ["members"] => (200, members(context), None),
-        ["agents"] => (200, json!({"agents": agents(snapshot)}), None),
+        ["agents"] => (
+            200,
+            json!({"agents": agents(snapshot, &context.specs)}),
+            None,
+        ),
         ["sessions"] => (200, sessions(context, query), None),
         ["sessions", id] => match session_detail(id) {
             Some(view) => (200, view, None),
@@ -80,28 +91,25 @@ pub(crate) fn route(context: &Context, path: &str, query: &BTreeMap<String, Stri
         },
         ["tasks"] => (
             200,
-            json!({"tasks": snapshot.tasks.iter().filter(|task| query.get("session").is_none_or(|session| &task.foxx_session_id == session)).take(MAX_LIMIT).map(|task| task_view(snapshot, task)).collect::<Vec<_>>()}),
+            json!({"tasks": snapshot.tasks.iter().filter(|task| query.get("session").is_none_or(|session| &task.foxx_session_id == session)).take(MAX_LIMIT).map(|task| task_view_with(snapshot, task, &context.specs)).collect::<Vec<_>>()}),
             None,
         ),
         ["tasks", id] => match snapshot.task(id) {
-            Some(task) => (200, task_view(snapshot, task), None),
+            Some(task) => (200, task_view_with(snapshot, task, &context.specs), None),
             None => error(404, format!("no task '{id}'")),
         },
-        ["events"] => (200, events(context, query), None),
+        ["events"] => (200, events(context, query, kind), None),
+        ["series"] => (200, filter::series(context, query), None),
+        ["facets"] => (200, filter::facets(context, query), None),
         ["graph", id] => match snapshot.session(id) {
-            Some(session) => (
-                200,
-                graph(context, &snapshot.session_events(&session.foxx_session_id)),
-                None,
-            ),
+            Some(session) => (200, graph(context, &session.foxx_session_id, kind), None),
             None => error(404, format!("no session '{id}'")),
         },
         ["governance"] => governance(context),
         ["ledger"] => (200, ledger_view(context, query), None),
-        ["metrics"] => metrics_view(context, query),
         ["definitions"] => (
             200,
-            json!({"metrics": DEFINITIONS, "controls": compliance::CONTROLS, "domains": crate::telemetry::model::Domain::ALL}),
+            json!({"spec_version": SPEC_VERSION, "groups": GROUPS, "facets": filter::FACETS, "controls": compliance::CONTROLS, "domains": crate::telemetry::model::Domain::ALL}),
             None,
         ),
         ["compliance"] => (200, compliance_view(context), None),
@@ -109,12 +117,16 @@ pub(crate) fn route(context: &Context, path: &str, query: &BTreeMap<String, Stri
         ["integrations"] => (200, integrations(context), None),
         ["repo"] => (200, repo_view(context), None),
         ["reports", "session", id] => match snapshot.session(id) {
-            Some(session) => (200, session_report(context, &session.foxx_session_id), None),
+            Some(session) => (
+                200,
+                session_report(context, &session.foxx_session_id, kind),
+                None,
+            ),
             None => error(404, format!("no session '{id}'")),
         },
         ["evidence", "session", id] => match snapshot.session(id) {
             Some(session) => {
-                let bundle = evidence_bundle(context, &session.foxx_session_id);
+                let bundle = evidence_bundle(context, &session.foxx_session_id, kind);
                 let text = serde_json::to_string_pretty(&bundle).unwrap_or_default();
                 (
                     200,

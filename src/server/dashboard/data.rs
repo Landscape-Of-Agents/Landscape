@@ -178,6 +178,7 @@ pub(crate) fn verified_repositories(read: &ReadOnly) -> Result<Vec<(String, Stri
     - attested: BTreeSet<String> - sessions with a session.attested event
     - links: BTreeMap<String, String> - member to the GitHub login that linked it
     - owner: Value - the owner key most recently confirmed by a GitHub admin (null when none)
+    - specs: Vec<Value> - the repository's event stream (DASHBOARD.md), oldest first
     - truncated: bool - a member had more events than are loaded
 */
 pub(crate) struct Context {
@@ -193,6 +194,7 @@ pub(crate) struct Context {
     pub(crate) attested: BTreeSet<String>,
     pub(crate) links: BTreeMap<String, String>,
     pub(crate) owner: Value,
+    pub(crate) specs: Vec<Value>,
     pub(crate) truncated: bool,
 }
 
@@ -370,11 +372,50 @@ pub(crate) fn load(
         .into_iter()
         .map(json)
         .collect();
+    let audit = read
+        .find("governance_changes", among.clone(), doc! {"seq": 1}, 10_000)?
+        .into_iter()
+        .map(json)
+        .collect::<Vec<_>>();
+    // The service's events about the selected machines, and (unless one member is chosen) those
+    // about the repository itself, such as dashboard views
+    let machines = selected
+        .iter()
+        .map(|key| Bson::String(key.clone()))
+        .collect::<Vec<_>>();
+    let mut owners = vec![doc! {"installation": {"$in": machines}}];
+    if wanted.is_empty() {
+        owners.push(doc! {"installation": Bson::Null});
+    }
+    let service = read
+        .find(
+            "service_events",
+            doc! {"repository_id": repository, "$or": owners},
+            doc! {"occurred_at": 1},
+            20_000,
+        )?
+        .into_iter()
+        .map(json)
+        .collect::<Vec<_>>();
     let statuses = read
         .find("repository_status", among, doc! {"collected_at": -1}, 500)?
         .into_iter()
         .map(json)
         .collect();
+    let specs = super::stream::build(
+        &super::stream::Sources {
+            repository,
+            remote,
+            snapshot: &snapshot,
+            event_member: &event_member,
+            session_member: &session_member,
+            attested: &attested,
+            audit: &audit,
+            service: &service,
+            chains: &chains,
+        },
+        crate::platform::now_millis(),
+    );
     Ok(Context {
         repository: repository.into(),
         remote: remote.into(),
@@ -388,6 +429,7 @@ pub(crate) fn load(
         attested,
         links,
         owner,
+        specs,
         truncated,
     })
 }

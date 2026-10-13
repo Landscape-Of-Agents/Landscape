@@ -11,8 +11,8 @@
 // A sync first asks the service how far each local stream already reached it (moving the local
 // checkpoint back when the service holds less, for example after a restore), then sends everything
 // newer in batches: events, ledger entries, governance changes, and alerts; the last batch also
-// carries the current sessions, tasks, selection records, signed manifest, and metric rollups for
-// the repository and for every session and tool call with new events. The outcome is kept in
+// carries the current sessions, tasks, selection records, the signed manifest, and how the sync
+// went (the service records it as DASHBOARD.md F09 events). The outcome is kept in
 // sync-state.json, which drives the periodic sync. The last batch also carries this machine's
 // repository status (foxx/status.rs) when it is due.
 
@@ -26,7 +26,7 @@ use serde_json::{json, Value};
 use super::events::Event;
 use super::identity::{SessionRecord, TaskRecord};
 use super::ledger::Entry;
-use super::{metrics, Stores};
+use super::Stores;
 use crate::governance::audit;
 use crate::governance::state::{Manifest, State};
 use crate::governance::workspace::Workspace;
@@ -198,23 +198,6 @@ pub(crate) struct Positions {
     pub(crate) alerts: u64,
 }
 
-/** A metric rollup of one scope
- * Fields
-    - scope: String - repository, session, or tool_call
-    - id: String - identifier within the scope
-    - computed_at: u64 - Unix milliseconds
-    - formula_version: u32 - metrics::FORMULA_VERSION
-    - metrics: Value - computed metrics
-*/
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct Rollup {
-    pub(crate) scope: String,
-    pub(crate) id: String,
-    pub(crate) computed_at: u64,
-    pub(crate) formula_version: u32,
-    pub(crate) metrics: Value,
-}
-
 /** One upload; records are decoded into Crane's own types by the service, which validates them
  * Fields
     - complete: bool - the last batch of a sync, carrying the current state below
@@ -227,7 +210,9 @@ pub(crate) struct Rollup {
     - sessions, tasks - sessions with new records and their tasks (all of them after a reset)
     - selections, manifest - current state
     - status: Option<Value> - this machine's repository status, when due
-    - rollups: Vec<Rollup> - refreshed metric rollups
+    - sync: Option<Value> - on the last batch: how this upload went (trigger, started_at, resent,
+      previous_error, events), so the service records it (DASHBOARD.md F09) without the machine
+      creating events about its own uploads
 */
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -245,14 +230,13 @@ pub(crate) struct Batch {
     pub(crate) tasks: Vec<TaskRecord>,
     pub(crate) selections: Vec<Record>,
     pub(crate) manifest: Option<Manifest>,
-    pub(crate) rollups: Vec<Rollup>,
     pub(crate) status: Option<Value>,
+    pub(crate) sync: Option<Value>,
 }
 
 /** The result of one sync
  * Fields
     - events, ledger, audit, alerts: usize - records sent per stream
-    - rollups: usize - metric rollups refreshed
     - duplicates: usize - records the service already held (retries)
     - reset: bool - the service held less than the checkpoint, so missing records were re-sent
     - skipped: bool - another sync was running, so this background sync did nothing
@@ -263,7 +247,6 @@ pub(crate) struct Flushed {
     pub(crate) ledger: usize,
     pub(crate) audit: usize,
     pub(crate) alerts: usize,
-    pub(crate) rollups: usize,
     pub(crate) duplicates: usize,
     pub(crate) reset: bool,
     pub(crate) skipped: bool,
@@ -502,11 +485,20 @@ pub(crate) fn sync(
     };
     let refresh = trigger == Trigger::Manual;
     let mut status = state(stores);
+    let previous_attempt = status.last_attempt_at;
     status.last_attempt_at = now_millis();
     save_state(stores, &status);
     let result = Client::open(workspace).and_then(|client| match client {
         None => Ok(None),
-        Some(client) => push(&client, workspace, stores, &mut status, refresh).map(Some),
+        Some(client) => push(
+            &client,
+            workspace,
+            stores,
+            &mut status,
+            refresh,
+            previous_attempt,
+        )
+        .map(Some),
     });
     match &result {
         Ok(Some(_)) => {
@@ -520,85 +512,6 @@ pub(crate) fn sync(
     result.map(Option::unwrap_or_default)
 }
 
-/** Compute the rollups of the repository and of the sessions and tool calls with new records
- * Input
-    - repository: &str - repository identity
-    - events: &[Event] - every event
-    - ledger: &[Entry] - every ledger entry
-    - records: &[SessionRecord] - every session
-    - sessions: &BTreeSet<String> - sessions with new records
-    - calls: &BTreeSet<String> - tool calls with new events
- * Output
-    - Vec<Rollup>
-*/
-fn rollups(
-    repository: &str,
-    events: &[Event],
-    ledger: &[Entry],
-    records: &[SessionRecord],
-    sessions: &BTreeSet<String>,
-    calls: &BTreeSet<String>,
-) -> Vec<Rollup> {
-    let rollup = |scope: &str,
-                  id: &str,
-                  events: Vec<&Event>,
-                  ledger: Vec<&Entry>,
-                  records: Vec<&SessionRecord>| {
-        let records = records
-            .into_iter()
-            .map(|record| serde_json::to_value(record).unwrap_or_default())
-            .collect::<Vec<_>>();
-        Rollup {
-            scope: scope.into(),
-            id: id.into(),
-            computed_at: now_millis(),
-            formula_version: metrics::FORMULA_VERSION,
-            metrics: json!(metrics::compute(&events, &ledger, &records)),
-        }
-    };
-    let mut rollups = vec![rollup(
-        "repository",
-        repository,
-        events.iter().collect(),
-        ledger.iter().collect(),
-        records.iter().collect(),
-    )];
-    for session in sessions {
-        rollups.push(rollup(
-            "session",
-            session,
-            events
-                .iter()
-                .filter(|event| event.scope.foxx_session_id.as_ref() == Some(session))
-                .collect(),
-            ledger
-                .iter()
-                .filter(|entry| &entry.session == session)
-                .collect(),
-            records
-                .iter()
-                .filter(|record| &record.foxx_session_id == session)
-                .collect(),
-        ));
-    }
-    for call in calls {
-        rollups.push(rollup(
-            "tool_call",
-            call,
-            events
-                .iter()
-                .filter(|event| event.scope.tool_call_id.as_ref() == Some(call))
-                .collect(),
-            ledger
-                .iter()
-                .filter(|entry| entry.tool_call_id.as_ref() == Some(call))
-                .collect(),
-            Vec::new(),
-        ));
-    }
-    rollups
-}
-
 /** Reconcile and upload: see the module comment
  * Input
     - client: &Client - service connection
@@ -606,6 +519,7 @@ fn rollups(
     - stores: &Stores - runtime stores
     - status: &mut SyncState - sync status, updated with the remote positions
     - refresh: bool - send the repository status even when it is not due
+    - previous_attempt: u64 - when the sync before this one started (Unix milliseconds, 0 if never)
  * Output
     - Result<Flushed, String>
 */
@@ -615,6 +529,7 @@ fn push(
     stores: &Stores,
     status: &mut SyncState,
     refresh: bool,
+    previous_attempt: u64,
 ) -> Result<Flushed, String> {
     let path = stores.directory.join("sync-checkpoint.json");
     let mut checkpoint: Positions = fs::read_to_string(&path)
@@ -658,10 +573,6 @@ fn push(
         .filter_map(|event| event.scope.foxx_session_id.clone())
         .collect::<BTreeSet<_>>();
     sessions.extend(entries.iter().map(|entry| entry.session.clone()));
-    let calls = events
-        .iter()
-        .filter_map(|event| event.scope.tool_call_id.clone())
-        .collect::<BTreeSet<_>>();
     let rounds = [events.len(), entries.len(), changes.len(), new_alerts.len()]
         .into_iter()
         .map(|length| length.div_ceil(BATCH))
@@ -689,18 +600,19 @@ fn push(
         };
         if round + 1 == rounds {
             let records = stores.identity.sessions();
-            if !events.is_empty() || !entries.is_empty() || flushed.reset {
-                batch.rollups = rollups(
-                    &workspace.repository_id,
-                    &all_events,
-                    &ledger,
-                    &records,
-                    &sessions,
-                    &calls,
-                );
-            }
             let touched = |session: &str| flushed.reset || sessions.contains(session);
             batch.complete = true;
+            batch.sync = Some(json!({
+                "trigger": if refresh { "MANUAL" } else { "BACKGROUND" },
+                "started_at": status.last_attempt_at,
+                "resent": flushed.reset,
+                "previous_error": status.last_error,
+                "events": flushed.events + events.len(),
+                // What started a background sync (F34): POST_TOOL, STOP, SESSION_END, COMMAND, INTERVAL
+                "trigger_reason": if refresh { None } else { std::env::var("CRANE_SYNC_TRIGGER").ok() },
+                "seconds_since_last_attempt": (previous_attempt > 0).then(|| status.last_attempt_at.saturating_sub(previous_attempt) / 1000),
+                "interval_seconds": super::sync::interval_seconds(),
+            }));
             batch.remote = workspace.remote.clone();
             batch.root_commits = workspace.root_commits.clone();
             batch.actor = Some(crate::platform::actor());
@@ -732,7 +644,6 @@ fn push(
         flushed.ledger += batch.ledger.len();
         flushed.audit += batch.audit.len();
         flushed.alerts += batch.alerts.len();
-        flushed.rollups += batch.rollups.len();
         if let Some(last) = batch.events.last() {
             checkpoint.events = last.sequence;
         }

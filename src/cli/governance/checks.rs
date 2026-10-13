@@ -204,6 +204,33 @@ pub(crate) fn test(args: &[String]) -> Result<(), String> {
     }
     let tests_passed = tests.iter().all(|test| test["passed"] == true);
     let passed = report.passed && tests_passed;
+    // Each rule's and each test command's result, for the command's event (DASHBOARD.md F19)
+    for policy in &report.policies {
+        for command in &policy.commands {
+            crate::platform::notes::note(
+                "POLICY_RULE_RESULT",
+                json!({
+                    "policy": policy.name,
+                    "id": command.id,
+                    "operation": command.operation.name(),
+                    "change_type": command.change_type,
+                    "outcome": command.outcome,
+                    "message": command.message,
+                }),
+            );
+        }
+    }
+    for test in &tests {
+        crate::platform::notes::note(
+            "PROJECT_TEST_RESULT",
+            json!({
+                "name": test["name"],
+                "outcome": if test["timed_out"] == true { "TIMEOUT" } else if test["passed"] == true { "PASS" } else { "FAIL" },
+                "exit_code": test["exit_code"],
+                "duration_ms": test["duration_ms"],
+            }),
+        );
+    }
     if parsed.flag("json") {
         println!(
             "{}",

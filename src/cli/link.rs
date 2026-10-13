@@ -133,6 +133,25 @@ pub(crate) fn show_owner_confirmation(workspace: &Workspace, owner: &str) -> boo
         .ok()
         .flatten()
         .map(|client| client.confirmed_owner());
+    let result = match &answer {
+        Some(Ok(answer)) => match answer["owner_key"].as_str() {
+            Some(confirmed) if confirmed == owner => "MATCH",
+            Some(_) => "MISMATCH",
+            None => "NONE_CONFIRMED",
+        },
+        Some(Err(_)) => "UNAVAILABLE",
+        None => "UPLOADS_OFF",
+    };
+    match &answer {
+        Some(Ok(answer)) => crate::platform::notes::note(
+            "OWNER_KEY_LOOKUP",
+            serde_json::json!({"result": result, "confirmed_by": answer["confirmed_by"], "confirmed_key": answer["owner_key"]}),
+        ),
+        Some(Err(_)) => {
+            crate::platform::notes::note("OWNER_KEY_LOOKUP", serde_json::json!({"result": result}))
+        }
+        None => {}
+    }
     match answer {
         Some(Ok(answer)) => match answer["owner_key"].as_str() {
             Some(confirmed) if confirmed == owner => {

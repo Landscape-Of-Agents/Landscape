@@ -1,6 +1,6 @@
 // Read models shared by the task and session commands and the hosted Foxx dashboard: sessions,
-// tasks, agents, and tool calls with their metrics, built from the local runtime stores or, on the
-// service, from the uploaded records.
+// tasks, agents, and tool calls with their evals (DASHBOARD.md), built from the specification
+// events of the local runtime stores or, on the service, of the uploaded records.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -8,10 +8,11 @@ use serde_json::{json, Value};
 
 use crate::governance::workspace::Workspace;
 use crate::platform::render::iso_time;
+use crate::telemetry::evals::summarize;
 use crate::telemetry::events::Event;
 use crate::telemetry::identity::{SessionRecord, TaskRecord};
 use crate::telemetry::ledger::{Entry, Ledger};
-use crate::telemetry::metrics::{self, Metric};
+use crate::telemetry::spec;
 use crate::telemetry::Stores;
 
 /** Everything the read models are built from
@@ -56,6 +57,7 @@ impl Snapshot {
      * Output
         - Vec<&Event>
     */
+    #[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the hosted dashboard
     pub(crate) fn session_events(&self, session: &str) -> Vec<&Event> {
         self.events
             .iter()
@@ -63,17 +65,38 @@ impl Snapshot {
             .collect()
     }
 
-    /** Events of one task
+    /** Every specification event of the stores: those stored with each event (projected now for
+     * events stored before specifications existed) and the credit events of the ledger, in time
+     * order
      * Input
-        - task: &str - canonical task
+        - None (uses self)
      * Output
-        - Vec<&Event>
+        - Vec<Value> with envelopes
     */
-    pub(crate) fn task_events(&self, task: &str) -> Vec<&Event> {
-        self.events
-            .iter()
-            .filter(|event| event.scope.foxx_task_id.as_deref() == Some(task))
-            .collect()
+    pub(crate) fn specs(&self) -> Vec<Value> {
+        let repository = self
+            .events
+            .first()
+            .map(|event| event.repository_id.clone())
+            .unwrap_or_default();
+        let mut all = Vec::new();
+        for event in &self.events {
+            let specs = if event.spec.is_empty() {
+                spec::project(event)
+            } else {
+                event.spec.clone()
+            };
+            for (index, value) in specs.iter().enumerate() {
+                all.push(spec::envelope(event, value, index));
+            }
+        }
+        all.extend(
+            self.ledger
+                .iter()
+                .filter_map(|entry| spec::from_ledger(entry, &repository)),
+        );
+        all.sort_by_key(|value| value["occurred_at"].as_u64().unwrap_or(0));
+        all
     }
 
     /** Find a session by canonical or provider identifier
@@ -103,23 +126,6 @@ impl Snapshot {
     }
 }
 
-/** Convert metrics into a name-keyed map of value, unit, and status
- * Input
-    - metrics: &[Metric] - computed metrics
- * Output
-    - Value
-*/
-pub(crate) fn metric_map(metrics: &[Metric]) -> Value {
-    let mut map = serde_json::Map::new();
-    for metric in metrics {
-        map.insert(
-            metric.name.into(),
-            json!({"value": metric.value, "unit": metric.unit, "status": metric.status, "domain": metric.domain}),
-        );
-    }
-    Value::Object(map)
-}
-
 /** Format optional Unix milliseconds
  * Input
     - millis: Option<u64> - time
@@ -130,7 +136,22 @@ fn time(millis: Option<u64>) -> Value {
     millis.map_or(Value::Null, |millis| json!(iso_time(millis)))
 }
 
-/** Build the view of a task, with its metrics
+/** The specification events of one session or task
+ * Input
+    - specs: &[Value] - every specification event
+    - group_key: (&str, &str) - ("session", "session_id") or ("session", "task_id")
+    - id: &str - identifier
+ * Output
+    - Vec<&Value>
+*/
+pub(crate) fn of<'a>(specs: &'a [Value], group_key: (&str, &str), id: &str) -> Vec<&'a Value> {
+    specs
+        .iter()
+        .filter(|spec| spec[group_key.0][group_key.1].as_str() == Some(id))
+        .collect()
+}
+
+/** Build the view of a task, with its evals
  * Input
     - snapshot: &Snapshot - stores
     - task: &TaskRecord - task
@@ -138,21 +159,30 @@ fn time(millis: Option<u64>) -> Value {
     - Value
 */
 pub(crate) fn task_view(snapshot: &Snapshot, task: &TaskRecord) -> Value {
+    task_view_with(snapshot, task, &snapshot.specs())
+}
+
+/** Build the view of a task from already built specification events
+ * Input
+    - snapshot: &Snapshot - stores
+    - task: &TaskRecord - task
+    - specs: &[Value] - every specification event
+ * Output
+    - Value
+*/
+pub(crate) fn task_view_with(snapshot: &Snapshot, task: &TaskRecord, specs: &[Value]) -> Value {
     let session = snapshot.session(&task.foxx_session_id);
-    let events = snapshot.task_events(&task.foxx_task_id);
+    let events = of(specs, ("session", "task_id"), &task.foxx_task_id);
     let calls = events
         .iter()
-        .filter_map(|event| event.scope.tool_call_id.clone())
+        .filter(|spec| spec["flow"] == "F05")
+        .map(|spec| {
+            spec["action"]["action_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
         .collect::<BTreeSet<_>>();
-    let ledger = snapshot
-        .ledger
-        .iter()
-        .filter(|entry| entry.task.as_deref() == Some(task.foxx_task_id.as_str()))
-        .collect::<Vec<_>>();
-    let session_json = session
-        .map(|session| serde_json::to_value(session).unwrap_or_default())
-        .into_iter()
-        .collect::<Vec<_>>();
     json!({
         "task": {
             "foxx_task_id": task.foxx_task_id,
@@ -169,11 +199,11 @@ pub(crate) fn task_view(snapshot: &Snapshot, task: &TaskRecord) -> Value {
             "prompt": task.prompt_chars.map(|chars| format!("{chars} characters, sha512 {}", task.prompt_digest.clone().unwrap_or_default().chars().take(16).collect::<String>())),
             "tool_calls": calls.len(),
         },
-        "metrics": metric_map(&metrics::compute(&events, &ledger, &session_json)),
+        "evals": summarize(&events),
     })
 }
 
-/** Build the view of a session, with its tasks, credits, and metrics
+/** Build the view of a session, with its tasks, credits, and evals
  * Input
     - snapshot: &Snapshot - stores
     - session: &SessionRecord - session
@@ -181,11 +211,24 @@ pub(crate) fn task_view(snapshot: &Snapshot, task: &TaskRecord) -> Value {
     - Value
 */
 pub(crate) fn session_view(snapshot: &Snapshot, session: &SessionRecord) -> Value {
-    let events = snapshot.session_events(&session.foxx_session_id);
-    let ids = BTreeSet::from([session.foxx_session_id.clone()]);
-    let ledger = metrics::ledger_of(&snapshot.ledger, &ids);
+    session_view_with(snapshot, session, &snapshot.specs())
+}
+
+/** Build the view of a session from already built specification events
+ * Input
+    - snapshot: &Snapshot - stores
+    - session: &SessionRecord - session
+    - specs: &[Value] - every specification event
+ * Output
+    - Value
+*/
+pub(crate) fn session_view_with(
+    snapshot: &Snapshot,
+    session: &SessionRecord,
+    specs: &[Value],
+) -> Value {
+    let events = of(specs, ("session", "session_id"), &session.foxx_session_id);
     let balance = Ledger::balance_of(&snapshot.ledger, &session.foxx_session_id);
-    let record = serde_json::to_value(session).unwrap_or_default();
     json!({
         "session": {
             "foxx_session_id": session.foxx_session_id,
@@ -211,18 +254,19 @@ pub(crate) fn session_view(snapshot: &Snapshot, session: &SessionRecord) -> Valu
             "identity_conflicts": session.conflicts,
         },
         "credits": balance,
-        "metrics": metric_map(&metrics::compute(&events, &ledger, &[record])),
+        "evals": summarize(&events),
     })
 }
 
-/** Build the per-agent longitudinal view: every agent identity with its sessions and metrics
+/** Build the per-agent longitudinal view: every agent identity with its sessions and evals
  * Input
     - snapshot: &Snapshot - stores
+    - specs: &[Value] - every specification event
  * Output
     - Vec<Value>
 */
 #[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the hosted dashboard
-pub(crate) fn agents(snapshot: &Snapshot) -> Vec<Value> {
+pub(crate) fn agents(snapshot: &Snapshot, specs: &[Value]) -> Vec<Value> {
     let mut by_agent: BTreeMap<String, Vec<&SessionRecord>> = BTreeMap::new();
     for session in &snapshot.sessions {
         by_agent
@@ -234,12 +278,10 @@ pub(crate) fn agents(snapshot: &Snapshot) -> Vec<Value> {
         .into_iter()
         .map(|(agent, sessions)| {
             let ids = sessions.iter().map(|session| session.foxx_session_id.clone()).collect::<BTreeSet<_>>();
-            let events = snapshot
-                .events
+            let events = specs
                 .iter()
-                .filter(|event| event.scope.foxx_session_id.as_ref().is_some_and(|id| ids.contains(id)))
+                .filter(|spec| spec["session"]["session_id"].as_str().is_some_and(|id| ids.contains(id)))
                 .collect::<Vec<_>>();
-            let records = sessions.iter().map(|session| serde_json::to_value(session).unwrap_or_default()).collect::<Vec<_>>();
             json!({
                 "agent_id": agent,
                 "provider": sessions[0].provider,
@@ -247,7 +289,7 @@ pub(crate) fn agents(snapshot: &Snapshot) -> Vec<Value> {
                 "first_seen": iso_time(sessions.iter().map(|session| session.started_at).min().unwrap_or(0)),
                 "last_seen": iso_time(sessions.iter().map(|session| session.last_seen_at).max().unwrap_or(0)),
                 "quarantined_sessions": sessions.iter().filter(|session| format!("{:?}", session.safety) == "Quarantined").count(),
-                "metrics": metric_map(&metrics::compute(&events, &metrics::ledger_of(&snapshot.ledger, &ids), &records)),
+                "evals": summarize(&events),
             })
         })
         .collect()

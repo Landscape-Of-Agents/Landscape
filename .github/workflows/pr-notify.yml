@@ -44,6 +44,7 @@ jobs:
           echo "verb=$verb" >> "$GITHUB_OUTPUT"
 
       - name: Notify Slack
+        id: slack
         if: env.SLACK_WEBHOOK_URL != ''
         env:
           KEY: ${{ steps.describe.outputs.key }}
@@ -55,6 +56,7 @@ jobs:
             | curl -sS --fail-with-body -X POST -H 'Content-Type: application/json' --data @- "$SLACK_WEBHOOK_URL"
 
       - name: Comment on the Jira issue
+        id: jira
         if: steps.describe.outputs.key != '' && env.JIRA_API_TOKEN != '' && env.JIRA_BASE_URL != ''
         env:
           KEY: ${{ steps.describe.outputs.key }}
@@ -66,3 +68,55 @@ jobs:
                {type: "text", text: $title, marks: [{type: "link", attrs: {href: $url}}]}]}]}}' \
             | curl -sS --fail-with-body -X POST -u "$JIRA_EMAIL:$JIRA_API_TOKEN" \
                 -H 'Content-Type: application/json' --data @- "${JIRA_BASE_URL%/}/rest/api/3/issue/$KEY/comment"
+
+      # DASHBOARD.md F32.1: one event line per channel in this log. Built with jq here rather than
+      # a script from the repository, since this job holds the notification secrets and does not
+      # check out the pull request's code.
+      - name: Record the outcome
+        if: always()
+        env:
+          KEY: ${{ steps.describe.outputs.key }}
+          SLACK: ${{ steps.slack.outcome }}
+          JIRA: ${{ steps.jira.outcome }}
+          OWNER_TYPE: ${{ github.event.repository.owner.type }}
+        run: |
+          case "$ACTION" in
+            closed) if [ "$MERGED" = "true" ]; then pr_event=MERGED; else pr_event=CLOSED; fi ;;
+            *) pr_event=$(printf '%s' "$ACTION" | tr '[:lower:]' '[:upper:]') ;;
+          esac
+          if [ "$OWNER_TYPE" = Organization ]; then repo=ORGANIZATION; else repo=PERSONAL; fi
+          for channel in SLACK JIRA; do
+            if [ "$channel" = SLACK ]; then
+              if [ -z "$SLACK_WEBHOOK_URL" ]; then set -- SKIPPED NO_CREDENTIALS
+              elif [ "$SLACK" = success ]; then set -- SENT NA
+              else set -- FAILED HTTP_ERROR; fi
+            else
+              if [ -z "$KEY" ]; then set -- SKIPPED NO_ISSUE_KEY
+              elif [ -z "$JIRA_API_TOKEN" ] || [ -z "$JIRA_BASE_URL" ]; then set -- SKIPPED NO_CREDENTIALS
+              elif [ "$JIRA" = success ]; then set -- SENT NA
+              else set -- FAILED HTTP_ERROR; fi
+            fi
+            case "$1" in SENT) result=OK; severity=INFO; statement="Pull request notification sent." ;;
+              SKIPPED) result=SKIPPED; severity=INFO; statement="Pull request notification skipped." ;;
+              *) result=FAILED; severity=MEDIUM; statement="Pull request notification failed." ;; esac
+            jq -cn --arg name PULL_REQUEST_NOTIFIED --arg user "$AUTHOR" --arg run "$GITHUB_RUN_ID" --arg repo "$repo" \
+                  --arg remote "github.com/$REPOSITORY" --arg key "$KEY" --arg number "$NUMBER" --arg status "$1" \
+                  --arg failure "$2" --arg statement "$statement" --arg severity "$severity" --arg result "$result" \
+                  --arg pr_event "$pr_event" --arg channel "$channel" --arg id "evt_$(cat /proc/sys/kernel/random/uuid | tr -d -)" \
+              '{event_id: $id, event_name: $name, flow: "F32", occurred_at: (now * 1000 | floor), schema_version: 1,
+                sequence: null, previous_digest: null, digest: null, origin: "WORKFLOW",
+                action: {action_type: "PULL_REQUEST", action_source: "GITHUB_WORKFLOW", action_user: $user, action_email: null, action_id: $run},
+                repository: {repo: $repo, repo_id: null, repo_remote: $remote, repo_remote_verified: false, registry_generation: null},
+                session: {session_type: "NOT_IN_SESSION", session_id: null, provider_session_id: null, id_provenance: "NA", task_id: null,
+                          external_task_id: (if $key == "" then null else $key end)},
+                agent: {agent_type: "NOT_AN_AGENT", agent_id: null, model: null, autonomy_mode: "NA"},
+                resource: {resource: ["NETWORK"], resource_ids: [$number], resource_classification: ["EXTERNAL"]},
+                response: {response_status: $status, failure_state: $failure, response_statement: $statement},
+                assessment: {assessment: "NOT_REQUIRED", assessment_checks: []},
+                decision: {decision: "NOT_REQUIRED", decision_rule: null, decision_reasons: [], enforcement: "NOT_APPLICABLE"},
+                eval: {eval: "NOT_REQUIRED"},
+                severity: {severity_status: $severity, severity_basis: "OUTCOME", alert_kind: "NONE"},
+                bindings: {third_party: ["GITHUB_ACTIONS", "SLACK", "JIRA"], binding_result: $result},
+                telemetry: {agent_state: "INACTIVE", known_as: "OBSERVED", hook_event: "NA"},
+                other: {pr_event: $pr_event, channel: $channel}}' | sed 's/^/crane-event /'
+          done

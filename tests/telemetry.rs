@@ -1,5 +1,5 @@
 // Security telemetry: canonical identities with provider provenance, task and session views,
-// metrics, the hash-chained event store, idempotent credit accounting, redaction, coverage gaps,
+// evals, the hash-chained event store, idempotent credit accounting, redaction, coverage gaps,
 // and signed session attestations.
 
 mod common;
@@ -171,15 +171,15 @@ fn tasks_follow_prompts() {
     assert!(list.contains("status: ENDED"), "{list}");
 }
 
-/** Metrics separate allowed, denied, bypass attempts, and confirmed bypasses; missing data is
- * null and unobserved; unsupported telemetry is labeled
+/** Evals (DASHBOARD.md), computed from the session's events, separate allowed, denied, bypass
+ * attempts, and confirmed bypasses; data that was never recorded is null, never zero
  * Input
     - None
  * Output
     - None (panics on failure)
 */
 #[test]
-fn metrics_are_separated_and_honest() {
+fn evals_are_separated_and_honest() {
     let fixture = Fixture::ready();
     fixture.protect(&["app/payments.py", "start-line", "1", "end-line", "4"]);
     hook(&fixture, "SessionStart", json!({"session_id": "s-m"}));
@@ -209,55 +209,32 @@ fn metrics_are_separated_and_honest() {
         ),
     );
     let session = fixture.ok(&["session", "current"]);
-    let block = |name: &str| {
-        let start = session
-            .find(&format!("  {name}:\n"))
-            .unwrap_or_else(|| panic!("{name} in {session}"));
-        session[start..]
+    let line = |name: &str| {
+        session
             .lines()
-            .take(8)
-            .collect::<Vec<_>>()
-            .join("\n")
+            .find(|line| line.trim_start().starts_with(&format!("{name}:")))
+            .unwrap_or_else(|| panic!("{name} in {session}"))
+            .trim()
+            .to_string()
     };
-    assert!(
-        block("actions_allowed").contains("value: 2"),
-        "{}",
-        block("actions_allowed")
+    assert_eq!(line("allowed"), "allowed: 2", "{session}");
+    assert_eq!(line("denied"), "denied: 1", "{session}");
+    assert_eq!(line("bypass_attempts"), "bypass_attempts: 1", "{session}");
+    assert_eq!(
+        line("bypasses_confirmed"),
+        "bypasses_confirmed: 0",
+        "{session}"
     );
-    assert!(block("actions_denied").contains("value: 1"));
-    assert!(block("bypass_attempts").contains("value: 1"));
-    assert!(block("bypasses_confirmed").contains("value: 0"));
-    assert!(
-        block("network_destinations").contains("https://example.org"),
-        "{}",
-        block("network_destinations")
-    );
-    assert!(block("network_destinations").contains("status: INFERRED"));
-    assert!(block("network_bytes_sent").contains("status: UNSUPPORTED"));
-    assert!(block("llm_tokens").contains("status: UNSUPPORTED"));
-    assert!(
-        block("hook_latency_ms").contains("p50"),
-        "{}",
-        block("hook_latency_ms")
-    );
-    assert!(
-        block("tool_duration_ms").contains("count: 1"),
-        "{}",
-        block("tool_duration_ms")
-    );
+    assert!(session.contains("example.org"), "{session}");
+    assert!(session.contains("latency_ms:"), "{session}");
     let fresh = Fixture::ready();
     hook(&fresh, "SessionStart", json!({"session_id": "s-empty"}));
     let empty = fresh.ok(&["session", "current"]);
-    let start = empty.find("  actions_denied:\n").unwrap();
-    let denied = empty[start..]
+    let denied = empty
         .lines()
-        .take(5)
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        denied.contains("value: null") && denied.contains("UNOBSERVED"),
-        "missing is never zero: {denied}"
-    );
+        .find(|line| line.trim_start().starts_with("denied:"))
+        .unwrap_or_else(|| panic!("denied in {empty}"));
+    assert!(denied.contains("null"), "missing is never zero: {denied}");
 }
 
 /** Events are hash chained, typed, bound to the registry generation, and redacted; a retried

@@ -38,8 +38,10 @@ use crate::telemetry::model::{Decision, Safety};
     - policies: Vec<String> - policies of those selections
     - network: Vec<String> - network destinations inferred from it
     - zones: Vec<String> - zones and flows covering the files it writes
-    - zone_floor: Option<(Decision, String)> - the strictest decision those zones and flows (or the
-      script pre-check) require, with the reason
+    - zone_floor: Option<(Decision, String, &'static str)> - the strictest decision those zones
+      and flows (or the script pre-check) require, with the reason and its rule code
+    - rules: Vec<&'static str> - rule codes of every reason, in order (DASHBOARD.md decision_rule)
+    - scripts: Vec<String> - scripts and inline code the script pre-check read
 */
 #[derive(Debug, Clone)]
 pub(crate) struct Decided {
@@ -49,7 +51,9 @@ pub(crate) struct Decided {
     pub(crate) policies: Vec<String>,
     pub(crate) network: Vec<String>,
     pub(crate) zones: Vec<String>,
-    pub(crate) zone_floor: Option<(Decision, String)>,
+    pub(crate) zone_floor: Option<(Decision, String, &'static str)>,
+    pub(crate) rules: Vec<&'static str>,
+    pub(crate) scripts: Vec<String>,
 }
 
 /** Everything a decision depends on
@@ -163,18 +167,21 @@ impl Guard<'_> {
             network: Vec::new(),
             zones: Vec::new(),
             zone_floor: None,
+            rules: Vec::new(),
+            scripts: Vec::new(),
         };
-        let deny = |decided: &mut Decided, reason: String, bypass: bool| {
+        let deny = |decided: &mut Decided, rule: &'static str, reason: String, bypass: bool| {
             decided.verdict.decision = Decision::Deny;
             decided.verdict.bypass |= bypass;
             decided.verdict.reasons.push(reason);
+            decided.rules.push(rule);
         };
         match action.operation {
             Operation::Read => {
                 decided.verdict.cost = self.costs.read;
                 for read in &action.reads {
                     if self.in_trust_home(read) {
-                        deny(&mut decided, format!("reading {read} is denied: the Crane trust directory holds signing keys and secrets"), true);
+                        deny(&mut decided, "TRUST_DIRECTORY_ACCESS", format!("reading {read} is denied: the Crane trust directory holds signing keys and secrets"), true);
                     }
                     let is_url = read.contains("://");
                     decided.resources.push(Resource {
@@ -201,6 +208,7 @@ impl Guard<'_> {
                 if action.files.is_empty() {
                     deny(
                         &mut decided,
+                        "WRITE_NAMES_NO_FILE",
                         "the write names no file Crane can check (malformed patch?)".into(),
                         false,
                     );
@@ -214,6 +222,7 @@ impl Guard<'_> {
                 match &action.command {
                     None => deny(
                         &mut decided,
+                        "COMMAND_NOT_STATED",
                         "the shell command is not stated, so it cannot be checked".into(),
                         false,
                     ),
@@ -229,6 +238,7 @@ impl Guard<'_> {
                 {
                     deny(
                         &mut decided,
+                        "TOOL_NAMES_METADATA",
                         format!(
                             "{} names protected Crane metadata ({argument})",
                             action.tool
@@ -285,35 +295,43 @@ impl Guard<'_> {
             return;
         }
         let verdict = &mut decided.verdict;
+        let rules = &mut decided.rules;
         if self.safety == Safety::Quarantined {
             verdict.decision = Decision::Quarantine;
             verdict.reasons.push("the session is quarantined; only reads are allowed until a human recovers it in a new session".into());
+            rules.push("SAFETY_QUARANTINED");
         } else if !self.integrity_ok {
             verdict.decision = Decision::Deny;
             verdict.reasons.push("Crane's signed governance state failed verification, so changes are denied (fail closed); a human must run 'crane validate'".into());
+            rules.push("INTEGRITY_FAILED");
         } else if self.mode == "observe" {
             verdict.decision = Decision::Deny;
             verdict
                 .reasons
                 .push("the session is in observe mode; changes are not allowed".into());
+            rules.push("MODE_OBSERVE");
         } else if self.mode == "assisted" {
             verdict.decision = Decision::RequireApproval;
             verdict
                 .reasons
                 .push("the session is in assisted mode; every change needs human approval".into());
+            rules.push("MODE_ASSISTED");
         } else if self.safety == Safety::Degraded {
             verdict.decision = Decision::RequireApproval;
             verdict.reasons.push(
                 "the session is degraded after a violation; changes need human approval".into(),
             );
+            rules.push("SAFETY_DEGRADED");
         } else if let Some(error) = &self.zone_error {
             verdict.decision = Decision::Deny;
             verdict.reasons.push(format!(
                 "the zone and flow configuration could not be resolved ({error}); changes are denied (fail closed)"
             ));
-        } else if let Some((decision, reason)) = decided.zone_floor.clone() {
+            rules.push("ZONE_CONFIG_UNRESOLVED");
+        } else if let Some((decision, reason, rule)) = decided.zone_floor.clone() {
             decided.verdict.decision = decision;
             decided.verdict.reasons.push(reason);
+            decided.rules.push(rule);
         } else {
             self.charge(decided);
         }
@@ -333,6 +351,7 @@ impl Guard<'_> {
                     "autonomy credits exhausted (available {available}, this action costs {}); a human must approve",
                     decided.verdict.cost
                 ));
+                decided.rules.push("CREDITS_EXHAUSTED");
             }
         }
     }
@@ -345,13 +364,21 @@ impl Guard<'_> {
         - None (updates decided)
     */
     fn decide_write(&self, change: &FileChange, decided: &mut Decided) {
-        let deny = |decided: &mut Decided, reason: String, bypass: bool| {
+        let deny = |decided: &mut Decided, rule: &'static str, reason: String, bypass: bool| {
             decided.verdict.decision = Decision::Deny;
             decided.verdict.bypass |= bypass;
             decided.verdict.reasons.push(reason);
+            decided.rules.push(rule);
         };
         if self.names_protected(&change.path) {
-            deny(decided, format!("writing {} is denied: Crane metadata, the trust directory, and hook settings cannot be modified by an agent, even with approval", change.path), true);
+            let rule = if self.in_trust_home(&change.path) {
+                "TRUST_DIRECTORY_ACCESS"
+            } else if names_crane_directory(&normal(&change.path)) {
+                "CRANE_METADATA_WRITE"
+            } else {
+                "HOOK_SETTINGS_WRITE"
+            };
+            deny(decided, rule, format!("writing {} is denied: Crane metadata, the trust directory, and hook settings cannot be modified by an agent, even with approval", change.path), true);
             decided.resources.push(Resource {
                 kind: "metadata".into(),
                 id: change.path.clone(),
@@ -382,19 +409,22 @@ impl Guard<'_> {
                 (Ceiling::Observe, _) => Some((
                     Decision::Deny,
                     format!("{path} is in {names}, whose autonomy ceiling is observe; agents cannot change it"),
+                    "ZONE_OBSERVE",
                 )),
                 (Ceiling::Assisted, _) => Some((
                     Decision::RequireApproval,
                     format!("{path} is in {names}, whose autonomy ceiling is assisted; a human must approve the change"),
+                    "ZONE_ASSISTED",
                 )),
                 (_, Criticality::Restricted) => Some((
                     Decision::RequireApproval,
                     format!("{path} is in {names}, which is restricted; a human must approve the change"),
+                    "ZONE_RESTRICTED",
                 )),
                 _ => None,
             };
             if let Some(floor) = floor {
-                let stricter = decided.zone_floor.as_ref().is_none_or(|(current, _)| {
+                let stricter = decided.zone_floor.as_ref().is_none_or(|(current, _, _)| {
                     floor.0 == Decision::Deny && *current != Decision::Deny
                 });
                 if stricter {
@@ -434,7 +464,7 @@ impl Guard<'_> {
         let after = match apply(&change.proposed, before.as_deref()) {
             Ok(after) => after,
             Err(error) if holds_selections => {
-                deny(decided, format!("{path} holds Crane selections and {error}, so the edit cannot be verified (fail closed)"), false);
+                deny(decided, "EDIT_NOT_SIMULATABLE", format!("{path} holds Crane selections and {error}, so the edit cannot be verified (fail closed)"), false);
                 return;
             }
             Err(_) => return,
@@ -443,6 +473,7 @@ impl Guard<'_> {
             if holds_selections {
                 deny(
                     decided,
+                    "SELECTION_FILE_DELETE",
                     format!("deleting {path} would remove Crane selections"),
                     true,
                 );
@@ -480,10 +511,11 @@ impl Guard<'_> {
                 .filter(|id| !known.contains(id))
                 .collect::<BTreeSet<_>>();
             if forged.is_empty() {
-                deny(decided, format!("the edit of {path} adds, removes, or alters Crane selection markers; markers are managed only by crane protect and crane target"), true);
+                deny(decided, "MARKER_CHANGED", format!("the edit of {path} adds, removes, or alters Crane selection markers; markers are managed only by crane protect and crane target"), true);
             } else {
                 deny(
                     decided,
+                    "MARKER_FORGED",
                     format!(
                         "the edit of {path} writes Crane markers ({}) that Crane did not generate",
                         forged.into_iter().collect::<Vec<_>>().join(", ")
@@ -508,6 +540,7 @@ impl Guard<'_> {
             match self.state.record(&id) {
                 Some(record) if record.operation == SelectionOperation::Preserve => deny(
                     decided,
+                    "PRESERVED_SELECTION",
                     format!(
                         "the edit would change preserved selection {id} ({path} lines {}-{}, policy {}); preserved code must stay as it was at checkpoint {}",
                         old.span.start_line, old.span.end_line, record.policy, record.origin.checkpoint
@@ -515,7 +548,7 @@ impl Guard<'_> {
                     false,
                 ),
                 Some(_) => {}
-                None => deny(decided, format!("{path} holds markers of {id}, which is not in the signed registry"), true),
+                None => deny(decided, "UNREGISTERED_MARKER", format!("{path} holds markers of {id}, which is not in the signed registry"), true),
             }
         }
     }
@@ -538,6 +571,7 @@ impl Guard<'_> {
                 decided.verdict.decision = Decision::Deny;
                 decided.verdict.bypass |= risk.bypass;
                 decided.verdict.reasons.push(risk.reason);
+                decided.rules.push(risk.code);
             } else if decided.zone_floor.is_none() {
                 let reason = if written {
                     format!(
@@ -547,7 +581,7 @@ impl Guard<'_> {
                 } else {
                     risk.reason
                 };
-                decided.zone_floor = Some((Decision::RequireApproval, reason));
+                decided.zone_floor = Some((Decision::RequireApproval, reason, risk.code));
             }
         }
     }
@@ -560,10 +594,11 @@ impl Guard<'_> {
         - None (updates decided)
     */
     fn decide_command(&self, command: &str, decided: &mut Decided) {
-        let deny = |decided: &mut Decided, reason: String, bypass: bool| {
+        let deny = |decided: &mut Decided, rule: &'static str, reason: String, bypass: bool| {
             decided.verdict.decision = Decision::Deny;
             decided.verdict.bypass |= bypass;
             decided.verdict.reasons.push(reason);
+            decided.rules.push(rule);
         };
         decided.resources.push(Resource {
             kind: "command".into(),
@@ -572,10 +607,10 @@ impl Guard<'_> {
             classification: None,
         });
         if self.names_protected(command) {
-            deny(decided, "the command names protected Crane metadata (.crane, the trust directory, or hook settings); agents cannot read or change it through the shell".into(), true);
+            deny(decided, "SHELL_NAMES_METADATA", "the command names protected Crane metadata (.crane, the trust directory, or hook settings); agents cannot read or change it through the shell".into(), true);
         }
         if let Some(invocation) = mutating_crane(command) {
-            deny(decided, format!("'{invocation}' cannot be executed by an AI agent; a human runs governance commands"), true);
+            deny(decided, "GOVERNANCE_COMMAND", format!("'{invocation}' cannot be executed by an AI agent; a human runs governance commands"), true);
         }
         let tokens = words(command);
         let mutating = command.contains('>')
@@ -604,7 +639,7 @@ impl Guard<'_> {
                         .iter()
                         .any(|token| token.rsplit('/').next() == Some(name.as_str()))
                 {
-                    deny(decided, format!("the shell command would modify {path}, which holds preserved selections; use the file edit tools so Crane can check the change"), false);
+                    deny(decided, "SHELL_MODIFIES_PRESERVED_FILE", format!("the shell command would modify {path}, which holds preserved selections; use the file edit tools so Crane can check the change"), false);
                 }
             }
         }
@@ -619,6 +654,7 @@ impl Guard<'_> {
         for source in scripts::sources(command, &directory) {
             if let Some((code, origin)) = scripts::read(&source) {
                 risks.extend(scripts::code_risks(&code, &origin, &protected, &preserved));
+                decided.scripts.push(origin);
             }
         }
         self.apply_risks(risks, false, decided);

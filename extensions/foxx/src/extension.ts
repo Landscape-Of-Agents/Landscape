@@ -33,6 +33,40 @@ let records: RegistryRecord[] = [];
 let status: vscode.StatusBarItem;
 let extensionUri: vscode.Uri;
 let lastSelection: SelectionInfo | undefined;
+let extensionVersion = "";
+
+/** Where the panel was opened from (DASHBOARD.md F31.2). */
+type OpenedFrom = "TITLE_BUTTON" | "KEYBINDING" | "EXPLORER" | "STATUS_BAR";
+
+/**
+ * Record an event of the editor side (DASHBOARD.md F31) with 'crane foxx event'. It runs in the
+ * background, writes nothing to the Foxx output, and never changes or delays what the person did.
+ * @param name event name (FOXX_...)
+ * @param fields attributes as key=value; empty values are left out
+ */
+function record(name: string, fields: Record<string, string | number | boolean | undefined>): void {
+  const directory = root();
+  if (!directory) return;
+  const executable = vscode.workspace.getConfiguration("foxx").get<string>("cranePath", "crane");
+  const pairs = Object.entries({ ...fields, extension_version: extensionVersion })
+    .filter(([, value]) => value !== undefined && value !== "")
+    .map(([key, value]) => `${key}=${String(value).replace(/\s+/g, " ").slice(0, 200)}`);
+  void runCrane(executable, directory, ["foxx", "event", name, ...pairs]);
+}
+
+/**
+ * Name why a Crane command or governance change failed, for the event (DASHBOARD.md F31.3).
+ * @param message what the person was told
+ * @returns failure_state
+ */
+function failureOf(message: string): string {
+  const text = message.toLowerCase();
+  if (text.includes("admin")) return "NOT_ADMIN";
+  if (text.includes("sign")) return "SIGN_FAILED";
+  if (text.includes("not kept")) return "VALIDATION_FAILED";
+  if (text.startsWith("select") || text.startsWith("choose") || text.startsWith("give") || text.includes("name:")) return "INVALID_INPUT";
+  return "CRANE_ERROR";
+}
 
 /**
  * Describe an editor's selection for the panel: file, lines, the enclosing function (from the
@@ -86,10 +120,13 @@ async function describeFile(uri: vscode.Uri): Promise<SelectionInfo | undefined>
  * asks for a selection instead.
  * @param file file chosen in the Explorer, if any
  */
-async function openPanel(file?: vscode.Uri): Promise<void> {
+async function openPanel(file: vscode.Uri | undefined, from: OpenedFrom): Promise<void> {
+  const refused = (failure: string, statement: string) =>
+    record("FOXX_PANEL_REFUSED", { status: "REFUSED", failure_state: failure, statement, opened_from: from });
   if (file?.scheme === "file") {
     const whole = await describeFile(file);
     if (!whole) {
+      refused("FILE_UNREADABLE", "File cannot be opened as text.");
       void vscode.window.showErrorMessage("Foxx: this file cannot be opened as text.");
       return;
     }
@@ -97,11 +134,19 @@ async function openPanel(file?: vscode.Uri): Promise<void> {
   } else {
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.document.uri.scheme !== "file" || editor.selection.isEmpty) {
+      refused(editor && editor.document.uri.scheme !== "file" ? "NOT_A_FILE" : "NO_SELECTION", "No code block was selected.");
       void vscode.window.showErrorMessage("Please select a code block first.");
       return;
     }
     lastSelection = await describeSelection(editor);
   }
+  record("FOXX_PANEL_OPENED", {
+    status: "OPENED",
+    statement: "Foxx panel opened for the selected code.",
+    opened_from: from,
+    selected_lines: lastSelection ? lastSelection.end - lastSelection.start + 1 : undefined,
+    enclosing_function: lastSelection?.symbol,
+  });
   FoxxPanel.show(extensionUri, panelHost, lastSelection);
 }
 
@@ -120,7 +165,19 @@ const panelHost: PanelHost = {
       selections: ready ? loadRecords().map((record) => ({ id: record.id, label: `${record.operation}${record.name ? ` ${record.name}` : ""}`, policy: record.policy })) : [],
     };
   },
-  run: (action, values, selection) => runAction(action, values, selection),
+  run: async (action, values, selection) => {
+    const started = Date.now();
+    const result = await runAction(action, values, selection);
+    record("FOXX_ACTION_RUN", {
+      status: result.ok ? "OK" : "FAILED",
+      failure_state: result.ok ? "NA" : failureOf(result.message),
+      statement: result.ok ? "Panel action finished." : "Panel action failed.",
+      panel_action: action.toUpperCase(),
+      enforce_now: typeof values.enforce === "boolean" ? values.enforce : undefined,
+      duration_ms: Date.now() - started,
+    });
+    return result;
+  },
 };
 
 /**
@@ -356,12 +413,15 @@ async function setUp(): Promise<void> {
   }
   const connect = repoArgs((await originRemote(directory)) ?? "");
   if (!connect) {
+    record("FOXX_SETUP", { status: "FAILED", failure_state: "NO_REMOTE", statement: "No GitHub origin remote." });
     vscode.window.showErrorMessage("Foxx: this repository has no GitHub 'origin' remote (HTTPS or SSH). Add one with 'git remote add origin URL'.");
     return;
   }
   const fresh = !fs.existsSync(path.join(directory, ".crane", "registry.json"));
-  const fail = (result: { stdout: string; stderr: string }) =>
-    vscode.window.showErrorMessage(`Foxx: ${(result.stderr || result.stdout).trim().replace(/^crane: /, "")}`);
+  const fail = (result: { code: number; stdout: string; stderr: string }) => {
+    record("FOXX_SETUP", { status: "FAILED", failure_state: result.code === 127 ? "CRANE_MISSING" : "GIT", statement: "Crane setup failed.", role: fresh ? "OWNER" : "MEMBER" });
+    return vscode.window.showErrorMessage(`Foxx: ${(result.stderr || result.stdout).trim().replace(/^crane: /, "")}`);
+  };
   const connected = await craneIn(directory, connect);
   if (connected.code !== 0) return void fail(connected);
   let initialized = await craneIn(directory, ["init"], "n\n");
@@ -373,6 +433,7 @@ async function setUp(): Promise<void> {
         : "The signed rules differ from the version this machine last signed. This is expected after merging another admin's change. Accept the current signed rules?";
     const answer = await vscode.window.showWarningMessage(message, { modal: true }, asked === "trust_owner" ? "Trust owner key" : "Accept rules");
     if (!answer) {
+      record("FOXX_SETUP", { status: "CANCELLED", failure_state: "OWNER_DECLINED", statement: "Person declined the signed rules.", role: "MEMBER" });
       vscode.window.showInformationMessage("Foxx: nothing changed.");
       return;
     }
@@ -384,6 +445,7 @@ async function setUp(): Promise<void> {
     if (checkpoint.code !== 0) return void fail(checkpoint);
   }
   await vscode.commands.executeCommand("setContext", "foxx.ready", true);
+  record("FOXX_SETUP", { status: "OK", statement: fresh ? "Crane set up; owner key created." : "Joined the repository's signed rules.", role: fresh ? "OWNER" : "MEMBER" });
   await validate(true);
   tree.refresh();
   const hooks = await vscode.window.showInformationMessage(
@@ -683,8 +745,9 @@ async function writeGovernance(change: (text: string) => string, summary: string
     return { ok: false, message: (error as Error).message };
   }
   const file = path.join(root() ?? "", ".crane", "governance.yaml");
-  const restore = async (reason: string) => {
+  const restore = async (reason: string, failure: "VALIDATION_FAILED" | "SIGN_FAILED") => {
     fs.writeFileSync(file, before, "utf8");
+    record("FOXX_GOVERNANCE_REVERTED", { status: "REVERTED", failure_state: failure, statement: "Governance change reverted; it did not pass." });
     await validate(true);
     return { ok: false, message: `The change was not kept: ${reason}` };
   };
@@ -692,9 +755,9 @@ async function writeGovernance(change: (text: string) => string, summary: string
   // The file is unsigned until signed below, so that one finding is expected here
   const report = await validate(true);
   const errors = report?.findings.filter((finding) => (finding.severity === "HIGH" || finding.severity === "CRITICAL") && finding.code !== "governance_yaml_changed" && (finding.code.startsWith("governance") || finding.code.startsWith("flow") || finding.code.startsWith("selector"))) ?? [];
-  if (!report || errors.length) return restore(errors.map((finding) => finding.message).join("; ") || "validation did not run");
+  if (!report || errors.length) return restore(errors.map((finding) => finding.message).join("; ") || "validation did not run", "VALIDATION_FAILED");
   const signed = await crane(["governance", "sign"]);
-  if (!signed || signed.code !== 0) return restore((signed?.stderr || signed?.stdout || "crane governance sign did not run").trim().replace(/^crane: /, ""));
+  if (!signed || signed.code !== 0) return restore((signed?.stderr || signed?.stdout || "crane governance sign did not run").trim().replace(/^crane: /, ""), "SIGN_FAILED");
   lastGovernanceText = before;
   await validate(true);
   tree.refresh();
@@ -720,8 +783,10 @@ export function activate(context: vscode.ExtensionContext): void {
   diagnostics = vscode.languages.createDiagnosticCollection("crane");
   const register = (command: string, callback: (...args: unknown[]) => unknown) => context.subscriptions.push(vscode.commands.registerCommand(command, callback));
   // The title button passes the editor's file, so only the Explorer entry opens a whole file
-  register("foxx.menu", () => openPanel());
-  register("foxx.openFile", (uri) => openPanel(uri instanceof vscode.Uri ? uri : undefined));
+  extensionVersion = String(context.extension.packageJSON.version ?? "");
+  // The title button passes the editor's file, the status bar passes STATUS_BAR, a keybinding nothing
+  register("foxx.menu", (arg) => openPanel(undefined, arg instanceof vscode.Uri ? "TITLE_BUTTON" : arg === "STATUS_BAR" ? "STATUS_BAR" : "KEYBINDING"));
+  register("foxx.openFile", (uri) => openPanel(uri instanceof vscode.Uri ? uri : undefined, "EXPLORER"));
   register("foxx.setup", () => setUp());
   register("foxx.createPolicy", () => createPolicy());
   register("foxx.createCheckpoint", () => createCheckpoint());
@@ -739,10 +804,12 @@ export function activate(context: vscode.ExtensionContext): void {
   register("foxx.undoGovernanceChange", async () => {
     const previous = lastGovernanceText;
     if (previous === undefined) {
+      record("FOXX_GOVERNANCE_UNDONE", { status: "NOTHING_TO_UNDO", statement: "No governance change to undo." });
       vscode.window.showInformationMessage("Foxx: there is no governance change to undo.");
       return;
     }
     const result = await writeGovernance(() => previous, "the last governance change was undone");
+    if (result.ok) record("FOXX_GOVERNANCE_UNDONE", { status: "UNDONE", statement: "Last governance change undone and signed." });
     lastGovernanceText = undefined;
     (result.ok ? vscode.window.showInformationMessage : vscode.window.showErrorMessage)(`Foxx: ${result.message}`);
   });
@@ -752,8 +819,20 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider("foxx.governance", tree),
     vscode.languages.registerCodeLensProvider({ scheme: "file" }, codeLenses),
     vscode.window.onDidChangeVisibleTextEditors(() => decorateAll()),
-    vscode.workspace.onDidSaveTextDocument(() => {
-      if (vscode.workspace.getConfiguration("foxx").get<boolean>("validateOnSave", true)) void validate(true);
+    vscode.workspace.onDidSaveTextDocument(async (document) => {
+      if (!vscode.workspace.getConfiguration("foxx").get<boolean>("validateOnSave", true)) return;
+      const report = await validate(true);
+      if (!report) return;
+      const failing = Object.values(report.selections).filter((span) => span === null).length;
+      const serious = report.findings.some((finding) => finding.severity === "HIGH" || finding.severity === "CRITICAL");
+      record("FOXX_VALIDATED_ON_SAVE", {
+        status: report.findings.length ? "FINDINGS" : "PASS",
+        statement: report.findings.length ? "Validation on save found problems." : "Validation on save passed.",
+        assessment: failing ? "UNRESOLVED" : serious ? "VIOLATION" : "COMPLIANT",
+        diagnostics: report.findings.length,
+        selections_failing: failing,
+        saved_file: document.uri.scheme === "file" ? relative(document.uri.fsPath) : undefined,
+      });
     }),
   );
   extensionUri = context.extensionUri;
@@ -765,7 +844,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
-  status.command = "foxx.menu";
+  status.command = { command: "foxx.menu", title: "Foxx", arguments: ["STATUS_BAR"] };
   context.subscriptions.push(status);
   updateStatus();
   void vscode.commands.executeCommand("setContext", "foxx.ready", Boolean(root()));

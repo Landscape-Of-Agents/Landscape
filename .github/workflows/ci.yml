@@ -112,7 +112,9 @@ jobs:
       run:
         working-directory: extensions/foxx
     steps:
+      # extensions/foxx does not exist before the checkout
       - name: Note the start time
+        working-directory: .
         run: echo "STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Check out repository

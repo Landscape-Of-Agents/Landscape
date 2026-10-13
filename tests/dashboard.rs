@@ -100,8 +100,14 @@ fn world(name: &str) -> Option<World> {
     team.ok(&["agent", "sync"]);
     // bob's machine on the same repository
     let alice = std::mem::replace(&mut team.home, team.root.path().join("bob"));
+    // Every command starts a background sync. Before 'crane init' trusts the owner key, bob's
+    // status report would fail verification (an F12 DENY that races the next command), so
+    // nothing is uploaded until he has trusted it
+    let service_url = std::mem::replace(&mut team.ingest_url, "off".into());
     team.ok(&["repo", "--https", team.remote_url().as_str()]);
-    team.with_input(&["init"], "y\n");
+    team.ingest_url = service_url;
+    let init = team.with_input(&["init"], "y\n");
+    assert!(init.status.success(), "{}", common::text(&init));
     team.hook("claude", "SessionStart", &json!({"session_id": "bob-1"}));
     let bob_call = call(&team, "bob-1", "b1", "Bash", json!({"command": "echo bob"}));
     team.hook("claude", "pre-tool-use", &bob_call);

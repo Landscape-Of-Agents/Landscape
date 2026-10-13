@@ -252,5 +252,6 @@ pub(super) fn repo_view(context: &Context) -> Value {
         |status| status["repo"].clone(),
     );
     view["remote"] = json!(context.remote);
+    view["owner"] = context.owner.clone();
     view
 }

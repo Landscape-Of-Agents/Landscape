@@ -66,7 +66,8 @@ pub(super) fn overview(context: &Context, query: &BTreeMap<String, String>) -> V
     let ledger = snapshot.ledger.iter().collect::<Vec<_>>();
     let computed = metrics::compute(&events, &ledger, &sessions);
     json!({
-        "active_sessions": snapshot.sessions.iter().filter(|session| session.ended_at.is_none()).count(),
+        "active_sessions": snapshot.sessions.iter().filter(|session| session.ended_at.is_none() && !context.stale(session)).count(),
+        "stale_sessions": snapshot.sessions.iter().filter(|session| context.stale(session)).count(),
         "sessions": snapshot.sessions.len(),
         "tasks": snapshot.tasks.len(),
         "tasks_by_status": snapshot.tasks.iter().fold(BTreeMap::<String, usize>::new(), |mut counts, task| { *counts.entry(task.status.clone()).or_default() += 1; counts }),
@@ -113,6 +114,7 @@ pub(super) fn members(context: &Context) -> Value {
                 "member": context.member(Some(&key)),
                 "selected": context.selected.contains(&key),
                 "verified": member["verified"],
+                "linked_by": context.links.get(&key),
                 "last_upload": member["updated_at"],
                 "registry_generation": member["registry_generation"],
                 "events": events,
@@ -125,16 +127,43 @@ pub(super) fn members(context: &Context) -> Value {
     json!({"members": list})
 }
 
-/** Alerts, newest first, with their member
+/** Alerts, newest first, with their member; stale sessions are added as computed alerts (the
+ * dashboard cannot store anything, so they are derived on every read)
  * Input
     - context: &Context - repository data
  * Output
     - Value {alerts}
 */
 pub(super) fn alerts(context: &Context) -> Value {
-    let list = context
+    let stale = context
+        .snapshot
+        .sessions
+        .iter()
+        .filter(|session| context.stale(session))
+        .map(|session| {
+            json!({
+                "at": session.last_seen_at / 1000,
+                "kind": "stale_session",
+                "title": "Agent session stopped reporting",
+                "severity": "HIGH",
+                "session": session.foxx_session_id,
+                "state": "STALE",
+                "computed": true,
+                "suppressed": false,
+                "deliveries": [],
+                "installation": context.session_member.get(&session.foxx_session_id),
+                "detail": format!("no hook activity since {} and no signed end of session: the agent may have been stopped, its hooks removed, or its evidence is not reaching the service", iso_time(session.last_seen_at)),
+            })
+        });
+    let mut all = context
         .snapshot
         .alerts
+        .iter()
+        .cloned()
+        .chain(stale)
+        .collect::<Vec<_>>();
+    all.sort_by_key(|alert| std::cmp::Reverse(alert["at"].as_u64().unwrap_or(0)));
+    let list = all
         .iter()
         .take(MAX_LIMIT)
         .map(|alert| {

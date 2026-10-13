@@ -79,6 +79,7 @@ pub(super) fn sessions(context: &Context, query: &BTreeMap<String, String>) -> V
         .map(|session| {
             let mut view = session_view(snapshot, session);
             view["member"] = context.member(context.session_member.get(&session.foxx_session_id));
+            view["stale"] = json!(context.stale(session));
             view
         })
         .collect::<Vec<_>>();

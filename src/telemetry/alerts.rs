@@ -55,6 +55,10 @@ fn describe(kind: &str) -> (&'static str, &'static str) {
             "Task verification failed",
             "the agent was asked to repair before finishing",
         ),
+        "unattributed_change" => (
+            "Files changed outside the agent's recorded actions",
+            "recorded for review; check who or what changed them",
+        ),
         "prompt_injection" => (
             "Suspicious prompt",
             "recorded for review; decisions are unaffected",

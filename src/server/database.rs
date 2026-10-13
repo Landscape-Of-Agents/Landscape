@@ -16,7 +16,7 @@ use crate::platform::io_error;
 
 /** Current schema version applied by the migrations (3: records keyed by installation; 4: the
  * members' repository status and the service's settings) */
-pub(crate) const SCHEMA_VERSION: i64 = 4;
+pub(crate) const SCHEMA_VERSION: i64 = 5;
 
 /** How the service reaches its database
  * Fields
@@ -283,6 +283,27 @@ const COLLECTIONS: &[Collection] = &[
         name: "repository_status",
         required: &["repository_id", "installation", "collected_at"],
         indexes: &[(&[("repository_id", 1), ("installation", 1)], true)],
+    },
+    Collection {
+        name: "chain_heads",
+        required: &["repository_id", "installation", "sequence", "digest"],
+        indexes: &[(&[("repository_id", 1), ("installation", 1)], true)],
+    },
+    Collection {
+        name: "member_links",
+        required: &["repository_id", "installation", "code_digest", "expires_at"],
+        indexes: &[
+            (&[("code_digest", 1)], true),
+            (&[("repository_id", 1), ("installation", 1)], false),
+        ],
+    },
+    Collection {
+        name: "owner_keys",
+        required: &["repository_id", "owner_key", "code_digest", "expires_at"],
+        indexes: &[
+            (&[("code_digest", 1)], true),
+            (&[("repository_id", 1), ("confirmed_at", -1)], false),
+        ],
     },
     Collection {
         name: "service_settings",

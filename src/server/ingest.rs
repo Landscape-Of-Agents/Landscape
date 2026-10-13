@@ -12,9 +12,13 @@ use tiny_http::Request;
 
 use super::http::header;
 use super::{database, log, store, Service};
+use crate::governance::workspace::identity;
 use crate::platform::now_millis;
+use crate::telemetry::ingest::{
+    is_approval_code, owner_message, ApprovalRequest, CODE_DOMAIN, OWNER_DOMAIN,
+};
 use crate::telemetry::ingest::{request_message, Batch, REQUEST_DOMAIN};
-use crate::trust::crypto::{is_digest, verify_signature};
+use crate::trust::crypto::{digest, is_digest, verify_signature};
 
 /** Largest accepted request body */
 const MAX_BODY: usize = 8 * 1024 * 1024;
@@ -146,6 +150,53 @@ fn admit(
     Ok(())
 }
 
+/** Check an approval request: a well-formed code, a GitHub remote that the root commits prove to be
+ * this repository (the dashboard checks the person's access to that remote), and for an owner
+ * registration a valid signature by the owner key
+ * Input
+    - repository: &str - repository identity
+    - installation: &str - the requesting machine
+    - operation: &str - link or owner
+    - approval: &ApprovalRequest - the request
+ * Output
+    - Result<(), Failure>
+*/
+fn check_approval(
+    repository: &str,
+    installation: &str,
+    operation: &str,
+    approval: &ApprovalRequest,
+) -> Result<(), Failure> {
+    if !is_approval_code(&approval.code) {
+        return Err((400, "the approval code is malformed".into()));
+    }
+    let remote = approval.remote.as_deref().unwrap_or_default();
+    if !remote.starts_with("github.com/") {
+        return Err((
+            400,
+            "approvals need a GitHub remote, so the dashboard can check access with GitHub".into(),
+        ));
+    }
+    if approval.root_commits.is_empty()
+        || identity(&approval.root_commits, Some(remote)) != repository
+    {
+        return Err((
+            403,
+            "the root commits and remote do not prove this repository".into(),
+        ));
+    }
+    if operation == "owner" {
+        let key = approval.owner_key.as_deref().unwrap_or_default();
+        let signature = approval.signature.as_deref().unwrap_or_default();
+        let code_digest = digest(CODE_DOMAIN, &[approval.code.as_bytes()]);
+        let message = owner_message(repository, key, installation, &code_digest);
+        if key.len() != 64 || verify_signature(key, OWNER_DOMAIN, &message, signature).is_err() {
+            return Err((403, "the owner key's signature does not verify".into()));
+        }
+    }
+    Ok(())
+}
+
 /** Route a /v1 request
  * Input
     - request: &mut Request - request
@@ -211,7 +262,16 @@ pub(super) fn handle(
                 &batch,
             )
         }
-        (_, "positions" | "batch") => return Err((405, "method not allowed".into())),
+        ("POST", operation @ ("link" | "owner")) => {
+            let approval: ApprovalRequest = serde_json::from_slice(&body)
+                .map_err(|error| (400, format!("invalid request: {error}")))?;
+            check_approval(&repository, &installation, operation, &approval)?;
+            store::hold_approval(database, &repository, &installation, operation, &approval)
+        }
+        ("GET", "owner") => store::confirmed_owner(database, &repository),
+        (_, "positions" | "batch" | "link" | "owner") => {
+            return Err((405, "method not allowed".into()))
+        }
         _ => return Err(not_found()),
     };
     stored.map_err(|error| {

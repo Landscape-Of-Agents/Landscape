@@ -9,6 +9,7 @@
 // a separate user) can make that guarantee.
 
 pub(crate) mod crypto;
+pub(crate) mod keys;
 
 use std::env;
 use std::fs;
@@ -214,24 +215,81 @@ impl TrustStore {
         self.repo_dir.join("runtime")
     }
 
-    /** Load the repository's signing key, if this machine holds it
+    /** Read the key file, if this machine has one
      * Input
         - None (uses self)
      * Output
-        - Result<Option<SigningIdentity>, String>, None when the key file does not exist
-        - Error if the key file cannot be read or is malformed
+        - Result<Option<String>, String>
     */
-    pub(crate) fn signing_key(&self) -> Result<Option<SigningIdentity>, String> {
+    fn key_file(&self) -> Result<Option<String>, String> {
         match fs::read_to_string(&self.key_path) {
-            Ok(seed) => SigningIdentity::from_seed_hex(&seed)
-                .map(Some)
-                .map_err(|error| format!("{}: {error}", self.key_path.display())),
+            Ok(text) => Ok(Some(text)),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
             Err(error) => Err(format!(
                 "could not read {}: {error}",
                 self.key_path.display()
             )),
         }
+    }
+
+    /** Return the public half of this machine's signing key without unsealing it (what hooks and
+     * verification use; they never need the private key)
+     * Input
+        - None (uses self)
+     * Output
+        - Result<Option<String>, String>, None when this machine holds no key
+    */
+    pub(crate) fn signing_public_key(&self) -> Result<Option<String>, String> {
+        self.key_file()?
+            .map(|text| {
+                keys::public_key(&text)
+                    .map_err(|error| format!("{}: {error}", self.key_path.display()))
+            })
+            .transpose()
+    }
+
+    /** Report whether using this machine's signing key asks for a passphrase
+     * Input
+        - None (uses self)
+     * Output
+        - Result<bool, String>
+    */
+    pub(crate) fn signing_key_prompts(&self) -> Result<bool, String> {
+        Ok(self
+            .key_file()?
+            .is_some_and(|text| keys::protection(&text) == keys::Protection::Passphrase))
+    }
+
+    /** Load (unseal) the repository's signing key, if this machine holds it. Only human commands
+     * call this: a passphrase-sealed key asks for its passphrase. A key kept with weaker
+     * protection than CRANE_KEY_PROTECTION asks for (or the system default) is sealed again
+     * Input
+        - None (uses self)
+     * Output
+        - Result<Option<SigningIdentity>, String>, None when the key file does not exist
+        - Error if the key file cannot be read, is malformed, or cannot be unsealed here
+    */
+    pub(crate) fn signing_key(&self) -> Result<Option<SigningIdentity>, String> {
+        let Some(text) = self.key_file()? else {
+            return Ok(None);
+        };
+        let identity =
+            keys::open(&text).map_err(|error| format!("{}: {error}", self.key_path.display()))?;
+        let stronger = matches!(
+            (keys::protection(&text), keys::wanted()),
+            (
+                keys::Protection::Plain,
+                keys::Protection::Dpapi | keys::Protection::Passphrase
+            ) | (keys::Protection::Dpapi, keys::Protection::Passphrase)
+        );
+        if stronger {
+            write_atomic(
+                &self.key_path,
+                keys::seal(&identity, keys::wanted())?.as_bytes(),
+            )?;
+            restrict_to_owner(&self.key_path)?;
+        }
+        Ok(Some(identity))
     }
 
     /** Load the signing key, creating it (owner-only) when this machine has none; refused for
@@ -250,7 +308,7 @@ impl TrustStore {
         let identity = SigningIdentity::generate()?;
         write_atomic(
             &self.key_path,
-            format!("{}\n", identity.seed_hex()).as_bytes(),
+            keys::seal(&identity, keys::wanted())?.as_bytes(),
         )?;
         restrict_to_owner(&self.key_path)?;
         Ok(identity)
@@ -284,8 +342,8 @@ impl TrustStore {
     */
     pub(crate) fn trusted_public_keys(&self) -> Result<Vec<String>, String> {
         let mut keys = Vec::new();
-        if let Some(identity) = self.signing_key()? {
-            keys.push(identity.public_hex());
+        if let Some(public) = self.signing_public_key()? {
+            keys.push(public);
         }
         if let Ok(list) = env::var("CRANE_TRUSTED_PUBLIC_KEYS") {
             keys.extend(list.split(',').map(|key| key.trim().to_ascii_lowercase()));

@@ -217,6 +217,57 @@ fn live_pipeline_reaches_mongodb_without_setup() {
         .unwrap();
     assert!(fixture.ok(&["agent", "sync"]).contains("re-sent"));
     assert_eq!(count("events", doc! {}), local);
+    let broken = doc! {"kind": "evidence_chain_broken"};
+    assert_eq!(
+        count("alerts", broken.clone()),
+        0,
+        "re-sending is not a break"
+    );
+    // The machine's history is rewritten (an event that does not chain) and cut (a gap)
+    let file = fixture
+        .home
+        .join("repos")
+        .read_dir()
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+        .join("runtime/events.jsonl");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let last: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    let forged = |sequence: u64, previous: &str| {
+        let mut event = last.clone();
+        event["event_id"] = json!(format!("evt_forged_{sequence}"));
+        event["idempotency_key"] = json!(format!("forged:{sequence}"));
+        event["sequence"] = json!(sequence);
+        event["previous_digest"] = json!(previous);
+        event["digest"] = json!(format!("{sequence:0>128}"));
+        event.to_string()
+    };
+    let next = last["sequence"].as_u64().unwrap() + 1;
+    let appended = format!(
+        "{}
+{}
+",
+        forged(next, &"0".repeat(128)),
+        forged(next + 5, &format!("{next:0>128}"))
+    );
+    std::fs::write(&file, text + &appended).unwrap();
+    fixture.ok(&["agent", "sync"]);
+    assert_eq!(count("alerts", broken.clone()), 2, "a rewrite and a gap");
+    let details = database
+        .collection::<mongodb::bson::Document>("alerts")
+        .find(broken)
+        .run()
+        .unwrap()
+        .map(|alert| alert.unwrap().get_str("detail").unwrap().to_string())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        details.contains("does not chain") && details.contains("never arrived"),
+        "{details}"
+    );
     database.drop().run().unwrap();
 }
 

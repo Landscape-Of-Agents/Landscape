@@ -21,8 +21,9 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         "hooks" => validate_hooks(&profile(rest)?),
         "hook" => hook(rest),
         "sync" => sync(),
+        "link" => super::link::link(rest),
         other => Err(format!(
-            "unknown agent command '{other}'; use install, uninstall, or hooks"
+            "unknown agent command '{other}'; use install, uninstall, hooks, or link"
         )),
     }
 }

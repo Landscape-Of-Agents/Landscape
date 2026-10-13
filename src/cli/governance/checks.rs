@@ -50,7 +50,10 @@ pub(crate) fn validate(args: &[String]) -> Result<(), String> {
     if !blocking
         && !report.relocations.is_empty()
         && agent_environment().is_none()
-        && workspace.trust()?.signing_key()?.is_some()
+        && workspace.trust()?.signing_public_key()?.is_some()
+        // A passphrase key needs a console; editors run validate without one
+        && (!workspace.trust()?.signing_key_prompts()?
+            || std::io::IsTerminal::is_terminal(&std::io::stdin()))
     {
         let relocations = report.relocations.clone();
         let detail = json!({"relocations": relocations});

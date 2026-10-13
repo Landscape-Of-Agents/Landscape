@@ -82,6 +82,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     let service = Arc::new(Service {
         dashboard: dashboard::Dashboard::new(
             dashboard::data::ReadOnly::new(connected.clone()),
+            dashboard::approve::Approvals::new(connected.clone()),
             auth,
         ),
         database: connected,

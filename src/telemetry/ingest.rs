@@ -44,6 +44,80 @@ pub(crate) const BATCH: usize = 500;
 /** The Foxx ingestion service every build uploads to unless told otherwise */
 pub(crate) const DEFAULT_INGEST_URL: &str = "https://agentscript-service.onrender.com";
 
+/** Signature domain of an owner key registration */
+pub(crate) const OWNER_DOMAIN: &str = "foxx/owner/v1";
+
+/** Digest domain of approval codes (the service stores only their digests) */
+pub(crate) const CODE_DOMAIN: &str = "foxx/approval-code/v1";
+
+/** How long an approval code can be used, in milliseconds */
+#[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the service
+pub(crate) const CODE_LIFETIME_MILLIS: u64 = 10 * 60 * 1000;
+
+/** A request the dashboard must approve after a GitHub check: linking this machine's upload key
+ * to a GitHub user, or registering the repository owner's key
+ * Fields
+    - code: String - one-time code the person enters (or opens) on the dashboard
+    - remote: Option<String> - repository remote
+    - root_commits: Vec<String> - root commits (prove the remote, as in a batch)
+    - owner_key: Option<String> - the owner's public key (owner registration only)
+    - signature: Option<String> - the owner key's signature over owner_message (owner registration)
+*/
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct ApprovalRequest {
+    pub(crate) code: String,
+    pub(crate) remote: Option<String>,
+    pub(crate) root_commits: Vec<String>,
+    pub(crate) owner_key: Option<String>,
+    pub(crate) signature: Option<String>,
+}
+
+/** The message an owner key signs to register itself, binding the repository, the key, the
+ * uploading machine, and the one-time code
+ * Input
+    - repository: &str - repository identity
+    - owner_key: &str - owner public key
+    - installation: &str - uploading machine's key
+    - code_digest: &str - digest of the code
+ * Output
+    - Vec<u8>
+*/
+pub(crate) fn owner_message(
+    repository: &str,
+    owner_key: &str,
+    installation: &str,
+    code_digest: &str,
+) -> Vec<u8> {
+    format!("{repository}\n{owner_key}\n{installation}\n{code_digest}").into_bytes()
+}
+
+/** Generate a one-time approval code: 12 characters from the selection identifier alphabet
+ * Input
+    - None
+ * Output
+    - Result<String, String>
+*/
+pub(crate) fn approval_code() -> Result<String, String> {
+    let first = crate::trust::crypto::random_id()?;
+    let second = crate::trust::crypto::random_id()?;
+    Ok(format!("{first}{}", &second[..4]))
+}
+
+/** Report whether text is an approval code
+ * Input
+    - code: &str - text
+ * Output
+    - bool
+*/
+#[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the service
+pub(crate) fn is_approval_code(code: &str) -> bool {
+    code.len() == 12
+        && code
+            .bytes()
+            .all(|byte| crate::trust::crypto::ID_ALPHABET.contains(&byte))
+}
+
 /** How often the repository status is sent, in milliseconds */
 const STATUS_EVERY: u64 = 120_000;
 
@@ -280,6 +354,56 @@ impl Client {
             key,
             agent: ureq::AgentBuilder::new().timeout(TIMEOUT).build(),
         }))
+    }
+
+    /** Return the service's address
+     * Input
+        - None (uses self)
+     * Output
+        - &str
+    */
+    pub(crate) fn base(&self) -> &str {
+        &self.base
+    }
+
+    /** Return this machine's upload key
+     * Input
+        - None (uses self)
+     * Output
+        - String public key in hex
+    */
+    pub(crate) fn installation(&self) -> String {
+        self.key.public_hex()
+    }
+
+    /** Ask the service to hold an approval request (link or owner) until the code is used
+     * Input
+        - operation: &str - link or owner
+        - request: &ApprovalRequest - the request
+     * Output
+        - Result<Value, String>
+    */
+    pub(crate) fn request_approval(
+        &self,
+        operation: &str,
+        request: &ApprovalRequest,
+    ) -> Result<Value, String> {
+        self.call(
+            "POST",
+            operation,
+            &serde_json::to_vec(request).map_err(io_error)?,
+        )
+    }
+
+    /** Ask the service for the repository's GitHub-confirmed owner key
+     * Input
+        - None (uses self)
+     * Output
+        - Result<Value, String> {owner_key, confirmed_by, confirmed_at, remote}, owner_key null
+          when none is confirmed
+    */
+    pub(crate) fn confirmed_owner(&self) -> Result<Value, String> {
+        self.call("GET", "owner", &[])
     }
 
     /** Send one signed request about this repository

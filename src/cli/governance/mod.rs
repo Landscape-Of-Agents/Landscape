@@ -55,10 +55,9 @@ fn grouped(key: &str) -> String {
     - Result<String, String> owner, admin, or member, with this machine's key
 */
 fn role(state: &State, trust: &TrustStore) -> Result<String, String> {
-    let Some(identity) = trust.signing_key()? else {
+    let Some(key) = trust.signing_public_key()? else {
         return Ok("member (this machine has no key yet)".into());
     };
-    let key = identity.public_hex();
     let role = if admins::owner(state).as_deref() == Some(key.as_str()) {
         "owner"
     } else if admins::signers(state).contains(&key) {

@@ -276,3 +276,76 @@ fn parse_prints_a_tree() {
     let missing = fixture.fails(&["parse", "file", "nope"]);
     assert!(missing.contains("no policy file"), "{missing}");
 }
+
+/** Signing keys are sealed at rest (the Windows Data Protection API by default on Windows), the
+ * passphrase mode seals them under a passphrase and is asked for by every signing command, and
+ * hooks keep verifying without ever unsealing the key
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn signing_keys_are_sealed() {
+    let fixture = Fixture::ready();
+    let file = std::fs::read_dir(fixture.home.join("keys"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let owner = fixture
+        .ok(&["admin", "list"])
+        .lines()
+        .find_map(|line| line.strip_prefix("owner: "))
+        .unwrap()
+        .replace(' ', "");
+    let content = std::fs::read_to_string(&file).unwrap();
+    if cfg!(windows) {
+        let sealed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(sealed["protection"], "dpapi", "{content}");
+        assert_eq!(sealed["public"], owner.as_str());
+    }
+    let run = |args: &[&str], passphrase: &str| {
+        fixture
+            .command(args)
+            .env("CRANE_KEY_PROTECTION", "prompt")
+            .env("CRANE_TEST_KEY_PASSPHRASE", passphrase)
+            .output()
+            .unwrap()
+    };
+    // The next signing command seals the key under the passphrase
+    let sealed = run(&["checkpoint", "second"], "correct horse battery");
+    assert!(sealed.status.success(), "{}", text(&sealed));
+    let content = std::fs::read_to_string(&file).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(parsed["protection"], "passphrase", "{content}");
+    assert_eq!(parsed["public"], owner.as_str());
+    let wrong = run(&["checkpoint", "third"], "wrong horse battery");
+    assert!(!wrong.status.success());
+    assert!(
+        text(&wrong).contains("wrong passphrase"),
+        "{}",
+        text(&wrong)
+    );
+    assert!(run(&["checkpoint", "third"], "correct horse battery")
+        .status
+        .success());
+    // Verification and hooks only need the public key
+    assert!(fixture.ok(&["validate"]).contains("PASS"));
+    fixture.hook(
+        "claude",
+        "SessionStart",
+        &serde_json::json!({"session_id": "k1"}),
+    );
+    let write = fixture.hook(
+        "claude",
+        "pre-tool-use",
+        &serde_json::json!({"session_id": "k1", "tool_use_id": "k-1", "cwd": fixture.work.to_string_lossy(), "tool_name": "Write", "tool_input": {"file_path": fixture.work.join("web/app.js").to_string_lossy(), "content": "x\n"}}),
+    );
+    assert!(
+        write.status.success() && write.stdout.is_empty(),
+        "{}",
+        text(&write)
+    );
+}

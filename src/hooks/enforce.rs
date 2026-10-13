@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use super::action::{apply, AgentAction, FileChange, Operation, Proposed};
 use super::adapter::Verdict;
+use super::scripts;
 use super::shell::{
     mutating_crane, names_crane_directory, network_destinations, normal, words, MUTATING_GIT,
     MUTATING_WORDS, NETWORK_WORDS,
@@ -37,8 +38,8 @@ use crate::telemetry::model::{Decision, Safety};
     - policies: Vec<String> - policies of those selections
     - network: Vec<String> - network destinations inferred from it
     - zones: Vec<String> - zones and flows covering the files it writes
-    - zone_floor: Option<(Decision, String)> - the strictest decision those zones and flows
-      require, with the reason
+    - zone_floor: Option<(Decision, String)> - the strictest decision those zones and flows (or the
+      script pre-check) require, with the reason
 */
 #[derive(Debug, Clone)]
 pub(crate) struct Decided {
@@ -448,6 +449,12 @@ impl Guard<'_> {
             }
             return;
         };
+        if scripts::is_script(&path) {
+            let preserved = self.preserved_files();
+            let protected = |text: &str| self.names_protected(text);
+            let risks = scripts::code_risks(&after, &path, &protected, &preserved);
+            self.apply_risks(risks, true, decided);
+        }
         let after_markers = find_markers(&path, &after);
         let shape = |markers: &[Marker], text: &str| {
             let all = lines(text);
@@ -513,6 +520,38 @@ impl Guard<'_> {
         }
     }
 
+    /** Apply what the script pre-check found: denials (when the code runs) and approvals
+     * Input
+        - risks: Vec<Risk> - findings
+        - written: bool - the code is being written, not run: every finding then needs approval
+        - decided: &mut Decided - decision being built
+     * Output
+        - None (updates decided)
+    */
+    fn apply_risks(&self, risks: Vec<scripts::Risk>, written: bool, decided: &mut Decided) {
+        let mut seen = BTreeSet::new();
+        for risk in risks {
+            if !seen.insert(risk.reason.clone()) {
+                continue;
+            }
+            if risk.deny && !written {
+                decided.verdict.decision = Decision::Deny;
+                decided.verdict.bypass |= risk.bypass;
+                decided.verdict.reasons.push(risk.reason);
+            } else if decided.zone_floor.is_none() {
+                let reason = if written {
+                    format!(
+                        "{} (it is being written; a human must approve it)",
+                        risk.reason
+                    )
+                } else {
+                    risk.reason
+                };
+                decided.zone_floor = Some((Decision::RequireApproval, reason));
+            }
+        }
+    }
+
     /** Decide a shell command
      * Input
         - command: &str - command text
@@ -569,6 +608,20 @@ impl Guard<'_> {
                 }
             }
         }
+        // Script pre-check: the command line itself, and the scripts and inline code it runs
+        let directory = self
+            .cwd
+            .clone()
+            .unwrap_or_else(|| self.workspace.root.clone());
+        let preserved = self.preserved_files();
+        let protected = |text: &str| self.names_protected(text);
+        let mut risks = scripts::command_risks(command);
+        for source in scripts::sources(command, &directory) {
+            if let Some((code, origin)) = scripts::read(&source) {
+                risks.extend(scripts::code_risks(&code, &origin, &protected, &preserved));
+            }
+        }
+        self.apply_risks(risks, false, decided);
         decided.network = network_destinations(&[command.to_string()]);
         if tokens
             .iter()

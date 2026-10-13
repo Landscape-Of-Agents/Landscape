@@ -254,6 +254,36 @@ pub(crate) fn list_files(root: &Path) -> Result<Vec<String>, String> {
     Ok(files)
 }
 
+/** List the files that differ from HEAD in the work tree or index, including untracked files that
+ * are not ignored, as repository-relative paths with "/" separators (renames count as a deletion
+ * and an addition)
+ * Input
+    - root: &Path - repository top level
+ * Output
+    - Result<Vec<String>, String>
+    - Error if git cannot run
+*/
+pub(crate) fn changed_files(root: &Path) -> Result<Vec<String>, String> {
+    let output = git_bytes(
+        Some(root),
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+        ],
+    )?;
+    let mut files = output
+        .split(|byte| *byte == 0)
+        .filter(|entry| entry.len() > 3)
+        .map(|entry| String::from_utf8_lossy(&entry[3..]).into_owned())
+        .collect::<Vec<_>>();
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
 /** Check that a remote answers, by running git ls-remote against it with a timeout, so a dead
  * network cannot hang a command
  * Input

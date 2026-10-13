@@ -337,6 +337,16 @@ fn dashboard_shows_every_view_for_a_team() {
         assert_eq!(answer.status, 200, "{route}: {}", answer.body);
         answer
     };
+    // bob's session stops reporting: no hook activity for hours and no signed end
+    world
+        .database
+        .collection::<Document>("sessions")
+        .update_one(
+            doc! {"repository_id": &world.widgets, "installation": &world.bob},
+            doc! {"$set": {"last_seen_at": 1_i64}},
+        )
+        .run()
+        .unwrap();
     let members = api("members").json();
     let list = members["members"].as_array().unwrap();
     assert_eq!(list.len(), 2);
@@ -478,6 +488,20 @@ fn dashboard_shows_every_view_for_a_team() {
             .as_array()
             .unwrap()
             .is_empty()
+    );
+    // bob's session stopped reporting (aged before the first request, which caches the view)
+    let overview = api("overview").json();
+    assert_eq!(overview["stale_sessions"], 1, "{overview}");
+    let rows = api(&format!("sessions?members={}", world.bob)).json();
+    assert_eq!(rows["sessions"][0]["stale"], true, "{rows}");
+    let alerts = api("alerts").json();
+    assert!(
+        alerts["alerts"].as_array().unwrap().iter().any(|alert| {
+            alert["title"] == "Agent session stopped reporting"
+                && alert["member"]["key"] == world.bob.as_str()
+                && alert["computed"] == true
+        }),
+        "{alerts}"
     );
     assert_eq!(
         get(
@@ -636,5 +660,137 @@ fn dashboard_is_read_only_and_machines_cannot_read() {
     assert_eq!(
         machine.status, 401,
         "the dashboard API answers only signed-in people"
+    );
+}
+
+/** The digest the service stores for an approval code
+ * Input
+    - code: &str - the code
+ * Output
+    - String
+*/
+fn code_digest(code: &str) -> String {
+    use sha2::{Digest, Sha512};
+    let domain = "foxx/approval-code/v1";
+    let mut hasher = Sha512::new();
+    hasher.update(b"crane-digest\0");
+    hasher.update((domain.len() as u64).to_be_bytes());
+    hasher.update(domain.as_bytes());
+    hasher.update(1_u64.to_be_bytes());
+    hasher.update((code.len() as u64).to_be_bytes());
+    hasher.update(code.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/** Approvals are decided by GitHub: a machine is linked by someone with access to the repository
+ * (and machines nobody linked are then hidden by default), an owner key is confirmed only by an
+ * admin, codes work once, and a joining teammate's crane init shows the confirmation
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn approvals_are_decided_by_github() {
+    let Some(mut world) = world("approvals") else {
+        return;
+    };
+    let base = world.service.url.clone();
+    let pending = |collection: &str, code: &str, installation: &str, owner: Option<&str>| {
+        let mut document = doc! {
+            "repository_id": &world.widgets,
+            "installation": installation,
+            "code_digest": code_digest(code),
+            "remote": "github.com/acme/widgets",
+            "requested_at": 1_i64,
+            "expires_at": i64::MAX,
+        };
+        if let Some(owner) = owner {
+            document.insert("owner_key", owner);
+        }
+        world
+            .database
+            .collection::<Document>(collection)
+            .insert_one(document)
+            .run()
+            .unwrap();
+    };
+    // bob links his machine (he can push to acme/widgets); carol cannot see the repository
+    pending("member_links", "BOBLINKCODE1", &world.bob, None);
+    let (ok, message) = support::approve(&base, "carol", "link", "BOBLINKCODE1");
+    assert!(!ok && message.contains("does not show @carol"), "{message}");
+    let (ok, message) = support::approve(&base, "bob", "link", "BOBLINKCODE1");
+    assert!(ok && message.contains("linked to @bob"), "{message}");
+    let (ok, message) = support::approve(&base, "bob", "link", "BOBLINKCODE1");
+    assert!(
+        !ok && message.contains("already used"),
+        "codes work once: {message}"
+    );
+    let alice = sign_in(&base, &world.github, "alice");
+    let api = |route: &str| {
+        let separator = if route.contains('?') { '&' } else { '?' };
+        get(
+            &format!("{base}/api/{route}{separator}repository={}", world.widgets),
+            Some(&alice),
+        )
+        .json()
+    };
+    let members = api("members");
+    let rows = members["members"].as_array().unwrap();
+    let bob = rows
+        .iter()
+        .find(|row| row["member"]["key"] == world.bob.as_str())
+        .unwrap();
+    assert_eq!(bob["linked_by"], "bob", "{members}");
+    let unlinked = rows
+        .iter()
+        .find(|row| row["member"]["key"] != world.bob.as_str())
+        .unwrap();
+    assert!(unlinked["linked_by"].is_null());
+    assert_eq!(
+        unlinked["selected"], false,
+        "unlinked machines are hidden by default"
+    );
+    assert_eq!(api("overview")["members"], 1);
+    // The owner key is confirmed only by an admin of acme/widgets
+    let owner = world
+        .team
+        .ok(&["admin", "list"])
+        .lines()
+        .find_map(|line| line.strip_prefix("owner: "))
+        .unwrap()
+        .replace(' ', "");
+    pending("owner_keys", "OWNERCODE123", "x", Some(&owner));
+    let (ok, message) = support::approve(&base, "bob", "owner", "OWNERCODE123");
+    assert!(!ok && message.contains("an admin"), "{message}");
+    let (ok, message) = support::approve(&base, "alice", "owner", "OWNERCODE123");
+    assert!(ok && message.contains("confirmed by @alice"), "{message}");
+    let repo = get(
+        &format!(
+            "{base}/api/repo?repository={}&members={}",
+            world.widgets, world.bob
+        ),
+        Some(&alice),
+    )
+    .json();
+    assert_eq!(repo["owner"]["confirmed_by"], "alice", "{repo}");
+    // A teammate joining (a new machine, "dave") sees that GitHub vouches for the owner key
+    let original = std::mem::replace(&mut world.team.home, world.team.root.path().join("dave"));
+    let remote = world.team.remote_url();
+    world.team.ok(&["repo", "--https", remote.as_str()]);
+    let joined = world.team.with_input(
+        &["init"],
+        "n
+",
+    );
+    world.team.home = original;
+    let output = common::text(&joined);
+    assert!(
+        output.contains("this owner key was confirmed by @alice"),
+        "{output}"
     );
 }

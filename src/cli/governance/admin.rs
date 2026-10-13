@@ -16,10 +16,11 @@ use serde_json::json;
     - Result<(), String>
 */
 pub(crate) fn admin(args: &[String]) -> Result<(), String> {
-    let usage = "usage: crane admin list | crane admin add PUBLIC_KEY [name NAME] | crane admin del PUBLIC_KEY";
+    let usage = "usage: crane admin list | crane admin register | crane admin add PUBLIC_KEY [name NAME] | crane admin del PUBLIC_KEY";
     let words = args.iter().map(String::as_str).collect::<Vec<_>>();
     let (adding, key, name) = match words.as_slice() {
         ["list"] => return admin_list(),
+        ["register"] => return register(),
         ["add", key] => (true, *key, "admin"),
         ["add", key, "name", name] => (true, *key, *name),
         ["del", key] => (false, *key, ""),
@@ -89,6 +90,28 @@ pub(crate) fn admin(args: &[String]) -> Result<(), String> {
         state.config.admins.as_ref().map_or(0, |statement| statement.epoch),
         state.generation()
     );
+    Ok(())
+}
+
+/** Ask a GitHub admin of the repository to confirm the owner key on the dashboard (owner only), so
+ * teammates' 'crane init' can show that GitHub vouches for the key they are asked to trust
+ * Input
+    - None
+ * Output
+    - Result<(), String>
+*/
+fn register() -> Result<(), String> {
+    require_human("crane admin register")?;
+    let workspace = Workspace::locate()?;
+    let identity = workspace.trust()?.require_signing_key()?;
+    let state = State::load(&workspace)?;
+    let url = crate::cli::link::register_owner(&workspace, &state, &identity)?;
+    println!(
+        "Open this address within 10 minutes and sign in with GitHub as an admin of {} to confirm owner key {}:",
+        workspace.remote.as_deref().unwrap_or_default(),
+        grouped(&identity.public_hex())
+    );
+    println!("  {url}");
     Ok(())
 }
 

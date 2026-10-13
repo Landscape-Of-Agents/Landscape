@@ -35,6 +35,14 @@ impl Hook {
             "grant",
         )?;
         let (context, supplied) = self.context_text(session)?;
+        // The files already changed when the session starts are not the agent's doing
+        if self.with_calls(session, |calls| calls.baseline.is_none())? {
+            if let Ok(baseline) = tree(&self.workspace) {
+                self.with_calls(session, |calls| {
+                    calls.baseline.get_or_insert(baseline);
+                })?;
+            }
+        }
         self.update_session(session, |session| {
             session.context = supplied.clone();
             if session.ended_at.is_some() {
@@ -268,6 +276,7 @@ impl Hook {
         - Result<(), String>
     */
     pub(super) fn stop(&self, session: &mut SessionRecord) -> Result<(), String> {
+        self.report_unattributed(session)?;
         let (report, state) = evaluate(
             &self.workspace,
             &Options {
@@ -397,6 +406,72 @@ impl Hook {
         )
     }
 
+    /** Report files changed since the session started that none of its recorded tool calls
+     * changed: a script or program run outside the hooks, an unhooked tool, another process, or a
+     * person editing at the same time. Each file is reported once per session; the stop is not
+     * blocked, since the change may be legitimate, but it is recorded and alerted for review
+     * Input
+        - session: &SessionRecord - session
+     * Output
+        - Result<(), String>
+    */
+    fn report_unattributed(&self, session: &SessionRecord) -> Result<(), String> {
+        let Ok(now) = tree(&self.workspace) else {
+            return Ok(());
+        };
+        let found = self.with_calls(session, |calls| {
+            let Some(baseline) = &calls.baseline else {
+                calls.baseline = Some(now.clone());
+                return Vec::new();
+            };
+            let found = tree_changes(baseline, &now)
+                .into_iter()
+                .filter(|path| {
+                    !calls.attributed.contains(path) && !calls.unattributed.contains(path)
+                })
+                .collect::<Vec<_>>();
+            calls.unattributed.extend(found.iter().cloned());
+            found
+        })?;
+        if found.is_empty() {
+            return Ok(());
+        }
+        let mut event = self.base_event(
+            "change.unattributed",
+            Domain::AuditCompliance,
+            session,
+            &format!(
+                "unattributed:{}",
+                digest("unattributed/v1", &[found.join("\n").as_bytes()])
+            ),
+        );
+        event.severity = Severity::High;
+        event.assessment = Some(Assessment::Suspicious);
+        event.enforcement = Enforcement::CoverageGap;
+        event.telemetry = Telemetry::Observed;
+        event.reasons.push(format!(
+            "{} file(s) changed during the session outside every recorded tool call (a script or program outside the hooks, an unhooked tool, another process, or a person): {}",
+            found.len(),
+            found.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
+        ));
+        event.resources = found
+            .iter()
+            .map(|path| crate::telemetry::events::Resource {
+                kind: "file".into(),
+                id: path.clone(),
+                access: "write".into(),
+                classification: Some("unattributed".into()),
+            })
+            .collect();
+        event.measurements.push(Measurement::observed(
+            "unattributed_files",
+            found.len() as f64,
+            "count",
+            "work tree compared with recorded tool calls",
+        ));
+        self.emit(session, event, Some("unattributed_change"))
+    }
+
     /** SessionEnd: release reservations without a post-tool settlement (recorded as coverage
      * gaps), expire unused credits, close the session and task, and record a signed attestation
      * over the session's events
@@ -478,7 +553,9 @@ impl Hook {
                 digests.join("\n").as_bytes(),
             ],
         );
-        let signature = self.workspace.trust()?.signing_key()?.map(|key| {
+        // Signed with this machine's upload key: hooks never unseal a repository signing key,
+        // and every teammate's machine has an upload key
+        let signature = crate::trust::installation_key().ok().map(|key| {
             (
                 key.public_hex(),
                 key.sign("telemetry/session-attestation/v1", attestation.as_bytes()),
@@ -516,6 +593,7 @@ impl Hook {
             "public_key": signature.as_ref().map(|(key, _)| key.clone()),
             "signature": signature.as_ref().map(|(_, signature)| signature.clone()),
             "signed": signature.is_some(),
+            "signer": "installation",
         });
         self.emit(session, event, None)
     }

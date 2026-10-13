@@ -21,6 +21,26 @@ use crate::telemetry::ledger::{self, Entry};
 /** Most events loaded per member */
 const MAX_EVENTS: i64 = 100_000;
 
+/** Minutes without any hook activity after which an open session without a signed attestation is
+ * reported as stale (it stopped reporting: the agent was killed, the hooks were removed, or its
+ * evidence is not reaching the service); CRANE_STALE_SESSION_MINUTES overrides it */
+const STALE_SESSION_MINUTES: u64 = 120;
+
+/** Return the stale-session timeout in milliseconds
+ * Input
+    - None
+ * Output
+    - u64
+*/
+fn stale_after_millis() -> u64 {
+    std::env::var("CRANE_STALE_SESSION_MINUTES")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(STALE_SESSION_MINUTES)
+        .max(1)
+        * 60_000
+}
+
 /** A database handle that can only read
  * Fields
     - database: Database - MongoDB (private, so no write method is reachable)
@@ -155,6 +175,9 @@ pub(crate) fn verified_repositories(read: &ReadOnly) -> Result<Vec<(String, Stri
     - statuses: Vec<Value> - the latest repository status of each selected member
     - event_member: BTreeMap<String, String> - event identifier to member
     - session_member: BTreeMap<String, String> - session to member
+    - attested: BTreeSet<String> - sessions with a session.attested event
+    - links: BTreeMap<String, String> - member to the GitHub login that linked it
+    - owner: Value - the owner key most recently confirmed by a GitHub admin (null when none)
     - truncated: bool - a member had more events than are loaded
 */
 pub(crate) struct Context {
@@ -167,6 +190,9 @@ pub(crate) struct Context {
     pub(crate) statuses: Vec<Value>,
     pub(crate) event_member: BTreeMap<String, String>,
     pub(crate) session_member: BTreeMap<String, String>,
+    pub(crate) attested: BTreeSet<String>,
+    pub(crate) links: BTreeMap<String, String>,
+    pub(crate) owner: Value,
     pub(crate) truncated: bool,
 }
 
@@ -190,6 +216,20 @@ impl Context {
         json!({"key": key, "short": &key[..key.len().min(8)], "actor": actor})
     }
 
+    /** Report whether a session stopped reporting: it never ended, has no signed attestation,
+     * and no hook has seen it for the stale-session timeout
+     * Input
+        - session: &SessionRecord - session
+     * Output
+        - bool
+    */
+    pub(crate) fn stale(&self, session: &SessionRecord) -> bool {
+        session.ended_at.is_none()
+            && !self.attested.contains(&session.foxx_session_id)
+            && crate::platform::now_millis().saturating_sub(session.last_seen_at)
+                > stale_after_millis()
+    }
+
     /** Return the most recent repository status among the selected members
      * Input
         - None (uses self)
@@ -203,7 +243,9 @@ impl Context {
     }
 }
 
-/** Load a repository's view for the selected members (all when none are named)
+/** Load a repository's view for the selected members: the named ones, otherwise every member
+ * linked to a GitHub account (machines nobody linked may be anyone's, so they are hidden by
+ * default once a member is linked), otherwise every member
  * Input
     - read: &ReadOnly - database
     - repository: &str - repository identity
@@ -228,10 +270,47 @@ pub(crate) fn load(
         .into_iter()
         .map(json)
         .collect::<Vec<_>>();
+    let links = read
+        .find(
+            "member_links",
+            doc! {"repository_id": repository, "confirmed_by": {"$type": "string"}},
+            doc! {"confirmed_at": 1},
+            1_000,
+        )?
+        .into_iter()
+        .filter_map(|link| {
+            Some((
+                link.get_str("installation").ok()?.to_string(),
+                link.get_str("confirmed_by").ok()?.to_string(),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let owner = read
+        .find(
+            "owner_keys",
+            doc! {"repository_id": repository, "confirmed_by": {"$type": "string"}},
+            doc! {"confirmed_at": -1},
+            1,
+        )?
+        .into_iter()
+        .next()
+        .map_or(Value::Null, |document| {
+            json!({
+                "owner_key": document.get_str("owner_key").unwrap_or_default(),
+                "confirmed_by": document.get_str("confirmed_by").unwrap_or_default(),
+                "confirmed_at": crate::server::store::number(document.get("confirmed_at")),
+            })
+        });
     let selected = members
         .iter()
         .filter_map(|member| member["installation"].as_str())
-        .filter(|key| wanted.is_empty() || wanted.contains(*key))
+        .filter(|key| {
+            if wanted.is_empty() {
+                links.is_empty() || links.contains_key(*key)
+            } else {
+                wanted.contains(*key)
+            }
+        })
         .map(String::from)
         .collect::<Vec<_>>();
     let mut snapshot = Snapshot::default();
@@ -276,6 +355,12 @@ pub(crate) fn load(
         }
     }
     snapshot.sessions = decode::<SessionRecord>(sessions, "sessions")?;
+    let attested = snapshot
+        .events
+        .iter()
+        .filter(|event| event.event_type == "session.attested")
+        .filter_map(|event| event.scope.foxx_session_id.clone())
+        .collect::<BTreeSet<_>>();
     snapshot.tasks = decode::<TaskRecord>(
         read.find("tasks", among.clone(), doc! {"started_at": -1}, 5_000)?,
         "tasks",
@@ -300,6 +385,9 @@ pub(crate) fn load(
         statuses,
         event_member,
         session_member,
+        attested,
+        links,
+        owner,
         truncated,
     })
 }

@@ -65,6 +65,8 @@ const INJECTION_PHRASES: &[&str] = &[
     - operation: String - read, write, execute, or other
     - tool: String - tool name
     - selections: Vec<String> - selections touched
+    - before: Option<Tree> - the changed files before a shell or other tool ran, so its effect can
+      be attributed to it afterwards
 */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CallRecord {
@@ -75,17 +77,75 @@ struct CallRecord {
     operation: String,
     tool: String,
     selections: Vec<String>,
+    #[serde(default)]
+    before: Option<Tree>,
+}
+
+/** The files that differ from HEAD, each with its size and modification time ("missing" when
+ * deleted): enough to see that a file changed without reading it */
+pub(super) type Tree = BTreeMap<String, String>;
+
+/** Take a Tree of the work tree, leaving out .crane (its own signatures cover it)
+ * Input
+    - workspace: &Workspace - repository
+ * Output
+    - Result<Tree, String>
+*/
+pub(super) fn tree(workspace: &Workspace) -> Result<Tree, String> {
+    Ok(crate::platform::git::changed_files(&workspace.root)?
+        .into_iter()
+        .filter(|path| !path.starts_with(".crane/"))
+        .map(|path| {
+            let state = fs::metadata(workspace.root.join(&path)).map_or_else(
+                |_| "missing".to_string(),
+                |metadata| {
+                    let modified = metadata
+                        .modified()
+                        .ok()
+                        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map_or(0, |time| time.as_nanos());
+                    format!("{}:{modified}", metadata.len())
+                },
+            );
+            (path, state)
+        })
+        .collect())
+}
+
+/** List the files whose state differs between two Trees
+ * Input
+    - before: &Tree - earlier
+    - after: &Tree - later
+ * Output
+    - BTreeSet<String>
+*/
+pub(super) fn tree_changes(before: &Tree, after: &Tree) -> BTreeSet<String> {
+    before
+        .keys()
+        .chain(after.keys())
+        .filter(|path| before.get(*path) != after.get(*path))
+        .cloned()
+        .collect()
 }
 
 /** Per-session correlation state of tool calls
  * Fields
     - calls: BTreeMap<String, CallRecord> - pre-tool decisions by tool call
     - known_violations: BTreeSet<String> - violations already reported in this session
+    - baseline: Option<Tree> - the changed files when the session started
+    - attributed: BTreeSet<String> - files changed by the session's recorded tool calls
+    - unattributed: BTreeSet<String> - files already reported as changed outside them
 */
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Calls {
     calls: BTreeMap<String, CallRecord>,
     known_violations: BTreeSet<String>,
+    #[serde(default)]
+    baseline: Option<Tree>,
+    #[serde(default)]
+    attributed: BTreeSet<String>,
+    #[serde(default)]
+    unattributed: BTreeSet<String>,
 }
 
 /** Everything a hook invocation works with

@@ -99,6 +99,16 @@ pub(crate) fn init(args: &[String]) -> Result<(), String> {
     );
     println!("  owner key:      {}", grouped(&manifest.public_key));
     println!("                  (teammates compare this when their 'crane init' asks to trust it)");
+    // Best effort: let a GitHub admin vouch for the owner key, so joining teammates see it
+    if let Ok(identity) = trust.require_signing_key() {
+        match crate::cli::link::register_owner(&workspace, &state, &identity) {
+            Ok(url) => println!("  GitHub check:   confirm the owner key as a GitHub admin of the repository (within 10 minutes): {url}"),
+            Err(error) if crate::telemetry::ingest::endpoint().is_some() => println!(
+                "  GitHub check:   not registered ({error}); run 'crane admin register' later"
+            ),
+            Err(_) => {}
+        }
+    }
     match crate::telemetry::ingest::endpoint() {
         Some(url) => println!(
             "  telemetry:      events and metrics are uploaded to {url}, signed with this machine's upload key (set CRANE_INGEST_URL=off to keep them local)"
@@ -173,6 +183,10 @@ pub(super) fn join(workspace: &Workspace, state: &State) -> Result<(), String> {
         println!("  owner key:   {}", grouped(&owner));
         describe();
         println!("Ask the repository owner for their key ('crane admin list' shows it) and compare every group.");
+        let mismatch = crate::cli::link::show_owner_confirmation(workspace, &owner);
+        if mismatch {
+            println!("Answer 'n' unless the owner confirmed to you that their key changed.");
+        }
         if !Prompter::new().confirm("Trust this owner key for this repository?", false)? {
             return Err("the owner key was not trusted; nothing changed, and agent changes stay blocked until it is".into());
         }

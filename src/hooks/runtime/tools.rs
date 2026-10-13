@@ -126,7 +126,36 @@ impl Hook {
                 }
             })?;
         }
+        // What this call may change, so the stop hook can tell its changes from changes made
+        // outside every recorded tool call: the files a write names, and for a shell or other
+        // tool (whose effect is unknown beforehand) the changed files before it runs
+        let allowed = decided.verdict.decision != Decision::Deny
+            && decided.verdict.decision != Decision::Quarantine;
+        let written = action
+            .files
+            .iter()
+            .filter_map(|change| {
+                repository_path(
+                    &self.workspace,
+                    self.provider.cwd.as_deref().map(std::path::Path::new),
+                    &change.path,
+                )
+            })
+            .collect::<Vec<_>>();
+        let before = (allowed && matches!(action.operation, Operation::Execute | Operation::Other))
+            .then(|| tree(&self.workspace).ok())
+            .flatten();
+        let baseline = self
+            .with_calls(session, |calls| calls.baseline.is_none())?
+            .then(|| tree(&self.workspace).ok())
+            .flatten();
         self.with_calls(session, |calls| {
+            if calls.baseline.is_none() {
+                calls.baseline = baseline;
+            }
+            if allowed {
+                calls.attributed.extend(written);
+            }
             calls.calls.insert(
                 call.clone(),
                 CallRecord {
@@ -137,6 +166,7 @@ impl Hook {
                     operation: action.operation.name().into(),
                     tool: action.tool.clone(),
                     selections: decided.selections.clone(),
+                    before,
                 },
             );
         })?;
@@ -309,6 +339,12 @@ impl Hook {
         let (call, provided) = self.tool_call_id(session, &action);
         let record = self.with_calls(session, |calls| calls.calls.get(&call).cloned())?;
         let failed = self.provider.tool_failed;
+        if let Some(before) = record.as_ref().and_then(|record| record.before.as_ref()) {
+            if let Ok(after) = tree(&self.workspace) {
+                let changed = tree_changes(before, &after);
+                self.with_calls(session, |calls| calls.attributed.extend(changed))?;
+            }
+        }
         if let Some(record) = &record {
             if record.reserved > 0 {
                 if failed == Some(true) && action.operation == Operation::Write {

@@ -58,6 +58,7 @@ pub(crate) fn route(context: &Context, path: &str, query: &BTreeMap<String, Stri
         snapshot.session(id).map(|session| {
             let mut view = session_view(snapshot, session);
             view["member"] = context.member(context.session_member.get(&session.foxx_session_id));
+            view["stale"] = json!(context.stale(session));
             view["tasks"] = json!(snapshot
                 .tasks
                 .iter()

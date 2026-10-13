@@ -14,8 +14,12 @@ use serde_json::{json, Value};
 use super::database::Settings;
 use crate::governance::workspace::identity;
 use crate::platform::{io_error, now_millis};
-use crate::telemetry::ingest::{Batch, Positions};
+use crate::telemetry::events::Event;
+use crate::telemetry::ingest::{
+    ApprovalRequest, Batch, Positions, CODE_DOMAIN, CODE_LIFETIME_MILLIS,
+};
 use crate::telemetry::model::Severity;
+use crate::trust::crypto::digest;
 
 /** Convert a record to a BSON document tagged with the repository and installation
  * Input
@@ -97,6 +101,173 @@ fn upsert(
         .map_err(io_error)
 }
 
+/** Check that uploaded events continue each machine's chain where the service last saw it, and
+ * record a critical alert when they do not: an event that does not chain from the previous one
+ * (history rewritten), a gap in the sequence (events removed), or a different event at a sequence
+ * already stored (a fork). The head is kept in chain_heads, which never expires, so the check
+ * survives the expiry of routine events. Events are still stored, so the dashboard shows the
+ * broken chain too
+ * Input
+    - database: &Database - database
+    - repository: &str - repository identity
+    - installation: &str - installation key
+    - events: &[Event] - uploaded events
+ * Output
+    - Result<(), String>
+*/
+fn continuity(
+    database: &Database,
+    repository: &str,
+    installation: &str,
+    events: &[Event],
+) -> Result<(), String> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    let heads = database.collection::<Document>("chain_heads");
+    let scope = doc! {"repository_id": repository, "installation": installation};
+    let stored = heads.find_one(scope.clone()).run().map_err(io_error)?;
+    let mut head = stored.as_ref().and_then(|document| {
+        Some((
+            number(document.get("sequence")),
+            document.get_str("digest").ok()?.to_string(),
+        ))
+    });
+    let mut ordered = events.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|event| event.sequence);
+    let mut problems: Vec<(u64, &str, String)> = Vec::new();
+    for event in ordered {
+        match &head {
+            // The first event the service sees from this machine starts the chain
+            None => head = Some((event.sequence, event.digest.clone())),
+            Some((sequence, _)) if event.sequence <= *sequence => {
+                let mut filter = scope.clone();
+                filter.insert("sequence", event.sequence as i64);
+                let earlier = database
+                    .collection::<Document>("events")
+                    .find_one(filter)
+                    .run()
+                    .map_err(io_error)?;
+                if let Some(earlier) = earlier {
+                    if earlier.get_str("digest").ok() != Some(event.digest.as_str()) {
+                        problems.push((event.sequence, "fork", format!("event {} differs from the event {} the service already holds (the machine's history was replaced)", event.sequence, event.sequence)));
+                    }
+                }
+            }
+            Some((sequence, digest)) => {
+                if event.sequence > sequence + 1 {
+                    problems.push((event.sequence, "gap", format!("events {} to {} never arrived (removed from the machine before upload)", sequence + 1, event.sequence - 1)));
+                } else if event.previous_digest != *digest {
+                    problems.push((event.sequence, "rewrite", format!("event {} does not chain from event {} (the machine's history was rewritten)", event.sequence, sequence)));
+                }
+                head = Some((event.sequence, event.digest.clone()));
+            }
+        }
+    }
+    if let Some((sequence, digest)) = &head {
+        let mut document = scope.clone();
+        document.insert("sequence", *sequence as i64);
+        document.insert("digest", digest.as_str());
+        document.insert("updated_at", now_millis() as i64);
+        heads
+            .replace_one(scope.clone(), document)
+            .upsert(true)
+            .run()
+            .map_err(io_error)?;
+    }
+    let now = now_millis() / 1000;
+    let alerts = problems
+        .into_iter()
+        .map(|(sequence, kind, detail)| {
+            doc! {
+                "alert_id": format!("srv_chain_{kind}_{sequence}"),
+                "key": format!("chain:{kind}:{sequence}"),
+                "kind": "evidence_chain_broken",
+                "title": "Evidence chain broken: a machine's history was rewritten or removed",
+                "severity": "CRITICAL",
+                "at": now as i64,
+                "state": "OPEN",
+                "source": "service",
+                "suppressed": false,
+                "deliveries": Bson::Array(Vec::new()),
+                "detail": detail,
+                "repository_id": repository,
+                "installation": installation,
+            }
+        })
+        .collect::<Vec<_>>();
+    insert(database, "alerts", alerts)?;
+    Ok(())
+}
+
+/** Hold an approval request until a person uses its code on the dashboard (the code itself is
+ * never stored, only its digest; it expires after CODE_LIFETIME_MILLIS and works once)
+ * Input
+    - database: &Database - database
+    - repository: &str - repository identity
+    - installation: &str - the requesting machine
+    - operation: &str - link (member_links) or owner (owner_keys)
+    - approval: &ApprovalRequest - checked request
+ * Output
+    - Result<Value, String> {"expires_in_seconds"}
+*/
+pub(super) fn hold_approval(
+    database: &Database,
+    repository: &str,
+    installation: &str,
+    operation: &str,
+    approval: &ApprovalRequest,
+) -> Result<Value, String> {
+    let now = now_millis();
+    let mut document = doc! {
+        "repository_id": repository,
+        "installation": installation,
+        "code_digest": digest(CODE_DOMAIN, &[approval.code.as_bytes()]),
+        "remote": approval.remote.clone().unwrap_or_default(),
+        "requested_at": now as i64,
+        "expires_at": (now + CODE_LIFETIME_MILLIS) as i64,
+    };
+    let collection = if operation == "owner" {
+        document.insert("owner_key", approval.owner_key.clone().unwrap_or_default());
+        "owner_keys"
+    } else {
+        "member_links"
+    };
+    database
+        .collection::<Document>(collection)
+        .insert_one(document)
+        .run()
+        .map_err(io_error)?;
+    Ok(json!({"expires_in_seconds": CODE_LIFETIME_MILLIS / 1000}))
+}
+
+/** Return the repository's owner key most recently confirmed by a GitHub admin of its remote
+ * (public information: a public key and who confirmed it)
+ * Input
+    - database: &Database - database
+    - repository: &str - repository identity
+ * Output
+    - Result<Value, String> {owner_key, confirmed_by, confirmed_at, remote}, owner_key null when
+      none is confirmed
+*/
+pub(super) fn confirmed_owner(database: &Database, repository: &str) -> Result<Value, String> {
+    let found = database
+        .collection::<Document>("owner_keys")
+        .find_one(doc! {"repository_id": repository, "confirmed_by": {"$type": "string"}})
+        .sort(doc! {"confirmed_at": -1})
+        .run()
+        .map_err(io_error)?;
+    Ok(match found {
+        Some(document) => json!({
+            "owner_key": document.get_str("owner_key").unwrap_or_default(),
+            "confirmed_by": document.get_str("confirmed_by").unwrap_or_default(),
+            "confirmed_at": number(document.get("confirmed_at")),
+            "remote": document.get_str("remote").unwrap_or_default(),
+        }),
+        None => json!({"owner_key": null}),
+    })
+}
+
 /** Check that a batch proves its remote: the root commits and the remote reproduce the repository
  * identity
  * Input
@@ -176,6 +347,7 @@ pub(super) fn ingest(
         };
     }
     let mut duplicates = 0;
+    continuity(database, repository, installation, &batch.events)?;
     let events = batch
         .events
         .iter()

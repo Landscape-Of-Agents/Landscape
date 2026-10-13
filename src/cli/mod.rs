@@ -6,6 +6,7 @@ mod agent;
 mod args;
 mod audit;
 mod governance;
+mod link;
 mod repo;
 mod runtime;
 
@@ -121,11 +122,13 @@ Zones and flows (.crane/governance.yaml)
   crane governance sign
 
 Admins
+  crane admin register          (owner: a GitHub admin confirms the owner key on the dashboard)
   crane admin list
   crane admin add PUBLIC_KEY [name NAME]
   crane admin del PUBLIC_KEY
 
 Agent
+  crane agent link              (link this machine's upload key to your GitHub account)
   crane agent install --profile claude|codex
   crane agent uninstall --profile claude|codex
   crane agent hooks --profile claude|codex

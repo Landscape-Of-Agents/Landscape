@@ -176,6 +176,26 @@ pub fn fake_github() -> String {
                 } else {
                     json!([])
                 }
+            } else if let Some(repository) = url.strip_prefix("/repos/") {
+                // Roles on repositories: alice administers acme/widgets, bob can push to it,
+                // carol administers carol/notes; anyone else is not shown the repository
+                let role = match (repository, login.as_str()) {
+                    ("acme/widgets", "alice") | ("carol/notes", "carol") => Some(true),
+                    ("acme/widgets", "bob") => Some(false),
+                    _ => None,
+                };
+                match role {
+                    Some(admin) => {
+                        json!({"full_name": repository, "permissions": {"admin": admin, "push": true, "pull": true}})
+                    }
+                    None => {
+                        let _ = request.respond(
+                            tiny_http::Response::from_string("{\"message\": \"Not Found\"}")
+                                .with_status_code(404),
+                        );
+                        continue;
+                    }
+                }
             } else {
                 json!({})
             };
@@ -334,4 +354,74 @@ pub fn sign_in(base: &str, github: &str, user: &str) -> String {
         "{session}"
     );
     session.split(';').next().unwrap().to_string()
+}
+
+/** Approve a request on the dashboard as a stand-in GitHub user: start /auth/approve, then
+ * finish the GitHub sign-in it starts
+ * Input
+    - base: &str - service URL
+    - user: &str - login (also the OAuth code)
+    - action: &str - link or owner
+    - code: &str - the one-time code
+ * Output
+    - (bool, String) whether it was confirmed, and the message shown to the person
+*/
+pub fn approve(base: &str, user: &str, action: &str, code: &str) -> (bool, String) {
+    let start = get(
+        &format!("{base}/auth/approve?action={action}&code={code}"),
+        None,
+    );
+    assert_eq!(start.status, 302, "{}", start.body);
+    let location = start.location.clone().unwrap();
+    let state = location.split("state=").nth(1).unwrap().to_string();
+    let cookies = start
+        .cookies
+        .iter()
+        .map(|cookie| cookie.split(';').next().unwrap().to_string())
+        .collect::<Vec<_>>()
+        .join("; ");
+    let done = get(
+        &format!("{base}/auth/callback?code={user}&state={state}"),
+        Some(&cookies),
+    );
+    assert_eq!(done.status, 302, "{}", done.body);
+    let target = done.location.unwrap();
+    let query = target.split('?').nth(1).unwrap_or_default();
+    let field = |name: &str| {
+        query
+            .split(['&', '#'])
+            .find_map(|pair| pair.strip_prefix(&format!("{name}=")))
+            .unwrap_or_default()
+            .to_string()
+    };
+    let message = percent_decode(&field("approval"));
+    (field("ok") == "1", message)
+}
+
+/** Decode a percent-encoded query value
+ * Input
+    - text: &str - encoded text
+ * Output
+    - String
+*/
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&text[index + 1..index + 3], 16) {
+                out.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(if bytes[index] == b'+' {
+            b' '
+        } else {
+            bytes[index]
+        });
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }

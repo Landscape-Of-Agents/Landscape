@@ -5,6 +5,15 @@ const PAGES = [["repositories", "Repositories"], ["overview", "Overview"], ["age
 const scope = { account: "", repository: "", member: "" };
 let me = null;
 let members = [];
+// The result of an approval (crane agent link / crane admin register), shown once
+let approval = null;
+{
+  const params = new URLSearchParams(location.search);
+  if (params.has("approval")) {
+    approval = { ok: params.get("ok") === "1", message: params.get("approval") };
+    history.replaceState(null, "", location.pathname + location.hash);
+  }
+}
 try { Object.assign(scope, JSON.parse(sessionStorage.getItem("foxx-scope") || "{}")); } catch (error) { /* storage unavailable */ }
 function saveScope() { try { sessionStorage.setItem("foxx-scope", JSON.stringify(scope)); } catch (error) { /* storage unavailable */ } }
 
@@ -46,9 +55,9 @@ function fmt(value) {
   return String(value);
 }
 const TONES = { ALLOW: "ok", COMPLIANT: "ok", SATISFIED: "ok", PASS: "ok", ACTIVE: "ok", OBSERVED: "ok", verified: "ok", current: "ok",
-  REQUIRE_APPROVAL: "warn", DEGRADED: "warn", PARTIAL: "warn", INFERRED: "warn", PENDING: "warn", SUSPICIOUS: "warn", COVERAGE_GAP: "warn", stale: "warn", NO_EVIDENCE: "warn", Medium: "warn", MEDIUM: "warn",
+  REQUIRE_APPROVAL: "warn", DEGRADED: "warn", PARTIAL: "warn", INFERRED: "warn", PENDING: "warn", SUSPICIOUS: "warn", COVERAGE_GAP: "warn", stale: "warn", STALE: "warn", NO_EVIDENCE: "warn", Medium: "warn", MEDIUM: "warn",
   DENY: "bad", VIOLATION: "bad", FAIL: "bad", NOT_SATISFIED: "bad", DETECTED_AFTER_EFFECT: "bad", UNRESOLVED: "bad", HIGH: "bad", ERROR: "bad", missing: "bad", broken: "bad",
-  QUARANTINE: "crit", QUARANTINED: "crit", BYPASS_CONFIRMED: "crit", CRITICAL: "crit" };
+  UNLINKED: "warn", LINKED: "ok", QUARANTINE: "crit", QUARANTINED: "crit", BYPASS_CONFIRMED: "crit", CRITICAL: "crit" };
 function chip(value, title) { return value === null || value === undefined ? h("span", { class: "muted" }, "—") : h("span", { class: "chip " + (TONES[value] || ""), title }, String(value)); }
 function status(metric) { return metric ? chip(metric.status, "how this value is known") : null; }
 function metricValue(metrics, name) { const metric = metrics && metrics[name]; return metric ? metric.value : null; }
@@ -86,7 +95,7 @@ async function overview(main) {
   const data = await api("/api/overview");
   const metrics = data.metrics;
   main.append(h("h2", {}, "Activity"), h("div", { class: "grid" },
-    tile("Members shown", data.members), tile("Active sessions", data.active_sessions, data.sessions + " total"), tile("Tasks", data.tasks, fmt(data.tasks_by_status)), tile("Agents", data.agents),
+    tile("Members shown", data.members), tile("Active sessions", data.active_sessions, data.sessions + " total"), tile("Stale sessions", data.stale_sessions, "stopped reporting without a signed end"), tile("Tasks", data.tasks, fmt(data.tasks_by_status)), tile("Agents", data.agents),
     tile("Actions allowed", metricValue(metrics, "actions_allowed")), tile("Actions denied", metricValue(metrics, "actions_denied"), "prevented before running"),
     tile("Approvals requested", metricValue(metrics, "actions_requiring_approval"))));
   main.append(h("h2", {}, "Security outcomes"), h("div", { class: "grid" },
@@ -102,7 +111,7 @@ async function overview(main) {
 
 function alertTable(rows) {
   return table([["When", (row) => new Date(row.at * 1000).toISOString()], ["Member", (row) => member(row.member)], ["Alert", (row) => row.title], ["Severity", (row) => chip(row.severity)], ["Session", (row) => row.session ? link(row.session, "#/sessions/" + row.session) : "—"], ["State", (row) => chip(row.state)],
-    ["Delivery", (row) => row.suppressed ? "suppressed (cooldown)" : fmt((row.deliveries || []).map((delivery) => delivery.channel + ": " + delivery.result))]], rows);
+    ["Delivery", (row) => row.computed ? h("span", { class: "muted", title: row.detail }, "derived by the dashboard") : row.suppressed ? "suppressed (cooldown)" : fmt((row.deliveries || []).map((delivery) => delivery.channel + ": " + delivery.result))]], rows);
 }
 
 async function agents(main) {
@@ -114,7 +123,7 @@ async function agents(main) {
     ["Credits consumed", (row) => metricValue(row.metrics, "credits_consumed"), "num"], ["Last seen", (row) => row.last_seen]], agentData.agents));
   main.append(h("h2", {}, "Sessions"), table([
     ["Session", (row) => link(row.session.foxx_session_id, "#/sessions/" + row.session.foxx_session_id)], ["Member", (row) => member(row.member)], ["Provider id", (row) => row.session.provider_session_id === null ? h("span", { class: "muted" }, "not reported (" + row.session.id_provenance + ")") : row.session.provider_session_id],
-    ["Model", (row) => row.session.model], ["Status", (row) => chip(row.session.status)], ["Mode", (row) => row.session.autonomy_mode], ["Safety", (row) => chip(row.session.safety)],
+    ["Model", (row) => row.session.model], ["Status", (row) => chip(row.stale ? "STALE" : row.session.status, row.stale ? "no hook activity and no signed end of session for a long time" : undefined)], ["Mode", (row) => row.session.autonomy_mode], ["Safety", (row) => chip(row.session.safety)],
     ["Credits", (row) => row.credits.available + " / " + row.credits.granted, "num"], ["Started", (row) => row.session.started_at]], sessionData.sessions));
 }
 
@@ -146,6 +155,7 @@ async function session(main, id) {
   const data = await api("/api/sessions/" + encodeURIComponent(id));
   const graph = await api("/api/graph/" + encodeURIComponent(id));
   const info = data.session;
+  if (data.stale) main.append(h("p", { class: "error" }, "This session stopped reporting: no hook activity for a long time and no signed end of session. The agent may have been stopped, its hooks removed, or its evidence is not reaching the service."));
   main.append(h("h2", {}, "Session ", h("code", {}, info.foxx_session_id), " ", member(data.member)), h("div", { class: "grid" },
     tile("Provider", info.provider, info.provider_session_id === null ? "provider id not reported" : "provider id " + info.provider_session_id), tile("Model", info.model),
     tile("Safety", info.safety, info.safety_reason || ""), tile("Autonomy mode", info.autonomy_mode), tile("Credits available", data.credits.available, data.credits.consumed + " consumed, " + data.credits.revoked + " revoked, " + data.credits.expired + " expired"),
@@ -219,12 +229,22 @@ async function alerts(main) {
 async function settings(main) {
   if (needRepository(main)) return;
   const [health, repo, integrations, memberData] = await Promise.all([api("/api/health"), api("/api/repo"), api("/api/integrations"), api("/api/members")]);
-  main.append(h("h2", {}, "Members"), table([["Member", (row) => member(row.member)], ["Shown", (row) => row.selected ? "yes" : "no"], ["Remote verified", (row) => chip(row.verified ? "verified" : "missing")], ["Events", (row) => row.events, "num"], ["Sessions", (row) => row.sessions, "num"],
+  main.append(h("h2", {}, "Approvals"), h("div", { class: "panel" },
+    h("p", { class: "muted" }, "Enter the code printed by 'crane agent link' (links a machine's upload key to your GitHub account; you need access to the repository) or 'crane admin register' (confirms the owner key; you must administer the repository). GitHub checks your role once; Foxx keeps no GitHub token."),
+    (() => {
+      const input = h("input", { placeholder: "12-character code", "aria-label": "approval code", maxlength: "12" });
+      const go = (action) => () => { const code = input.value.trim().toUpperCase(); if (code) location.href = "/auth/approve?action=" + action + "&code=" + encodeURIComponent(code); };
+      return h("div", { class: "filters" }, input, h("button", { onclick: go("link") }, "Link machine"), h("button", { onclick: go("owner") }, "Confirm owner key"));
+    })()));
+  const hidden = memberData.members.filter((row) => !row.selected && !row.linked_by).length;
+  if (hidden && !scope.member) main.append(h("p", { class: "muted" }, hidden + " machine(s) nobody linked to a GitHub account are hidden; choose one in Member to see its activity."));
+  main.append(h("h2", {}, "Members"), table([["Member", (row) => member(row.member)], ["Linked to", (row) => row.linked_by ? chip("LINKED", "linked by @" + row.linked_by) : chip("UNLINKED", "run 'crane agent link' on that machine")], ["GitHub", (row) => row.linked_by ? "@" + row.linked_by : "—"], ["Shown", (row) => row.selected ? "yes" : "no"], ["Remote verified", (row) => chip(row.verified ? "verified" : "missing")], ["Events", (row) => row.events, "num"], ["Sessions", (row) => row.sessions, "num"],
     ["Last upload", (row) => when(row.last_upload)], ["Status reported", (row) => when(row.status_reported_at)], ["Crane", (row) => row.crane_version]], memberData.members));
   main.append(h("h2", {}, "System health"), h("div", { class: "grid" }, tile("Crane", health.reported_crane_version || health.crane_version, "schema v" + health.schema_version + ", metrics v" + health.metric_formula_version), tile("Registry generation", health.registry_generation),
     tile("Events", health.events, "chains " + health.event_chain.status + (health.truncated ? " (most recent shown)" : "")), tile("Ledger", health.ledger_entries, health.ledger_reconciles ? "reconciles" : "DOES NOT reconcile"), tile("Storage", "MongoDB", health.storage.service), tile("Mode", health.mode)));
   main.append(h("h2", {}, "Event chains by member"), table([["Member", (row) => member(row.member)], ["Chain", (row) => chip(row.event_chain.status)], ["Events", (row) => row.event_chain.length, "num"], ["Ledger", (row) => row.ledger_reconciles ? "reconciles" : chip("FAIL")]], health.event_chain.members));
-  main.append(h("h2", {}, "Repository connection"), h("div", { class: "panel" }, repo.connection ? h("p", {}, repo.connection.repository + " via " + repo.connection.method + "  ·  privileges: " + fmt(repo.connection.privileges)) : h("p", { class: "muted" }, repo.remote + " (connection not reported yet)")));
+  main.append(h("h2", {}, "Repository connection"), h("div", { class: "panel" }, repo.connection ? h("p", {}, repo.connection.repository + " via " + repo.connection.method + "  ·  privileges: " + fmt(repo.connection.privileges)) : h("p", { class: "muted" }, repo.remote + " (connection not reported yet)"),
+    repo.owner ? h("p", {}, "Owner key ", h("code", {}, repo.owner.owner_key.slice(0, 16) + "…"), " confirmed by @" + repo.owner.confirmed_by + " (GitHub admin) on " + when(repo.owner.confirmed_at)) : h("p", { class: "muted" }, "No GitHub-confirmed owner key yet: the owner runs 'crane admin register' and confirms it here.")));
   main.append(h("h2", {}, "Integrations (non-secret settings)"), table([["Integration", (row) => row.name], ["Member", (row) => member(row.member)], ["Settings", (row) => fmt(row.settings)], ["Secrets", (row) => row.secret_fields.length + " stored on the member's machine"], ["Configured", (row) => new Date(row.configured_at * 1000).toISOString()]], integrations.integrations));
   main.append(h("p", { class: "muted" }, "This dashboard is read-only. Policies, checkpoints, budgets, approvals, and integrations are changed with the Crane CLI by a human."));
 }
@@ -257,7 +277,7 @@ async function controls() {
   document.getElementById("scope").replaceChildren(
     select("Account", scope.account, me.accounts.map((account) => [account.name, (account.kind === "personal" ? "Personal · " : "Organization · ") + account.name]), (value) => { scope.account = value; scope.repository = ""; scope.member = ""; saveScope(); render(); }),
     select("Repository", scope.repository, owned.length ? owned.map((repository) => [repository.id, repository.remote.replace(/^github\.com\//, "")]) : [["", "no repositories yet"]], (value) => { scope.repository = value; scope.member = ""; saveScope(); render(); }),
-    select("Member", scope.member, [["", "All members"]].concat(members.map((row) => [row.member.key, row.member.actor + " (" + row.member.short + ")"])), (value) => { scope.member = value; saveScope(); render(); }));
+    select("Member", scope.member, [["", members.some((row) => row.linked_by) ? "All linked members" : "All members"]].concat(members.map((row) => [row.member.key, row.member.actor + " (" + row.member.short + ")" + (row.linked_by ? " @" + row.linked_by : " · unlinked")])), (value) => { scope.member = value; saveScope(); render(); }));
   document.getElementById("viewer").replaceChildren("Signed in as " + me.login + " · ", h("a", { href: "/auth/logout" }, "Sign out"));
 }
 
@@ -269,6 +289,7 @@ async function render() {
     await controls();
     const nav = document.getElementById("nav"); nav.replaceChildren(...PAGES.map(([id, label]) => h("a", { href: "#/" + id, class: route.split("/")[0] === id ? "active" : "" }, label)));
     main.replaceChildren();
+    if (approval) { main.append(h("p", { class: approval.ok ? "panel" : "error" }, approval.message)); approval = null; }
     const [page, id] = route.split("/");
     if (page === "sessions" && id) await session(main, decodeURIComponent(id));
     else await ({ repositories, overview, agents, events, governance, compliance, alerts, settings }[page] || overview)(main);

@@ -24,6 +24,33 @@ use crate::trust::crypto::{hex, unhex, verify_signature, SigningIdentity};
 /** Signature domain of session cookies */
 const SESSION_DOMAIN: &str = "foxx/dashboard/session/v1";
 
+/** Signature domain of an approval intent cookie */
+const INTENT_DOMAIN: &str = "foxx/dashboard/intent/v1";
+
+/** What a person asked to approve, carried through GitHub sign-in in a signed cookie
+ * Fields
+    - action: String - link (a machine's upload key) or owner (the owner key)
+    - code: String - the one-time code
+    - state: String - the sign-in state it belongs to
+*/
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Intent {
+    pub(crate) action: String,
+    pub(crate) code: String,
+    pub(crate) state: String,
+}
+
+/** The viewer's access to a repository, as GitHub reports it
+ * Fields
+    - admin: bool - administers it
+    - read: bool - can read it (any of pull, triage, push, maintain, admin)
+*/
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Access {
+    pub(crate) admin: bool,
+    pub(crate) read: bool,
+}
+
 /** Lifetime of a session */
 pub(crate) const SESSION_MILLIS: u64 = 8 * 60 * 60 * 1000;
 
@@ -204,26 +231,100 @@ impl Auth {
      * Input
         - request: &Request - request
         - state: &str - random state
+        - private: bool - also ask for repository access (needed only to check a person's role on
+          a private repository during an approval; the token is used once and never kept)
      * Output
         - String
     */
-    pub(crate) fn authorize_url(&self, request: &Request, state: &str) -> String {
+    pub(crate) fn authorize_url(&self, request: &Request, state: &str, private: bool) -> String {
         format!(
-            "{}/login/oauth/authorize?client_id={}&redirect_uri={}&scope=read%3Aorg&state={state}",
+            "{}/login/oauth/authorize?client_id={}&redirect_uri={}&scope={}&state={state}",
             self.github_url,
             encode(&self.client_id),
-            encode(&format!("{}/auth/callback", Self::public_url(request)))
+            encode(&format!("{}/auth/callback", Self::public_url(request))),
+            if private {
+                "read%3Aorg%20repo"
+            } else {
+                "read%3Aorg"
+            }
         )
     }
 
-    /** Exchange an OAuth code for the viewer's login and organizations
+    /** Sign an approval intent for its cookie
+     * Input
+        - intent: &Intent - intent
+     * Output
+        - String
+    */
+    pub(crate) fn seal(&self, intent: &Intent) -> String {
+        let payload = serde_json::to_vec(intent).unwrap_or_default();
+        format!(
+            "{}.{}",
+            hex(&payload),
+            self.key.sign(INTENT_DOMAIN, &payload)
+        )
+    }
+
+    /** Read and check the approval intent cookie of a request
+     * Input
+        - request: &Request - request
+     * Output
+        - Option<Intent>, None when absent or forged
+    */
+    pub(crate) fn intent(&self, request: &Request) -> Option<Intent> {
+        let value = cookie(request, "foxx_intent")?;
+        let (payload, signature) = value.split_once('.')?;
+        let payload = unhex(payload).ok()?;
+        verify_signature(&self.key.public_hex(), INTENT_DOMAIN, &payload, signature).ok()?;
+        serde_json::from_slice(&payload).ok()
+    }
+
+    /** Ask GitHub for a person's access to a repository, with the token of their sign-in
+     * Input
+        - token: &str - OAuth access token (used here only, never stored)
+        - remote: &str - normalized remote, github.com/OWNER/NAME
+     * Output
+        - Result<Access, String>; no access when GitHub does not show the repository to them
+    */
+    pub(crate) fn access(&self, token: &str, remote: &str) -> Result<Access, String> {
+        let Some(path) = remote.strip_prefix("github.com/") else {
+            return Ok(Access::default());
+        };
+        let answer = self
+            .agent
+            .get(&format!("{}/repos/{path}", self.api_url))
+            .set("Authorization", &format!("Bearer {token}"))
+            .set("Accept", "application/vnd.github+json")
+            .set("User-Agent", concat!("crane/", env!("CARGO_PKG_VERSION")))
+            .call();
+        let repository: Value = match answer {
+            Ok(response) => response.into_json().map_err(|error| error.to_string())?,
+            Err(ureq::Error::Status(404 | 403, _)) => return Ok(Access::default()),
+            Err(error) => return Err(format!("GitHub could not be asked: {error}")),
+        };
+        let permissions = &repository["permissions"];
+        let flag = |name: &str| permissions[name].as_bool().unwrap_or(false);
+        Ok(Access {
+            admin: flag("admin"),
+            read: ["pull", "triage", "push", "maintain", "admin"]
+                .iter()
+                .any(|name| flag(name)),
+        })
+    }
+
+    /** Exchange an OAuth code for the viewer's login and organizations, and the access token
+     * (which the caller may use once for an approval and must not keep)
      * Input
         - request: &Request - request
         - code: &str - OAuth code
      * Output
-        - Result<Viewer, String>
+        - Result<(Viewer, String), String>
     */
-    pub(crate) fn sign_in(&self, request: &Request, code: &str) -> Result<Viewer, String> {
+    pub(crate) fn sign_in(
+        &self,
+        request: &Request,
+        code: &str,
+    ) -> Result<(Viewer, String), String> {
         let failed = |error: ureq::Error| format!("GitHub sign-in failed: {error}");
         let token: Value = self
             .agent
@@ -268,11 +369,14 @@ impl Auth {
                     .collect()
             })
             .unwrap_or_default();
-        Ok(Viewer {
-            login,
-            orgs,
-            expires: now_millis() + SESSION_MILLIS,
-        })
+        Ok((
+            Viewer {
+                login,
+                orgs,
+                expires: now_millis() + SESSION_MILLIS,
+            },
+            access.to_string(),
+        ))
     }
 }
 
@@ -282,7 +386,7 @@ impl Auth {
  * Output
     - String
 */
-fn encode(text: &str) -> String {
+pub(crate) fn encode(text: &str) -> String {
     text.bytes()
         .map(|byte| match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {

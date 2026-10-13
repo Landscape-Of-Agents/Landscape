@@ -5,12 +5,18 @@
 // only writes, and the dashboard answers only signed-in browsers. The dashboard holds a read-only
 // database handle (data.rs), so viewing never changes the stored evidence.
 //
-// Routes (GET only): /, /app.js, /logo.png, and /favicon.png (the page), /auth/login, /auth/callback, /auth/logout,
+// Approvals (approve.rs) are the one exception to read-only: /auth/approve?action=link|owner&code=
+// runs a GitHub sign-in, and the callback asks GitHub for the person's role on that repository
+// before marking a pending request confirmed. The GitHub token is used for that one question and
+// never kept.
+//
+// Routes (GET only): /, /app.js, /logo.png, and /favicon.png (the page), /auth/login, /auth/approve, /auth/callback, /auth/logout,
 // /api/me (the viewer, accounts, and repositories), /api/accounts/NAME (a summary of an account's
 // repositories), and /api/ROUTE?repository=ID[&members=KEY,...] (api.rs). Responses carry a
 // strict Content-Security-Policy; the page loads only its own script.
 
 pub(crate) mod api;
+pub(crate) mod approve;
 pub(crate) mod auth;
 pub(crate) mod data;
 
@@ -23,7 +29,8 @@ use tiny_http::Request;
 
 use super::http::{self, Reply};
 use crate::trust::crypto::{hex, is_digest, random_bytes};
-use auth::{Auth, Viewer, SESSION_MILLIS};
+use approve::Approvals;
+use auth::{Auth, Intent, Viewer, SESSION_MILLIS};
 use data::{Context, ReadOnly};
 
 /** The page */
@@ -47,11 +54,13 @@ const CACHE_SIZE: usize = 16;
 /** The dashboard
  * Fields
     - read: ReadOnly - read-only database handle
+    - approvals: Approvals - confirms approval requests (the only writes)
     - auth: Option<Auth> - GitHub sign-in, None when not configured
     - cache: Mutex<HashMap<String, (Instant, Arc<Context>)>> - recently loaded repository views
 */
 pub(crate) struct Dashboard {
     read: ReadOnly,
+    approvals: Approvals,
     auth: Option<Auth>,
     cache: Mutex<HashMap<String, (Instant, Arc<Context>)>>,
 }
@@ -60,13 +69,15 @@ impl Dashboard {
     /** Create the dashboard
      * Input
         - read: ReadOnly - read-only database handle
+        - approvals: Approvals - approval writer
         - auth: Option<Auth> - sign-in settings
      * Output
         - Dashboard
     */
-    pub(crate) fn new(read: ReadOnly, auth: Option<Auth>) -> Self {
+    pub(crate) fn new(read: ReadOnly, approvals: Approvals, auth: Option<Auth>) -> Self {
         Self {
             read,
+            approvals,
             auth,
             cache: Mutex::new(HashMap::new()),
         }
@@ -99,6 +110,7 @@ impl Dashboard {
             "/logo.png" => Reply::image(LOGO, "image/png"),
             "/favicon.png" | "/favicon.ico" => Reply::image(FAVICON, "image/png"),
             "/auth/login" => self.login(request),
+            "/auth/approve" => self.approve(request, &query),
             "/auth/callback" => self.callback(request, &query),
             "/auth/logout" => Reply::redirect("/")
                 .with_header("Set-Cookie", &Auth::cookie(request, "foxx_session", "", 0)),
@@ -127,10 +139,93 @@ impl Dashboard {
         let state = random_bytes(16)
             .map(|bytes| hex(&bytes))
             .unwrap_or_default();
-        Reply::redirect(&auth.authorize_url(request, &state)).with_header(
-            "Set-Cookie",
-            &Auth::cookie(request, "foxx_oauth", &state, 600),
-        )
+        Reply::redirect(&auth.authorize_url(request, &state, false))
+            .with_header(
+                "Set-Cookie",
+                &Auth::cookie(request, "foxx_oauth", &state, 600),
+            )
+            .with_header("Set-Cookie", &Auth::cookie(request, "foxx_intent", "", 0))
+    }
+
+    /** Start an approval: GitHub sign-in carrying what to approve in a signed cookie
+     * Input
+        - request: &Request - request
+        - query: &BTreeMap<String, String> - action (link or owner), code, private=1 to also ask
+          for repository access (private repositories)
+     * Output
+        - Reply
+    */
+    fn approve(&self, request: &Request, query: &BTreeMap<String, String>) -> Reply {
+        let Some(auth) = &self.auth else {
+            return Reply::redirect("/");
+        };
+        let action = query.get("action").cloned().unwrap_or_default();
+        let code = query
+            .get("code")
+            .map(|code| code.trim().to_ascii_uppercase())
+            .unwrap_or_default();
+        if !matches!(action.as_str(), "link" | "owner")
+            || !crate::telemetry::ingest::is_approval_code(&code)
+        {
+            return Reply::json(
+                400,
+                json!({"error": "an approval needs action=link or action=owner and the 12-character code"}),
+            );
+        }
+        let state = random_bytes(16)
+            .map(|bytes| hex(&bytes))
+            .unwrap_or_default();
+        let intent = Intent {
+            action,
+            code,
+            state: state.clone(),
+        };
+        let private = query.get("private").is_some_and(|value| value == "1");
+        Reply::redirect(&auth.authorize_url(request, &state, private))
+            .with_header(
+                "Set-Cookie",
+                &Auth::cookie(request, "foxx_oauth", &state, 600),
+            )
+            .with_header(
+                "Set-Cookie",
+                &Auth::cookie(request, "foxx_intent", &auth.seal(&intent), 600),
+            )
+    }
+
+    /** Carry out an approval with the token of the sign-in that was started for it
+     * Input
+        - auth: &Auth - sign-in settings
+        - intent: &Intent - what to approve
+        - viewer: &Viewer - who signed in
+        - token: &str - their GitHub token (used for one question, then dropped)
+     * Output
+        - (bool, String) success and the message for the person
+    */
+    fn carry_out(
+        &self,
+        auth: &Auth,
+        intent: &Intent,
+        viewer: &Viewer,
+        token: &str,
+    ) -> (bool, String) {
+        let outcome = self.approvals.pending(intent).and_then(|(_, pending)| {
+            let remote = pending.get_str("remote").unwrap_or_default().to_string();
+            let access = auth.access(token, &remote)?;
+            self.approvals.confirm(intent, &viewer.login, access).map_err(|error| {
+                if access.read {
+                    error
+                } else {
+                    format!(
+                        "{error}. If the repository is private, approve again with repository access: /auth/approve?action={}&code={}&private=1",
+                        intent.action, intent.code
+                    )
+                }
+            })
+        });
+        match outcome {
+            Ok(message) => (true, message),
+            Err(error) => (false, error),
+        }
     }
 
     /** Finish GitHub sign-in: check the state, exchange the code, and set the session cookie
@@ -155,17 +250,36 @@ impl Dashboard {
             return Reply::json(400, json!({"error": "GitHub returned no code"}));
         };
         match auth.sign_in(request, code) {
-            Ok(viewer) => Reply::redirect("/")
-                .with_header(
-                    "Set-Cookie",
-                    &Auth::cookie(
-                        request,
-                        "foxx_session",
-                        &auth.session(&viewer),
-                        SESSION_MILLIS / 1000,
-                    ),
-                )
-                .with_header("Set-Cookie", &Auth::cookie(request, "foxx_oauth", "", 0)),
+            Ok((viewer, token)) => {
+                // An approval started with this sign-in: GitHub decides with this token, once
+                let target = match auth
+                    .intent(request)
+                    .filter(|intent| Some(&intent.state) == expected.as_ref())
+                {
+                    Some(intent) => {
+                        let (ok, message) = self.carry_out(auth, &intent, &viewer, &token);
+                        format!(
+                            "/?approval={}&ok={}#/settings",
+                            auth::encode(&message),
+                            u8::from(ok)
+                        )
+                    }
+                    None => "/".into(),
+                };
+                drop(token);
+                Reply::redirect(&target)
+                    .with_header(
+                        "Set-Cookie",
+                        &Auth::cookie(
+                            request,
+                            "foxx_session",
+                            &auth.session(&viewer),
+                            SESSION_MILLIS / 1000,
+                        ),
+                    )
+                    .with_header("Set-Cookie", &Auth::cookie(request, "foxx_oauth", "", 0))
+                    .with_header("Set-Cookie", &Auth::cookie(request, "foxx_intent", "", 0))
+            }
             Err(error) => Reply::json(400, json!({"error": error})),
         }
     }

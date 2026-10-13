@@ -65,8 +65,9 @@ comments); whitespace-only changes never satisfy a target.
 | Repository | `repo --ssh\|--https\|--gh-cli REMOTE [privileges]`, `repo status`, `repo --view`, `repo del`, `github`, `github days DAYS` |
 | Policies | `create policy NAME FILENAME`, `add policy NAME marker MARKER`, `policy NAME status` |
 | Runtime | `task current [ID]`, `task .`, `session current [ID]`, `session .` |
-| Agents | `agent install\|uninstall\|hooks --profile claude\|codex` |
-| Admins | `admin list`, `admin add PUBLIC_KEY [name NAME]`, `admin del PUBLIC_KEY` |
+| Agents | `agent install\|uninstall\|hooks --profile claude\|codex`, `agent link` |
+| Admins | `admin list`, `admin register`, `admin add PUBLIC_KEY [name NAME]`, `admin del PUBLIC_KEY` |
+| Zones and flows | `governance sign` |
 | Integrations | `integrate jira\|slack\|whatsapp\|github` |
 
 `protect` and `target` options: `policy NAME`, `checkpoint NAME`, `start-line N`, `end-line N`,
@@ -92,6 +93,17 @@ The person who runs `crane init` first is the **owner**; `crane init` prints the
    `crane init` to accept that signed state, then re-apply your change with crane.
 
 CI machines can trust the owner without a prompt: set `CRANE_TRUSTED_PUBLIC_KEYS` to the owner key.
+
+**GitHub vouches for the owner key.** The owner runs `crane admin register` (a new repository's
+`crane init` offers it) and opens the printed address; a GitHub admin of the repository confirms
+the key there. A teammate's `crane init` then shows "confirmed by @admin" next to the fingerprint,
+or a warning when the repository's key is not the confirmed one. Also protect `.crane` on GitHub:
+add `/.crane/ @OWNER` to `CODEOWNERS` and require code-owner review on the default branch.
+
+**Machines are linked to people.** Each teammate runs `crane agent link` once per machine and opens
+the printed address; GitHub must show them access to the repository. Once any machine is linked,
+the dashboard shows only linked machines by default, so an upload key nobody linked (anyone can
+create one for a public repository) cannot pass as a teammate.
 
 ## Zones, flows, and context packs
 
@@ -141,8 +153,15 @@ GitHub, then choose an account, a repository, and optionally one team member.
   with filters, governance (policies, selections, checkpoints, audit trail), the autonomy ledger,
   every metric with how it is known, compliance controls, alerts, members, health, session reports,
   and evidence bundles.
+- **Stale sessions:** a session with no hook activity for `CRANE_STALE_SESSION_MINUTES` (120) and
+  no signed end is flagged and alerted: the agent was stopped, its hooks removed, or its evidence
+  is not arriving.
+- **Broken evidence chains:** the service checks that every upload continues the machine's event
+  chain where it left off, and records a critical alert for a rewrite, a gap, or a fork.
 - **Read-only:** the dashboard reads MongoDB through a handle that cannot write, and accepts only
-  GET requests. Machines and agents can only upload: no upload route returns stored records, and
+  GET requests. The one write is an approval (`/auth/approve`): after a fresh GitHub sign-in it
+  asks GitHub for the person's role on that repository, marks the pending link or owner key
+  confirmed, and drops the GitHub token. Machines and agents can only upload: no upload route returns stored records, and
   the dashboard answers only signed-in people. A repository appears only after an upload proves its
   GitHub remote, so nobody can attach their uploads to someone else's repository.
 
@@ -201,6 +220,8 @@ Slack, Jira, WhatsApp, and GitHub are set with `crane integrate NAME` instead.
 | `CRANE_ALERTS_DRY_RUN` | `1` records alerts without delivering them | `0` |
 | `CRANE_INGEST_URL` | Foxx ingestion service; `off` keeps telemetry local | the release's service |
 | `CRANE_SYNC_SECONDS` | Periodic upload interval | `60` |
+| `CRANE_KEY_PROTECTION` | Signing keys at rest: `prompt` (a passphrase typed on the console for every signing command), `plain` | Windows Data Protection on Windows, plain (owner-only file) elsewhere |
+| `CRANE_STALE_SESSION_MINUTES` | `crane server`: minutes without hook activity before an unfinished session is stale | `120` |
 | `CRANE_MONGODB_URI`, `CRANE_MONGODB_DB`, `CRANE_MONGODB_EVENT_RETENTION_DAYS` | `crane server` only (never on developer machines) | required, `foxx`, `30` |
 | `CRANE_GITHUB_CLIENT_ID`, `CRANE_GITHUB_CLIENT_SECRET` | `crane server`: dashboard sign-in (GitHub OAuth app) | sign-in off |
 | `CRANE_PUBLIC_URL` | `crane server`: public address, when it cannot be detected | `RENDER_EXTERNAL_URL` or the request host |
@@ -211,8 +232,17 @@ Slack, Jira, WhatsApp, and GitHub are set with `crane integrate NAME` instead.
 ## Security notes
 
 Signing keys and runtime evidence live in `CRANE_HOME` (default `~/.crane-trust`), never in the
-repository. An agent with an unrestricted shell running as your user can still read that directory;
-run agents in a sandbox or separate account for a hard boundary. Network, CPU, memory, and token
+repository. On Windows signing keys are sealed with the Data Protection API (tied to your Windows
+login); `CRANE_KEY_PROTECTION=prompt` seals them under a passphrase typed on the console, which a
+process running as you (such as an agent's shell) cannot supply. Hooks never unseal a signing key.
+An agent with an unrestricted shell running as your user can still read the rest of that
+directory; run agents in a sandbox or separate account for a hard boundary.
+
+Before a shell command runs a script (`python x.py`, `node x.js`, `./x.sh`, `npm run NAME`, inline
+`-c`/`-e` code), Crane reads it: code that names Crane's files, changes files holding preserved
+selections, runs downloaded or decoded code, or is encoded PowerShell is denied; reading credential
+files while using the network, rewriting Git history, and deleting directory trees need approval.
+At stop, files changed outside every recorded tool call are reported as unattributed changes. Network, CPU, memory, and token
 usage are not observed by hooks and are reported as unsupported.
 
 ## Architecture

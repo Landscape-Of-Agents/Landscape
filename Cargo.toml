@@ -23,6 +23,9 @@ sha2 = "0.10"
 ed25519-dalek = "2"
 getrandom = "0.3"
 rpassword = "7"
+# Passphrase protection of signing keys (CRANE_KEY_PROTECTION=prompt)
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
 # HTTPS client of the Foxx ingestion service
 ureq = { version = "2.12", default-features = false, features = ["tls", "json"] }
 tiny_http = { version = "0.12", optional = true }

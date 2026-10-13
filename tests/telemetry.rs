@@ -445,3 +445,72 @@ fn commands_are_audited() {
         .fails(&["agent", "sync"])
         .contains("uploads are off"));
 }
+
+/** Files changed during a session outside every recorded tool call are reported at stop (once),
+ * while the files of recorded writes and the effects of recorded shell commands are not
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn unattributed_changes_are_reported() {
+    let fixture = Fixture::ready();
+    hook(&fixture, "SessionStart", json!({"session_id": "s-u"}));
+    let call = |id: &str, tool: &str, input: Value| json!({"session_id": "s-u", "tool_use_id": id, "cwd": fixture.work.to_string_lossy(), "tool_name": tool, "tool_input": input});
+    let write = call(
+        "w1",
+        "Write",
+        json!({"file_path": fixture.work.join("web/app.js").to_string_lossy(), "content": "export const x = 1;\n"}),
+    );
+    hook(&fixture, "pre-tool-use", write.clone());
+    fixture.write("web/app.js", "export const x = 1;\n");
+    hook(&fixture, "post-tool-use", write);
+    let shell = call("b1", "Bash", json!({"command": "python generate.py"}));
+    hook(&fixture, "pre-tool-use", shell.clone());
+    fixture.write("data/config.json", "{\"a\": 2}\n");
+    hook(&fixture, "post-tool-use", shell);
+    // Nothing recorded changes this one
+    fixture.write(
+        "src/lib.rs",
+        "pub fn add(a: i32, b: i32) -> i32 {\n    a - b\n}\n",
+    );
+    let stop = hook(&fixture, "Stop", json!({"session_id": "s-u"}));
+    assert!(stop.status.success(), "{}", text(&stop));
+    hook(&fixture, "Stop", json!({"session_id": "s-u"}));
+    let reported = events(&fixture)
+        .into_iter()
+        .filter(|event| event["event_type"] == "change.unattributed")
+        .collect::<Vec<_>>();
+    assert_eq!(reported.len(), 1, "reported once: {reported:?}");
+    let files = reported[0]["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|resource| resource["id"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(files, vec!["src/lib.rs".to_string()], "{reported:?}");
+    assert_eq!(reported[0]["severity"], "HIGH");
+}
+
+/** Linking a machine and registering the owner key are for humans, and need a GitHub remote so
+ * GitHub can decide who may approve
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn approvals_need_a_human_and_a_github_remote() {
+    let fixture = Fixture::ready();
+    let agent = fixture.as_agent(&["agent", "link"]);
+    assert!(
+        text(&agent).contains("cannot be executed by an AI agent"),
+        "{}",
+        text(&agent)
+    );
+    for command in [&["agent", "link"][..], &["admin", "register"][..]] {
+        let refused = fixture.fails(command);
+        assert!(refused.contains("GitHub 'origin' remote"), "{refused}");
+    }
+}

@@ -7,4 +7,5 @@ pub(crate) mod enforce;
 pub(crate) mod install;
 pub(crate) mod outcome;
 pub(crate) mod runtime;
+pub(crate) mod scripts;
 pub(crate) mod shell;

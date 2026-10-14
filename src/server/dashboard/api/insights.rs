@@ -78,6 +78,14 @@ struct Trace<'a> {
 }
 
 impl Trace<'_> {
+    fn tool_call_id(&self) -> Option<&str> {
+        let has_tool = self
+            .spans
+            .iter()
+            .any(|spec| !field(spec, "action", "action_tool").is_empty());
+        has_tool.then_some(self.id.as_str())
+    }
+
     /** Summarize the trace for tables and charts
      * Input
         - context: &Context - repository data
@@ -193,7 +201,7 @@ impl Trace<'_> {
             "severity": severity,
             "decision": decision,
             "tool": self.spans.iter().map(|spec| field(spec, "action", "action_tool")).find(|tool| !tool.is_empty()),
-            "tool_call_id": self.spans.iter().map(|spec| field(spec, "scope", "tool_call_id")).find(|id| !id.is_empty()),
+            "tool_call_id": self.tool_call_id(),
             "session": self.spans.iter().map(|spec| field(spec, "session", "session_id")).find(|session| !session.is_empty()),
             "member": context.member(first_span["member_key"].as_str().map(String::from).as_ref()),
             "flows": flows,
@@ -937,4 +945,29 @@ pub(super) fn semantics(context: &Context, query: &Query) -> Value {
             "id": spec["event_id"],
         })).collect::<Vec<_>>(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_trace_exposes_its_stable_group_key_as_call_id() {
+        let span = json!({"action": {"action_tool": "BASH"}});
+        let trace = Trace {
+            id: "call-1".into(),
+            spans: vec![&span],
+        };
+        assert_eq!(trace.tool_call_id(), Some("call-1"));
+    }
+
+    #[test]
+    fn non_tool_trace_has_no_tool_call_id() {
+        let span = json!({"action": {"action_type": "COMMAND"}});
+        let trace = Trace {
+            id: "command-1".into(),
+            spans: vec![&span],
+        };
+        assert_eq!(trace.tool_call_id(), None);
+    }
 }

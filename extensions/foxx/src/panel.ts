@@ -520,7 +520,7 @@ function formFor(action) {
     case "policy": return '<div class="section"><h4>Policy</h4>' + text("name", "Name", "", "e.g. payments") + text("file", "File in .crane/policies", "Without .crane. Empty uses the name.", "") + "</div>";
     case "move": return '<div class="section"><h4>Move</h4>' + choose("selection", "Selection", state.selections.map((r) => option(r.id, r.id + " · " + r.label + " (in " + r.policy + ")", draft.selection)), "") + choose("policy", "To policy", state.policies.map((p) => option(p, p, draft.policy)), "") + "</div>";
     case "checkpoint": return '<div class="section"><h4>Checkpoint</h4>' + text("name", "Name", "Records the current commit as trusted.", "") + "</div>";
-    case "hooks": return '<div class="section"><h4>Agent</h4>' + segmented("profile", "Install hooks for", [["claude", "Claude Code", "PreToolUse, PostToolUse, Stop…"], ["codex", "Codex", "Codex hook profile"]], "") + "</div>";
+    case "hooks": return '<div class="section"><h4>Agent</h4>' + segmented("profile", "Install hooks for", [["claude", "Claude Code", "PreToolUse, PostToolUse, Stop…"], ["codex", "Codex", "Codex hook profile"], ["copilot", "Copilot CLI", "GitHub Copilot CLI hooks"], ["gemini", "Gemini CLI", "Gemini CLI hooks"]], "") + "</div>";
     default: return "";
   }
 }
@@ -543,7 +543,7 @@ function plan(action) {
     case "policy": return ["Create policy <b>" + esc(draft.name || "…") + "</b> in <code>.crane/policies/" + esc(draft.file || (draft.name || "").toLowerCase() || "…") + ".crane</code>"];
     case "move": return ["Move <b>" + esc(draft.selection || "…") + "</b> to policy <b>" + esc(draft.policy || "…") + "</b>"];
     case "checkpoint": return ["Record the current commit as checkpoint <b>" + esc(draft.name || "…") + "</b>", "Later checks compare against it"];
-    case "hooks": return ["Install Crane's hooks for " + (draft.profile === "codex" ? "Codex" : "Claude Code"), "Every tool call is decided before it runs and verified after"];
+    case "hooks": return ["Install Crane's hooks for " + (draft.profile || "claude"), "Every tool call is decided before it runs and verified after"];
     default: return [];
   }
 }

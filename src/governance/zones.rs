@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read};
 
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +22,8 @@ use super::state::State;
 use super::workspace::Workspace;
 use super::{Finding, Severity};
 use crate::platform::{git, glob};
+use crate::selection::anchors::{Boundary, Marker, MarkerKind};
+use crate::selection::tracker::scan_repository;
 
 /** File holding the zones, flows, and context packs */
 pub(crate) const FILE: &str = "governance.yaml";
@@ -273,6 +275,19 @@ pub(crate) struct Resolution {
     pub(crate) uncovered: Vec<String>,
     pub(crate) analyzed: usize,
     pub(crate) unsupported: usize,
+    #[serde(default)]
+    pub(crate) source_scopes: Vec<SourceScope>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SourceScope {
+    pub(crate) path: String,
+    pub(crate) start_line: usize,
+    pub(crate) end_line: usize,
+    pub(crate) kind: String,
+    pub(crate) id: String,
+    pub(crate) ceiling: Ceiling,
+    pub(crate) criticality: Criticality,
 }
 
 /** Build a finding about an entity
@@ -285,6 +300,28 @@ pub(crate) struct Resolution {
 */
 fn finding(code: &str, severity: Severity, message: String) -> Finding {
     Finding::new(code, severity, message)
+}
+
+fn contains_marker_tag(path: &std::path::Path) -> Result<bool, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
+    let tag = crate::selection::anchors::ANY_MARKER_TAG.as_bytes();
+    let mut buffer = [0u8; 8192];
+    let mut carry = Vec::new();
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
+        if count == 0 {
+            return Ok(false);
+        }
+        let mut chunk = std::mem::take(&mut carry);
+        chunk.extend_from_slice(&buffer[..count]);
+        if chunk.windows(tag.len()).any(|window| window == tag) {
+            return Ok(true);
+        }
+        carry.extend_from_slice(&chunk[chunk.len().saturating_sub(tag.len() - 1)..]);
+    }
 }
 
 /** Resolve zones and flows against the repository and validate the configuration: unique and
@@ -545,6 +582,157 @@ pub(crate) fn resolve(
             graph: Some(graph),
         });
     }
+    for path in &files {
+        let full = workspace.root.join(path);
+        if fs::metadata(&full).is_ok_and(|metadata| metadata.len() > 8 * 1024 * 1024)
+            && contains_marker_tag(&full)?
+        {
+            resolution.findings.push(
+                finding(
+                    "source_marker_unresolved",
+                    Severity::High,
+                    format!("{path} exceeds the source marker scan limit; its markers cannot be validated or enforced"),
+                )
+                .with_path(path),
+            );
+        }
+    }
+    let source_scan = scan_repository(workspace)?;
+    let zone_ids = governance
+        .zones
+        .iter()
+        .map(|zone| zone.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let flow_ids = governance
+        .flows
+        .iter()
+        .map(|flow| flow.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut source_markers = BTreeMap::<(&str, &str), Vec<(&str, &Marker)>>::new();
+    for (path, marker) in &source_scan.markers {
+        if let Some(problem) = &marker.problem {
+            resolution.findings.push(
+                finding(
+                    "source_marker_malformed",
+                    Severity::High,
+                    format!("{path}:{}: {problem}", marker.line),
+                )
+                .with_path(path),
+            );
+            continue;
+        }
+        if !matches!(marker.kind, MarkerKind::Zone | MarkerKind::Flow) {
+            continue;
+        }
+        let kind = if marker.kind == MarkerKind::Zone {
+            "zone"
+        } else {
+            "flow"
+        };
+        let id = marker.id.as_deref().unwrap_or_default();
+        let known = if kind == "zone" {
+            zone_ids.contains(id)
+        } else {
+            flow_ids.contains(id)
+        };
+        if !known {
+            resolution.findings.push(
+                finding(
+                    "source_marker_unresolved",
+                    Severity::High,
+                    format!(
+                        "{path}:{}: {kind} marker {id} does not resolve to a governance {kind}",
+                        marker.line
+                    ),
+                )
+                .with_path(path),
+            );
+            continue;
+        }
+        source_markers
+            .entry((kind, id))
+            .or_default()
+            .push((path, marker));
+    }
+    for ((kind, id), markers) in source_markers {
+        let start_markers = markers
+            .iter()
+            .filter(|(_, marker)| marker.boundary == Some(Boundary::Start))
+            .collect::<Vec<_>>();
+        let end_markers = markers
+            .iter()
+            .filter(|(_, marker)| marker.boundary == Some(Boundary::End))
+            .collect::<Vec<_>>();
+        if start_markers.len() != 1
+            || end_markers.len() != 1
+            || start_markers[0].0 != end_markers.first().map(|entry| entry.0).unwrap_or_default()
+        {
+            resolution.findings.push(finding(
+                "source_marker_unresolved",
+                Severity::High,
+                format!(
+                    "{kind} {id} markers must have exactly one start and one end in the same file"
+                ),
+            ));
+            continue;
+        }
+        let (path, start) = start_markers[0];
+        let (end_path, end) = end_markers[0];
+        if end.line <= start.line + 1 {
+            resolution.findings.push(
+                finding(
+                    "source_marker_unresolved",
+                    Severity::High,
+                    format!("{path}: {kind} {id} markers must enclose at least one source line"),
+                )
+                .with_path(path),
+            );
+            continue;
+        }
+        let entity = resolution
+            .entities
+            .iter()
+            .find(|entity| entity.kind == kind && entity.id == id);
+        if let Some(entity) = entity.filter(|entity| entity.status == Lifecycle::Active) {
+            resolution.source_scopes.push(SourceScope {
+                path: path.to_string(),
+                start_line: start.line + 1,
+                end_line: end.line.saturating_sub(1),
+                kind: kind.to_string(),
+                id: id.to_string(),
+                ceiling: entity.ceiling,
+                criticality: entity.criticality,
+            });
+        }
+        let _ = end_path;
+    }
+    let mut scope_events = BTreeMap::<&str, Vec<(usize, bool, &str)>>::new();
+    for scope in &resolution.source_scopes {
+        scope_events.entry(&scope.path).or_default().extend([
+            (scope.start_line, true, scope.id.as_str()),
+            (scope.end_line, false, scope.id.as_str()),
+        ]);
+    }
+    for (path, events) in &mut scope_events {
+        events.sort_by_key(|(line, start, _)| (*line, !*start));
+        let mut stack: Vec<(&str, usize)> = Vec::new();
+        for (line, start, id) in events {
+            if *start {
+                stack.push((id, *line));
+            } else if stack.last().is_some_and(|(open, _)| open == id) {
+                stack.pop();
+            } else {
+                resolution.findings.push(
+                    finding(
+                        "source_marker_crossed",
+                        Severity::High,
+                        format!("{path}:{line}: source markers overlap or are crossed"),
+                    )
+                    .with_path(*path),
+                );
+            }
+        }
+    }
     let mut overlaps: BTreeMap<String, Vec<&Resolved>> = BTreeMap::new();
     for entity in resolution
         .entities
@@ -611,6 +799,48 @@ pub(crate) struct Limit {
     pub(crate) ceiling: Ceiling,
     pub(crate) criticality: Criticality,
     pub(crate) entities: Vec<String>,
+    #[serde(default)]
+    pub(crate) scopes: Vec<ScopedLimit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ScopedLimit {
+    pub(crate) start_line: usize,
+    pub(crate) end_line: usize,
+    pub(crate) ceiling: Ceiling,
+    pub(crate) criticality: Criticality,
+    pub(crate) entities: Vec<String>,
+}
+
+impl Limit {
+    pub(crate) fn for_lines(&self, changed: &[(usize, usize)]) -> Option<Self> {
+        let scopes = self
+            .scopes
+            .iter()
+            .filter(|scope| {
+                changed
+                    .iter()
+                    .any(|(start, end)| *start <= scope.end_line && *end >= scope.start_line)
+            })
+            .collect::<Vec<_>>();
+        if self.entities.is_empty() && scopes.is_empty() {
+            return None;
+        }
+        let mut result = Self {
+            ceiling: self.ceiling,
+            criticality: self.criticality,
+            entities: self.entities.clone(),
+            scopes: Vec::new(),
+        };
+        for scope in scopes {
+            result.ceiling = result.ceiling.min(scope.ceiling);
+            result.criticality = result.criticality.max(scope.criticality);
+            result.entities.extend(scope.entities.iter().cloned());
+        }
+        result.entities.sort();
+        result.entities.dedup();
+        Some(result)
+    }
 }
 
 /** Limits by repository-relative file */
@@ -645,7 +875,7 @@ pub(crate) fn cached_limits(
 ) -> Result<Limits, String> {
     let text = match fs::read_to_string(workspace.file(FILE)) {
         Ok(text) => text,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Limits::new()),
+        Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
         Err(error) => return Err(format!("could not read .crane/{FILE}: {error}")),
     };
     let mut material = format!("{text}\n{}\n", state.generation());
@@ -672,6 +902,13 @@ pub(crate) fn cached_limits(
     let governance = load(workspace)?;
     let policies = PolicySet::load(workspace)?;
     let resolution = resolve(workspace, &governance, state, &policies)?;
+    if let Some(problem) = resolution
+        .findings
+        .iter()
+        .find(|finding| finding.code.starts_with("source_marker_"))
+    {
+        return Err(problem.message.clone());
+    }
     let mut limits = Limits::new();
     for entity in resolution
         .entities
@@ -683,6 +920,7 @@ pub(crate) fn cached_limits(
                 ceiling: Ceiling::Autonomous,
                 criticality: Criticality::Routine,
                 entities: Vec::new(),
+                scopes: Vec::new(),
             });
             entry.ceiling = entry.ceiling.min(entity.ceiling);
             entry.criticality = entry.criticality.max(entity.criticality);
@@ -690,6 +928,21 @@ pub(crate) fn cached_limits(
                 .entities
                 .push(format!("{}:{}", entity.kind, entity.id));
         }
+    }
+    for scope in &resolution.source_scopes {
+        let entry = limits.entry(scope.path.clone()).or_insert(Limit {
+            ceiling: Ceiling::Autonomous,
+            criticality: Criticality::Routine,
+            entities: Vec::new(),
+            scopes: Vec::new(),
+        });
+        entry.scopes.push(ScopedLimit {
+            start_line: scope.start_line,
+            end_line: scope.end_line,
+            ceiling: scope.ceiling,
+            criticality: scope.criticality,
+            entities: vec![format!("{}:{}", scope.kind, scope.id)],
+        });
     }
     let cached = CachedLimits {
         fingerprint,

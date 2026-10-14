@@ -327,11 +327,44 @@ pub(super) fn label(context: &Context, by: Option<&str>, key: &str) -> String {
             member["short"].as_str().unwrap_or_default()
         );
     }
+    if matches!(by, Some("agent.agent_id" | "agent_id")) {
+        let provider = context
+            .snapshot
+            .sessions
+            .iter()
+            .find(|session| session.agent_id == key)
+            .map(|session| session.provider.to_ascii_lowercase())
+            .unwrap_or_default();
+        if provider.contains("claude") {
+            return "Claude".into();
+        }
+        if provider.contains("codex") {
+            return "Codex".into();
+        }
+        if provider.contains("copilot") {
+            return "Copilot".into();
+        }
+        if provider.contains("gemini") {
+            return "Gemini".into();
+        }
+        return format!("Agent {}", short_identity(key));
+    }
+    if matches!(by, Some("session.session_id" | "session")) {
+        return format!("Session {}", short_identity(key));
+    }
     if key.is_empty() {
         "NONE".into()
     } else {
         key.into()
     }
+}
+
+fn short_identity(id: &str) -> &str {
+    id.split_once('_')
+        .map(|(_, hash)| hash)
+        .unwrap_or(id)
+        .get(..4)
+        .unwrap_or_else(|| id.split_once('_').map(|(_, hash)| hash).unwrap_or(id))
 }
 
 /** The count of every value of every facet among the events that pass the query; each facet

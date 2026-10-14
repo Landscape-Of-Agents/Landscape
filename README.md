@@ -9,8 +9,10 @@ verifies what actually changed on disk, and records tamper-evident security evid
   `# @crane:selection:K7M2P9RX:start` that move with the code.
 - A signed registry (Ed25519, SHA-512) is the authority, so forged, copied, or edited markers and
   registry files are detected.
-- Claude Code and Codex hooks deny edits to protected code, `.crane/`, and the markers before they
-  run, and detect shell bypasses after they run.
+- Selections can be fully nested: partial overlaps and crossed markers fail closed, and each
+  nested selection keeps its own preserve/target behavior.
+- Claude Code, Codex, GitHub Copilot CLI, and Gemini CLI hooks deny edits to protected code,
+  `.crane/`, and the markers before they run, and detect shell bypasses after they run.
 - Hash-chained events, an autonomy-credit ledger, and metrics that say how each value is known.
 
 ## Install
@@ -65,7 +67,7 @@ comments); whitespace-only changes never satisfy a target.
 | Repository | `repo --ssh\|--https\|--gh-cli REMOTE [privileges]`, `repo status`, `repo --view`, `repo del`, `github`, `github days DAYS` |
 | Policies | `create policy NAME FILENAME`, `add policy NAME marker MARKER`, `policy NAME status` |
 | Runtime | `task current [ID]`, `task .`, `session current [ID]`, `session .` |
-| Agents | `agent install\|uninstall\|hooks --profile claude\|codex`, `agent link` |
+| Agents | `agent install\|uninstall\|hooks --profile claude\|codex\|copilot\|gemini`, `agent link` |
 | Admins | `admin list`, `admin register`, `admin add PUBLIC_KEY [name NAME]`, `admin del PUBLIC_KEY` |
 | Zones and flows | `governance sign` |
 | Integrations | `integrate jira\|slack\|whatsapp\|github` |
@@ -130,6 +132,36 @@ After editing the file, an admin runs `crane governance sign` (Foxx does this fo
 covered by the signed manifest, so an edit nobody signed fails `crane validate` and stops agent
 changes until it is signed or restored. Criticality adds credit cost per edit (sensitive +1,
 critical +3, restricted +5), and restricted code always needs human approval.
+
+Zones and flows can also name exact source blocks with comment markers. Use the file's ordinary
+comment syntax and the governance entity's ID:
+
+```python
+# @crane:zone:payment-core:start
+def capture(order):
+    ...
+# @crane:zone:payment-core:end
+```
+
+```javascript
+// @crane:flow:checkout:start
+function submit(order) {
+  ...
+}
+// @crane:flow:checkout:end
+```
+
+For block-comment languages, wrap the marker text in the language's normal block comment (for
+example `<!-- @crane:zone:payment-core:start -->`). Source markers must resolve to a declared zone
+or flow, occur once as a matching start/end pair, and be properly nested; malformed, crossed,
+duplicate, and orphan markers prevent governance validation/signing. An entity's source block
+enforces limits only when a proposed edit intersects the lines between its markers. Existing path,
+file, directory, symbol, selection, flow-entry, and flow-include selectors retain their existing
+file-level behavior. Marker edits themselves are always denied to agents.
+
+On every tool call that reaches an active zone, flow, or selection, Crane sends its attached
+guidance to the agent and displays it in the agent window. Selection notices include the relevant
+policy context files; zone and flow notices include their context packs.
 
 ## Integrations and alerts
 

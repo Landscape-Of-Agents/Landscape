@@ -38,7 +38,8 @@ Install: search for **Foxx** in the Extensions view, or
 3. Select lines in the editor and click the fox icon at the top right (or Ctrl+Alt+F). In the Foxx
    panel, search for what you want: preserve or target the lines, make them a zone or a flow (with
    criticality, autonomy ceiling, and context for the agent), or add context to an existing one.
-4. **Foxx: Install Agent Hooks** for Claude Code or Codex, then commit the `.crane` folder.
+4. **Foxx: Install Agent Hooks** for Claude Code, Codex, GitHub Copilot CLI, or Gemini CLI, then
+   commit the `.crane` folder.
 
 ## Commands
 
@@ -49,7 +50,7 @@ Install: search for **Foxx** in the Extensions view, or
 | Foxx: Create Policy | `crane create policy NAME FILE` |
 | Foxx: Create Checkpoint | `crane checkpoint NAME`: record the current commit as trusted |
 | Foxx: Move Selection to Policy | `crane add policy NAME marker ID` |
-| Foxx: Install Agent Hooks | `crane agent install --profile claude\|codex` |
+| Foxx: Install Agent Hooks | `crane agent install --profile claude\|codex\|copilot\|gemini` |
 | Foxx: Validate Governance | `crane validate --json`; findings become diagnostics |
 | Foxx: Test Policies | `crane test . --json`; failing and unresolved commands become diagnostics and CodeLens outcomes |
 | Foxx: Policy Status | `crane policy NAME status` in the Foxx output |

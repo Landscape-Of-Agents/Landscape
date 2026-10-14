@@ -64,8 +64,10 @@ impl AgentAdapter for CodexAdapter {
                 (HookEvent::Stop, false),
                 (HookEvent::SessionEnd, false),
             ],
+            matcher: "*",
             deny: &[],
             timeout: 120,
+            format: HookConfigFormat::Grouped,
         })
     }
 
@@ -92,11 +94,38 @@ impl AgentAdapter for CodexAdapter {
     fn respond_action(&self, verdict: &Verdict) -> Result<(), String> {
         let reasons = verdict.reasons.join("; ");
         match verdict.decision {
-            Decision::Allow => Ok(()),
+            Decision::Allow => {
+                if verdict.context.is_some() || verdict.system_message.is_some() {
+                    let mut output = json!({});
+                    if let Some(context) = &verdict.context {
+                        output["hookSpecificOutput"] = json!({
+                            "hookEventName": "PreToolUse",
+                            "additionalContext": context,
+                        });
+                    }
+                    if let Some(message) = &verdict.system_message {
+                        output["systemMessage"] = json!(message);
+                    }
+                    println!("{output}");
+                }
+                Ok(())
+            }
             Decision::RequireApproval => Err(block(format!(
-                "Crane requires human approval for this tool call: {reasons}"
+                "Crane requires human approval for this tool call: {reasons}{}",
+                verdict
+                    .system_message
+                    .as_deref()
+                    .map(|message| format!("\n{message}"))
+                    .unwrap_or_default()
             ))),
-            _ => Err(block(format!("Crane denied this tool call: {reasons}"))),
+            _ => Err(block(format!(
+                "Crane denied this tool call: {reasons}{}",
+                verdict
+                    .system_message
+                    .as_deref()
+                    .map(|message| format!("\n{message}"))
+                    .unwrap_or_default()
+            ))),
         }
     }
 
@@ -108,15 +137,29 @@ impl AgentAdapter for CodexAdapter {
         - Result<(), String>
     */
     fn respond_permission(&self, verdict: &Verdict) -> Result<(), String> {
-        if !matches!(
+        if matches!(
             verdict.decision,
             Decision::Allow | Decision::RequireApproval
         ) {
+            if verdict.context.is_some() || verdict.system_message.is_some() {
+                let mut output = json!({});
+                if let Some(context) = &verdict.context {
+                    output["hookSpecificOutput"] = json!({
+                        "hookEventName": "PermissionRequest",
+                        "additionalContext": context,
+                    });
+                }
+                if let Some(message) = &verdict.system_message {
+                    output["systemMessage"] = json!(message);
+                }
+                println!("{output}");
+            }
+        } else {
             println!(
                 "{}",
                 json!({"hookSpecificOutput": {
                     "hookEventName": "PermissionRequest",
-                    "decision": {"behavior": "deny", "message": format!("Crane denied this tool call: {}", verdict.reasons.join("; "))},
+                    "decision": {"behavior": "deny", "message": format!("Crane denied this tool call: {}{}", verdict.reasons.join("; "), verdict.system_message.as_deref().map(|message| format!("\n{message}")).unwrap_or_default())},
                 }})
             );
         }

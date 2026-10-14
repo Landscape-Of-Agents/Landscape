@@ -16,7 +16,7 @@ use super::state::{integrity, State};
 use super::workspace::Workspace;
 use super::{Finding, Severity};
 use crate::platform::git;
-use crate::selection::anchors::{language_for, CommentSyntax};
+use crate::selection::anchors::{language_for, lines, Boundary, CommentSyntax, MarkerKind};
 use crate::selection::registry::{content_digest, Operation, Record, Span};
 use crate::selection::tracker::{
     candidates, normalize_content, resolve, scan_findings, scan_paths, scan_repository, Resolution,
@@ -233,6 +233,108 @@ pub(crate) fn baseline(workspace: &Workspace, record: &Record) -> Result<String,
 */
 fn syntax_of(path: &str) -> CommentSyntax {
     language_for(path).map_or(CommentSyntax::Line("#"), |language| language.syntax)
+}
+
+fn unchanged_except_nested_targets(
+    workspace: &Workspace,
+    parent: &Record,
+    location: &crate::selection::tracker::Location,
+    state: &State,
+    scan: &Scan,
+) -> bool {
+    let Some(current_text) = scan.texts.get(&location.span.path) else {
+        return false;
+    };
+    let mut nested = Vec::new();
+    for child in state
+        .registry
+        .selections
+        .iter()
+        .filter(|child| child.operation == Operation::Target && child.id != parent.id)
+    {
+        let starts = scan
+            .markers
+            .iter()
+            .filter(|(path, marker)| {
+                path == &location.span.path
+                    && marker.kind == MarkerKind::Selection
+                    && marker.id.as_deref() == Some(child.id.as_str())
+                    && marker.boundary == Some(Boundary::Start)
+                    && marker.problem.is_none()
+            })
+            .collect::<Vec<_>>();
+        let ends = scan
+            .markers
+            .iter()
+            .filter(|(path, marker)| {
+                path == &location.span.path
+                    && marker.kind == MarkerKind::Selection
+                    && marker.id.as_deref() == Some(child.id.as_str())
+                    && marker.boundary == Some(Boundary::End)
+                    && marker.problem.is_none()
+            })
+            .collect::<Vec<_>>();
+        if let ([start], [end]) = (starts.as_slice(), ends.as_slice()) {
+            if start.1.line > location.start_marker_line && end.1.line < location.end_marker_line {
+                if child.origin.commit != parent.origin.commit
+                    || child.origin.span.path != parent.origin.span.path
+                    || child.origin.span.start_line <= parent.origin.span.start_line
+                    || child.origin.span.end_line >= parent.origin.span.end_line
+                {
+                    return false;
+                }
+                nested.push((
+                    start.1.line,
+                    end.1.line,
+                    child.origin.span.start_line,
+                    child.origin.span.end_line,
+                ));
+            }
+        }
+    }
+    if nested.is_empty() {
+        return false;
+    }
+    let Ok(baseline_text) = baseline(workspace, parent) else {
+        return false;
+    };
+    let baseline_lines = baseline_text.lines().collect::<Vec<_>>();
+    let current_lines = lines(current_text);
+    let marker_lines = scan
+        .markers
+        .iter()
+        .filter(|(path, marker)| {
+            path == &location.span.path && marker.kind == MarkerKind::Selection
+        })
+        .map(|(_, marker)| marker.line)
+        .collect::<BTreeSet<_>>();
+    let mut baseline_projected = String::new();
+    for (index, line) in baseline_lines.iter().enumerate() {
+        let absolute = parent.origin.span.start_line + index;
+        if nested
+            .iter()
+            .any(|(_, _, start, end)| absolute >= *start && absolute <= *end)
+        {
+            continue;
+        }
+        baseline_projected.push_str(line);
+        baseline_projected.push('\n');
+    }
+    let mut current_projected = String::new();
+    for line in current_lines.iter().filter(|line| {
+        line.number > location.start_marker_line && line.number < location.end_marker_line
+    }) {
+        if marker_lines.contains(&line.number)
+            || nested
+                .iter()
+                .any(|(start, end, _, _)| line.number > *start && line.number < *end)
+        {
+            continue;
+        }
+        current_projected.push_str(line.text);
+        current_projected.push('\n');
+    }
+    normalize_content(&baseline_projected) == normalize_content(&current_projected)
 }
 
 /** Check the consistency of policies, defaults, and registry: syntax errors, policy files outside
@@ -454,6 +556,8 @@ fn judge_command(
     resolution: &Resolution,
     change_type: Option<ChangeType>,
     targets_pending: bool,
+    state: &State,
+    scan: &Scan,
 ) -> (Outcome, String, Option<Summary>) {
     let location = match resolution {
         Resolution::Unresolved { reason, .. } => {
@@ -472,6 +576,13 @@ fn judge_command(
         Operation::Preserve => {
             if current == record.origin.content_digest {
                 return (Outcome::Pass, format!("preserved ({where_})"), None);
+            }
+            if unchanged_except_nested_targets(workspace, record, location, state, scan) {
+                return (
+                    Outcome::Pass,
+                    format!("preserved outside nested target selections ({where_})"),
+                    None,
+                );
             }
             let summary = baseline
                 .as_ref()
@@ -641,6 +752,8 @@ pub(crate) fn evaluate(
                         resolution,
                         statement.change_type,
                         options.targets_pending,
+                        &state,
+                        &scanned,
                     );
                     let location = match resolution {
                         Resolution::Resolved(location) => Some(location.span.clone()),

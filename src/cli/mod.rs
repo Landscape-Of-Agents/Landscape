@@ -132,9 +132,9 @@ Admins
 
 Agent
   crane agent link              (link this machine's upload key to your GitHub account)
-  crane agent install --profile claude|codex
-  crane agent uninstall --profile claude|codex
-  crane agent hooks --profile claude|codex
+  crane agent install --profile claude|codex|copilot|gemini
+  crane agent uninstall --profile claude|codex|copilot|gemini
+  crane agent hooks --profile claude|codex|copilot|gemini
 
 Integrations
   crane integrate jira|whatsapp|slack|github

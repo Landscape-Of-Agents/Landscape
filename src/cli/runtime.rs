@@ -29,7 +29,7 @@ pub(crate) fn task(args: &[String]) -> Result<(), String> {
     let snapshot = Snapshot::load(&workspace)?;
     match args {
         [word] if word == "current" => {
-            let session = snapshot.sessions.first().ok_or("no agent session has been observed yet; install hooks with 'crane agent install --profile claude|codex'")?;
+            let session = snapshot.sessions.first().ok_or("no agent session has been observed yet; install hooks with 'crane agent install --profile claude|codex|copilot|gemini'")?;
             let task = session
                 .current_task
                 .as_ref()
@@ -87,7 +87,7 @@ pub(crate) fn session(args: &[String]) -> Result<(), String> {
     let snapshot = Snapshot::load(&workspace)?;
     match args {
         [word] if word == "current" => {
-            let session = snapshot.sessions.first().ok_or("no agent session has been observed yet; install hooks with 'crane agent install --profile claude|codex'")?;
+            let session = snapshot.sessions.first().ok_or("no agent session has been observed yet; install hooks with 'crane agent install --profile claude|codex|copilot|gemini'")?;
             print(&session_view(&snapshot, session));
             Ok(())
         }

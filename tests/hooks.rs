@@ -1,5 +1,5 @@
 // Runtime enforcement through the agent hooks: hook installation, pre-tool authorization of
-// Claude Code and Codex tool calls, post-tool verification of actual effects, bypass detection,
+// Claude Code, Codex, Copilot, and Gemini tool calls, post-tool verification of actual effects, bypass detection,
 // quarantine, stop reconciliation, credit exhaustion, and fail-closed behavior.
 
 mod common;
@@ -103,6 +103,61 @@ fn install_validate_uninstall() {
     assert!(status.to_string().contains("Codex"), "{status}");
 }
 
+#[test]
+fn copilot_and_gemini_profiles_install_validate_and_uninstall() {
+    let fixture = Fixture::ready();
+    fixture.write(
+        ".github/hooks/crane.json",
+        r#"{"version":1,"hooks":{"preToolUse":[{"type":"command","bash":"echo existing","powershell":"Write-Output existing"}]}}"#,
+    );
+    fixture.ok(&["agent", "install", "--profile", "copilot"]);
+    let copilot: Value = serde_json::from_str(&fixture.read(".github/hooks/crane.json")).unwrap();
+    assert_eq!(copilot["version"], 1);
+    assert_eq!(copilot["hooks"]["preToolUse"][0]["bash"], "echo existing");
+    assert_eq!(
+        copilot["hooks"]["preToolUse"][1]["bash"],
+        "crane agent hook --event pre-tool-use --profile copilot"
+    );
+    assert_eq!(
+        copilot["hooks"]["preToolUse"][1]["powershell"],
+        "crane agent hook --event pre-tool-use --profile copilot"
+    );
+    assert!(fixture
+        .ok(&["agent", "hooks", "--profile", "copilot"])
+        .contains("valid"));
+    assert!(fixture
+        .ok(&["agent", "install", "--profile", "copilot"])
+        .contains("already installed"));
+    fixture.ok(&["agent", "uninstall", "--profile", "copilot"]);
+    let copilot: Value = serde_json::from_str(&fixture.read(".github/hooks/crane.json")).unwrap();
+    assert_eq!(copilot["hooks"]["preToolUse"].as_array().unwrap().len(), 1);
+    assert_eq!(copilot["hooks"]["preToolUse"][0]["bash"], "echo existing");
+
+    fixture.write(
+        ".gemini/settings.json",
+        r#"{"model":{"name":"gemini-2.5-pro"}}"#,
+    );
+    fixture.ok(&["agent", "install", "--profile", "gemini"]);
+    let gemini: Value = serde_json::from_str(&fixture.read(".gemini/settings.json")).unwrap();
+    assert_eq!(gemini["model"]["name"], "gemini-2.5-pro");
+    assert_eq!(gemini["hooks"]["BeforeTool"][0]["matcher"], ".*");
+    assert_eq!(
+        gemini["hooks"]["BeforeTool"][0]["hooks"][0]["command"],
+        "crane agent hook --event pre-tool-use --profile gemini"
+    );
+    assert_eq!(
+        gemini["hooks"]["BeforeTool"][0]["hooks"][0]["timeout"],
+        120_000
+    );
+    assert!(fixture
+        .ok(&["agent", "hooks", "--profile", "gemini"])
+        .contains("valid"));
+    fixture.ok(&["agent", "uninstall", "--profile", "gemini"]);
+    let gemini: Value = serde_json::from_str(&fixture.read(".gemini/settings.json")).unwrap();
+    assert!(gemini.get("hooks").is_none());
+    assert_eq!(gemini["model"]["name"], "gemini-2.5-pro");
+}
+
 /** Session start supplies policies, selections, and policy context to the agent
  * Input
     - None
@@ -121,6 +176,40 @@ fn session_start_supplies_context() {
     assert!(text.contains(&format!("target {change}")), "{text}");
     assert!(text.contains("Use the payment API carefully."), "{text}");
     assert!(text.contains("100 credits available"), "{text}");
+}
+
+#[test]
+fn selection_context_is_shown_when_a_selection_is_touched() {
+    let (fixture, keep, _) = governed();
+    fixture.ok(&["add", "policy-context", "file", "docs/guide.md"]);
+    start(&fixture, "s-selection-context");
+    let output = fixture.hook(
+        "claude",
+        "pre-tool-use",
+        &claude(
+            &fixture,
+            "s-selection-context",
+            "read-selection",
+            "Read",
+            json!({"file_path": fixture.work.join("app/payments.py").to_string_lossy()}),
+        ),
+    );
+    assert!(output.status.success(), "{}", text(&output));
+    let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let context = answer["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(context.contains(&format!("Selection {keep}")), "{context}");
+    assert!(
+        context.contains("Use the payment API carefully."),
+        "{context}"
+    );
+    assert!(
+        answer["systemMessage"]
+            .as_str()
+            .is_some_and(|message| message.contains(&format!("selection:{keep}"))),
+        "{answer}"
+    );
 }
 
 /** Pre-tool decisions for Claude Code edits, writes, shells, and reads
@@ -202,6 +291,7 @@ fn pre_tool_decisions() {
             text(&output)
         );
     }
+
     let key = fixture
         .home
         .join("keys")
@@ -238,6 +328,61 @@ fn pre_tool_decisions() {
     }
     let delete = fixture.hook("generic", "pre-tool-use", &json!({"session_id": "g1", "tool_call_id": "g", "operation": "write", "path": file, "delete": true}));
     assert_eq!(delete.status.code(), Some(2), "{}", text(&delete));
+}
+
+#[test]
+fn nested_target_is_an_editable_exception_and_nested_preserve_stays_frozen() {
+    let fixture = Fixture::ready();
+    fixture.protect(&["app/payments.py", "start-line", "1", "end-line", "4"]);
+    fixture.target(&["app/payments.py", "start-line", "3", "end-line", "3"]);
+    start(&fixture, "nested-target");
+    let edit = fixture.hook(
+        "claude",
+        "pre-tool-use",
+        &claude(
+            &fixture,
+            "nested-target",
+            "nested-target-edit",
+            "Edit",
+            json!({
+                "file_path": fixture.work.join("app/payments.py").to_string_lossy(),
+                "old_string": "fee = amount * 0.03",
+                "new_string": "fee = amount * 0.04"
+            }),
+        ),
+    );
+    assert!(edit.status.success(), "{}", text(&edit));
+    let changed = fixture
+        .read("app/payments.py")
+        .replace("fee = amount * 0.03", "fee = amount * 0.04");
+    fixture.write("app/payments.py", &changed);
+    assert!(fixture.ok(&["test", "."]).contains("Crane test: PASS"));
+
+    let frozen = Fixture::ready();
+    frozen.target(&["app/payments.py", "start-line", "1", "end-line", "4"]);
+    let preserve = frozen.protect(&["app/payments.py", "start-line", "3", "end-line", "3"]);
+    start(&frozen, "nested-preserve");
+    let edit = frozen.hook(
+        "claude",
+        "pre-tool-use",
+        &claude(
+            &frozen,
+            "nested-preserve",
+            "nested-preserve-edit",
+            "Edit",
+            json!({
+                "file_path": frozen.work.join("app/payments.py").to_string_lossy(),
+                "old_string": "fee = amount * 0.03",
+                "new_string": "fee = amount * 0.04"
+            }),
+        ),
+    );
+    assert_eq!(edit.status.code(), Some(2), "{}", text(&edit));
+    assert!(
+        text(&edit).contains(&format!("preserved selection {preserve}")),
+        "{}",
+        text(&edit)
+    );
 }
 
 /** Malformed or empty payloads and uninitialized repositories fail closed

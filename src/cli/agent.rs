@@ -1,5 +1,5 @@
-// Agent commands: install, uninstall, and validate the hooks of Claude Code and Codex, and the
-// internal 'agent hook' entry point the installed hooks run.
+// Agent commands: install, uninstall, and validate supported provider hooks, and the internal
+// 'agent hook' entry point the installed hooks run.
 
 use super::args::Args;
 use crate::hooks::adapter::{AgentKind, HookEvent};
@@ -12,9 +12,9 @@ use crate::hooks::{install, runtime};
     - Result<(), String>
 */
 pub(crate) fn run(args: &[String]) -> Result<(), String> {
-    let (command, rest) = args
-        .split_first()
-        .ok_or("usage: crane agent install|uninstall|hooks --profile claude|codex")?;
+    let (command, rest) = args.split_first().ok_or(
+        "usage: crane agent install|uninstall|hooks --profile claude|codex|copilot|gemini",
+    )?;
     match command.as_str() {
         "install" => install_hooks(&profile(rest)?),
         "uninstall" => uninstall_hooks(&profile(rest)?),
@@ -39,15 +39,15 @@ fn profile(args: &[String]) -> Result<AgentKind, String> {
     let parsed = Args::parse(args, &["profile"], &[])?;
     parsed.expect_positional(
         0,
-        "crane agent install|uninstall|hooks --profile claude|codex",
+        "crane agent install|uninstall|hooks --profile claude|codex|copilot|gemini",
     )?;
     let kind = AgentKind::parse(
         &parsed
             .value("profile")
-            .ok_or("--profile claude|codex is required")?,
+            .ok_or("--profile claude|codex|copilot|gemini is required")?,
     )?;
     if kind == AgentKind::Generic {
-        return Err("hooks are installed for --profile claude or --profile codex".into());
+        return Err("hooks are installed for --profile claude, codex, copilot, or gemini".into());
     }
     Ok(kind)
 }
@@ -72,6 +72,9 @@ fn install_hooks(kind: &AgentKind) -> Result<(), String> {
     println!("Every pre- and post-tool hook now passes through Crane; check them with 'crane agent hooks --profile {}'.", kind.name());
     if *kind == AgentKind::Codex {
         println!("Codex runs project hooks only after they are trusted: open Codex in this repository and review them with /hooks.");
+    }
+    if *kind == AgentKind::Gemini {
+        println!("Gemini CLI may ask you to trust the project hooks before running them; review the displayed hook commands.");
     }
     Ok(())
 }

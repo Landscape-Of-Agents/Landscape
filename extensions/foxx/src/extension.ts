@@ -718,18 +718,30 @@ async function setUp(): Promise<void> {
     fresh ? "Foxx: Crane is set up (owner key created, baseline checkpoint recorded). Commit the .crane folder, then install the agent hooks:" : "Foxx: this machine now verifies the repository's rules. Install the agent hooks:",
     "Claude Code",
     "Codex",
+    "Copilot CLI",
+    "Gemini CLI",
   );
-  if (hooks) await installHooks(hooks === "Codex" ? "codex" : "claude");
+  if (hooks) {
+    const profiles: Record<string, "claude" | "codex" | "copilot" | "gemini"> = {
+      "Claude Code": "claude",
+      Codex: "codex",
+      "Copilot CLI": "copilot",
+      "Gemini CLI": "gemini",
+    };
+    const profile = profiles[hooks];
+    if (profile) await installHooks(profile);
+  }
 }
 
 /**
  * Install the Crane hooks for an agent.
  * @param kind agent profile, or undefined to ask
  */
-async function installHooks(kind?: "claude" | "codex"): Promise<void> {
-  const profile = kind ?? (await pick(["claude", "codex"] as const, "Which agent?"));
+async function installHooks(kind?: "claude" | "codex" | "copilot" | "gemini"): Promise<void> {
+  const profile = kind ?? (await pick(["claude", "codex", "copilot", "gemini"] as const, "Which agent?"));
   if (!profile) return;
-  await change(["agent", "install", "--profile", profile], `hooks installed for ${profile === "claude" ? "Claude Code" : "Codex"}; Crane now checks every tool call.`);
+  const name = { claude: "Claude Code", codex: "Codex", copilot: "GitHub Copilot CLI", gemini: "Gemini CLI" }[profile];
+  await change(["agent", "install", "--profile", profile], `hooks installed for ${name}; Crane now checks every tool call.`);
 }
 
 /** Record HEAD as a trusted checkpoint. */

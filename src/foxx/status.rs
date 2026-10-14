@@ -139,9 +139,14 @@ fn compliance_inputs(workspace: &Workspace) -> Inputs {
             .iter()
             .filter(|rule| rule.enabled)
             .count(),
-        hooks_valid: [AgentKind::Claude, AgentKind::Codex]
-            .into_iter()
-            .any(|kind| install::validate(kind).is_ok_and(|report| report["valid"] == true)),
+        hooks_valid: [
+            AgentKind::Claude,
+            AgentKind::Codex,
+            AgentKind::Copilot,
+            AgentKind::Gemini,
+        ]
+        .into_iter()
+        .any(|kind| install::validate(kind).is_ok_and(|report| report["valid"] == true)),
         ..Inputs::default()
     };
     if let Ok((report, state)) = evaluate(

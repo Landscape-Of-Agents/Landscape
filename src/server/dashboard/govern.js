@@ -127,6 +127,12 @@ async function credits(main) {
     { label: "Last seen", get: (row) => row.last_seen_at, render: (row) => h("span", { class: "mono" }, dt(row.last_seen_at)) },
     { label: "", render: (row) => h("button", { class: "btn primary small", type: "button", onclick: () => grantForm(row) }, "Grant credits") },
   ], data.sessions, { sort: 3, dir: -1, name: "foxx-credit-balances", empty: "No sessions yet." })); })));
+  main.append(zone("consumption", "Actual consumption", "Net credits consumed after calls ran, from the autonomy ledger. Credits are fungible within a session, so a specific spend cannot be assigned to one dashboard grant.",
+    panel("Consumed credits by session", { span: 12, info: { title: "Consumed credits by session", text: "Ledger-backed consumption (CONSUME minus REFUND) for each session. A dashboard grant becomes spendable only after the agent machine applies it; because credits share one session balance, the ledger does not claim which individual grant funded a later call." } }, async (body, big, ctx) => {
+      const items = data.sessions.map((row) => ({ value: row.session, count: row.balance.consumed })).filter((row) => row.count > 0).sort((a, b) => b.count - a.count);
+      ctx.record("items", items, { unit: "credits", source: "autonomy ledger" });
+      put(body, charts.toplist(items, { unit: "credits", format: fmt, onPick: (id) => go("#/sessions/" + encodeURIComponent(id)), byValue: true, empty: "No session has consumed credits yet." }));
+    })));
   main.append(zone("grants", "Grants", "Every grant approved on the dashboard and what the machine did with it.", panel("Grants", { span: 12, flush: true, scope: { kind: "state", what: "Credit grants" } }, async (body, big, ctx) => { ctx.record("rows", data.grants); put(body, dataTable([
     { label: "Approved", get: (row) => row.approved_at, render: (row) => h("span", { class: "mono" }, dt(row.approved_at)), csv: (row) => dt(row.approved_at) },
     { label: "By", get: (row) => "@" + row.approved_by, filter: true }, { label: "Session", get: (row) => row.session }, { label: "Credits", get: (row) => row.amount, num: true },

@@ -62,6 +62,7 @@ impl AgentAdapter for ClaudeAdapter {
                 (HookEvent::Stop, false),
                 (HookEvent::SessionEnd, false),
             ],
+            matcher: "*",
             deny: &[
                 "Edit(./.crane/**)",
                 "Write(./.crane/**)",
@@ -69,6 +70,7 @@ impl AgentAdapter for ClaudeAdapter {
                 "Edit(./.claude/settings.local.json)",
             ],
             timeout: 120,
+            format: HookConfigFormat::Grouped,
         })
     }
 
@@ -85,12 +87,18 @@ impl AgentAdapter for ClaudeAdapter {
         let reasons = verdict.reasons.join("; ");
         match verdict.decision {
             Decision::Allow => {
-                // Allowed calls stay silent unless there is zone or flow guidance to give
-                if let Some(context) = &verdict.context {
-                    println!(
-                        "{}",
-                        json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": context}})
-                    );
+                if verdict.context.is_some() || verdict.system_message.is_some() {
+                    let mut output = json!({});
+                    if let Some(context) = &verdict.context {
+                        output["hookSpecificOutput"] = json!({
+                            "hookEventName": "PreToolUse",
+                            "additionalContext": context,
+                        });
+                    }
+                    if let Some(message) = &verdict.system_message {
+                        output["systemMessage"] = json!(message);
+                    }
+                    println!("{output}");
                 }
                 Ok(())
             }
@@ -103,10 +111,20 @@ impl AgentAdapter for ClaudeAdapter {
                 if let Some(context) = &verdict.context {
                     output["hookSpecificOutput"]["additionalContext"] = json!(context);
                 }
+                if let Some(message) = &verdict.system_message {
+                    output["systemMessage"] = json!(message);
+                }
                 println!("{output}");
                 Ok(())
             }
-            _ => Err(block(format!("Crane denied this tool call: {reasons}"))),
+            _ => Err(block(format!(
+                "Crane denied this tool call: {reasons}{}",
+                verdict
+                    .system_message
+                    .as_deref()
+                    .map(|message| format!("\n{message}"))
+                    .unwrap_or_default()
+            ))),
         }
     }
 

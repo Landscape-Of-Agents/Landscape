@@ -9,12 +9,14 @@ use crate::hooks::action::Operation;
 use crate::hooks::adapter::{Feedback, HookEvent, Verdict};
 use crate::hooks::enforce::{repository_path, Decided, Guard};
 use crate::platform::now_millis;
+use crate::selection::registry::{Record, Status};
 use crate::telemetry::events::Measurement;
 use crate::telemetry::identity::SessionRecord;
 use crate::telemetry::ledger::Kind;
 use crate::telemetry::model::{
     Assessment, Decision, Domain, Enforcement, Execution, Safety, Severity, Telemetry,
 };
+use crate::trust::crypto::sha512_hex;
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -62,11 +64,27 @@ impl Hook {
         };
         let mut decided: Decided = guard.decide(&action);
         // Guidance of the active zones and flows covering the files this call reads or writes
-        let touched = action
+        let mut path_candidates = action
             .files
             .iter()
             .map(|change| change.path.as_str())
             .chain(action.reads.iter().map(String::as_str))
+            .collect::<Vec<_>>();
+        let command_paths = action
+            .command
+            .as_deref()
+            .map(crate::hooks::shell::words)
+            .unwrap_or_default();
+        path_candidates.extend(command_paths.iter().filter_map(|candidate| {
+            let relative = guard.relative(candidate)?;
+            self.workspace
+                .root
+                .join(&relative)
+                .is_file()
+                .then_some(candidate.as_str())
+        }));
+        let touched = path_candidates
+            .into_iter()
             .filter_map(|raw| guard.relative(raw))
             .collect::<std::collections::BTreeSet<_>>();
         let entities = touched
@@ -74,16 +92,51 @@ impl Hook {
             .filter_map(|file| limits.get(file))
             .flat_map(|limit| limit.entities.iter().cloned())
             .collect::<std::collections::BTreeSet<_>>();
-        let guidance = if entities.is_empty() {
+        let governance = if entities.is_empty() {
             None
         } else {
-            crate::governance::zones::load(&self.workspace)
-                .ok()
-                .map(|governance| {
-                    crate::governance::zones::guidance(&self.workspace, &governance, &entities)
-                })
-                .filter(|text| !text.is_empty())
+            Some(crate::governance::zones::load(&self.workspace)?)
         };
+        let zone_guidance = governance
+            .as_ref()
+            .map(|governance| {
+                crate::governance::zones::guidance(&self.workspace, governance, &entities)
+            })
+            .filter(|text| !text.is_empty());
+        let mut selection_guidance = Vec::new();
+        let mut context_candidates = Vec::new();
+        for record in self.state.registry.selections.iter().filter(|record| {
+            record.status == Status::Active
+                && (touched.contains(&record.current.span.path)
+                    || decided.selections.contains(&record.id))
+        }) {
+            let text = self.selection_guidance(record)?;
+            let entity = format!("selection:{}", record.id);
+            context_candidates.push((entity, text.clone()));
+            selection_guidance.push(text);
+        }
+        let guidance = [
+            zone_guidance,
+            (!selection_guidance.is_empty()).then(|| {
+                format!(
+                    "Crane selection guidance (guidance only, never authorization):\n{}",
+                    selection_guidance.join("\n")
+                )
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        let guidance = (!guidance.is_empty()).then(|| guidance.join("\n"));
+        if let Some(governance) = &governance {
+            for entity in &entities {
+                let single = std::collections::BTreeSet::from([entity.clone()]);
+                let text = crate::governance::zones::guidance(&self.workspace, governance, &single);
+                if !text.is_empty() {
+                    context_candidates.push((entity.clone(), text));
+                }
+            }
+        }
         let mut reserved = 0;
         if decided.verdict.decision == Decision::Allow && decided.verdict.cost > 0 {
             reserved = self.ledger(
@@ -334,8 +387,14 @@ impl Hook {
                 self.emit(session, event, Some("low_credits"))?;
             }
         }
+        let notices = context_candidates
+            .into_iter()
+            .map(|(entity, text)| format!("Crane context · {entity}:\n{text}"))
+            .collect::<Vec<_>>();
+        let system_message = (!notices.is_empty()).then(|| notices.join("\n"));
         let verdict = Verdict {
             context: guidance,
+            system_message,
             ..decided.verdict
         };
         if self.event == HookEvent::PermissionRequest {
@@ -343,6 +402,58 @@ impl Hook {
         } else {
             self.adapter.respond_action(&verdict)
         }
+    }
+
+    fn selection_guidance(&self, record: &Record) -> Result<String, String> {
+        let requirement = match record.operation {
+            crate::selection::registry::Operation::Preserve => "must remain unchanged".to_string(),
+            crate::selection::registry::Operation::Target => record
+                .change_type
+                .as_deref()
+                .map(|change| format!("must be changed meaningfully ({change})"))
+                .unwrap_or_else(|| "must be changed meaningfully".into()),
+        };
+        let mut text = format!(
+            "Selection {}{} ({}) in policy {} at {} lines {}-{}.",
+            record.id,
+            record
+                .name
+                .as_deref()
+                .map(|name| format!(" '{name}'"))
+                .unwrap_or_default(),
+            requirement,
+            record.policy,
+            record.current.span.path,
+            record.current.span.start_line,
+            record.current.span.end_line,
+        );
+        for binding in self.state.context.of(&record.policy) {
+            let path = self.workspace.root.join(&binding.path);
+            let bytes = fs::read(&path).map_err(|error| {
+                format!("could not read selection context {}: {error}", binding.path)
+            })?;
+            let current_digest = sha512_hex(&bytes);
+            text.push_str(&format!(
+                "\nAttached policy context ({}{}):\n{}",
+                binding.path,
+                if current_digest == binding.digest {
+                    ""
+                } else {
+                    ", changed since it was bound"
+                },
+                String::from_utf8_lossy(&bytes).trim_end()
+            ));
+        }
+        const LIMIT: usize = 8_000;
+        if text.len() > LIMIT {
+            let mut end = LIMIT;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+            text.push_str("\n[selection context truncated]");
+        }
+        Ok(text)
     }
 
     /** PostToolUse: settle the reservation, verify the actual effects (written files, or the

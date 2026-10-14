@@ -149,12 +149,64 @@ function percent(value) { return value === null || value === undefined || Number
 function link(text, hash) { return h("a", { href: hash }, text); }
 function go(hash) { if (location.hash === hash) render(); else location.hash = hash; }
 function sessionOf(spec) { return spec.session && spec.session.session_id ? spec.session.session_id : null; }
+function shortIdentity(id) {
+  const value = String(id || "").replace(/^[a-z]+_/, "");
+  return value.slice(0, 4) || "????";
+}
+const agentProviders = new Map();
+function rememberAgents(rows) {
+  for (const row of rows || []) if (row.agent_id && row.provider) agentProviders.set(row.agent_id, row.provider);
+}
+function agentName(id, provider) {
+  const kind = String(provider || agentProviders.get(id) || "").toLowerCase();
+  if (kind.includes("claude")) return "Claude";
+  if (kind.includes("codex")) return "Codex";
+  if (kind.includes("copilot")) return "Copilot";
+  if (kind.includes("gemini")) return "Gemini";
+  return "Agent " + shortIdentity(id);
+}
 function facetPath(name) { const found = FACETS.find(([facet]) => facet === name); return found ? found[1] : name; }
 function facetName(path) { const found = FACETS.find(([, known]) => known === path); return found ? found[0] : null; }
 function attrLabel(path) { const facet = facetName(path); return facet ? FACET_LABELS[facet].toLowerCase() : path; }
 function memberLabel(key) { const row = members.find((item) => item.member.key === key); return row ? row.member.actor + " (" + row.member.short + ")" : String(key).slice(0, 8); }
-function valueLabel(path, value) { return path === "member_key" ? memberLabel(value) : value; }
-function sessionLink(id) { return id ? link(String(id).slice(0, 20), "#/sessions/" + encodeURIComponent(id)) : h("span", { class: "muted" }, "—"); }
+function valueLabel(path, value) {
+  if (path === "member_key") return memberLabel(value);
+  if (path === "agent.agent_id") return agentName(value);
+  if (path === "session.session_id") return "Session " + shortIdentity(value);
+  return value;
+}
+function sessionLink(id, session) {
+  if (!id) return h("span", { class: "muted" }, "—");
+  const label = "Session " + shortIdentity(id);
+  const summary = session ? [
+    session.provider,
+    session.model,
+    session.safety && "safety " + session.safety,
+    session.autonomy_mode && session.autonomy_mode + " mode",
+    session.started_at && "started " + dt(session.started_at),
+    session.ended_at && "ended " + dt(session.ended_at),
+  ].filter(Boolean).join(" · ") : "Internal session identity. Open the session to see its activity, safety state, model, and credit history.";
+  return h("span", { class: "identity-link" }, link(label, "#/sessions/" + encodeURIComponent(id)),
+    info("", { title: label, text: summary }));
+}
+function agentLink(id, provider) {
+  return id ? link(agentName(id, provider), "#/agents") : h("span", { class: "muted" }, "—");
+}
+function consumedCreditsBy(entries, calls, dimension) {
+  const toolsByCall = new Map((calls || []).filter((call) => call.tool_call_id && call.tool).map((call) => [call.tool_call_id, call.tool]));
+  const totals = new Map();
+  for (const entry of entries || []) {
+    const kind = String(entry.kind || "").toUpperCase();
+    const delta = kind === "CONSUME" ? Number(entry.amount || 0) : kind === "REFUND" ? -Number(entry.amount || 0) : 0;
+    if (!delta) continue;
+    if (dimension === "tool" && entry.tool_call_id && !toolsByCall.has(entry.tool_call_id)) continue;
+    const key = dimension === "tool"
+      ? (toolsByCall.get(entry.tool_call_id) || "Unattributed")
+      : (entry.session || "Unknown session");
+    totals.set(key, (totals.get(key) || 0) + delta);
+  }
+  return [...totals].map(([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count);
+}
 const is = (path, value) => ({ path, op: "is", values: [value] });
 const SVG_ICON = (d) => svg("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" }, svg("path", { d }));
 const FUNNEL = "M3 5h18l-7 8v6l-4 2v-8z", LENS = "M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zM20 20l-4-4M8 11h6M11 8v6";
@@ -365,7 +417,7 @@ function staleAt(millis, info) {
 let zoneObserver = null;
 /** A zone: one subsection of a page, listed in the rail */
 function zone(id, title, guide, ...children) {
-  return h("section", { class: "zone", id: "zone-" + id, "aria-labelledby": "zone-title-" + id }, h("h2", { class: "zone-title", id: "zone-title-" + id }, title, guide ? info("", { title, text: guide }) : null), h("div", { class: "grid" }, children));
+  return h("section", { class: "zone", id: "zone-" + id, "aria-labelledby": "zone-title-" + id }, h("h2", { class: "zone-title", id: "zone-title-" + id }, title, info("", { title, text: guide || title + " groups related dashboard panels. Use each panel's controls and info icon to explore the data." })), h("div", { class: "grid" }, children));
 }
 function scrollToZone(id) { const node = document.getElementById("zone-" + id); if (node) node.scrollIntoView({ behavior: "smooth", block: "start" }); }
 /** A panel focused on one thing. Its header: the title and explanation, the funnel (its filter in
@@ -810,7 +862,7 @@ async function openTrace(id) {
   const t = trace.tokens;
   details.open("Trace " + id, h("div", {},
     h("div", { class: "metric-grid" }, [["duration", duration(trace.duration_ms)], ["tool time", duration(trace.tool_ms)], ["hook latency", duration(trace.latency_ms)], ["tokens", t ? tokens(t.total) : "not reported"], ["events", trace.spans]].map(([label, valueText]) => h("div", {}, h("span", {}, label), h("b", {}, valueText)))),
-    h("h4", {}, "Call"), h("div", { class: "kv" }, [["kind", chip(trace.kind)], ["tool", trace.tool || "—"], ["outcome", chip(trace.outcome)], ["severity", chip(trace.severity)], ["decision", chip(trace.decision)], ["start", dt(trace.start)], ["end", dt(trace.end)], ["agent", trace.agent || "—"], ["agent identity", trace.agent_id || "—"], ["model", trace.model || "—"], ["session", trace.session ? sessionLink(trace.session) : "—"], ["member", member(trace.member)], ["resources", (trace.resources || []).join(", ") || "—"], ["targets", (trace.targets || []).join(", ") || "—"], ["flows", h("span", {}, trace.flows.map((flow) => h("span", {}, flow, info("flow:" + flow), " ")))]].map(([key, item]) => [h("div", {}, key), h("div", {}, item instanceof Node ? item : fmt(item))])),
+    h("h4", {}, "Call"), h("div", { class: "kv" }, [["kind", chip(trace.kind)], ["tool", trace.tool || "—"], ["outcome", chip(trace.outcome)], ["severity", chip(trace.severity)], ["decision", chip(trace.decision)], ["start", dt(trace.start)], ["end", dt(trace.end)], ["agent", trace.agent ? agentName(trace.agent_id, trace.agent) : "—"], ["agent identity", trace.agent_id ? agentName(trace.agent_id, trace.agent) : "—"], ["model", trace.model || "—"], ["session", trace.session ? sessionLink(trace.session) : "—"], ["member", member(trace.member)], ["resources", (trace.resources || []).join(", ") || "—"], ["targets", (trace.targets || []).join(", ") || "—"], ["flows", h("span", {}, trace.flows.map((flow) => h("span", {}, flow, info("flow:" + flow), " ")))]].map(([key, item]) => [h("div", {}, key), h("div", {}, item instanceof Node ? item : fmt(item))])),
     t ? h("div", {}, h("h4", {}, "Tokens of the issuing model turn", info("eval:model_tokens")), h("div", { class: "kv" }, [["this call's share", tokens(t.total)], ["input", tokens(t.input)], ["output", tokens(t.output)], ["cache read", tokens(t.cache_read)], ["cache creation", tokens(t.cache_creation)], ["whole turn", tokens(t.turn)], ["calls in the turn", fmt(t.turn_calls)]].map(([key, item]) => [h("div", {}, key), h("div", {}, item)]))) : null,
     h("h4", {}, "Waterfall"), h("p", { class: "muted" }, "Every event of the trace at its time after the first; click one for its attributes."), waterfall), { wide: true, kind: "Trace" });
 }
@@ -996,8 +1048,8 @@ async function openPalette() {
   if (!scope.repository) return;
   const [overviewData, sessionData, cache, agentData] = await Promise.all([lastEvals ? Promise.resolve({ evals: lastEvals }) : api("/api/overview", filterParams()).catch(() => ({})), api("/api/sessions").catch(() => ({ sessions: [] })), facets(), api("/api/agents").catch(() => ({ agents: [] }))]);
   for (const [name, value] of Object.entries(overviewData.evals || {})) if (value !== null && typeof value !== "object") items.push({ kind: "Metric", label: name, hint: compact(value), run: () => { go("#/overview"); setTimeout(() => scrollToZone("evals"), 600); } });
-  for (const row of sessionData.sessions || []) items.push({ kind: "Session", label: row.session.foxx_session_id, hint: (row.member ? row.member.actor + " · " : "") + row.session.provider, run: () => go("#/sessions/" + encodeURIComponent(row.session.foxx_session_id)) });
-  for (const row of agentData.agents || []) items.push({ kind: "Agent", label: row.agent_id, hint: row.provider, run: () => { go("#/agents"); setTimeout(() => openAgent(row.agent_id), 600); } });
+  for (const row of sessionData.sessions || []) items.push({ kind: "Session", label: "Session " + shortIdentity(row.session.foxx_session_id), hint: (row.member ? row.member.actor + " · " : "") + row.session.provider, run: () => go("#/sessions/" + encodeURIComponent(row.session.foxx_session_id)) });
+  for (const row of agentData.agents || []) items.push({ kind: "Agent", label: agentName(row.agent_id, row.provider), hint: row.provider, run: () => { go("#/agents"); setTimeout(() => openAgent(row.agent_id), 600); } });
   for (const item of (cache.facets || {}).tool || []) items.push({ kind: "Tool", label: item.value, hint: compact(item.count) + " events", run: () => { go("#/tools"); setTimeout(() => openTool(item.value), 600); } });
   for (const item of (cache.facets || {}).event || []) items.push({ kind: "Event", label: item.value, hint: compact(item.count), run: () => drill({ clauses: [is("event_name", item.value)] }) });
   if (document.body.contains(palette)) draw();
@@ -1064,7 +1116,7 @@ function callsTable(calls, options) {
     { label: "Tokens", get: (row) => (row.tokens ? row.tokens.total : null), render: (row) => (row.tokens ? tokens(row.tokens.total) : h("span", { class: "muted" }, "—")), num: true, bar: true, format: tokens, info: "eval:model_tokens" },
     { label: "Output tok", get: (row) => (row.tokens ? row.tokens.output : null), render: (row) => (row.tokens ? compact(row.tokens.output) : "—"), num: true, hidden: true },
     { label: "Cache read", get: (row) => (row.tokens ? row.tokens.cache_read : null), render: (row) => (row.tokens ? compact(row.tokens.cache_read) : "—"), num: true, hidden: true },
-    { label: "Agent", get: (row) => row.agent_id || row.agent, filter: true },
+    { label: "Agent", get: (row) => row.agent_id || row.agent, render: (row) => agentName(row.agent_id, row.agent), filter: true },
     { label: "Model", get: (row) => row.model, filter: true, hidden: options && options.compact },
     { label: "Targets", get: (row) => (row.targets || []).join(", "), render: (row) => h("span", { class: "muted clip" }, (row.targets || []).join(", ") || "—") },
     { label: "Session", get: (row) => row.session, render: (row) => sessionLink(row.session), hidden: options && options.compact },

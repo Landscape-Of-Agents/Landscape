@@ -24,7 +24,7 @@ use crate::governance::state::State;
 use crate::governance::workspace::Workspace;
 use crate::governance::zones::{Ceiling, Criticality, Limits};
 use crate::platform::git;
-use crate::selection::anchors::{find_markers, lines, Marker};
+use crate::selection::anchors::{find_markers, lines, Marker, MarkerKind};
 use crate::selection::registry::Operation as SelectionOperation;
 use crate::selection::tracker::{resolve, Resolution, Scan};
 use crate::telemetry::events::Resource;
@@ -98,6 +98,83 @@ impl Guard<'_> {
         repository_path(self.workspace, self.cwd.as_deref(), raw)
     }
 
+    fn changed_line_ranges(before: &str, after: &str) -> Vec<(usize, usize)> {
+        let old = before.lines().collect::<Vec<_>>();
+        let new = after.lines().collect::<Vec<_>>();
+        if old == new {
+            return Vec::new();
+        }
+        let cells = (old.len() + 1).saturating_mul(new.len() + 1);
+        if cells > 1_500_000 {
+            let mut prefix = 0;
+            while prefix < old.len() && prefix < new.len() && old[prefix] == new[prefix] {
+                prefix += 1;
+            }
+            let mut suffix = 0;
+            while suffix < old.len().saturating_sub(prefix)
+                && suffix < new.len().saturating_sub(prefix)
+                && old[old.len() - suffix - 1] == new[new.len() - suffix - 1]
+            {
+                suffix += 1;
+            }
+            let end = old.len().saturating_sub(suffix).max(prefix + 1);
+            return vec![(prefix + 1, end)];
+        }
+        let width = new.len() + 1;
+        let mut lcs = vec![0u32; cells];
+        for i in (0..old.len()).rev() {
+            for j in (0..new.len()).rev() {
+                let value = if old[i] == new[j] {
+                    lcs[(i + 1) * width + j + 1] + 1
+                } else {
+                    lcs[(i + 1) * width + j].max(lcs[i * width + j + 1])
+                };
+                lcs[i * width + j] = value;
+            }
+        }
+        let (mut i, mut j) = (0, 0);
+        let mut changes = Vec::new();
+        let mut changed_start = None;
+        let mut changed_end = 0;
+        while i < old.len() || j < new.len() {
+            if i < old.len() && j < new.len() && old[i] == new[j] {
+                if let Some(start) = changed_start.take() {
+                    changes.push((start, changed_end.max(start)));
+                }
+                i += 1;
+                j += 1;
+            } else {
+                let at = i + 1;
+                changed_start.get_or_insert(at);
+                if i < old.len() && j < new.len() {
+                    let delete_score = lcs[(i + 1) * width + j];
+                    let insert_score = lcs[i * width + j + 1];
+                    if delete_score == insert_score {
+                        changed_end = i + 1;
+                        i += 1;
+                        j += 1;
+                    } else if delete_score > insert_score {
+                        changed_end = i + 1;
+                        i += 1;
+                    } else {
+                        changed_end = changed_end.max(at);
+                        j += 1;
+                    }
+                } else if i < old.len() {
+                    changed_end = i + 1;
+                    i += 1;
+                } else {
+                    changed_end = changed_end.max(at);
+                    j += 1;
+                }
+            }
+        }
+        if let Some(start) = changed_start {
+            changes.push((start, changed_end.max(start)));
+        }
+        changes
+    }
+
     /** Check whether text names protected metadata: .crane, the trust directory, or a provider
      * hook settings file
      * Input
@@ -160,6 +237,7 @@ impl Guard<'_> {
                 bypass: false,
                 cost: 0,
                 context: None,
+                system_message: None,
             },
             resources: Vec::new(),
             selections: Vec::new(),
@@ -356,6 +434,50 @@ impl Guard<'_> {
         }
     }
 
+    fn apply_zone_limits(&self, path: &str, changed: &[(usize, usize)], decided: &mut Decided) {
+        let Some(limit) = self
+            .limits
+            .and_then(|limits| limits.get(path))
+            .and_then(|limit| limit.for_lines(changed))
+        else {
+            return;
+        };
+        decided.zones.extend(limit.entities.iter().cloned());
+        decided.verdict.cost += match limit.criticality {
+            Criticality::Routine => 0,
+            Criticality::Sensitive => 1,
+            Criticality::Critical => 3,
+            Criticality::Restricted => 5,
+        };
+        let names = limit.entities.join(", ");
+        let floor = match (limit.ceiling, limit.criticality) {
+            (Ceiling::Observe, _) => Some((
+                Decision::Deny,
+                format!("{path} is in {names}, whose autonomy ceiling is observe; agents cannot change it"),
+                "ZONE_OBSERVE",
+            )),
+            (Ceiling::Assisted, _) => Some((
+                Decision::RequireApproval,
+                format!("{path} is in {names}, whose autonomy ceiling is assisted; a human must approve the change"),
+                "ZONE_ASSISTED",
+            )),
+            (_, Criticality::Restricted) => Some((
+                Decision::RequireApproval,
+                format!("{path} is in {names}, which is restricted; a human must approve the change"),
+                "ZONE_RESTRICTED",
+            )),
+            _ => None,
+        };
+        if let Some(floor) = floor {
+            let stricter = decided.zone_floor.as_ref().is_none_or(|(current, _, _)| {
+                floor.0 == Decision::Deny && *current != Decision::Deny
+            });
+            if stricter {
+                decided.zone_floor = Some(floor);
+            }
+        }
+    }
+
     /** Decide one file of a write
      * Input
         - change: &FileChange - proposed change
@@ -396,42 +518,6 @@ impl Guard<'_> {
             });
             return;
         };
-        if let Some(limit) = self.limits.and_then(|limits| limits.get(&path)) {
-            decided.zones.extend(limit.entities.iter().cloned());
-            decided.verdict.cost += match limit.criticality {
-                Criticality::Routine => 0,
-                Criticality::Sensitive => 1,
-                Criticality::Critical => 3,
-                Criticality::Restricted => 5,
-            };
-            let names = limit.entities.join(", ");
-            let floor = match (limit.ceiling, limit.criticality) {
-                (Ceiling::Observe, _) => Some((
-                    Decision::Deny,
-                    format!("{path} is in {names}, whose autonomy ceiling is observe; agents cannot change it"),
-                    "ZONE_OBSERVE",
-                )),
-                (Ceiling::Assisted, _) => Some((
-                    Decision::RequireApproval,
-                    format!("{path} is in {names}, whose autonomy ceiling is assisted; a human must approve the change"),
-                    "ZONE_ASSISTED",
-                )),
-                (_, Criticality::Restricted) => Some((
-                    Decision::RequireApproval,
-                    format!("{path} is in {names}, which is restricted; a human must approve the change"),
-                    "ZONE_RESTRICTED",
-                )),
-                _ => None,
-            };
-            if let Some(floor) = floor {
-                let stricter = decided.zone_floor.as_ref().is_none_or(|(current, _, _)| {
-                    floor.0 == Decision::Deny && *current != Decision::Deny
-                });
-                if stricter {
-                    decided.zone_floor = Some(floor);
-                }
-            }
-        }
         let full = self.workspace.root.join(&path);
         let before = fs::read(&full)
             .ok()
@@ -470,6 +556,13 @@ impl Guard<'_> {
             Err(_) => return,
         };
         let Some(after) = after else {
+            let line_count = before.as_deref().unwrap_or_default().lines().count();
+            let changed = if line_count == 0 {
+                Vec::new()
+            } else {
+                vec![(1, line_count)]
+            };
+            self.apply_zone_limits(&path, &changed, decided);
             if holds_selections {
                 deny(
                     decided,
@@ -480,6 +573,11 @@ impl Guard<'_> {
             }
             return;
         };
+        self.apply_zone_limits(
+            &path,
+            &Self::changed_line_ranges(before.as_deref().unwrap_or_default(), &after),
+            decided,
+        );
         if scripts::is_script(&path) {
             let preserved = self.preserved_files();
             let protected = |text: &str| self.names_protected(text);
@@ -511,7 +609,7 @@ impl Guard<'_> {
                 .filter(|id| !known.contains(id))
                 .collect::<BTreeSet<_>>();
             if forged.is_empty() {
-                deny(decided, "MARKER_CHANGED", format!("the edit of {path} adds, removes, or alters Crane selection markers; markers are managed only by crane protect and crane target"), true);
+                deny(decided, "MARKER_CHANGED", format!("the edit of {path} adds, removes, or alters Crane selection, zone, or flow markers; markers are managed only by Crane commands"), true);
             } else {
                 deny(
                     decided,
@@ -527,7 +625,13 @@ impl Guard<'_> {
         }
         let before_scan = Scan::single(&path, before.as_deref().unwrap_or_default());
         let after_scan = Scan::single(&path, &after);
-        for id in before_markers.iter().filter_map(|marker| marker.id.clone()) {
+        let changed_ranges =
+            Self::changed_line_ranges(before.as_deref().unwrap_or_default(), &after);
+        for id in before_markers
+            .iter()
+            .filter(|marker| marker.kind == MarkerKind::Selection)
+            .filter_map(|marker| marker.id.clone())
+        {
             let (Resolution::Resolved(old), Resolution::Resolved(new)) =
                 (resolve(&id, &before_scan), resolve(&id, &after_scan))
             else {
@@ -537,6 +641,36 @@ impl Guard<'_> {
                 continue;
             }
             decided.selections.push(id.clone());
+            let target_exception = self
+                .state
+                .registry
+                .selections
+                .iter()
+                .filter(|record| record.operation == SelectionOperation::Target && record.id != id)
+                .any(|record| {
+                    let starts = before_scan.markers.iter().filter(|(_, marker)| {
+                        marker.kind == MarkerKind::Selection
+                            && marker.id.as_deref() == Some(record.id.as_str())
+                            && marker.boundary == Some(crate::selection::anchors::Boundary::Start)
+                    }).collect::<Vec<_>>();
+                    let ends = before_scan.markers.iter().filter(|(_, marker)| {
+                        marker.kind == MarkerKind::Selection
+                            && marker.id.as_deref() == Some(record.id.as_str())
+                            && marker.boundary == Some(crate::selection::anchors::Boundary::End)
+                    }).collect::<Vec<_>>();
+                    matches!((starts.as_slice(), ends.as_slice()), ([start], [end])
+                        if start.1.line > old.start_marker_line
+                            && end.1.line < old.end_marker_line
+                            && changed_ranges.iter().all(|(from, to)| *from > start.1.line && *to < end.1.line))
+                });
+            if target_exception
+                && self
+                    .state
+                    .record(&id)
+                    .is_some_and(|record| record.operation == SelectionOperation::Preserve)
+            {
+                continue;
+            }
             match self.state.record(&id) {
                 Some(record) if record.operation == SelectionOperation::Preserve => deny(
                     decided,

@@ -193,6 +193,7 @@ impl Trace<'_> {
             "severity": severity,
             "decision": decision,
             "tool": self.spans.iter().map(|spec| field(spec, "action", "action_tool")).find(|tool| !tool.is_empty()),
+            "tool_call_id": self.spans.iter().map(|spec| field(spec, "scope", "tool_call_id")).find(|id| !id.is_empty()),
             "session": self.spans.iter().map(|spec| field(spec, "session", "session_id")).find(|session| !session.is_empty()),
             "member": context.member(first_span["member_key"].as_str().map(String::from).as_ref()),
             "flows": flows,

@@ -42,7 +42,7 @@ export const ACTIONS: Action[] = [
   { id: "validate", label: "Validate governance", detail: "Check integrity, syntax, and markers", keywords: ["check", "verify", "integrity"], form: "none", needsSelection: false },
   { id: "test", label: "Test policies", detail: "Run every preserve and target rule", keywords: ["run", "check", "rules"], form: "none", needsSelection: false },
   { id: "status", label: "Policy status", detail: "A policy's rules and an enforcement self-test", keywords: ["report", "rules"], form: "none", needsSelection: false },
-  { id: "hooks", label: "Install agent hooks", detail: "Make Crane check every tool call of Claude Code or Codex", keywords: ["claude", "codex", "agent", "install", "enforce"], form: "hooks", needsSelection: false },
+  { id: "hooks", label: "Install agent hooks", detail: "Make Crane check every tool call of Claude Code, Codex, Copilot CLI, or Gemini CLI", keywords: ["claude", "codex", "copilot", "gemini", "agent", "install", "enforce"], form: "hooks", needsSelection: false },
 ];
 
 /** The action offered before Crane is set up. */

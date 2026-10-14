@@ -280,13 +280,15 @@ impl Hook {
             HookEvent::SessionStart => self.session_start(&mut session),
             HookEvent::UserPromptSubmit => self.prompt(&mut session),
             HookEvent::PreToolUse | HookEvent::PermissionRequest => self.pre_tool(&mut session),
-            HookEvent::PostToolUse => self.post_tool(&mut session),
+            HookEvent::PostToolUse | HookEvent::PostToolUseFailure => self.post_tool(&mut session),
             HookEvent::Stop => self.stop(&mut session),
             HookEvent::SessionEnd => self.session_end(&mut session),
         };
         // A tool call is complete after post-tool use, a session after stop or session end
         match self.event {
-            HookEvent::PostToolUse => sync::trigger(&self.workspace, "POST_TOOL"),
+            HookEvent::PostToolUse | HookEvent::PostToolUseFailure => {
+                sync::trigger(&self.workspace, "POST_TOOL")
+            }
             HookEvent::Stop => sync::trigger(&self.workspace, "STOP"),
             HookEvent::SessionEnd => sync::trigger(&self.workspace, "SESSION_END"),
             _ => sync::trigger_if_due(&self.workspace, &self.stores),

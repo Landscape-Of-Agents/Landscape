@@ -1,11 +1,12 @@
-// Source anchors: the comment lines that mark where a selection starts and ends. The marker text
-// is the same for every operation ("@crane:selection:ID:start" and ":end"); only the comment
-// syntax around it depends on the file's language, through the adapters below. Markers are
-// references, not authority: the signed registry decides what a selection is, and a marker that
-// is malformed, duplicated, unmatched, or unregistered is reported, never trusted.
+// Source anchors for selections, zones, and flows. The comment syntax depends on the file's
+// language, but marker identities only refer to their signed registry or governance entries;
+// malformed, duplicated, unmatched, or unregistered markers are reported, never trusted.
 
 /** Text every marker carries between the comment opener and the identifier */
 pub(crate) const MARKER_TAG: &str = "@crane:selection:";
+pub(crate) const ZONE_MARKER_TAG: &str = "@crane:zone:";
+pub(crate) const FLOW_MARKER_TAG: &str = "@crane:flow:";
+pub(crate) const ANY_MARKER_TAG: &str = "@crane:";
 
 /** Comment openers that make a line a marker candidate, whatever the file's language, so a
  * marker written in the wrong syntax is reported instead of ignored */
@@ -20,6 +21,23 @@ const CANDIDATE_OPENERS: &[&str] = &["<!--", "//", "/*", "#", "--", ";", "%", "'
 pub(crate) enum CommentSyntax {
     Line(&'static str),
     Block(&'static str, &'static str),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum MarkerKind {
+    Selection,
+    Zone,
+    Flow,
+}
+
+impl MarkerKind {
+    pub(crate) fn tag(self) -> &'static str {
+        match self {
+            Self::Selection => MARKER_TAG,
+            Self::Zone => ZONE_MARKER_TAG,
+            Self::Flow => FLOW_MARKER_TAG,
+        }
+    }
 }
 
 /** A comment adapter: the language name and its comment syntax
@@ -142,7 +160,16 @@ pub(crate) fn language_for(path: &str) -> Option<Language> {
     - String such as "# @crane:selection:K7M2P9RX:start"
 */
 pub(crate) fn render(syntax: CommentSyntax, id: &str, boundary: Boundary) -> String {
-    let marker = format!("{MARKER_TAG}{id}:{}", boundary.name());
+    render_kind(syntax, MarkerKind::Selection, id, boundary)
+}
+
+pub(crate) fn render_kind(
+    syntax: CommentSyntax,
+    kind: MarkerKind,
+    id: &str,
+    boundary: Boundary,
+) -> String {
+    let marker = format!("{}{id}:{}", kind.tag(), boundary.name());
     match syntax {
         CommentSyntax::Line(opener) => format!("{opener} {marker}"),
         CommentSyntax::Block(opener, closer) => format!("{opener} {marker} {closer}"),
@@ -208,6 +235,7 @@ pub(crate) fn lines(text: &str) -> Vec<Line<'_>> {
 */
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Marker {
+    pub(crate) kind: MarkerKind,
     pub(crate) id: Option<String>,
     pub(crate) boundary: Option<Boundary>,
     pub(crate) line: usize,
@@ -227,7 +255,7 @@ pub(crate) struct Marker {
     - Vec<Marker> in line order
 */
 pub(crate) fn find_markers(path: &str, text: &str) -> Vec<Marker> {
-    if !text.contains(MARKER_TAG) {
+    if !text.contains(ANY_MARKER_TAG) {
         return Vec::new();
     }
     let language = language_for(path);
@@ -236,9 +264,11 @@ pub(crate) fn find_markers(path: &str, text: &str) -> Vec<Marker> {
         .filter_map(|line| {
             let trimmed = line.text.trim();
             let candidate = CANDIDATE_OPENERS.iter().any(|opener| {
-                trimmed
-                    .strip_prefix(opener)
-                    .is_some_and(|rest| rest.trim_start().starts_with(MARKER_TAG))
+                trimmed.strip_prefix(opener).is_some_and(|rest| {
+                    [MARKER_TAG, ZONE_MARKER_TAG, FLOW_MARKER_TAG, ANY_MARKER_TAG]
+                        .iter()
+                        .any(|tag| rest.trim_start().starts_with(tag))
+                })
             });
             candidate.then(|| parse_marker(language, trimmed, line))
         })
@@ -254,10 +284,24 @@ pub(crate) fn find_markers(path: &str, text: &str) -> Vec<Marker> {
     - Marker, with problem set when the line is not exactly a well-formed marker
 */
 fn parse_marker(language: Option<Language>, trimmed: &str, line: Line) -> Marker {
-    let tag = trimmed.find(MARKER_TAG).unwrap_or(0);
-    let after = &trimmed[tag + MARKER_TAG.len()..];
-    let id = after.get(..8).map(str::to_string);
-    let boundary = after.get(8..).and_then(|rest| {
+    let (kind, tag) = [
+        (MarkerKind::Selection, MARKER_TAG),
+        (MarkerKind::Zone, ZONE_MARKER_TAG),
+        (MarkerKind::Flow, FLOW_MARKER_TAG),
+    ]
+    .into_iter()
+    .find(|(_, tag)| trimmed.contains(tag))
+    .unwrap_or((MarkerKind::Selection, ANY_MARKER_TAG));
+    let recognized = tag != ANY_MARKER_TAG;
+    let offset = trimmed.find(tag).unwrap_or(0);
+    let after = &trimmed[offset + tag.len()..];
+    let id_len = if kind == MarkerKind::Selection {
+        8
+    } else {
+        after.find(':').unwrap_or(after.len())
+    };
+    let id = after.get(..id_len).map(str::to_string);
+    let boundary = after.get(id_len..).and_then(|rest| {
         let rest = rest.strip_prefix(':')?;
         if rest.starts_with("start") {
             Some(Boundary::Start)
@@ -268,9 +312,13 @@ fn parse_marker(language: Option<Language>, trimmed: &str, line: Line) -> Marker
         }
     });
     let mut marker = Marker {
-        id: id
-            .clone()
-            .filter(|id| crate::trust::crypto::is_selection_id(id)),
+        kind,
+        id: id.clone().filter(|id| match kind {
+            MarkerKind::Selection => crate::trust::crypto::is_selection_id(id),
+            MarkerKind::Zone | MarkerKind::Flow => {
+                crate::platform::validate_name("marker", id).is_ok()
+            }
+        }),
         boundary,
         line: line.number,
         start: line.start,
@@ -281,13 +329,19 @@ fn parse_marker(language: Option<Language>, trimmed: &str, line: Line) -> Marker
         (None, _, _) => {
             Some("this file type has no supported comment syntax for Crane markers".into())
         }
+        (_, _, _) if !recognized => Some("unknown Crane marker type".into()),
         (_, None, _) => Some(format!(
-            "unreadable selection identifier '{}'",
+            "unreadable {} identifier '{}'",
+            match kind {
+                MarkerKind::Selection => "selection",
+                MarkerKind::Zone => "zone",
+                MarkerKind::Flow => "flow",
+            },
             id.unwrap_or_default()
         )),
         (_, _, None) => Some("the marker must end with ':start' or ':end'".into()),
         (Some(language), Some(id), Some(boundary)) => {
-            let expected = render(language.syntax, id, boundary);
+            let expected = render_kind(language.syntax, kind, id, boundary);
             (trimmed != expected).then(|| {
                 format!(
                     "malformed marker; expected exactly '{expected}' for {} files",

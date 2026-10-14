@@ -1,13 +1,17 @@
 // Agent adapters. An adapter only translates its provider's hook payloads into provider-neutral
 // actions and renders Crane's answers in the provider's protocol; every decision is made by the
-// provider-neutral enforcement engine. Claude Code and Codex are supported; the generic profile
-// reads Crane's neutral action JSON.
+// provider-neutral enforcement engine. Claude Code, Codex, GitHub Copilot CLI, and Gemini CLI are
+// supported; the generic profile reads Crane's neutral action JSON.
 
 mod claude;
 mod codex;
+mod copilot;
+mod gemini;
 
 use claude::ClaudeAdapter;
 use codex::CodexAdapter;
+use copilot::CopilotAdapter;
+use gemini::GeminiAdapter;
 
 use crate::hooks::outcome::{block, blocked};
 
@@ -22,12 +26,16 @@ use crate::trust::crypto::sha512_hex;
     - Generic - any agent host, using Crane's neutral action format
     - Claude - Claude Code
     - Codex - Codex
+    - Copilot - GitHub Copilot CLI
+    - Gemini - Gemini CLI
 */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentKind {
     Generic,
     Claude,
     Codex,
+    Copilot,
+    Gemini,
 }
 
 impl AgentKind {
@@ -43,8 +51,10 @@ impl AgentKind {
             "generic" | "universal" => Ok(Self::Generic),
             "claude" | "claude-code" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
+            "copilot" | "github-copilot" => Ok(Self::Copilot),
+            "gemini" | "gemini-cli" => Ok(Self::Gemini),
             other => Err(format!(
-                "unsupported agent profile '{other}'; expected claude or codex"
+                "unsupported agent profile '{other}'; expected claude, codex, copilot, or gemini"
             )),
         }
     }
@@ -60,6 +70,8 @@ impl AgentKind {
             Self::Generic => "generic",
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Copilot => "copilot",
+            Self::Gemini => "gemini",
         }
     }
 
@@ -74,6 +86,8 @@ impl AgentKind {
             Self::Generic => "generic agent",
             Self::Claude => "Claude Code",
             Self::Codex => "Codex",
+            Self::Copilot => "GitHub Copilot CLI",
+            Self::Gemini => "Gemini CLI",
         }
     }
 }
@@ -94,6 +108,7 @@ pub(crate) enum HookEvent {
     UserPromptSubmit,
     PreToolUse,
     PostToolUse,
+    PostToolUseFailure,
     PermissionRequest,
     Stop,
     SessionEnd,
@@ -101,11 +116,12 @@ pub(crate) enum HookEvent {
 
 impl HookEvent {
     /** Every event */
-    pub(crate) const ALL: [HookEvent; 7] = [
+    pub(crate) const ALL: [HookEvent; 8] = [
         Self::SessionStart,
         Self::UserPromptSubmit,
         Self::PreToolUse,
         Self::PostToolUse,
+        Self::PostToolUseFailure,
         Self::PermissionRequest,
         Self::Stop,
         Self::SessionEnd,
@@ -137,6 +153,7 @@ impl HookEvent {
             Self::UserPromptSubmit => "user-prompt-submit",
             Self::PreToolUse => "pre-tool-use",
             Self::PostToolUse => "post-tool-use",
+            Self::PostToolUseFailure => "post-tool-use-failure",
             Self::PermissionRequest => "permission-request",
             Self::Stop => "stop",
             Self::SessionEnd => "session-end",
@@ -155,6 +172,7 @@ impl HookEvent {
             Self::UserPromptSubmit => "UserPromptSubmit",
             Self::PreToolUse => "PreToolUse",
             Self::PostToolUse => "PostToolUse",
+            Self::PostToolUseFailure => "PostToolUseFailure",
             Self::PermissionRequest => "PermissionRequest",
             Self::Stop => "Stop",
             Self::SessionEnd => "SessionEnd",
@@ -170,7 +188,10 @@ impl HookEvent {
     pub(crate) fn has_action(self) -> bool {
         matches!(
             self,
-            Self::PreToolUse | Self::PostToolUse | Self::PermissionRequest
+            Self::PreToolUse
+                | Self::PostToolUse
+                | Self::PostToolUseFailure
+                | Self::PermissionRequest
         )
     }
 }
@@ -216,46 +237,53 @@ pub(crate) struct ProviderEvent {
     - ProviderEvent
 */
 fn provider_event(payload: &Value, action: Option<AgentAction>) -> ProviderEvent {
-    let text = |key: &str| {
-        payload
-            .get(key)
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .map(String::from)
+    let text = |keys: &[&str]| {
+        keys.iter().find_map(|key| {
+            payload
+                .get(*key)
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(String::from)
+        })
     };
-    let response = payload.get("tool_response");
-    let tool_failed = response.map(|response| {
-        response.get("success") == Some(&Value::Bool(false))
-            || response.get("is_error") == Some(&Value::Bool(true))
-            || response.get("interrupted") == Some(&Value::Bool(true))
-            || response
-                .get("exit_code")
-                .and_then(Value::as_i64)
-                .is_some_and(|code| code != 0)
-    });
+    let response = payload
+        .get("tool_response")
+        .or_else(|| payload.get("toolResult"));
+    let tool_failed = response
+        .map(|response| {
+            response.get("success") == Some(&Value::Bool(false))
+                || response.get("is_error") == Some(&Value::Bool(true))
+                || response.get("interrupted") == Some(&Value::Bool(true))
+                || response
+                    .get("exit_code")
+                    .and_then(Value::as_i64)
+                    .is_some_and(|code| code != 0)
+        })
+        .or_else(|| payload.get("error").map(|_| true));
     ProviderEvent {
-        session: text("session_id"),
-        turn: text("turn_id"),
-        task: text("task_id"),
-        tool_call_id: text("tool_use_id").or_else(|| text("call_id")),
+        session: text(&["session_id", "sessionId"]),
+        turn: text(&["turn_id", "turnId"]),
+        task: text(&["task_id", "taskId"]),
+        tool_call_id: text(&["tool_use_id", "tool_call_id", "toolCallId", "call_id"]),
         action,
         stop_hook_active: payload
             .get("stop_hook_active")
+            .or_else(|| payload.get("stopHookActive"))
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        model: text("model").or_else(|| {
+        model: text(&["model"]).or_else(|| {
             payload
                 .get("model")
                 .and_then(|model| model.get("id"))
                 .and_then(Value::as_str)
                 .map(String::from)
         }),
-        source: text("source"),
-        cwd: text("cwd"),
-        prompt: text("prompt"),
+        source: text(&["source"]),
+        cwd: text(&["cwd", "workingDirectory"]),
+        prompt: text(&["prompt", "userPrompt"]),
         tool_failed,
-        end_reason: text("reason"),
-        transcript: text("transcript_path"),
+        end_reason: text(&["reason"]),
+        transcript: text(&["transcript_path", "transcriptPath"]),
     }
 }
 
@@ -267,6 +295,7 @@ fn provider_event(payload: &Value, action: Option<AgentAction>) -> ProviderEvent
     - cost: u64 - autonomy credits the action costs
     - context: Option<String> - guidance of the zones and flows the action touches, given to the
       agent with this tool call where the agent supports it
+    - system_message: Option<String> - guidance newly shown to the person using the agent
 */
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Verdict {
@@ -275,6 +304,7 @@ pub(crate) struct Verdict {
     pub(crate) bypass: bool,
     pub(crate) cost: u64,
     pub(crate) context: Option<String>,
+    pub(crate) system_message: Option<String>,
 }
 
 /** What Crane tells the agent after verification
@@ -294,14 +324,23 @@ pub(crate) struct Feedback {
  * Fields
     - file: &'static str - repository-relative configuration file
     - events: &'static [(HookEvent, bool)] - registered events, and whether each needs a matcher
+    - matcher: &'static str - provider-specific pattern that matches every tool
     - deny: &'static [&'static str] - provider permission rules Crane adds
-    - timeout: u64 - seconds the provider waits for a hook
+    - timeout: u64 - provider-specific hook timeout
 */
 pub(crate) struct HookConfig {
     pub(crate) file: &'static str,
     pub(crate) events: &'static [(HookEvent, bool)],
+    pub(crate) matcher: &'static str,
     pub(crate) deny: &'static [&'static str],
     pub(crate) timeout: u64,
+    pub(crate) format: HookConfigFormat,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HookConfigFormat {
+    Grouped,
+    Flat,
 }
 
 /** The interface of an agent integration */
@@ -343,10 +382,11 @@ pub(crate) trait AgentAdapter {
         - blocking error (outcome::block) unless the decision is Allow
     */
     fn respond_action(&self, verdict: &Verdict) -> Result<(), String> {
-        println!(
-            "{}",
-            json!({"decision": verdict.decision, "reasons": verdict.reasons})
-        );
+        let mut response = json!({"decision": verdict.decision, "reasons": verdict.reasons});
+        if let Some(message) = &verdict.system_message {
+            response["systemMessage"] = json!(message);
+        }
+        println!("{response}");
         match verdict.decision {
             Decision::Allow => Ok(()),
             _ => Err(block(format!("Crane: {}", verdict.reasons.join("; ")))),
@@ -415,7 +455,7 @@ pub(crate) trait AgentAdapter {
             HookEvent::PreToolUse | HookEvent::PermissionRequest => Err(block(format!(
                 "Crane could not authorize this tool call, so it is denied: {error}"
             ))),
-            HookEvent::PostToolUse => Err(block(format!(
+            HookEvent::PostToolUse | HookEvent::PostToolUseFailure => Err(block(format!(
                 "Crane could not verify this tool call, so it is not known to be compliant: {error}"
             ))),
             HookEvent::Stop if !stop_hook_active => Err(block(format!(
@@ -437,6 +477,11 @@ pub(crate) trait AgentAdapter {
     */
     fn hook_config(&self) -> Option<HookConfig> {
         None
+    }
+
+    /** Return the event name used by the provider's hook configuration */
+    fn hook_event_name(&self, event: HookEvent) -> &'static str {
+        event.host_name()
     }
 
     /** Return the command the provider runs for an event
@@ -482,6 +527,8 @@ pub(crate) fn adapter(kind: AgentKind) -> Box<dyn AgentAdapter> {
     match kind {
         AgentKind::Claude => Box::new(ClaudeAdapter),
         AgentKind::Codex => Box::new(CodexAdapter),
+        AgentKind::Copilot => Box::new(CopilotAdapter),
+        AgentKind::Gemini => Box::new(GeminiAdapter),
         AgentKind::Generic => Box::new(GenericAdapter),
     }
 }
@@ -584,7 +631,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /** Check Claude and Codex translation of writes, edits, shells, and patches
+    /** Check provider translation of writes, edits, shells, and patches
      * Input
         - None
      * Output
@@ -630,5 +677,53 @@ mod tests {
         assert!(parse_patch("garbage", None).is_none());
         let failed = ClaudeAdapter.translate(HookEvent::PostToolUse, &json!({"tool_name": "Bash", "tool_input": {"command": "x"}, "tool_response": {"exit_code": 1}}));
         assert_eq!(failed.tool_failed, Some(true));
+
+        let copilot = CopilotAdapter.translate(
+            HookEvent::PreToolUse,
+            &json!({
+                "sessionId": "copilot-session",
+                "toolCallId": "call-1",
+                "toolName": "edit",
+                "toolArgs": "{\"filePath\":\"src/main.py\",\"oldString\":\"old\",\"newString\":\"new\"}",
+            }),
+        );
+        let action = copilot.action.unwrap();
+        assert_eq!(copilot.session.as_deref(), Some("copilot-session"));
+        assert_eq!(copilot.tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(action.operation, Operation::Write);
+        assert_eq!(action.files[0].path, "src/main.py");
+        assert_eq!(
+            action.files[0].proposed,
+            Proposed::Edits(vec![TextEdit {
+                old: "old".into(),
+                new: "new".into(),
+                all: false,
+            }])
+        );
+        assert_eq!(
+            adapter(AgentKind::Copilot).hook_event_name(HookEvent::PreToolUse),
+            "preToolUse"
+        );
+
+        let gemini = GeminiAdapter.translate(
+            HookEvent::PreToolUse,
+            &json!({
+                "session_id": "gemini-session",
+                "tool_name": "write_file",
+                "tool_input": {"file_path":"src/main.py","content":"contents"},
+            }),
+        );
+        let action = gemini.action.unwrap();
+        assert_eq!(gemini.session.as_deref(), Some("gemini-session"));
+        assert_eq!(action.operation, Operation::Write);
+        assert_eq!(action.files[0].path, "src/main.py");
+        assert_eq!(
+            action.files[0].proposed,
+            Proposed::Content("contents".into())
+        );
+        assert_eq!(
+            adapter(AgentKind::Gemini).hook_event_name(HookEvent::Stop),
+            "AfterAgent"
+        );
     }
 }

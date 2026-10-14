@@ -258,12 +258,12 @@ function waterfallPanel(title, options) {
     put(body, charts.waterfall(calls, { packed: state.axis === "packed", onPick: (call) => openTrace(call.id) }));
   });
   node.controls.append(segmented("Time axis", state.axis, [["packed", "Packed"], ["real", "Real time"]], (value) => { state.axis = value; node.refresh(); }), select("Calls", state.limit, [["30", "Newest 30"], ["60", "Newest 60"], ["120", "Newest 120"], ["250", "Newest 250"]], (value) => { state.limit = value; node.refresh(); }));
-  if (options.sessions) api("/api/sessions").then((data) => node.controls.prepend(select("Session", state.session, [["", "All sessions"]].concat(data.sessions.map((row) => [row.session.foxx_session_id, row.session.foxx_session_id.slice(0, 18) + " · " + (row.member ? row.member.actor : "")])), (value) => { state.session = value; node.refresh(); }))).catch(() => {});
+  if (options.sessions) api("/api/sessions").then((data) => node.controls.prepend(select("Session", state.session, [["", "All sessions"]].concat(data.sessions.map((row) => [row.session.foxx_session_id, "Session " + shortIdentity(row.session.foxx_session_id) + " · " + (row.member ? row.member.actor : "")])), (value) => { state.session = value; node.refresh(); }))).catch(() => {});
   return node;
 }
 async function tools(main) {
   if (needRepository(main)) return;
-  const [stats, calls] = await Promise.all([usage("tool"), toolCalls()]);
+  const [stats, calls, ledger] = await Promise.all([usage("tool"), toolCalls(), api("/api/ledger")]);
   const totals = stats.totals;
   main.append(hero("Tool calls", "Every call an agent made through Crane's hooks: what it was, what Crane decided, how long it ran, and the tokens its model turn burnt.",
     [["Calls", compact(totals.calls), "eval:tool_calls"], ["Tools", compact(stats.groups.length)], ["Tokens", tokens(totals.tokens.total), "eval:model_tokens"], ["Tool time p95", duration(totals.tool_ms.p95), "eval:tool_duration_ms"], ["Failure share", percent(totals.failure_share)]]));
@@ -311,6 +311,17 @@ async function tools(main) {
     }),
     matrixPanel("Tools by resource", { span: 6, rows: "tool", cols: "resource.resource_ids", clauses: [is("flow", "F05")] })));
   main.append(zone("tool-waterfall", "Waterfall", "The time each call took, one after another, with the tokens its model turn burnt.", waterfallPanel("Waterfall of tool calls", { sessions: true })));
+  main.append(zone("tool-credits", "Actual credit consumption", "Credits actually settled after calls ran, net of refunds. Tool attribution requires a matching tool-call ID in both the signed ledger and the trace.",
+    panel("Consumed credits by tool", { span: 7, info: { title: "Actual credits consumed by tool", text: "This uses CONSUME ledger entries minus REFUND entries, joined to tool traces by the internal tool-call ID. Entries without a matching trace are grouped as Unattributed; grants and reservations are not counted as consumption." } }, async (body, big, ctx) => {
+      const items = consumedCreditsBy(ledger.entries, calls, "tool").filter((item) => item.count > 0);
+      ctx.record("items", items, { unit: "credits", source: "autonomy ledger" });
+      put(body, charts.toplist(items, { unit: "credits", format: fmt, onPick: openTool, byValue: true, empty: "No settled tool-call credits in the current range." }));
+    }),
+    panel("Consumption by session", { span: 5, info: { title: "Actual credits consumed by session", text: "Net consumed credits from the autonomy ledger. Click a session to inspect its activity and remaining balance." }, scope: { kind: "state", what: "Ledger consumption" } }, async (body, big, ctx) => {
+      const items = consumedCreditsBy(ledger.entries, [], "session").filter((item) => item.count > 0).slice(0, 12);
+      ctx.record("items", items, { unit: "credits" });
+      put(body, charts.toplist(items, { unit: "credits", format: fmt, onPick: (id) => go("#/sessions/" + encodeURIComponent(id)), byValue: true, empty: "No consumed credits in the ledger." }));
+    })));
   main.append(zone("tool-tokens", "Tokens per call", "How many tokens each call's model turn burnt (Claude Code transcripts; shared equally among the calls of one turn).",
     panel("Tokens per call", { span: 6, info: "eval:model_tokens" }, async (body, big, ctx) => {
       const data = await api("/api/histogram", filterParams({ field: "eval.model_tokens", bins: big ? 40 : 20 }));
@@ -342,14 +353,16 @@ async function openAgent(id) {
   const [byTool, calls, sessionData, decisions] = await Promise.all([usage("tool", { clauses }), toolCalls({ clauses }), api("/api/sessions").catch(() => ({ sessions: [] })), api("/api/facets", filterParams({ clauses: clauses.concat([is("flow", "F05")]) }))]);
   const totals = byTool.totals;
   const sessions = sessionData.sessions.filter((row) => row.session.agent_id === id);
-  details.open(id, h("div", {},
+  const provider = sessions[0] && sessions[0].session.provider;
+  rememberAgents([{ agent_id: id, provider }]);
+  details.open(agentName(id, provider), h("div", {},
     h("p", { class: "sentence" }, filterSentence({ what: "Events of agent " + id })),
     h("div", { class: "metric-grid", style: "margin-top:10px" }, [["tool calls", fmt(totals.calls)], ["tools used", fmt(totals.tools)], ["denied", fmt(totals.denied)], ["failure share", percent(totals.failure_share)], ["tokens", tokens(totals.tokens.total)], ["tokens per call", tokens(totals.tokens.per_call)], ["tool time p95", duration(totals.tool_ms.p95)], ["sessions", fmt(sessions.length)], ["last active", dt(totals.last)]].map(([label, value]) => h("div", {}, h("span", {}, label), h("b", {}, value)))),
     h("h4", {}, "Tool mix"), charts.toplist(byTool.groups.map((group) => ({ value: group.key, count: group.calls })), { onPick: openTool, hint: "The tool's profile", byValue: true }),
     h("h4", {}, "Decisions"), charts.donut((decisions.facets.decision || []).map((item) => ({ value: item.value, count: item.count })), { unit: "decisions", explain: explained }),
     h("h4", {}, "Waterfall of its newest calls"), charts.waterfall(calls.slice(0, 40), { packed: true, onPick: (call) => openTrace(call.id) }),
     h("h4", {}, "Sessions"), dataTable([
-      { label: "Session", get: (row) => row.session.foxx_session_id, render: (row) => sessionLink(row.session.foxx_session_id) },
+      { label: "Session", get: (row) => row.session.foxx_session_id, render: (row) => sessionLink(row.session.foxx_session_id, row.session) },
       { label: "Status", get: (row) => (row.stale ? "STALE" : row.session.status), render: (row) => chip(row.stale ? "STALE" : row.session.status) },
       { label: "Safety", get: (row) => row.session.safety, render: (row) => chip(row.session.safety) },
       { label: "Mode", get: (row) => row.session.autonomy_mode },
@@ -361,6 +374,7 @@ async function agents(main) {
   if (needRepository(main)) return;
   const [data, byAgent, sessionData] = await Promise.all([api("/api/agents"), usage("agent_id"), api("/api/sessions")]);
   const rows = data.agents;
+  rememberAgents(rows);
   const sessions = sessionData.sessions;
   const stats = new Map(byAgent.groups.map((group) => [group.key, group]));
   const active = sessions.filter((row) => !row.stale && row.session.status === "ACTIVE").length;
@@ -383,7 +397,7 @@ async function agents(main) {
       const list = rows.map((row) => Object.assign({}, row, { usage: stats.get(row.agent_id) || null }));
       for (const group of byAgent.groups) if (!rows.some((row) => row.agent_id === group.key) && group.key !== "NONE") list.push({ agent_id: group.key, provider: "", sessions: 0, quarantined_sessions: 0, evals: {}, usage: group });
       put(body, dataTable([
-        { label: "Agent", get: (row) => row.agent_id, render: (row) => h("code", {}, row.agent_id) },
+        { label: "Agent", get: (row) => row.agent_id, render: (row) => agentLink(row.agent_id, row.provider) },
         { label: "Provider", get: (row) => row.provider, filter: true },
         { label: "Tool calls", get: (row) => (row.usage ? row.usage.calls : 0), num: true, bar: true },
         { label: "Tools", get: (row) => (row.usage ? row.usage.tools : 0), num: true },
@@ -406,10 +420,10 @@ async function agents(main) {
     breakdownPanel("Tool mix", { span: 5, by: "tool", view: "toplist", clauses: [is("flow", "F05")], info: "facet:tool" })));
   main.append(zone("agent-decisions", "Decisions and risk", "How Crane's decisions divide per agent, and which agents trip the protections.",
     matrixPanel("Agent by decision", { span: 6, rows: "agent.agent_id", cols: "decision", clauses: [is("flow", "F05")] }),
-    panel("Risk map", { span: 6, info: { title: "Risk map", text: "Each dot is an agent identity: its tool calls (across) against its denial share (up), sized by its bypass attempts. Agents up and to the right are busy and often stopped." } }, async (body, big, ctx) => {
-      const points = rows.map((row) => { const group = stats.get(row.agent_id); return { x: group ? group.calls : 0, y: ((row.evals || {}).denial_share || 0) * 100, key: row.provider || "agent", label: row.agent_id, r: 4 + Math.min(8, ((row.evals || {}).bypass_attempts || 0) * 2), rows: [["bypass attempts", fmt((row.evals || {}).bypass_attempts)], ["quarantined sessions", fmt(row.quarantined_sessions)]] }; });
+    panel("Agent reliability comparison", { span: 6, info: { title: "Agent reliability comparison", text: "Each dot compares an agent's call volume (across) with its failed-call share (up); the dot grows with denied calls. Hover for denial share, bypass attempts, and quarantined sessions. Click a dot for its profile." } }, async (body, big, ctx) => {
+      const points = rows.map((row) => { const group = stats.get(row.agent_id); return { x: group ? group.calls : 0, y: (group ? group.failure_share : 0) * 100, key: agentName(row.agent_id, row.provider), label: agentName(row.agent_id, row.provider), id: row.agent_id, r: 4 + Math.min(8, group ? group.denied : 0), rows: [["denial share", percent((row.evals || {}).denial_share)], ["bypass attempts", fmt((row.evals || {}).bypass_attempts)], ["quarantined sessions", fmt(row.quarantined_sessions)]] }; });
       ctx.record("value", { agents: rows.length, "busiest calls": Math.max(0, ...points.map((point) => point.x)), "highest denial share %": Math.max(0, ...points.map((point) => point.y)) }, { lines: ["Denial share is the share of the agent's decided tool calls that Crane denied."] });
-      put(body, charts.scatter(points, { height: big ? 420 : 240, xLabel: "tool calls", yLabel: "denial share %", keyLabel: "provider", yFormat: (value) => value.toFixed(0) + "%", onPick: (point) => openAgent(point.label) }));
+      put(body, charts.scatter(points, { height: big ? 420 : 240, xLabel: "tool calls", yLabel: "failed-call share %", keyLabel: "agent", yFormat: (value) => value.toFixed(0) + "%", onPick: (point) => openAgent(point.id) }));
     }),
     breakdownPanel("Bypass attempts by agent", { span: 6, by: "agent.agent_id", view: "toplist", clauses: [is("severity.alert_kind", "BYPASS_ATTEMPT")], info: "eval:bypass_attempts" }),
     breakdownPanel("Denials by agent", { span: 6, by: "agent.agent_id", view: "toplist", clauses: [is("decision.decision", "DENY")], info: "eval:denied" })));
@@ -437,7 +451,7 @@ async function agents(main) {
       put(body, charts.donut(items, { unit: "sessions", explain: explained }));
     })));
   main.append(zone("agent-list", "Agent identities", "Every agent identity across all its sessions (all time).", panel("Agents", { span: 12, flush: true, scope: { kind: "state", what: "Agent identities" } }, async (body, big, ctx) => { ctx.record("rows", rows); put(body, dataTable([
-    { label: "Agent", get: (row) => row.agent_id, render: (row) => h("code", {}, row.agent_id) }, { label: "Provider", get: (row) => row.provider, filter: true },
+    { label: "Agent", get: (row) => row.agent_id, render: (row) => agentLink(row.agent_id, row.provider) }, { label: "Provider", get: (row) => row.provider, filter: true },
     { label: "Sessions", get: (row) => row.sessions, num: true }, { label: "Quarantined", get: (row) => row.quarantined_sessions, num: true },
     { label: "Tool calls decided", get: (row) => (row.evals || {}).tool_calls_decided, num: true, info: "eval:tool_calls_decided" }, { label: "Denial share", get: (row) => (row.evals || {}).denial_share, render: (row) => percent((row.evals || {}).denial_share), num: true, info: "eval:denial_share" },
     { label: "Bypass attempts", get: (row) => (row.evals || {}).bypass_attempts, num: true, info: "eval:bypass_attempts" }, { label: "Confirmed bypasses", get: (row) => (row.evals || {}).bypasses_confirmed, num: true, info: "eval:bypasses_confirmed" },
@@ -451,6 +465,7 @@ async function sessions(main) {
   if (needRepository(main)) return;
   const [data, bySession] = await Promise.all([api("/api/sessions"), usage("session")]);
   const rows = data.sessions;
+  rememberAgents(rows.map((row) => ({ agent_id: row.session.agent_id, provider: row.session.provider })));
   const stats = new Map(bySession.groups.map((group) => [group.key, group]));
   const active = rows.filter((row) => !row.stale && row.session.status === "ACTIVE").length;
   main.append(zone("session-kpis", "Summary", "Sessions are counted over all time; the charts below follow the range and filter.", h("div", { class: "kpis span-12" },
@@ -459,13 +474,13 @@ async function sessions(main) {
     kpi("Tool calls", bySession.totals.calls, { info: "eval:tool_calls" }),
     kpi("Tokens", bySession.totals.tokens.total, { format: tokens, info: "eval:model_tokens" }),
     kpi("Denied actions", rows.reduce((sum, row) => sum + ((row.evals || {}).denied || 0), 0), { info: "eval:denied", drill: () => drill({ clauses: [is("decision.decision", "DENY")] }) }))));
-  main.append(zone("session-activity", "Activity", "", seriesPanel("Session activity", { span: 8, by: "agent", type: "area", height: 200 }), breakdownPanel("By agent type", { span: 4, by: "agent", info: "facet:agent" }),
+  main.append(zone("session-activity", "Activity", "Session events over time, grouped by agent type, and the number of sessions active in each time bucket.", seriesPanel("Session activity", { span: 8, by: "agent", type: "area", height: 200 }), breakdownPanel("By agent type", { span: 4, by: "agent", info: "facet:agent" }),
     seriesPanel("Active sessions", { span: 12, metric: "session.session_id", agg: "distinct", type: "lines", height: 160, info: { title: "Active sessions", text: "How many different sessions produced an event in each time bucket." } })));
   main.append(zone("session-leaderboard", "Leaderboard", "Sessions ranked by tool calls in range and filter, with their time and tokens.",
     panel("Session leaderboard", { span: 12, flush: true, info: { title: "Session leaderboard", text: "Per session: tool calls, denials, failures, tool time, and tokens (in range and filter)." } }, async (body, big, ctx) => {
       ctx.record("usage", bySession, { by: "session" });
       put(body, dataTable([
-        { label: "Session", get: (row) => row.key, render: (row) => sessionLink(row.key) },
+        { label: "Session", get: (row) => row.key, render: (row) => sessionLink(row.key, rows.find((item) => item.session.foxx_session_id === row.key)?.session) },
         { label: "Calls", get: (row) => row.calls, num: true, bar: true },
         { label: "Tools", get: (row) => row.tools, num: true },
         { label: "Denied", get: (row) => row.denied, num: true },
@@ -480,9 +495,9 @@ async function sessions(main) {
     })));
   main.append(zone("session-waterfall", "Waterfall", "The tool calls of one session (or all), one after another.", waterfallPanel("Session waterfall", { sessions: true })));
   main.append(zone("session-list", "Sessions", "", panel("Sessions", { span: 12, flush: true, scope: { kind: "state", what: "Sessions" } }, async (body, big, ctx) => { ctx.record("rows", rows); put(body, dataTable([
-    { label: "Session", get: (row) => row.session.foxx_session_id, render: (row) => link(row.session.foxx_session_id, "#/sessions/" + encodeURIComponent(row.session.foxx_session_id)) },
+    { label: "Session", get: (row) => row.session.foxx_session_id, render: (row) => sessionLink(row.session.foxx_session_id, row.session) },
     { label: "Member", get: (row) => (row.member ? row.member.actor : ""), render: (row) => member(row.member), filter: true },
-    { label: "Agent", get: (row) => row.session.agent_id, render: (row) => h("code", {}, String(row.session.agent_id || "—").slice(0, 18)), filter: true },
+    { label: "Agent", get: (row) => row.session.agent_id, render: (row) => agentLink(row.session.agent_id, row.session.provider), filter: true },
     { label: "Provider", get: (row) => row.session.provider, filter: true }, { label: "Model", get: (row) => row.session.model, filter: true },
     { label: "Status", get: (row) => (row.stale ? "STALE" : row.session.status), render: (row) => chip(row.stale ? "STALE" : row.session.status), filter: true },
     { label: "Safety", get: (row) => row.session.safety, render: (row) => chip(row.session.safety), filter: true }, { label: "Mode", get: (row) => row.session.autonomy_mode, filter: true },
@@ -516,7 +531,7 @@ async function session(main, id) {
     const anchor = h("a", { href: URL.createObjectURL(await response.blob()), download: name });
     document.body.append(anchor); anchor.click(); anchor.remove();
   };
-  main.append(hero("Session " + sessionInfo.foxx_session_id, [sessionInfo.provider, sessionInfo.model || "model not reported", data.member ? data.member.actor : "unknown member", "started " + dt(sessionInfo.started_at), sessionInfo.ended_at ? "ended " + dt(sessionInfo.ended_at) : "open"].join(" · "),
+  main.append(hero(h("span", { class: "identity-link" }, "Session " + shortIdentity(sessionInfo.foxx_session_id), info("", { title: "Session " + shortIdentity(sessionInfo.foxx_session_id), text: [sessionInfo.provider, sessionInfo.model || "model not reported", "safety " + sessionInfo.safety, sessionInfo.autonomy_mode + " mode", data.member ? data.member.actor : "unknown member", "started " + dt(sessionInfo.started_at), sessionInfo.ended_at ? "ended " + dt(sessionInfo.ended_at) : "open"].join(" · ") })), [sessionInfo.provider, sessionInfo.model || "model not reported", data.member ? data.member.actor : "unknown member", "started " + dt(sessionInfo.started_at), sessionInfo.ended_at ? "ended " + dt(sessionInfo.ended_at) : "open"].join(" · "),
     [["Safety", sessionInfo.safety, "value:" + sessionInfo.safety], ["Mode", sessionInfo.autonomy_mode], ["Status", data.stale ? "STALE" : sessionInfo.status], ["Tool calls", compact(stats.totals.calls)], ["Tokens", tokens(stats.totals.tokens.total), "eval:model_tokens"], ["Credits", data.credits.available + " / " + data.credits.granted, "eval:credits"]],
     [h("button", { class: "btn", type: "button", onclick: download("/api/reports/session/" + sessionInfo.foxx_session_id, "crane-report-" + sessionInfo.foxx_session_id + ".json") }, "Report"),
       h("button", { class: "btn", type: "button", onclick: download("/api/evidence/session/" + sessionInfo.foxx_session_id, "crane-evidence-" + sessionInfo.foxx_session_id + ".json") }, "Evidence bundle"),

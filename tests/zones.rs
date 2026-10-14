@@ -185,6 +185,142 @@ fn zone_ceilings_restrict_writes() {
     );
 }
 
+#[test]
+fn source_marked_zone_and_flow_enforce_only_their_lines() {
+    let fixture = fixture();
+    fixture.write(
+        "app/ledger.py",
+        "# @crane:zone:ledger-window:start\ndef post(entry):\n    return entry\n# @crane:zone:ledger-window:end\n",
+    );
+    fixture.write(
+        "web/app.js",
+        "export function greet(name) {\n  // @crane:flow:greeting-window:start\n  return `hi ${name}`;\n  // @crane:flow:greeting-window:end\n}\n",
+    );
+    govern(
+        &fixture,
+        "version: 1\nzones:\n  - id: ledger-window\n    autonomy_ceiling: observe\nflows:\n  - id: greeting-window\n    entry_points: [\"app/service.py:submit\"]\n    autonomy_ceiling: observe\n",
+    );
+    assert!(fixture.ok(&["validate"]).contains("Crane validate: PASS"));
+    fixture.hook("claude", "SessionStart", &json!({"session_id": "marked"}));
+
+    let ledger_inside = write(
+        &fixture,
+        "marked",
+        "m-1",
+        "app/ledger.py",
+        "# @crane:zone:ledger-window:start\ndef post(entry):\n    return entry + 1\n# @crane:zone:ledger-window:end\n",
+    );
+    assert_eq!(
+        ledger_inside.status.code(),
+        Some(2),
+        "{}",
+        text(&ledger_inside)
+    );
+    assert!(text(&ledger_inside).contains("zone:ledger-window"));
+    let ledger_outside = write(
+        &fixture,
+        "marked",
+        "m-2",
+        "app/ledger.py",
+        "# @crane:zone:ledger-window:start\ndef post(entry):\n    return entry\n# @crane:zone:ledger-window:end\n# outside = True\n",
+    );
+    assert!(ledger_outside.status.success(), "{}", text(&ledger_outside));
+
+    let flow_inside = write(
+        &fixture,
+        "marked",
+        "m-3",
+        "web/app.js",
+        "export function greet(name) {\n  // @crane:flow:greeting-window:start\n  return `hello ${name}`;\n  // @crane:flow:greeting-window:end\n}\n",
+    );
+    assert_eq!(flow_inside.status.code(), Some(2), "{}", text(&flow_inside));
+    assert!(text(&flow_inside).contains("flow:greeting-window"));
+    let flow_outside = write(
+        &fixture,
+        "marked",
+        "m-4",
+        "web/app.js",
+        "export function greet(name) {\n  // @crane:flow:greeting-window:start\n  return `hi ${name}`;\n  // @crane:flow:greeting-window:end\n}\nexport const extra = true;\n",
+    );
+    assert!(flow_outside.status.success(), "{}", text(&flow_outside));
+}
+
+#[test]
+fn source_marker_integrity_and_resolution_fail_closed() {
+    let fixture = fixture();
+    let original = "# @crane:zone:ledger-window:start\ndef post(entry):\n    return entry\n# @crane:zone:ledger-window:end\n";
+    fixture.write("app/ledger.py", original);
+    govern(
+        &fixture,
+        "version: 1\nzones:\n  - id: ledger-window\n    autonomy_ceiling: observe\n",
+    );
+    fixture.hook(
+        "claude",
+        "SessionStart",
+        &json!({"session_id": "marker-guard"}),
+    );
+    let marker_edit = write(
+        &fixture,
+        "marker-guard",
+        "marker-edit",
+        "app/ledger.py",
+        &original.replace("# @crane:zone:ledger-window:start\n", ""),
+    );
+    assert_eq!(marker_edit.status.code(), Some(2), "{}", text(&marker_edit));
+    assert!(
+        text(&marker_edit).contains("markers"),
+        "{}",
+        text(&marker_edit)
+    );
+    fixture.write(
+        "app/ledger.py",
+        &original.replace("ledger-window", "missing-zone"),
+    );
+    let orphan = fixture.fails(&["validate"]);
+    assert!(orphan.contains("source_marker_unresolved"), "{orphan}");
+
+    fixture.write(
+        "app/ledger.py",
+        &original.replace("# @crane:zone:ledger-window:end\n", ""),
+    );
+    let unmatched = fixture.fails(&["validate"]);
+    assert!(
+        unmatched.contains("source_marker_unresolved"),
+        "{unmatched}"
+    );
+
+    fixture.write("app/ledger.py", &format!("{original}{original}"));
+    let duplicate = fixture.fails(&["governance", "sign"]);
+    assert!(
+        duplicate.contains("markers must have exactly one"),
+        "{duplicate}"
+    );
+
+    fixture.write(
+        "app/ledger.py",
+        "# @crane:zone:ledger-window:start\n# @crane:zone:second-window:start\nx = 1\n# @crane:zone:ledger-window:end\n# @crane:zone:second-window:end\n",
+    );
+    fixture.write(
+        ".crane/governance.yaml",
+        "version: 1\nzones:\n  - id: ledger-window\n    autonomy_ceiling: observe\n  - id: second-window\n    autonomy_ceiling: observe\n",
+    );
+    let crossed = fixture.fails(&["governance", "sign"]);
+    assert!(
+        crossed.contains("source markers overlap or are crossed"),
+        "{crossed}"
+    );
+
+    fixture.write(
+        "app/ledger.py",
+        &original.replace(
+            "# @crane:zone:ledger-window:end",
+            "#@crane:zone:ledger-window:end",
+        ),
+    );
+    let malformed = fixture.fails(&["validate"]);
+    assert!(malformed.contains("source_marker_malformed"), "{malformed}");
+}
+
 /** Flows are discovered from their entry points across files; ambiguous or missing entry points
  * are UNRESOLVED; a flow's ceiling applies to every file it reaches
  * Input
@@ -356,6 +492,12 @@ context_packs:
             context.contains("Zone payment-core (critical, autonomy ceiling autonomous)"),
             "{context}"
         );
+        assert!(
+            answer["systemMessage"]
+                .as_str()
+                .is_some_and(|message| message.contains("Crane context · zone:payment-core")),
+            "every touch is visible to the user: {answer}"
+        );
     }
     let outside = read("r3", "app/ledger.py");
     assert!(outside.status.success(), "{}", text(&outside));
@@ -364,4 +506,63 @@ context_packs:
         "no guidance outside the zone: {}",
         text(&outside)
     );
+    govern(
+        &fixture,
+        "version: 1\nzones:\n  - id: payment-core\n    description: Core payment resources, updated\n    selectors:\n      files: [\"app/payments.py\"]\n    criticality: critical\n    autonomy_ceiling: autonomous\n    context_packs: [payment-invariants]\ncontext_packs:\n  - id: payment-invariants\n    version: 1\n    content:\n      - Charges must be idempotent; never retry a capture.\n",
+    );
+    let changed = read("r4", "app/payments.py");
+    assert!(changed.status.success(), "{}", text(&changed));
+    let answer: Value = serde_json::from_slice(&changed.stdout).unwrap();
+    assert!(
+        answer["systemMessage"]
+            .as_str()
+            .is_some_and(|message| message.contains("updated")),
+        "changed context is shown again: {answer}"
+    );
+
+    for (profile, session, payload, message_field) in [
+        (
+            "copilot",
+            "copilot-zone",
+            json!({
+                "sessionId": "copilot-zone",
+                "toolName": "view",
+                "toolArgs": {"filePath": fixture.work.join("app/payments.py").to_string_lossy()},
+                "cwd": fixture.work.to_string_lossy(),
+            }),
+            "progress",
+        ),
+        (
+            "gemini",
+            "gemini-zone",
+            json!({
+                "session_id": "gemini-zone",
+                "tool_name": "read_file",
+                "tool_input": {"file_path": fixture.work.join("app/payments.py").to_string_lossy()},
+                "cwd": fixture.work.to_string_lossy(),
+            }),
+            "systemMessage",
+        ),
+    ] {
+        let output = fixture.hook(profile, "pre-tool-use", &payload);
+        assert!(output.status.success(), "{profile}: {}", text(&output));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("Crane context · zone:payment-core")
+                && stdout.contains("Core payment resources, updated"),
+            "{profile} must show zone context in the agent window: {stdout}"
+        );
+        if profile == "copilot" {
+            let final_line = stdout.lines().last().unwrap();
+            let answer: Value = serde_json::from_str(final_line).unwrap();
+            assert_eq!(answer["permissionDecision"], "allow");
+            assert_eq!(session, "copilot-zone");
+            assert_eq!(message_field, "progress");
+        } else {
+            let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert!(answer["systemMessage"].is_string());
+            assert_eq!(session, "gemini-zone");
+            assert_eq!(message_field, "systemMessage");
+        }
+    }
 }

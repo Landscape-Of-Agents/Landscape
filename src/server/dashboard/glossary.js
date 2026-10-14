@@ -311,7 +311,7 @@ window.FOXX_GLOSSARY = {
   "DELIVERED": "The channel accepted the message (HTTP 2xx).",
   "QUEUED": "Sent in the background without waiting; delivery not confirmed.",
   "DRY_RUN": "Delivery was skipped on purpose (CRANE_ALERTS_DRY_RUN=1).",
-  "PENDING": "Approved on the dashboard; waiting for the agent's machine to apply it.",
+  "PENDING": "The grant was approved on the dashboard and is waiting for the agent's machine to sync and add it to that session's credit ledger. It normally becomes APPLIED at the machine's next sync (about a minute while the agent is active); until then, the credits are not available to spend.",
   "APPLIED": "The agent's machine added it to its ledger.",
   "REJECTED": "The machine could not apply it (for example, the session is not on that machine).",
   "CLAUDE_CODE": "Anthropic's Claude Code agent.",

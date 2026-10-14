@@ -666,6 +666,10 @@ fn dashboard_shows_every_view_for_a_team() {
         .iter()
         .find(|trace| trace["spans"].as_u64().unwrap() >= 2)
         .expect("a tool call with its decision and verification");
+    assert!(
+        call["tool_call_id"].as_str().is_some(),
+        "tool traces expose the stable call key used to attribute consumed credits: {call}"
+    );
     let detail = api(&format!("traces/{}", call["id"].as_str().unwrap())).json();
     assert_eq!(
         detail["spans"].as_array().unwrap().len() as u64,
@@ -740,6 +744,30 @@ fn dashboard_shows_every_view_for_a_team() {
             .iter()
             .any(|point| point.as_u64() >= Some(1)),
         "{active}"
+    );
+    let agents = api("series?by=agent.agent_id").json();
+    let claude = agents["series"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|series| series["label"] == "Claude")
+        .expect("agent chart uses the provider display name");
+    assert!(
+        claude["key"]
+            .as_str()
+            .is_some_and(|key| key.starts_with("agt_")),
+        "the full identity remains the internal key: {claude}"
+    );
+    let sessions = api("series?by=session.session_id").json();
+    assert!(
+        sessions["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|series| series["label"]
+                .as_str()
+                .is_some_and(|label| label.starts_with("Session "))),
+        "session charts use a short title while preserving internal keys: {sessions}"
     );
     let p95 = api("series?metric=eval.latency_ms&agg=p95").json();
     assert!(p95["series"][0]["points"]

@@ -2,14 +2,17 @@
 // so ordinary insertions, deletions, and replacements above or below a selection, and file
 // renames, are tracked without changing the selection's identifier. Resolution is strict: a
 // selection resolves only when exactly one well-formed start marker and one end marker with its
-// identifier exist in one file, in order, without overlapping another selection. Anything else is
-// UNRESOLVED with the reason, and a plausible replacement (the baseline content found elsewhere)
-// is reported as a candidate, never bound.
+// identifier exist in one file, in order, with any other selection either disjoint or fully
+// contained. Child marker lines do not enter a parent's fingerprint. Anything else is UNRESOLVED,
+// and a plausible replacement (the baseline content found elsewhere) is reported as a candidate,
+// never bound.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
-use super::anchors::{find_markers, language_for, normalize, Boundary, Marker, MARKER_TAG};
+use super::anchors::{
+    find_markers, language_for, normalize, Boundary, Marker, MarkerKind, ANY_MARKER_TAG,
+};
 use super::registry::{Record, Span};
 use crate::governance::workspace::Workspace;
 use crate::governance::{Finding, Severity};
@@ -98,8 +101,8 @@ pub(crate) fn scan_paths(workspace: &Workspace, paths: impl IntoIterator<Item = 
             continue;
         };
         if !bytes
-            .windows(MARKER_TAG.len())
-            .any(|window| window == MARKER_TAG.as_bytes())
+            .windows(ANY_MARKER_TAG.len())
+            .any(|window| window == ANY_MARKER_TAG.as_bytes())
         {
             continue;
         }
@@ -171,7 +174,9 @@ pub(crate) fn resolve(id: &str, scan: &Scan) -> Resolution {
     let hits = scan
         .markers
         .iter()
-        .filter(|(_, marker)| marker.id.as_deref() == Some(id))
+        .filter(|(_, marker)| {
+            marker.kind == MarkerKind::Selection && marker.id.as_deref() == Some(id)
+        })
         .collect::<Vec<_>>();
     if hits.is_empty() {
         return unresolved(
@@ -242,24 +247,34 @@ pub(crate) fn resolve(id: &str, scan: &Scan) -> Resolution {
             format!("{path}: the end marker of selection {id} (line {}) comes before its start marker (line {})", end.line, start.line),
         );
     }
-    // Another selection's marker between the two means overlapping or nested selections
-    if let Some((_, other)) = scan.markers.iter().find(|(other_path, marker)| {
-        *other_path == path
-            && marker.id.as_deref() != Some(id)
-            && marker.line > start.line
-            && marker.line < end.line
-    }) {
+    let intervals = selection_intervals(scan, &path);
+    if !intervals
+        .iter()
+        .any(|(selection, from, to)| selection == id && *from == start.line && *to == end.line)
+    {
+        return unresolved(
+            "marker_crossed",
+            format!("{path}: selection {id} has crossed or unmatched selection markers"),
+        );
+    }
+    if let Some((other_id, other_start, other_end)) =
+        intervals.iter().find(|(other_id, other_start, other_end)| {
+            other_id != id
+                && ((start.line < *other_start && *other_start < end.line && end.line < *other_end)
+                    || (*other_start < start.line
+                        && start.line < *other_end
+                        && *other_end < end.line))
+        })
+    {
         return unresolved(
             "selection_overlap",
             format!(
-                "{path}: selection {id} overlaps selection {} (line {})",
-                other.id.clone().unwrap_or_else(|| "?".into()),
-                other.line
+                "{path}: selection {id} partially overlaps selection {other_id} (lines {other_start}-{other_end})"
             ),
         );
     }
     let text = &scan.texts[&path];
-    let content = normalize_content(&text[start.end..end.start]);
+    let content = projected_content(text, start, end, id, &intervals, scan, &path);
     Resolution::Resolved(Location {
         span: Span {
             path,
@@ -272,6 +287,83 @@ pub(crate) fn resolve(id: &str, scan: &Scan) -> Resolution {
         start_marker_line: start.line,
         end_marker_line: end.line,
     })
+}
+
+fn selection_intervals(scan: &Scan, path: &str) -> Vec<(String, usize, usize)> {
+    let mut markers = scan
+        .markers
+        .iter()
+        .filter(|(marker_path, marker)| {
+            marker_path == path && marker.kind == MarkerKind::Selection && marker.problem.is_none()
+        })
+        .filter_map(|(_, marker)| Some((marker.id.clone()?, marker.boundary?, marker.line)))
+        .collect::<Vec<_>>();
+    markers.sort_by_key(|(_, boundary, line)| (*line, *boundary == Boundary::End));
+    let mut stack: Vec<(String, usize)> = Vec::new();
+    let mut intervals = Vec::new();
+    for (id, boundary, line) in markers {
+        match boundary {
+            Boundary::Start => stack.push((id, line)),
+            Boundary::End => {
+                if let Some(index) = stack.iter().rposition(|(open, _)| open == &id) {
+                    if index + 1 == stack.len() {
+                        let (_, start) = stack.pop().unwrap();
+                        intervals.push((id, start, line));
+                    }
+                }
+            }
+        }
+    }
+    intervals
+}
+
+fn projected_content(
+    text: &str,
+    start: &Marker,
+    end: &Marker,
+    id: &str,
+    intervals: &[(String, usize, usize)],
+    scan: &Scan,
+    path: &str,
+) -> String {
+    let mut raw = String::new();
+    let mut offset = start.end;
+    let children = intervals
+        .iter()
+        .filter(|(child, child_start, child_end)| {
+            child != id && start.line < *child_start && *child_end < end.line
+        })
+        .filter_map(|(child, child_start, child_end)| {
+            let child_start_marker = scan.markers.iter().find(|(p, marker)| {
+                p == path
+                    && marker.kind == MarkerKind::Selection
+                    && marker.id.as_deref() == Some(child)
+                    && marker.boundary == Some(Boundary::Start)
+                    && marker.line == *child_start
+            })?;
+            let child_end_marker = scan.markers.iter().find(|(p, marker)| {
+                p == path
+                    && marker.kind == MarkerKind::Selection
+                    && marker.id.as_deref() == Some(child)
+                    && marker.boundary == Some(Boundary::End)
+                    && marker.line == *child_end
+            })?;
+            Some(vec![
+                (child_start_marker.1.start, child_start_marker.1.end),
+                (child_end_marker.1.start, child_end_marker.1.end),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let mut marker_ranges = children.into_iter().flatten().collect::<Vec<_>>();
+    marker_ranges.sort_unstable();
+    for (marker_start, marker_end) in marker_ranges {
+        if marker_start >= offset && marker_end <= end.start {
+            raw.push_str(&text[offset..marker_start]);
+            offset = marker_end;
+        }
+    }
+    raw.push_str(&text[offset..end.start]);
+    normalize_content(&raw)
 }
 
 /** Normalize selected content for digesting: CRLF becomes LF and non-empty content always ends
@@ -301,7 +393,11 @@ pub(crate) fn normalize_content(content: &str) -> String {
 pub(crate) fn scan_findings(scan: &Scan, registered: &BTreeSet<String>) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut reported = BTreeSet::new();
-    for (path, marker) in &scan.markers {
+    for (path, marker) in scan
+        .markers
+        .iter()
+        .filter(|(_, marker)| marker.kind == MarkerKind::Selection)
+    {
         match &marker.id {
             None => findings.push(
                 Finding::new(
@@ -330,6 +426,64 @@ pub(crate) fn scan_findings(scan: &Scan, registered: &BTreeSet<String>) -> Vec<F
                 )
             }
             _ => {}
+        }
+    }
+    let paths = scan
+        .markers
+        .iter()
+        .map(|(path, _)| path)
+        .collect::<BTreeSet<_>>();
+    for path in paths {
+        let mut ordered = scan
+            .markers
+            .iter()
+            .filter(|(marker_path, marker)| {
+                marker_path == path
+                    && marker.kind == MarkerKind::Selection
+                    && marker.problem.is_none()
+            })
+            .filter_map(|(_, marker)| Some((marker.id.as_deref()?, marker.boundary?, marker.line)))
+            .collect::<Vec<_>>();
+        ordered.sort_by_key(|(_, _, line)| *line);
+        let mut stack: Vec<(&str, usize)> = Vec::new();
+        for (id, boundary, line) in ordered {
+            match boundary {
+                Boundary::Start => stack.push((id, line)),
+                Boundary::End => match stack.pop() {
+                    Some((open, _)) if open == id => {}
+                    Some((open, open_line)) => findings.push(
+                        Finding::new(
+                            "marker_crossed",
+                            Severity::High,
+                            format!("{path}:{line}: selection {id} closes before nested selection {open} opened at line {open_line}"),
+                        )
+                        .with_selection(id)
+                        .with_path(path),
+                    ),
+                    None => findings.push(
+                        Finding::new(
+                            "marker_unmatched",
+                            Severity::High,
+                            format!("{path}:{line}: selection {id} has an end marker without a matching start"),
+                        )
+                        .with_selection(id)
+                        .with_path(path),
+                    ),
+                },
+            }
+        }
+        for (id, line) in stack {
+            findings.push(
+                Finding::new(
+                    "marker_unmatched",
+                    Severity::High,
+                    format!(
+                        "{path}:{line}: selection {id} has a start marker without a matching end"
+                    ),
+                )
+                .with_selection(id)
+                .with_path(path),
+            );
         }
     }
     findings

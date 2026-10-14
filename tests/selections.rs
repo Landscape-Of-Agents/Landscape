@@ -162,6 +162,49 @@ fn multiple_selections_and_overlap() {
     assert!(report["selections"][second.as_str()].is_object());
 }
 
+#[test]
+fn nested_selections_are_contained_and_project_child_content_from_parent() {
+    let fixture = Fixture::ready();
+    let parent = fixture.protect(&["app/payments.py", "start-line", "1", "end-line", "4"]);
+    let child = fixture.target(&["app/payments.py", "start-line", "3", "end-line", "3"]);
+    assert_ne!(parent, child);
+    assert!(fixture.ok(&["validate"]).contains("Crane validate: PASS"));
+
+    let text = fixture.read("app/payments.py");
+    fixture.write(
+        "app/payments.py",
+        &text.replace("fee = amount * 0.03", "fee = amount * 0.04"),
+    );
+    assert!(
+        fixture.ok(&["test", "."]).contains("Crane test: PASS"),
+        "the nested target is editable without changing the parent's preserve fingerprint"
+    );
+
+    let partial = fixture.fails(&[
+        "protect",
+        "app/payments.py",
+        "start-line",
+        "4",
+        "end-line",
+        "8",
+    ]);
+    assert!(partial.contains("overlap"), "{partial}");
+
+    let same_type = Fixture::ready();
+    let outer = same_type.protect(&["app/payments.py", "start-line", "1", "end-line", "4"]);
+    let inner = same_type.protect(&["app/payments.py", "start-line", "3", "end-line", "3"]);
+    let text = same_type.read("app/payments.py");
+    same_type.write(
+        "app/payments.py",
+        &text.replace("fee = amount * 0.03", "fee = amount * 0.04"),
+    );
+    let blocked = same_type.fails(&["test", "."]);
+    assert!(
+        blocked.contains(&outer) && blocked.contains(&inner),
+        "{blocked}"
+    );
+}
+
 /** Identifier collisions with the registry or existing markers are regenerated
  * Input
     - None
@@ -360,6 +403,17 @@ fn forged_markers_are_detected() {
     fixture.write("app/ledger.py", "# @crane:selection:ZZZZ9999:start\ndef post(entry):\n    return entry\n# @crane:selection:ZZZZ9999:end\n");
     let output = fixture.fails(&["validate"]);
     assert!(output.contains("marker_unregistered"), "{output}");
+}
+
+#[test]
+fn crossed_nested_markers_fail_validation() {
+    let fixture = Fixture::ready();
+    fixture.write(
+        "app/ledger.py",
+        "# @crane:selection:AAAAAAAA:start\n# @crane:selection:BBBBBBBB:start\nx = 1\n# @crane:selection:AAAAAAAA:end\n# @crane:selection:BBBBBBBB:end\n",
+    );
+    let output = fixture.fails(&["validate"]);
+    assert!(output.contains("marker_crossed"), "{output}");
 }
 
 /** Editing a registry record, the map, the configuration, or the checkpoints is detected

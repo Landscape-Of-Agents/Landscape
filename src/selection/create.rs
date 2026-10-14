@@ -10,7 +10,7 @@ use std::fs;
 
 use serde_json::json;
 
-use super::anchors::{find_markers, insert, language_for, lines, Boundary};
+use super::anchors::{find_markers, insert, language_for, lines, Boundary, MarkerKind};
 use super::registry::{
     binding_digest, content_digest, Current, Operation, Origin, Record, Span, Status,
 };
@@ -207,23 +207,30 @@ pub(crate) fn create(request: &Request) -> Result<Record, String> {
     }
     // Existing selections in the file: their marker lines are taken and their ranges are closed
     let mut ranges: Vec<(String, usize, usize)> = Vec::new();
-    for marker in markers
-        .iter()
-        .filter(|marker| marker.boundary == Some(Boundary::Start))
-    {
+    for marker in markers.iter().filter(|marker| {
+        marker.kind == MarkerKind::Selection && marker.boundary == Some(Boundary::Start)
+    }) {
         let id = marker.id.clone().unwrap_or_default();
         let end_marker = markers
             .iter()
             .find(|other| {
-                other.id.as_deref() == Some(id.as_str()) && other.boundary == Some(Boundary::End)
+                other.kind == MarkerKind::Selection
+                    && other.id.as_deref() == Some(id.as_str())
+                    && other.boundary == Some(Boundary::End)
             })
             .map_or(all.len(), |other| other.line);
         ranges.push((id, marker.line, end_marker));
     }
-    if let Some((id, first, last)) = ranges
-        .iter()
-        .find(|(_, first, last)| start <= *last && end >= *first)
-    {
+    if let Some((id, first, last)) = ranges.iter().find(|(_, first, last)| {
+        let source_first = *first + 1;
+        let source_last = last.saturating_sub(1);
+        let intersects = source_first <= source_last && start <= source_last && end >= source_first;
+        let candidate_contains = start <= source_first && end >= source_last;
+        let existing_contains = source_first <= start && source_last >= end;
+        let touches_marker = (start..=end).contains(first) || (start..=end).contains(last);
+        (intersects && !candidate_contains && !existing_contains)
+            || (touches_marker && !candidate_contains)
+    }) {
         return Err(format!(
             "lines {start}-{end} overlap selection {id} (lines {first}-{last} including its markers); selections cannot overlap"
         ));

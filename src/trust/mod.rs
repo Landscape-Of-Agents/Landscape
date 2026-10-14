@@ -22,13 +22,14 @@ use crate::platform::files::{restrict_to_owner, write_atomic};
 use crate::platform::{io_error, now_unix};
 use crypto::{verify_signature, SigningIdentity};
 
-/** Environment variables set by agent hosts (Claude Code, Codex) or by an adapter for agent tool
- * processes; their presence means a command is running on behalf of an agent */
+/** Environment variables set by agent hosts or by an adapter for agent tool processes; their
+ * presence means a command is running on behalf of an agent */
 pub(crate) const AGENT_MARKERS: &[&str] = &[
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
     "CODEX_SANDBOX",
     "CODEX_SANDBOX_NETWORK_DISABLED",
+    "GEMINI_SESSION_ID",
     "CRANE_AGENT",
 ];
 

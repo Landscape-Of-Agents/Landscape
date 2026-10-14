@@ -604,7 +604,11 @@ mod tests {
         assert_eq!(unresolved_code(&[("x.py", inverted)]), "marker_inverted");
         assert_eq!(unresolved_code(&[("x.js", &text)]), "marker_malformed");
         let nested = insert(&text, syntax, "BBBBBBBB", 3, 3).unwrap();
-        assert_eq!(unresolved_code(&[("x.py", &nested)]), "selection_overlap");
+        let Resolution::Resolved(parent) = resolve("AAAAAAAA", &scan_of(&[("x.py", &nested)]))
+        else {
+            panic!("a fully contained selection resolves");
+        };
+        assert_eq!(parent.content, location.content);
     }
 
     /** Check that unregistered and unreadable markers are reported

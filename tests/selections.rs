@@ -117,7 +117,7 @@ fn markers_follow_the_language() {
     assert!(fixture.ok(&["validate"]).contains("Crane validate: PASS"));
 }
 
-/** Multiple selections coexist, are independently addressable, and cannot overlap
+/** Multiple selections coexist; partial overlaps are rejected while fully nested selections work
  * Input
     - None
  * Output

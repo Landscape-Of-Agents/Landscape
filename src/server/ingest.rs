@@ -262,6 +262,7 @@ pub(super) fn handle(
                 &batch,
             );
             if let Ok(stored) = &stored {
+                super::dashboard::uploaded(&repository);
                 let verified = !batch.root_commits.is_empty()
                     && batch.remote.is_some()
                     && identity(&batch.root_commits, batch.remote.as_deref()) == repository;

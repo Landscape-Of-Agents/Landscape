@@ -59,6 +59,25 @@ const LOGO: &[u8] = include_bytes!("logo.png");
 /** The browser tab icon (64 px) */
 const FAVICON: &[u8] = include_bytes!("favicon.png");
 
+/** When each repository last received an upload, so its cached views are dropped at once */
+static UPLOADS: std::sync::LazyLock<Mutex<HashMap<String, Instant>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/** Record that a repository received an upload: the dashboard reloads it on the next request
+ * Input
+    - repository: &str - repository identity
+ * Output
+    - None
+*/
+pub(crate) fn uploaded(repository: &str) {
+    if let Ok(mut uploads) = UPLOADS.lock() {
+        if uploads.len() > 10_000 {
+            uploads.clear();
+        }
+        uploads.insert(repository.to_string(), Instant::now());
+    }
+}
+
 /** How long a loaded repository view is reused */
 const CACHE_TTL: Duration = Duration::from_secs(20);
 
@@ -1138,9 +1157,14 @@ impl Dashboard {
             "{repository}:{}",
             members.iter().cloned().collect::<Vec<_>>().join(",")
         );
+        // A view loaded before the repository's last upload is stale
+        let uploaded = UPLOADS
+            .lock()
+            .ok()
+            .and_then(|uploads| uploads.get(repository).copied());
         if let Ok(cache) = self.cache.lock() {
             if let Some((at, context)) = cache.get(&key) {
-                if at.elapsed() < CACHE_TTL {
+                if at.elapsed() < CACHE_TTL && uploaded.is_none_or(|uploaded| uploaded < *at) {
                     return Ok(Arc::clone(context));
                 }
             }

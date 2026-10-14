@@ -443,10 +443,14 @@ impl Client {
     }
 }
 
+/** Most upload passes one sync makes while records keep arriving */
+const MAX_PASSES: usize = 5;
+
 /** What started a sync
  * Variants
-    - Background - a hook or command; skipped while another sync runs (that sync, or the next
-      trigger, uploads the same records), and the repository status is sent only when due
+    - Background - a hook or command; while another sync runs it leaves a pending flag instead,
+      and that sync makes one more pass, so the records that started it are never left behind;
+      the repository status is sent only when due
     - Manual - a person ran 'crane agent sync'; waits for a running sync and always refreshes the
       repository status
 */
@@ -470,20 +474,78 @@ pub(crate) fn sync(
     stores: &Stores,
     trigger: Trigger,
 ) -> Result<Flushed, String> {
-    let path = stores.directory.join("sync.lock");
-    let _lock = match trigger {
-        Trigger::Manual => Lock::acquire(&path)?,
-        Trigger::Background => match Lock::try_acquire(&path)? {
-            Some(lock) => lock,
-            None => {
-                return Ok(Flushed {
-                    skipped: true,
-                    ..Flushed::default()
-                })
-            }
-        },
-    };
-    let refresh = trigger == Trigger::Manual;
+    let manual = trigger == Trigger::Manual;
+    let first = passes(
+        &stores.directory.join("sync.lock"),
+        &stores.directory.join("sync.pending"),
+        manual,
+        |pass| upload(workspace, stores, manual && pass == 0),
+    )?;
+    first.unwrap_or_else(|| {
+        Ok(Flushed {
+            skipped: true,
+            ..Flushed::default()
+        })
+    })
+}
+
+/** Run upload passes under the sync lock until no other sync asked for one more. A background
+ * sync that finds the lock taken writes the pending flag (and tries the lock once more, in case
+ * the holder finished before it could see the flag); the holder checks the flag after each pass,
+ * once it has released the lock, so a request is served either by another pass or by its writer
+ * Input
+    - lock_path: &Path - the sync lock
+    - pending: &Path - the pending flag
+    - wait: bool - wait for the lock (a person asked) instead of leaving the flag
+    - pass: impl FnMut(usize) -> R - one pass, given its number
+ * Output
+    - Result<Option<R>, String> the first pass's result, None when another sync will run instead
+*/
+fn passes<R>(
+    lock_path: &std::path::Path,
+    pending: &std::path::Path,
+    wait: bool,
+    mut pass: impl FnMut(usize) -> R,
+) -> Result<Option<R>, String> {
+    let mut first = None;
+    for number in 0..MAX_PASSES {
+        let lock = match (wait, number) {
+            (true, 0) => Some(Lock::acquire(lock_path)?),
+            (false, 0) => match Lock::try_acquire(lock_path)? {
+                Some(lock) => Some(lock),
+                None => {
+                    let _ = fs::write(pending, now_millis().to_string());
+                    Lock::try_acquire(lock_path)?
+                }
+            },
+            _ => Lock::try_acquire(lock_path)?,
+        };
+        // Another sync holds the lock: it sees the pending flag after its pass
+        let Some(lock) = lock else {
+            break;
+        };
+        let _ = fs::remove_file(pending);
+        let result = pass(number);
+        drop(lock);
+        if first.is_none() {
+            first = Some(result);
+        }
+        if !pending.exists() {
+            break;
+        }
+    }
+    Ok(first)
+}
+
+/** One upload pass, under the sync lock, recording the outcome
+ * Input
+    - workspace: &Workspace - repository
+    - stores: &Stores - runtime stores
+    - refresh: bool - always send the repository status (a person asked)
+ * Output
+    - Result<Flushed, String> what was sent (nothing when uploads are off)
+*/
+fn upload(workspace: &Workspace, stores: &Stores, refresh: bool) -> Result<Flushed, String> {
     // Alert rules first, so their notifications are uploaded by this sync (telemetry/rules.rs)
     if let Err(error) = super::rules::evaluate(workspace, stores, "SYNC") {
         crate::platform::notes::note("ALERT_RULES_FAILED", json!({"error": error}));
@@ -741,7 +803,69 @@ fn push(
 
 #[cfg(test)]
 mod tests {
-    use super::{request_message, secure};
+    /** A sync never leaves records behind: one that finds another running asks it for one more
+     * pass, a request made during a pass gets another pass, the passes are bounded, and a free
+     * lock means a single pass
+     * Input
+        - None
+     * Output
+        - None (panics on failure)
+    */
+    #[test]
+    fn a_busy_sync_hands_its_records_to_the_running_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = directory.path().join("sync.lock");
+        let pending = directory.path().join("sync.pending");
+        // Nothing else runs: one pass
+        let mut count = 0;
+        assert_eq!(
+            passes(&lock, &pending, false, |_| count += 1).unwrap(),
+            Some(())
+        );
+        assert_eq!(count, 1);
+        assert!(!lock.exists() && !pending.exists());
+        // Another sync holds the lock: this one leaves the flag and runs nothing
+        std::fs::write(&lock, "held").unwrap();
+        let mut count = 0;
+        assert_eq!(
+            passes(&lock, &pending, false, |_| count += 1).unwrap(),
+            None
+        );
+        assert_eq!(count, 0);
+        assert!(
+            pending.exists(),
+            "the running sync is asked for one more pass"
+        );
+        // The running sync then serves that request with a second pass
+        std::fs::remove_file(&lock).unwrap();
+        let mut numbers = Vec::new();
+        let first = passes(&lock, &pending, false, |number| {
+            numbers.push(number);
+            if number == 0 {
+                // A trigger arrives while this pass runs
+                std::fs::write(&pending, "1").unwrap();
+            }
+            number
+        })
+        .unwrap();
+        assert_eq!(numbers, [0, 1]);
+        assert_eq!(first, Some(0), "the first pass's result is returned");
+        assert!(!pending.exists());
+        // Triggers that never stop are served by a bounded number of passes
+        let mut count = 0;
+        passes(&lock, &pending, false, |_| {
+            count += 1;
+            std::fs::write(&pending, "1").unwrap();
+        })
+        .unwrap();
+        assert_eq!(count, MAX_PASSES);
+        // A person waits for the lock and always runs
+        let mut count = 0;
+        passes(&lock, &pending, true, |_| count += 1).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    use super::{passes, request_message, secure, MAX_PASSES};
 
     /** Check that only HTTPS or a service on this machine is accepted
      * Input

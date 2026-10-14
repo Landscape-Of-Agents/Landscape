@@ -1143,8 +1143,14 @@ fn verified(event: &Event) -> Vec<Spec> {
             .respond("OK", "NA", "Files changed by the command attributed to it.")
             .severity("INFO", "FIXED", "NONE")
             .set("decision", "decision", "NOT_REQUIRED")
-            .set("decision", "enforcement", "NOT_APPLICABLE")
-            .set("eval", "files_changed", files);
+            .set("decision", "enforcement", "NOT_APPLICABLE");
+        // Only its own number: the call's measurements (tool time, tokens) stay on the
+        // verification, so they are counted once
+        let marker = attributed.0["eval"]["eval"].clone();
+        attributed.0.insert(
+            "eval".into(),
+            json!({"eval": marker, "files_changed": files}),
+        );
         specs.push(attributed);
     }
     specs

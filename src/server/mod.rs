@@ -81,16 +81,17 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     let settings = database::Settings::from_environment()?;
     let connected = database::connect(&settings)?;
     database::migrate(&connected)?;
+    database::apply_retention(&connected, settings.retention_ms)?;
     let limits = Limits::from_environment();
     let auth = dashboard::auth::Auth::from_environment(&store::session_seed(&connected)?)?;
     let service = Arc::new(Service {
         dashboard: dashboard::Dashboard::new(
             dashboard::data::ReadOnly::new(connected.clone()),
             dashboard::approve::Approvals::new(connected.clone()),
-            service_events::ServiceLog::new(connected.clone(), settings.retention_days),
+            service_events::ServiceLog::new(connected.clone(), settings.retention_ms),
             auth,
         ),
-        log: service_events::ServiceLog::new(connected.clone(), settings.retention_days),
+        log: service_events::ServiceLog::new(connected.clone(), settings.retention_ms),
         database: connected,
         installations: Limiter::new(limits.requests_per_minute),
         addresses: Limiter::new(limits.addresses_per_minute),

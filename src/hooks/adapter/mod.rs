@@ -189,6 +189,7 @@ impl HookEvent {
     - prompt: Option<String> - prompt text (digested, never stored)
     - tool_failed: Option<bool> - whether the tool reported a failure (post-tool-use)
     - end_reason: Option<String> - why the session ended
+    - transcript: Option<String> - path of the agent's transcript (token usage is read from it)
 */
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ProviderEvent {
@@ -204,6 +205,7 @@ pub(crate) struct ProviderEvent {
     pub(crate) prompt: Option<String>,
     pub(crate) tool_failed: Option<bool>,
     pub(crate) end_reason: Option<String>,
+    pub(crate) transcript: Option<String>,
 }
 
 /** Build a provider event from the fields the hook payloads share
@@ -253,6 +255,7 @@ fn provider_event(payload: &Value, action: Option<AgentAction>) -> ProviderEvent
         prompt: text("prompt"),
         tool_failed,
         end_reason: text("reason"),
+        transcript: text("transcript_path"),
     }
 }
 

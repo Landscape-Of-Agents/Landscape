@@ -81,26 +81,166 @@ pub(super) fn range(query: &Query, events: &[&Value]) -> (u64, u64) {
     (first, last.max(first + 1))
 }
 
-/** Events over time, counted per bucket and grouped by a facet or any attribute (the largest
- * groups drawn on their own, the rest as OTHER)
+/** How a series turns the events of one bucket into one number
+ * Variants
+    - Count - how many events
+    - Sum, Avg, Min, Max - of a numeric attribute
+    - P50, P95, P99 - a percentile of a numeric attribute
+    - Distinct - how many different values an attribute takes (sessions, agents, tools, ...)
+*/
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Agg {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+    P50,
+    P95,
+    P99,
+    Distinct,
+}
+
+impl Agg {
+    /** Read an aggregation name; without a metric only Count applies
+     * Input
+        - name: Option<&str> - count, sum, avg, min, max, p50, p95, p99, or distinct
+        - metric: bool - a metric attribute was given
+     * Output
+        - Agg
+    */
+    pub(super) fn parse(name: Option<&str>, metric: bool) -> Self {
+        if !metric {
+            return Self::Count;
+        }
+        match name.unwrap_or("avg") {
+            "count" => Self::Count,
+            "sum" => Self::Sum,
+            "min" => Self::Min,
+            "max" => Self::Max,
+            "p50" | "median" => Self::P50,
+            "p95" => Self::P95,
+            "p99" => Self::P99,
+            "distinct" => Self::Distinct,
+            _ => Self::Avg,
+        }
+    }
+
+    /** The aggregation's name
+     * Input
+        - None (uses self)
+     * Output
+        - &'static str
+    */
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Count => "count",
+            Self::Sum => "sum",
+            Self::Avg => "avg",
+            Self::Min => "min",
+            Self::Max => "max",
+            Self::P50 => "p50",
+            Self::P95 => "p95",
+            Self::P99 => "p99",
+            Self::Distinct => "distinct",
+        }
+    }
+
+    /** Reduce the samples of one bucket (or a whole series) to one number
+     * Input
+        - samples: &[String] - one item per event (count), the attribute's values (distinct), or
+          its first numeric value (the others)
+     * Output
+        - Option<f64>, None when a numeric aggregation has nothing to aggregate
+    */
+    pub(super) fn reduce(self, samples: &[String]) -> Option<f64> {
+        match self {
+            Self::Count => Some(samples.len() as f64),
+            Self::Distinct => Some(samples.iter().collect::<BTreeSet<_>>().len() as f64),
+            _ => {
+                let mut numbers = samples
+                    .iter()
+                    .filter_map(|sample| sample.parse::<f64>().ok())
+                    .collect::<Vec<_>>();
+                if numbers.is_empty() {
+                    return None;
+                }
+                numbers.sort_by(|a, b| a.total_cmp(b));
+                let at =
+                    |share: f64| numbers[((numbers.len() - 1) as f64 * share).round() as usize];
+                Some(match self {
+                    Self::Sum => numbers.iter().sum(),
+                    Self::Avg => numbers.iter().sum::<f64>() / numbers.len() as f64,
+                    Self::Min => numbers[0],
+                    Self::Max => numbers[numbers.len() - 1],
+                    Self::P50 => at(0.5),
+                    Self::P95 => at(0.95),
+                    _ => at(0.99),
+                })
+            }
+        }
+    }
+}
+
+/** A number as JSON: whole numbers as integers, others rounded to three decimals, none as null
+ * Input
+    - value: Option<f64> - number
+ * Output
+    - Value
+*/
+fn number_json(value: Option<f64>) -> Value {
+    match value {
+        Some(value) if value.fract() == 0.0 && value.abs() < 9.0e15 => json!(value as i64),
+        Some(value) => json!((value * 1000.0).round() / 1000.0),
+        None => Value::Null,
+    }
+}
+
+/** Events over time, per bucket, grouped by a facet or any attribute (the largest groups drawn on
+ * their own, the rest as OTHER). Each bucket counts its events, or aggregates a metric: the sum,
+ * average, smallest, largest, or a percentile of a numeric attribute, or how many different values
+ * an attribute takes (for instance distinct sessions: how many were active)
  * Input
     - context: &Context - repository data
     - query: &Query - filter
-    - by: Option<&str> - a facet name or an attribute path; none for one series
+    - params: &BTreeMap<String, String> - by (facet or path), metric (attribute path), agg
  * Output
-    - Value {by, bucket_ms, start, buckets, series: [{key, label, total, points}], total}
+    - Value {by, metric, agg, bucket_ms, start, buckets, series: [{key, label, total, events, points}], total}
 */
-pub(super) fn series(context: &Context, query: &Query, by: Option<&str>) -> Value {
+pub(super) fn series(context: &Context, query: &Query, params: &BTreeMap<String, String>) -> Value {
     let events = filtered(context, query, None);
-    let path = by
-        .map(|by| facet_path(by).unwrap_or(by).to_string())
-        .filter(|path| !path.is_empty());
+    let by = params
+        .get("by")
+        .map(String::as_str)
+        .filter(|by| !by.is_empty());
+    let path = by.map(|by| facet_path(by).unwrap_or(by).to_string());
+    let metric = params
+        .get("metric")
+        .map(String::as_str)
+        .filter(|metric| !metric.is_empty())
+        .map(|metric| facet_path(metric).unwrap_or(metric).to_string());
+    let agg = Agg::parse(params.get("agg").map(String::as_str), metric.is_some());
     let key_of = |spec: &Value| match &path {
         Some(path) => values(spec, path)
             .into_iter()
             .next()
             .unwrap_or_else(|| "NONE".into()),
         None => "events".into(),
+    };
+    // What one event adds to its bucket
+    let samples_of = |spec: &Value| -> Vec<String> {
+        match (&metric, agg) {
+            (None, _) | (Some(_), Agg::Count) => vec![String::new()],
+            (Some(metric), Agg::Distinct) => values(spec, metric)
+                .into_iter()
+                .filter(|value| !value.is_empty())
+                .collect(),
+            (Some(metric), _) => values(spec, metric)
+                .into_iter()
+                .find(|value| value.parse::<f64>().is_ok())
+                .into_iter()
+                .collect(),
+        }
     };
     let (first, last) = range(query, &events);
     let size = bucket_size(last - first);
@@ -117,7 +257,7 @@ pub(super) fn series(context: &Context, query: &Query, by: Option<&str>) -> Valu
         .take(MAX_SERIES)
         .map(|(key, _)| key.clone())
         .collect::<BTreeSet<_>>();
-    let mut points: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    let mut samples: BTreeMap<String, (u64, Vec<Vec<String>>)> = BTreeMap::new();
     for spec in &events {
         let at = spec["occurred_at"].as_u64().unwrap_or(start).max(start);
         let index = (((at - start) / size) as usize).min(buckets - 1);
@@ -127,30 +267,43 @@ pub(super) fn series(context: &Context, query: &Query, by: Option<&str>) -> Valu
         } else {
             "OTHER".to_string()
         };
-        points.entry(key).or_insert_with(|| vec![0; buckets])[index] += 1;
+        let entry = samples
+            .entry(key)
+            .or_insert_with(|| (0, vec![Vec::new(); buckets]));
+        entry.0 += 1;
+        entry.1[index].extend(samples_of(spec));
     }
     let mut keys = ranked
         .iter()
         .take(MAX_SERIES)
         .map(|(key, _)| key.clone())
         .collect::<Vec<_>>();
-    if points.contains_key("OTHER") && !keys.iter().any(|key| key == "OTHER") {
+    if samples.contains_key("OTHER") && !keys.iter().any(|key| key == "OTHER") {
         keys.push("OTHER".into());
     }
     let list = keys
         .iter()
+        .filter(|key| {
+            // A metric's series without one value (its events lack the attribute) says nothing
+            agg == Agg::Count
+                || samples
+                    .get(*key)
+                    .is_some_and(|(_, buckets)| buckets.iter().any(|bucket| !bucket.is_empty()))
+        })
         .filter_map(|key| {
-            points.get(key).map(|points| {
+            samples.get(key).map(|(count, buckets)| {
+                let all = buckets.iter().flatten().cloned().collect::<Vec<_>>();
                 json!({
                     "key": key,
                     "label": label(context, by, key),
-                    "total": points.iter().sum::<u64>(),
-                    "points": points,
+                    "total": number_json(agg.reduce(&all)),
+                    "events": count,
+                    "points": buckets.iter().map(|bucket| number_json(agg.reduce(bucket))).collect::<Vec<_>>(),
                 })
             })
         })
         .collect::<Vec<_>>();
-    json!({"by": by, "bucket_ms": size, "start": start, "buckets": buckets, "series": list, "total": events.len()})
+    json!({"by": by, "metric": metric, "agg": agg.name(), "bucket_ms": size, "start": start, "buckets": buckets, "series": list, "total": events.len()})
 }
 
 /** How a value is shown: members by their Git user name, everything else as it is

@@ -477,6 +477,45 @@ impl Hook {
                 "no pre-tool decision was recorded",
             ));
         }
+        // The model turn that issued the call, from the agent's transcript (DASHBOARD.md F06)
+        let usage = self
+            .provider
+            .transcript
+            .as_deref()
+            .zip(self.provider.tool_call_id.as_deref())
+            .and_then(|(path, id)| {
+                crate::telemetry::usage::of_tool_call(std::path::Path::new(path), id)
+            });
+        match &usage {
+            Some(turn) => {
+                let share = turn.share();
+                for (name, value) in [
+                    ("model_tokens", share.total()),
+                    ("model_input_tokens", share.input),
+                    ("model_output_tokens", share.output),
+                    ("cache_read_tokens", share.cache_read),
+                    ("cache_creation_tokens", share.cache_creation),
+                    ("turn_tokens", turn.total()),
+                    ("turn_tool_calls", turn.calls as f64),
+                ] {
+                    event.measurements.push(Measurement::observed(
+                        name,
+                        (value * 10.0).round() / 10.0,
+                        if name == "turn_tool_calls" { "count" } else { "tokens" },
+                        "the issuing model turn's usage in the agent transcript, shared equally by its tool calls",
+                    ));
+                }
+                if let Some(model) = &turn.model {
+                    event.payload["model_turn"] = json!(model);
+                }
+            }
+            None => event.measurements.push(Measurement::missing(
+                "model_tokens",
+                "tokens",
+                Telemetry::Unsupported,
+                "the agent reported no transcript with token usage for this call",
+            )),
+        }
         event.measurements.push(Measurement::observed(
             "selections_verified",
             report.resolutions.len() as f64,

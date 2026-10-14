@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 
 use crate::foxx::views::Snapshot;
 use crate::platform::io_error;
-use crate::telemetry::events::{verify_chain, Event};
+use crate::telemetry::events::{verify_retained, Event};
 use crate::telemetry::identity::{SessionRecord, TaskRecord};
 use crate::telemetry::ledger::{self, Entry};
 
@@ -332,7 +332,8 @@ pub(crate) fn load(
         )?;
         chains.push(json!({
             "member": installation,
-            "event_chain": verify_chain(&events),
+            // Events older than the retention period expire; the rest must still chain
+            "event_chain": verify_retained(&events),
             "ledger_reconciles": ledger::verify(&entries).is_ok(),
         }));
         for event in &events {

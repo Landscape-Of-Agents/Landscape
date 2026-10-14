@@ -1031,7 +1031,7 @@ Common attributes
 - Agent [(as F05)]
 - Resource [resource (list of enums), resource_ids (written files, or files changed during a shell command), resource_classification (list)]
 - Assessment [assessment_checks ([PAIRING, SELECTIONS_RECHECK, WORKTREE_DIFF]) (list of enums)]
-- Eval [eval (MEASURED), tool_duration_ms (duration_ms), latency_ms (duration_ms), files_checked (integer)]
+- Eval [eval (MEASURED), tool_duration_ms (duration_ms), latency_ms (duration_ms), files_checked (integer), model_tokens (number, tokens), model_input_tokens (number), model_output_tokens (number), cache_read_tokens (number), cache_creation_tokens (number), turn_tokens (number), turn_tool_calls (integer)]
 - Bindings [third_party ([CLAUDE_CODE, CODEX]), binding_result (NA)]
 - Telemetry [agent_state (ACTIVE, DEGRADED, QUARANTINED), known_as (OBSERVED, INFERRED), hook_event (POST_TOOL_USE)]
 - Other [tool_failed (boolean, null), scan_mode (PATHS, FULL, NONE) (enum)]
@@ -3060,32 +3060,46 @@ A tool from an external (MCP) server or a tool Crane does not know.
 
 ## Part 3: Where events appear on the dashboard
 
-Pages are grouped in the left rail (Monitor, Investigate, Operate, Govern, Organization). Each page is split
-into zones, one metric or table per panel, and the zones are listed under the page in the rail. Every
-panel has an info icon (hover for the explanation, click for the details sidebar), refresh, expand,
-monitor view (full screen, refreshed every 30 seconds), and collapse. Every time is shown as
-`DD:MM:YYYY:HH:MM:SS`.
+Pages are grouped in the left rail (Monitor, AI agents, Investigate, Operate, Govern, Organization).
+Groups fold, the rail has its own search, and pages that need attention carry a badge (firing alert
+rules, controls not satisfied). Each page is split into zones, one metric or table per panel, and
+the zones are listed under the page in the rail. Every panel has:
+
+- an info icon (hover for the explanation, click for the details sidebar);
+- a funnel that says in words which events it counts: the time range, every global condition, its
+  own conditions, its grouping, or that it shows state that no filter narrows;
+- its own conditions (`+ filter`), added to the global filter for that panel only;
+- refresh, the lens (a right sidebar with the chart large, its metrics, its properties and filter in
+  words, what it is, and an interpretation generated from what it drew), expand, monitor view (full
+  screen, refreshed every 30 seconds), and collapse.
+
+Every time is shown as `DD:MM:YYYY:HH:MM:SS`. Colors follow the Foxx logo (fox orange, ember, cream on
+warm charcoal); series use a categorical order led by the Foxx orange that was checked for
+color-blind separation in both themes, and states use reserved status colors. The theme is the
+system's, or light or dark when chosen.
 
 | Page | Built from |
 |---|---|
 | **Header and scope** | F00 (sign-in, account, repository, member), F02.7 (linked members) |
 | **Repositories** | per repository: count of F02.9 machines, F03 sessions, all events, F05.3 to F05.7 denials, F06.5 bypasses, F14.1 alerts, newest `occurred_at` |
-| **Overview** | Activity: F03, F04, F05, F10; Security outcomes: F05.4, F06.3 to F06.5, F07.1, F27; Integrity: F12, F28; Recent violations: F06.4, F06.5; Recent alerts: F14; All evals |
-| **Event explorer** | every event, as volume over time (split by any attribute) and as a stream |
-| **Timeline** | Gantt chart: traces (an F05 decision and the events with the same `action_id`) and sessions as bars, rows and colors by any attribute; Event timeline: every event as a dot in lanes |
-| **Logs** | every event as a log line, with its severity, flow, statement, and attributes |
-| **Traces** | events grouped by `action.action_id`; duration histogram and a table filtered by kind, outcome, duration, and span count; a waterfall for one trace |
-| **Topology** | Who used what: agents, sessions, tools, and paths, sized by events and colored by denials; Flow dependencies: which flow follows which within a session |
-| **Distributions** | histograms of trace duration, gap between session events, events per session, and any numeric `eval.*` attribute; breakdowns by any attribute |
+| **Overview** | Health: F05 evals; Agent fleet: tool calls (F05 and F06 traces), tokens (F06 `eval.model_tokens`), tool time; Activity: F03, F04, F05, F10; Security outcomes: F05.4, F06.3 to F06.5, F07.1, F27; Recent violations: F06.4, F06.5; Recent alerts: F14; All evals |
+| **Event explorer** | every event, as volume over time (split by any attribute) and as a stream; facets include and exclude values |
+| **Timeline** | Gantt chart of traces; event timeline (every event as a dot in lanes); activity rhythm (day of week by hour, and per day); concurrency (distinct sessions and agents per time bucket); tool time, hook latency, and tokens over time |
+| **Agents** | fleet numbers; a leaderboard per agent identity (calls, tools, denial and failure shares, tool time, tokens, sessions, quarantines, bypass attempts); events and Gantt by agent; agent by tool and agent by decision matrices; a risk map (calls against denial share); bypass attempts and denials by agent; tokens by agent; models, autonomy modes, and session safety; a profile per agent |
+| **Tool calls** | every traced tool call (F05 decision to F06 verification): summary, types (by tool, resource kind, decision), metrics per tool, decisions per tool, tools by resource, the waterfall (time per call, packed or in real time, with the tokens of its turn), tokens per call, time against tokens, tool time, and a browser of every call; a profile per tool |
+| **Sessions** | summary, activity, active sessions, a leaderboard (calls, time, tokens), the waterfall of one session's calls, and the session list |
+| **Session page** | tiles: F03, F05.10, F06.4, F06.5, F27; the waterfall of its tool calls; tool mix; tokens over the session; Gantt; action graph: every event with that `session_id` in `sequence` order; tasks: F04, F07; downloads: F30.3 |
+| **Logs** | every event as a log line, with its severity, flow, statement, tokens, stale data, and any attribute as a column |
+| **Traces** | events grouped by `action.action_id`; duration histogram and a table filtered by kind, outcome, duration, and span count; a trace view with its tokens and waterfall |
+| **Topology** | Who used what (any chain of 2 to 5 attributes); member by agent, tool by decision, and flow by severity matrices; most touched and denied resources; flow dependencies; the code topology (zones and flows of governance.yaml with their call graphs, F28) |
+| **Distributions** | histograms of trace duration, gap between session events, events per session, tokens per call, tool time, hook latency, and any numeric `eval.*` attribute; breakdowns by any attribute |
 | **Texts and reasons** | the words of `statement`, `reason`, and `response_statement`, the distinct texts, and log lines |
-| **Sessions, Agents** | Agents: F03 grouped by `agent_id`; Sessions: F03, F08, F10, F17, F27 |
-| **Session page** | tiles: F03, F05.10, F06.4, F06.5, F27; action graph: every event with that `session_id` in `sequence` order; tasks: F04, F07; downloads: F30.3 |
 | **Alerting** | rules built with `crane alert` (from the newest status report), rule values over time, firings, deliveries, alert events (F14), hook alerts |
 | **Credits** | balances per session (F27), grants made on the dashboard and their outcome |
-| **Audit trail** | F13.3, F18 to F20, F28, and every command event, with the time of each change |
-| **Governance** | F01, F13.3, F18, F19, F20, F28 (newest report per repository) |
-| **Compliance** | controls evaluated from F05, F06, F07, F08, F09.6, F12, F14, F22, F27; outcomes; inferred observability; what Crane cannot observe |
-| **Settings** | Approvals: F02.4 to F02.7, F30.4, F30.5; Members: F02.7, F02.9, F09, F28; Health: F09, F12, F27.10, F29; Connection: F21, F02.5; Integrations: F22 |
+| **Audit trail** | summary; changes per day by actor; actor by action; the change timeline; the governance changes (F13.3, F18 to F20, F28); command outcomes and events (F13); dashboard actions (service events) |
+| **Governance** | state; zones and flows (criticality, autonomy ceiling, files, call graph); flow call graphs; policies with command outcomes; the selection map (by file, operation, language) and relocations; checkpoints and context; integrity by member and evidence chains; governance events (F01, F12, F13, F18 to F20, F28); findings |
+| **Compliance** | posture gauge (applicable controls satisfied, partial counting half); outcomes; outcomes per framework (OWASP LLM, OWASP Agentic, NIST AI RMF, SOC 2, ISO/IEC 27001, GDPR) and each requirement; controls as cards or a table; evidence per control and flow; gaps and limitations; inferred observability; what Crane cannot observe |
+| **Settings** | Approvals: F02.4 to F02.7, F30.4, F30.5; Members: F02.7, F02.9, F09, F28; Health: F09, F12, F27.10, F29; Data retention; Connection: F21, F02.5; Integrations: F22 |
 
 ### Action graph encoding (session page)
 
@@ -3114,7 +3128,7 @@ The envelope's `origin` says which producer wrote an event:
 | `origin` | Producer | Stored in | Notes |
 |---|---|---|---|
 | `MACHINE` | Crane on a member's machine (hooks, commands, the Foxx extension) | `events.spec`, next to the internal event | Computed when the event is appended and covered by its digest, so it chains like the rest of the evidence. Events stored before this specification are projected when they are read. |
-| `SERVICE` | The ingestion service (uploads, status reports, sign-in, dashboard views) | `service_events` (schema version 6) | `INFO`, `LOW`, and `MEDIUM` events expire with the retention period; `HIGH` and `CRITICAL` are kept. |
+| `SERVICE` | The ingestion service (uploads, status reports, sign-in, dashboard views) | `service_events` (schema version 6) | Expire with the retention period, like every telemetry record (see Data retention). |
 | `DERIVED` | The dashboard, from other records | nothing (built on every read) | F27 from the credit ledger, F14 from alerts, F13.3 from the governance audit trail, F10 stale and revived sessions, permission outcomes (F16), and ledgers that do not reconcile. |
 | `WORKFLOW` | GitHub workflows (F32, F33) | the workflow log | One JSON line per event, prefixed with `crane-event ` (`scripts/workflow_event.py`, or `jq` in the pull request workflow). These are not uploaded. |
 
@@ -3170,26 +3184,90 @@ is counted (`telemetry/query.rs`; the alert rules use the same code).
   path is any attribute (`decision.decision`, `actor.agent_id`, `eval.latency_ms`, ...) or a facet
   name (`flow`, `severity`, `decision`, `agent`, `session`, `tool`, `status`, `origin`, `event`,
   `failure_state`, `enforcement`, `alert_kind`).
-- Operators: `is`, `not`, `contains`, `not_contains`, `prefix`, `gt`, `gte`, `lt`, `lte`, `exists`,
-  `missing`. Comparisons are numeric when both sides are numbers, else by text, ignoring case.
+- Operators: `is`, `not`, `contains`, `not_contains`, `prefix`, `suffix`, `like` (a pattern where
+  `*` is any text and `?` one character, matching the whole value), `gt`, `gte`, `lt`, `lte`,
+  `between` (two numbers, both included, in either order), `exists`, `missing`. Comparisons are
+  numeric when both sides are numbers, else by text, ignoring case.
+- `"exclude": true` negates a clause: an event passes when the condition does not hold (an event
+  without the attribute passes `not (tool is READ)`).
 - Combination: the values of one clause are OR-ed; clauses are AND-ed; clauses that share a `group`
-  number are OR-ed with each other. Any mix of these can be active at once.
+  number are OR-ed with each other. With exclusion, every combination of conditions can be written
+  (as an AND of OR groups). Any mix of these can be active at once.
 - `since` and `until` (Unix milliseconds), `q` (text anywhere in the event), and the shortcuts
   `session`, `task`, `name`, and one parameter per facet (`?flow=F05,F06`) are AND-ed with the
   list.
 - `/api/attributes` lists every attribute present in the filtered events: its kind, how many events
   have it, its distinct values (identifiers excepted), and the range of numbers.
 
-On the dashboard, the filter bar shows each clause as a pill that can be edited, switched off, or
-removed. The condition builder chooses the attribute, an operator that fits its kind, the values,
-and whether it is AND-ed or OR-ed with the clause before. The filter is kept for the browser tab.
+On the dashboard, the filter bar shows each clause as a pill that can be edited, negated (¬),
+switched off, or removed. The condition builder chooses the attribute, an operator that fits its
+kind, the values, NOT, and whether it is AND-ed or OR-ed with another condition, and previews the
+condition in words. Facet values can be included or excluded (⊖), and any value in an event can be
+kept or excluded from every view. A panel can add conditions for itself only. Filters can be saved
+as named views (in the browser) and shared as a link that carries the time range and every
+condition. A custom time range takes two exact times. The filter is kept for the browser tab.
 
 ### New API routes
 
 `/api/gantt`, `/api/timeline`, `/api/traces`, `/api/traces/{action_id}`, `/api/topology`,
-`/api/dependencies`, `/api/histogram`, `/api/semantics`, `/api/attributes`, `/api/alerting`, and
-`/api/grants`. They are read-only and take the filter above. The Gantt chart and the event timeline
-take `rows`, `lanes`, and `color` (a facet or a path), and the histogram takes `field` and `bins`.
+`/api/dependencies`, `/api/histogram`, `/api/semantics`, `/api/attributes`, `/api/alerting`,
+`/api/grants`, `/api/matrix`, `/api/calendar`, `/api/usage`, and `/api/retention`. They are
+read-only and take the filter above.
+
+- `/api/series` takes `by` (a facet or a path) and, for a metric, `metric` (an attribute path) and
+  `agg`: `count`, `sum`, `avg`, `min`, `max`, `p50`, `p95`, `p99`, or `distinct` (how many
+  different values: distinct `session.session_id` is how many sessions were active). A bucket
+  without a value is `null`; a group without any value is left out.
+- `/api/matrix` counts events by two attributes (`rows`, `cols`; `limit`; `hide_none=1`), with the
+  denied events of each cell.
+- `/api/calendar` counts events by day of the week and hour (`tz_offset`, as the browser reports
+  it), and per day.
+- `/api/usage` gives the metrics of tool calls grouped by `by` (`tool`, `agent_id`, `session`,
+  `model`, `member`): calls, denied, approvals, failed, sessions, agents, tool time and hook latency
+  percentiles, and tokens.
+- `/api/topology` takes `layers` (2 to 5 facets or paths). Traces carry their agent, model,
+  resources, targets, tool time, hook latency, and tokens.
+- The Gantt chart and the event timeline take `rows`, `lanes`, and `color` (a facet or a path), and
+  the histogram takes `field` and `bins`.
+
+### Model tokens
+
+Claude Code passes every hook the path of its transcript. After a tool runs, Crane reads the end of
+the transcript and finds the model turn whose `tool_use` block has the call's id; it keeps only the
+numbers of that turn's usage (input, output, cache read, and cache creation tokens) and the model,
+never a prompt, reply, or tool content. A turn that issued several tool calls is shared equally among
+them (`eval.model_tokens` and the four parts are the call's share; `turn_tokens` and
+`turn_tool_calls` describe the whole turn), so the shares of a session add up to the tokens of its
+tool-issuing turns. When the session ends, `SESSION_ATTESTED` carries the totals of the whole
+transcript (`session_tokens`, `session_input_tokens`, `session_output_tokens`,
+`session_cache_read_tokens`, `session_cache_creation_tokens`, `session_model_turns`,
+`session_tool_calls_issued`). Codex does not report a transcript in this format, so its calls carry
+no tokens (the measurement is recorded as unsupported). Tokens are no longer listed as unobservable
+in compliance; memory is.
+
+`SHELL_EFFECT_ATTRIBUTED`, the companion of a shell call's verification, now carries only its own
+number (`files_changed`), so tool time and tokens are counted once per call.
+
+### Data retention
+
+MongoDB keeps telemetry for the retention period, 30 days by default
+(`CRANE_MONGODB_RETENTION_DAYS`, fractions allowed; `CRANE_MONGODB_EVENT_RETENTION_DAYS` is still
+read): events, service events, and alerts from their time; sessions, agents, and tasks from their
+last activity. A TTL index on `expires_at` deletes them. Records older than the period less 7 days
+are stale data: the dashboard marks them (`STALE_DATA`) on events and in the log table, and Settings
+shows each kind of record with how many are stale and when the oldest goes. State and history never
+expire: repositories, chain heads, the autonomy ledger, the selection registry, policy versions, the
+governance audit trail, status reports, approvals, owner keys, and credit grants.
+
+At every start the service brings stored records in line: records without an expiry get one, and
+all are recomputed when the period changed. `CRANE_MONGODB_RETENTION_DAYS=persist` (or `forever`,
+`off`, `0`) keeps everything, for a larger cluster, and removes every expiry already set.
+
+Expiry never looks like tampering: the dashboard verifies each member's chain from the oldest event
+it still holds (`expired_before` says how many came before), and a gap after it is still a break.
+A machine does not upload expired records again: events older than the period are not stored, and
+the last of them is remembered (`chain_heads.expired_through`), as is the count of alerts uploaded,
+so the upload positions never go back. Recent events that are lost are still re-sent.
 
 ### Alert rules (`crane alert`)
 
@@ -3199,7 +3277,7 @@ refused):
 ```
 crane alert add NAME metric METRIC above|at_least|below|at_most|equals N [window 15m]
                 [channels slack,whatsapp] [severity high] [cooldown 30]
-                [where PATH OPERATOR VALUES]... [quiet-resolve]
+                [where PATH OPERATOR VALUES]... [except PATH OPERATOR VALUES]... [quiet-resolve]
 crane alert list|check [--json]
 crane alert remove|enable|disable|test NAME
 crane alert log [--json]
@@ -3207,7 +3285,9 @@ crane alert metrics
 ```
 
 - A metric is any number of the evals (`crane alert metrics` lists them), computed over the events
-  of the window that match the rule's `where` clauses.
+  of the window that match the rule's `where` clauses and none of its `except` clauses. Operators:
+  `is`, `not`, `contains`, `not-contains`, `prefix`, `suffix`, `like`, `gt`, `gte`, `lt`, `lte`,
+  `between LOW,HIGH`, `exists`, `missing`.
 - Rules are kept in the trust directory (`alert-rules.json`). The background sync evaluates them
   (and `crane alert check` does so at once). A rule is `OK` or `FIRING`. A ratio or percentile with no events in the window has no value, and the state stays as it was. When it starts
   firing, Crane sends the message to the rule's channels (`crane integrate slack|whatsapp` holds the

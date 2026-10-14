@@ -15,25 +15,25 @@ use crate::trust::crypto::{hex, random_bytes};
 /** The service's event log
  * Fields
     - database: Database - MongoDB (private: only `record` writes, and only to service_events)
-    - retention_days: i64 - how long routine events are kept
+    - retention_ms: Option<i64> - how long events are kept (None: for ever)
 */
 pub(crate) struct ServiceLog {
     database: Database,
-    retention_days: i64,
+    retention_ms: Option<i64>,
 }
 
 impl ServiceLog {
     /** Wrap a database
      * Input
         - database: Database - MongoDB
-        - retention_days: i64 - retention of routine events
+        - retention_ms: Option<i64> - retention of events
      * Output
         - ServiceLog
     */
-    pub(crate) fn new(database: Database, retention_days: i64) -> Self {
+    pub(crate) fn new(database: Database, retention_ms: Option<i64>) -> Self {
         Self {
             database,
-            retention_days,
+            retention_ms,
         }
     }
 
@@ -57,10 +57,6 @@ impl ServiceLog {
         if let Some(repository) = repository {
             spec.set("repository", "repo_id", repository);
         }
-        let routine = matches!(
-            spec.get("severity", "severity_status").as_str(),
-            Some("INFO" | "LOW" | "MEDIUM")
-        );
         let now = now_millis();
         let id = format!(
             "srv_{}",
@@ -74,9 +70,8 @@ impl ServiceLog {
         };
         document.insert("repository_id", repository.map(String::from));
         document.insert("installation", installation.map(String::from));
-        if routine {
-            let expiry = now as i64 + self.retention_days * 86_400_000;
-            document.insert("expires_at", bson::DateTime::from_millis(expiry));
+        if let Some(expiry) = super::database::expiry(self.retention_ms, now as i64) {
+            document.insert("expires_at", expiry);
         }
         let _ = self
             .database

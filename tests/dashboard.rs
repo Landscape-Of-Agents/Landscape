@@ -86,14 +86,28 @@ fn world(name: &str) -> Option<World> {
         json!({"file_path": team.work.join("app/payments.py").to_string_lossy(), "old_string": "0.03", "new_string": "0.3"}),
     );
     team.hook("claude", "pre-tool-use", &edit);
+    // The agent's transcript: one turn issued ok0 (1,150 tokens), another issued ok1 and ok2
+    // together (100 tokens, 50 each); only usage numbers are read from it
+    let transcript = team.root.path().join("transcript.jsonl");
+    std::fs::write(
+        &transcript,
+        [
+            r#"{"type":"user","message":{"content":"a prompt that is never read"}}"#,
+            r#"{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"tool_use","id":"ok0","name":"Bash","input":{}}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":1000}}}"#,
+            r#"{"type":"assistant","message":{"id":"m2","model":"claude-opus-5-5","content":[{"type":"tool_use","id":"ok1"},{"type":"tool_use","id":"ok2"}],"usage":{"input_tokens":20,"output_tokens":80}}}"#,
+        ]
+        .join("\n"),
+    )
+    .unwrap();
     for index in 0..3 {
-        let payload = call(
+        let mut payload = call(
             &team,
             "dash-1",
             &format!("ok{index}"),
             "Bash",
             json!({"command": "echo ok"}),
         );
+        payload["transcript_path"] = json!(transcript.to_string_lossy());
         team.hook("claude", "pre-tool-use", &payload);
         team.hook("claude", "post-tool-use", &payload);
     }
@@ -536,6 +550,46 @@ fn dashboard_shows_every_view_for_a_team() {
     ));
     let none = api(&format!("events?filter={}", encode(json!([{"path": "flow", "op": "is", "values": ["F05"]}, {"path": "flow", "op": "not", "values": ["F05"]}])))).json();
     assert_eq!(none["total"], 0, "contradictory clauses match nothing");
+    // The added operators and exclusion: every combination at once
+    let count = |clauses: Value| {
+        api(&format!("events?limit=500&filter={}", encode(clauses))).json()["total"]
+            .as_u64()
+            .unwrap()
+    };
+    let all = count(json!([]));
+    let f05 = count(json!([{"path": "flow", "op": "is", "values": ["F05"]}]));
+    assert_eq!(
+        count(json!([{"path": "flow", "op": "is", "values": ["F05"], "exclude": true}])),
+        all - f05,
+        "excluding a condition keeps exactly the other events"
+    );
+    assert_eq!(
+        count(json!([{"path": "event_name", "op": "like", "values": ["TOOL_CALL_*"]}])),
+        count(json!([{"path": "event_name", "op": "prefix", "values": ["TOOL_CALL_"]}]))
+    );
+    assert_eq!(
+        count(json!([{"path": "event_name", "op": "suffix", "values": ["_DENIED_RULE"]}])),
+        1
+    );
+    let measured = count(json!([{"path": "eval.model_tokens", "op": "exists"}]));
+    assert_eq!(
+        measured, 3,
+        "the three calls with a transcript carry tokens"
+    );
+    assert_eq!(
+        count(json!([{"path": "eval.model_tokens", "op": "between", "values": ["40", "60"]}])),
+        2,
+        "the shared turn gives each of its two calls 50 tokens"
+    );
+    assert_eq!(
+        count(json!([
+            {"path": "flow", "op": "is", "values": ["F06"], "group": 1},
+            {"path": "decision.decision", "op": "is", "values": ["DENY"], "group": 1},
+            {"path": "eval.model_tokens", "op": "gt", "values": ["1000"], "exclude": true},
+        ])),
+        count(json!([{"path": "flow", "op": "is", "values": ["F06"]}])) + 1 - 1,
+        "(F06 or DENY) and not more than 1,000 tokens"
+    );
     let bad = get(
         &format!(
             "{base}/api/events?repository={}&filter=%5Bnot-json",
@@ -667,6 +721,114 @@ fn dashboard_shows_every_view_for_a_team() {
             .map(|bin| bin["count"].as_u64().unwrap())
             .sum::<u64>(),
         histogram["count"].as_u64().unwrap()
+    );
+    // Metrics over time: any aggregation of any attribute, by any facet
+    let tokens = api("series?metric=eval.model_tokens&agg=sum&by=tool").json();
+    let bash = tokens["series"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|series| series["key"] == "BASH")
+        .unwrap_or_else(|| panic!("{tokens}"));
+    assert_eq!(bash["total"], 1250, "{bash}");
+    assert_eq!(tokens["agg"], "sum");
+    let active = api("series?metric=session.session_id&agg=distinct").json();
+    assert!(
+        active["series"][0]["points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|point| point.as_u64() >= Some(1)),
+        "{active}"
+    );
+    let p95 = api("series?metric=eval.latency_ms&agg=p95").json();
+    assert!(p95["series"][0]["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|point| point.is_null() || point.as_f64().is_some()));
+    // Heatmaps: two attributes, and when events happen
+    let matrix = api("matrix?rows=decision&cols=tool&hide_none=1").json();
+    let rows = matrix["rows"].as_array().unwrap();
+    let cols = matrix["cols"].as_array().unwrap();
+    let deny = rows.iter().position(|row| row["key"] == "DENY").unwrap();
+    let edit = cols.iter().position(|col| col["key"] == "EDIT").unwrap();
+    assert_eq!(matrix["cells"][deny][edit], 1, "{matrix}");
+    assert_eq!(matrix["denied"][deny][edit], 1);
+    let calendar = api("calendar?tz_offset=-330").json();
+    assert_eq!(
+        calendar["week"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|day| day.as_array().unwrap().clone())
+            .map(|count| count.as_u64().unwrap())
+            .sum::<u64>(),
+        calendar["total"].as_u64().unwrap()
+    );
+    // Any layers of the topology
+    let layered = api("topology?layers=flow,decision,tool").json();
+    assert_eq!(layered["layers"].as_array().unwrap().len(), 3);
+    assert!(
+        layered["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|edge| edge["from"] == "1:DENY" && edge["to"] == "2:EDIT"),
+        "{layered}"
+    );
+    // Tool call metrics, tokens included, per tool and per session
+    let usage = api("usage?by=tool").json();
+    let bash = usage["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|group| group["key"] == "BASH")
+        .unwrap();
+    assert_eq!(bash["tokens"]["total"], 1250.0, "{bash}");
+    assert_eq!(bash["tokens"]["measured_calls"], 3);
+    assert_eq!(bash["tokens"]["cache_read"], 1000.0);
+    let edit_usage = usage["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|group| group["key"] == "EDIT")
+        .unwrap();
+    assert_eq!(edit_usage["denied"], 1);
+    let sessions = api("usage?by=session").json();
+    assert!(sessions["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|group| group["key"] == "dash-1" || group["calls"].as_u64() >= Some(4)));
+    let trace = api("traces?limit=500").json()["traces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|trace| trace["tokens"].is_object())
+        .cloned()
+        .expect("a traced call with tokens");
+    assert!(trace["tokens"]["total"].as_f64().unwrap() > 0.0);
+    assert_eq!(trace["model"], "m");
+    // How long records live
+    let retention = api("retention").json();
+    assert_eq!(retention["mode"], "EXPIRES");
+    assert_eq!(retention["days"].as_f64(), Some(30.0));
+    assert_eq!(retention["stale_after_days"].as_f64(), Some(23.0));
+    assert!(retention["collections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|collection| collection["name"] == "events"
+            && collection["documents"].as_u64() > Some(0)
+            && collection["stale"] == 0));
+    let health = api("health").json();
+    assert!(
+        health["event_chain"]["members"][0]["event_chain"]
+            .get("expired_before")
+            .is_none(),
+        "nothing expired yet: {}",
+        health["event_chain"]
     );
     let semantics = api("semantics").json();
     assert!(

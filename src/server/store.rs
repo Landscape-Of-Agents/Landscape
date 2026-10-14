@@ -11,14 +11,13 @@ use mongodb::sync::Database;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::database::Settings;
+use super::database::{expiry, Settings};
 use crate::governance::workspace::identity;
 use crate::platform::{io_error, now_millis};
 use crate::telemetry::events::Event;
 use crate::telemetry::ingest::{
     ApprovalRequest, Batch, Positions, CODE_DOMAIN, CODE_LIFETIME_MILLIS,
 };
-use crate::telemetry::model::Severity;
 use crate::trust::crypto::digest;
 
 /** Convert a record to a BSON document tagged with the repository and installation
@@ -112,6 +111,7 @@ fn upsert(
     - repository: &str - repository identity
     - installation: &str - installation key
     - events: &[Event] - uploaded events
+    - retention_ms: Option<i64> - how long the alerts it raises are kept
  * Output
     - Result<Vec<Value>, String> the problems found: {sequence, kind (gap, rewrite, fork), detail}
 */
@@ -120,6 +120,7 @@ fn continuity(
     repository: &str,
     installation: &str,
     events: &[Event],
+    retention_ms: Option<i64>,
 ) -> Result<Vec<Value>, String> {
     if events.is_empty() {
         return Ok(Vec::new());
@@ -183,7 +184,7 @@ fn continuity(
     let alerts = problems
         .into_iter()
         .map(|(sequence, kind, detail)| {
-            doc! {
+            let mut alert = doc! {
                 "alert_id": format!("srv_chain_{kind}_{sequence}"),
                 "key": format!("chain:{kind}:{sequence}"),
                 "kind": "evidence_chain_broken",
@@ -197,7 +198,11 @@ fn continuity(
                 "detail": detail,
                 "repository_id": repository,
                 "installation": installation,
+            };
+            if let Some(expiry) = expiry(retention_ms, now as i64 * 1000) {
+                alert.insert("expires_at", expiry);
             }
+            alert
         })
         .collect::<Vec<_>>();
     insert(database, "alerts", alerts)?;
@@ -434,16 +439,38 @@ pub(super) fn ingest(
         };
     }
     let mut duplicates = 0;
-    let chain_problems = continuity(database, repository, installation, &batch.events)?;
-    let events = batch
-        .events
-        .iter()
+    let chain_problems = continuity(
+        database,
+        repository,
+        installation,
+        &batch.events,
+        settings.retention_ms,
+    )?;
+    // Events older than the retention period (re-sent after they expired, or uploaded late) are
+    // not stored again; the last of them is remembered so the machine moves past them
+    let now = now_millis() as i64;
+    let (current, expired): (Vec<&Event>, Vec<&Event>) = batch.events.iter().partition(|event| {
+        expiry(settings.retention_ms, event.occurred_at as i64)
+            .is_none_or(|expiry| expiry.timestamp_millis() > now)
+    });
+    if let Some(last) = expired.iter().map(|event| event.sequence).max() {
+        database
+            .collection::<Document>("chain_heads")
+            .update_one(
+                doc! {"repository_id": repository, "installation": installation},
+                doc! {"$max": {"expired_through": last as i64}},
+            )
+            .upsert(true)
+            .run()
+            .map_err(io_error)?;
+    }
+    let events = current
+        .into_iter()
         .map(|event| {
             let mut document = tag!(event)?;
             document.insert("ingested_at", bson::DateTime::now());
-            if event.severity <= Severity::Medium {
-                let expiry = event.occurred_at as i64 + settings.retention_days * 86_400_000;
-                document.insert("expires_at", bson::DateTime::from_millis(expiry));
+            if let Some(expiry) = expiry(settings.retention_ms, event.occurred_at as i64) {
+                document.insert("expires_at", expiry);
             }
             Ok(document)
         })
@@ -471,13 +498,46 @@ pub(super) fn ingest(
             batch
                 .alerts
                 .iter()
-                .map(|alert| tag!(alert))
-                .collect::<Result<Vec<_>, _>>()?,
+                .map(|alert| {
+                    let mut document = tag!(alert)?;
+                    let at = alert["at"]
+                        .as_i64()
+                        .unwrap_or_else(|| now_millis() as i64 / 1000);
+                    if let Some(expiry) = expiry(settings.retention_ms, at * 1000) {
+                        document.insert("expires_at", expiry);
+                    }
+                    Ok(document)
+                })
+                .collect::<Result<Vec<_>, String>>()?,
         ),
     ] {
         duplicates += insert(database, name, documents)?;
     }
     let scope = doc! {"repository_id": repository, "installation": installation};
+    // How many alerts this machine has uploaded, kept apart from the alerts themselves, which
+    // expire (the machine resumes its uploads from it)
+    if !batch.alerts.is_empty() {
+        let stored = database
+            .collection::<Document>("alerts")
+            .count_documents(scope.clone())
+            .run()
+            .map_err(io_error)?;
+        database
+            .collection::<Document>("ingestion_checkpoints")
+            .update_one(
+                doc! {"repository_id": repository, "installation": installation, "stream": "alerts"},
+                doc! {"$max": {"count": stored as i64}},
+            )
+            .upsert(true)
+            .run()
+            .map_err(io_error)?;
+    }
+    let living = |mut document: Document, from: u64| {
+        if let Some(expiry) = expiry(settings.retention_ms, from as i64) {
+            document.insert("expires_at", expiry);
+        }
+        document
+    };
     let within = |extra: Document| {
         let mut filter = scope.clone();
         filter.extend(extra);
@@ -501,15 +561,18 @@ pub(super) fn ingest(
                 database,
                 "sessions",
                 doc! {"installation": installation, "foxx_session_id": &session.foxx_session_id},
-                tag!(session)?,
+                living(tag!(session)?, session.last_seen_at),
             )?;
             upsert(
                 database,
                 "agents",
                 doc! {"installation": installation, "agent_id": &session.agent_id},
-                tag!(
-                    &json!({"agent_id": session.agent_id, "provider": session.provider, "last_seen_at": session.last_seen_at})
-                )?,
+                living(
+                    tag!(
+                        &json!({"agent_id": session.agent_id, "provider": session.provider, "last_seen_at": session.last_seen_at})
+                    )?,
+                    session.last_seen_at,
+                ),
             )?;
         }
         for task in &batch.tasks {
@@ -517,7 +580,12 @@ pub(super) fn ingest(
                 database,
                 "tasks",
                 doc! {"installation": installation, "foxx_task_id": &task.foxx_task_id},
-                tag!(task)?,
+                living(
+                    tag!(task)?,
+                    task.ended_at
+                        .unwrap_or(task.started_at)
+                        .max(task.started_at),
+                ),
             )?;
         }
         for record in &batch.selections {
@@ -604,15 +672,33 @@ pub(super) fn positions(
     installation: &str,
 ) -> Result<Positions, String> {
     let scope = doc! {"repository_id": repository, "installation": installation};
+    // Events and alerts expire, so their positions also come from records that never do: the
+    // last event that arrived already expired (ingest drops it), and the count of alerts uploaded.
+    // Otherwise a machine would upload expired records again; recent events lost are still re-sent
+    let expired = database
+        .collection::<Document>("chain_heads")
+        .find_one(scope.clone())
+        .run()
+        .map_err(io_error)?
+        .map_or(0, |document| number(document.get("expired_through")));
+    let mut checkpoint = scope.clone();
+    checkpoint.insert("stream", "alerts");
+    let uploaded = database
+        .collection::<Document>("ingestion_checkpoints")
+        .find_one(checkpoint)
+        .run()
+        .map_err(io_error)?
+        .map_or(0, |document| number(document.get("count")));
     Ok(Positions {
-        events: highest(database, "events", &scope, "sequence")?,
+        events: highest(database, "events", &scope, "sequence")?.max(expired),
         ledger: highest(database, "autonomy_ledger", &scope, "seq")?,
         audit: highest(database, "governance_changes", &scope, "seq")?,
         alerts: database
             .collection::<Document>("alerts")
             .count_documents(scope)
             .run()
-            .map_err(io_error)?,
+            .map_err(io_error)?
+            .max(uploaded),
     })
 }
 

@@ -47,6 +47,12 @@ const CHARTS: &str = include_str!("charts.js");
 /** The glossary the info icons read (generated from DASHBOARD.md) */
 const GLOSSARY: &str = include_str!("glossary.js");
 
+/** The pages that watch agents (monitor, AI agents, investigate) */
+const PAGES: &str = include_str!("pages.js");
+
+/** The pages that operate and govern, and the page's start */
+const GOVERN: &str = include_str!("govern.js");
+
 /** The Foxx logo (256 px, transparent background) */
 const LOGO: &[u8] = include_bytes!("logo.png");
 
@@ -126,6 +132,8 @@ impl Dashboard {
             "/app.js" => Reply::script(SCRIPT),
             "/charts.js" => Reply::script(CHARTS),
             "/glossary.js" => Reply::script(GLOSSARY),
+            "/pages.js" => Reply::script(PAGES),
+            "/govern.js" => Reply::script(GOVERN),
             "/logo.png" => Reply::image(LOGO, "image/png"),
             "/favicon.png" | "/favicon.ico" => Reply::image(FAVICON, "image/png"),
             "/auth/login" => self.login(request),

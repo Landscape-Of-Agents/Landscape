@@ -102,7 +102,7 @@ pub(crate) struct Inputs {
 }
 
 /** Telemetry Crane cannot collect from hooks, reported as such */
-pub(crate) const UNSUPPORTED: &[&str] = &["network_bytes_sent", "cpu_ms", "llm_tokens"];
+pub(crate) const UNSUPPORTED: &[&str] = &["network_bytes_sent", "cpu_ms", "memory_bytes"];
 
 /** What hooks can only infer, reported as observability rather than as a control */
 pub(crate) const INFERRED: &[(&str, &str)] = &[("network_destinations", "Destinations parsed from commands and tool arguments (F36); traffic itself is not observed, and an unrestricted shell can reach the network unseen.")];

@@ -83,7 +83,8 @@ impl Trace<'_> {
         - context: &Context - repository data
      * Output
         - Value {id, kind, start, end, duration_ms, spans, root, outcome, severity, decision, tool,
-          session, member, flows, events}
+          session, member, flows, events, agent, agent_id, model, resources, targets, tool_ms,
+          latency_ms, tokens: {total, input, output, cache_read, cache_creation, turn, turn_calls}}
     */
     fn summary(&self, context: &Context) -> Value {
         let first_span = self.spans[0];
@@ -143,7 +144,44 @@ impl Trace<'_> {
             .iter()
             .filter_map(|spec| spec["flow"].as_str())
             .collect::<BTreeSet<_>>();
+        let text = |group: &str, key: &str| {
+            self.spans
+                .iter()
+                .map(|spec| field(spec, group, key))
+                .find(|value| !value.is_empty() && *value != "NOT_AN_AGENT")
+        };
+        let eval = |key: &str| {
+            self.spans
+                .iter()
+                .find_map(|spec| spec["eval"][key].as_f64())
+        };
+        let listed = |path: &str| {
+            self.spans
+                .iter()
+                .flat_map(|spec| values(spec, path))
+                .filter(|value| !value.is_empty() && value != "NOT_CONSUMED")
+                .collect::<BTreeSet<_>>()
+        };
+        let tokens = eval("model_tokens").map(|total| {
+            json!({
+                "total": total,
+                "input": eval("model_input_tokens"),
+                "output": eval("model_output_tokens"),
+                "cache_read": eval("cache_read_tokens"),
+                "cache_creation": eval("cache_creation_tokens"),
+                "turn": eval("turn_tokens"),
+                "turn_calls": eval("turn_tool_calls"),
+            })
+        });
         json!({
+            "agent": text("agent", "agent_type"),
+            "agent_id": text("agent", "agent_id"),
+            "model": text("agent", "model"),
+            "resources": listed("resource.resource"),
+            "targets": listed("resource.resource_ids").into_iter().take(8).collect::<Vec<_>>(),
+            "tool_ms": eval("tool_duration_ms"),
+            "latency_ms": eval("latency_ms"),
+            "tokens": tokens,
             "id": self.id,
             "kind": kind,
             "start": start,
@@ -253,6 +291,126 @@ pub(super) fn trace_table(
         "total": matching.len(),
         "next_cursor": (matching.len() > cursor + limit).then_some(cursor + limit),
         "kinds": available,
+    })
+}
+
+/** The metrics of tool calls, grouped by tool (or agent, agent identity, session, model, member,
+ * or any attribute): calls, outcomes, decisions, tool time and hook latency percentiles, and model
+ * tokens. Only traces that are tool calls count
+ * Input
+    - context: &Context - repository data
+    - query: &Query - filter
+    - params: &BTreeMap<String, String> - by: tool (default), agent, agent_id, session, model,
+      member, or a summary field
+ * Output
+    - Value {by, groups: [{key, calls, denied, approvals, failed, failure_share, sessions, agents,
+      tool_ms: {p50, p95, max, total}, latency_ms: {p50, p95}, tokens: {total, input, output,
+      cache_read, cache_creation, per_call, measured_calls}, first, last}], totals}
+*/
+pub(super) fn usage(context: &Context, query: &Query, params: &BTreeMap<String, String>) -> Value {
+    let by = params
+        .get("by")
+        .map(String::as_str)
+        .filter(|by| !by.is_empty())
+        .unwrap_or("tool")
+        .to_string();
+    let summaries = traces(context, query)
+        .iter()
+        .map(|trace| trace.summary(context))
+        .filter(|summary| summary["tool"].is_string())
+        .collect::<Vec<_>>();
+    let key_of = |summary: &Value| -> String {
+        let value = match by.as_str() {
+            "member" => &summary["member"]["actor"],
+            other => &summary[other],
+        };
+        value
+            .as_str()
+            .map(String::from)
+            .or_else(|| value.as_u64().map(|number| number.to_string()))
+            .unwrap_or_else(|| "NONE".into())
+    };
+    let mut groups: BTreeMap<String, Vec<&Value>> = BTreeMap::new();
+    for summary in &summaries {
+        groups.entry(key_of(summary)).or_default().push(summary);
+    }
+    let percentile = |numbers: &mut Vec<f64>, share: f64| {
+        if numbers.is_empty() {
+            return Value::Null;
+        }
+        numbers.sort_by(|a, b| a.total_cmp(b));
+        json!(numbers[((numbers.len() - 1) as f64 * share).round() as usize])
+    };
+    let describe = |key: &str, list: &[&Value]| {
+        let calls = list.len();
+        let count =
+            |test: &dyn Fn(&Value) -> bool| list.iter().filter(|summary| test(summary)).count();
+        let denied = count(&|summary| {
+            matches!(
+                summary["decision"].as_str(),
+                Some("DENY" | "QUARANTINE" | "ERROR")
+            )
+        });
+        let failed = count(&|summary| summary["outcome"] == "FAILED");
+        let mut tool = list
+            .iter()
+            .filter_map(|summary| summary["tool_ms"].as_f64())
+            .collect::<Vec<_>>();
+        let mut latency = list
+            .iter()
+            .filter_map(|summary| summary["latency_ms"].as_f64())
+            .collect::<Vec<_>>();
+        let measured = list
+            .iter()
+            .filter(|summary| summary["tokens"].is_object())
+            .collect::<Vec<_>>();
+        let sum = |key: &str| {
+            measured
+                .iter()
+                .filter_map(|summary| summary["tokens"][key].as_f64())
+                .sum::<f64>()
+        };
+        let distinct = |key: &str| {
+            list.iter()
+                .filter_map(|summary| summary[key].as_str())
+                .collect::<BTreeSet<_>>()
+                .len()
+        };
+        let total_tokens = sum("total");
+        json!({
+            "key": key,
+            "calls": calls,
+            "denied": denied,
+            "approvals": count(&|summary| summary["decision"] == "REQUIRE_APPROVAL"),
+            "failed": failed,
+            "failure_share": failed as f64 / calls.max(1) as f64,
+            "sessions": distinct("session"),
+            "agents": distinct("agent_id"),
+            "tools": distinct("tool"),
+            "tool_ms": {"p50": percentile(&mut tool.clone(), 0.5), "p95": percentile(&mut tool.clone(), 0.95), "max": percentile(&mut tool, 1.0), "total": list.iter().filter_map(|summary| summary["tool_ms"].as_f64()).sum::<f64>()},
+            "latency_ms": {"p50": percentile(&mut latency.clone(), 0.5), "p95": percentile(&mut latency, 0.95)},
+            "tokens": {
+                "total": total_tokens,
+                "input": sum("input"),
+                "output": sum("output"),
+                "cache_read": sum("cache_read"),
+                "cache_creation": sum("cache_creation"),
+                "per_call": if measured.is_empty() { Value::Null } else { json!(total_tokens / measured.len() as f64) },
+                "measured_calls": measured.len(),
+            },
+            "first": list.iter().filter_map(|summary| summary["start"].as_u64()).min(),
+            "last": list.iter().filter_map(|summary| summary["end"].as_u64()).max(),
+        })
+    };
+    let mut list = groups
+        .iter()
+        .map(|(key, list)| describe(key, list))
+        .collect::<Vec<_>>();
+    list.sort_by(|a, b| b["calls"].as_u64().cmp(&a["calls"].as_u64()));
+    json!({
+        "by": by,
+        "groups": list,
+        "totals": describe("all", &summaries.iter().collect::<Vec<_>>()),
     })
 }
 
@@ -435,15 +593,59 @@ pub(super) fn timeline(
     })
 }
 
-/** The topology of activity: members use agents, agents call tools, tools touch resources;
- * edges carry how many events joined them and how many of those were denied
+/** The default layers of the topology and their names */
+const LAYERS: [(&str, &str); 4] = [
+    ("member", "Members"),
+    ("agent", "Agents"),
+    ("tool", "Tools"),
+    ("resource.resource", "Resources"),
+];
+
+/** Values that end a path through the topology (an event without that layer) */
+const NO_VALUE: [&str; 5] = ["", "NONE", "NA", "NOT_CONSUMED", "NOT_REQUIRED"];
+
+/** The topology of activity: by default members use agents, agents call tools, tools touch
+ * resources; any 2 to 5 attributes can be chained instead (layers=flow,decision,tool, ...). Each
+ * event walks the layers in order until one has no value; the last layer counts every item of a
+ * list. Edges carry how many events joined two nodes and how many of those were denied
  * Input
     - context: &Context - repository data
     - query: &Query - filter
+    - params: &BTreeMap<String, String> - layers: comma-separated facet names or attribute paths
  * Output
-    - Value {layers: [name], nodes: [{id, layer, label, count, denied}], edges: [{from, to, count, denied}]}
+    - Value {layers: [name], layer_keys: [facet or path], nodes: [{id, layer, label, count, denied}],
+      edges: [{from, to, count, denied}]}
 */
-pub(super) fn topology(context: &Context, query: &Query) -> Value {
+pub(super) fn topology(
+    context: &Context,
+    query: &Query,
+    params: &BTreeMap<String, String>,
+) -> Value {
+    let chosen = params
+        .get("layers")
+        .map(|text| {
+            text.split(',')
+                .map(str::trim)
+                .filter(|layer| !layer.is_empty())
+                .take(5)
+                .map(String::from)
+                .collect::<Vec<_>>()
+        })
+        .filter(|layers| layers.len() >= 2);
+    let keys = chosen.unwrap_or_else(|| LAYERS.iter().map(|(key, _)| key.to_string()).collect());
+    let names = keys
+        .iter()
+        .map(|key| {
+            LAYERS
+                .iter()
+                .find(|(known, _)| known == key)
+                .map_or_else(|| key.clone(), |(_, name)| name.to_string())
+        })
+        .collect::<Vec<_>>();
+    let paths = keys
+        .iter()
+        .map(|key| facet_path(key).unwrap_or(key).to_string())
+        .collect::<Vec<_>>();
     let mut nodes: BTreeMap<Node, (u64, u64)> = BTreeMap::new();
     let mut edges: BTreeMap<(Node, Node), (u64, u64)> = BTreeMap::new();
     for spec in filtered(context, query, None) {
@@ -451,48 +653,59 @@ pub(super) fn topology(context: &Context, query: &Query) -> Value {
             field(spec, "decision", "decision"),
             "DENY" | "QUARANTINE" | "ERROR"
         ));
-        let member = spec["member_key"]
-            .as_str()
-            .map(|key| label(context, Some("member"), key))
-            .unwrap_or_else(|| "SERVICE".into());
-        let agent = match field(spec, "agent", "agent_type") {
-            "" => "NOT_AN_AGENT".to_string(),
-            agent => agent.to_string(),
+        let read = |layer: usize| {
+            let found = values(spec, &paths[layer])
+                .into_iter()
+                .filter(|value| !NO_VALUE.contains(&value.as_str()))
+                .map(|value| {
+                    if paths[layer] == "member_key" {
+                        label(context, Some("member"), &value)
+                    } else {
+                        value
+                    }
+                })
+                .collect::<Vec<_>>();
+            match (layer, found.is_empty()) {
+                // The first layer always has a node: events of the service carry no member
+                (0, true) if paths[0] == "member_key" => vec!["SERVICE".to_string()],
+                (0, true) => vec!["NONE".to_string()],
+                _ => found,
+            }
         };
-        let tool = field(spec, "action", "action_tool");
-        let resources = values(spec, "resource.resource")
-            .into_iter()
-            .filter(|value| value != "NOT_CONSUMED")
-            .collect::<Vec<_>>();
-        let mut path = vec![(0, member), (1, agent)];
-        if !tool.is_empty() {
-            path.push((2, tool.to_string()));
+        let mut path: Vec<Node> = Vec::new();
+        let mut last: Vec<Node> = Vec::new();
+        for layer in 0..paths.len() {
+            let found = read(layer);
+            if found.is_empty() {
+                break;
+            }
+            if layer + 1 == paths.len() {
+                last = found.into_iter().map(|value| (layer, value)).collect();
+            } else {
+                path.push((layer, found[0].clone()));
+            }
         }
-        for node in &path {
+        let mut add = |from: Option<&Node>, node: &Node| {
             let entry = nodes.entry(node.clone()).or_default();
             entry.0 += 1;
             entry.1 += denied;
-        }
-        for pair in path.windows(2) {
-            let entry = edges.entry((pair[0].clone(), pair[1].clone())).or_default();
-            entry.0 += 1;
-            entry.1 += denied;
-        }
-        if let Some(last) = path.last().filter(|node| node.0 == 2).cloned() {
-            for resource in resources {
-                let node = (3, resource);
-                let entry = nodes.entry(node.clone()).or_default();
-                entry.0 += 1;
-                entry.1 += denied;
-                let entry = edges.entry((last.clone(), node)).or_default();
+            if let Some(from) = from {
+                let entry = edges.entry((from.clone(), node.clone())).or_default();
                 entry.0 += 1;
                 entry.1 += denied;
             }
+        };
+        for (position, node) in path.iter().enumerate() {
+            add(position.checked_sub(1).map(|before| &path[before]), node);
+        }
+        for node in &last {
+            add(path.last(), node);
         }
     }
     let id = |(layer, name): &(usize, String)| format!("{layer}:{name}");
     json!({
-        "layers": ["Members", "Agents", "Tools", "Resources"],
+        "layers": names,
+        "layer_keys": keys,
         "nodes": nodes.iter().map(|(node, (count, denied))| json!({"id": id(node), "layer": node.0, "label": node.1, "count": count, "denied": denied})).collect::<Vec<_>>(),
         "edges": edges.iter().map(|((from, to), (count, denied))| json!({"from": id(from), "to": id(to), "count": count, "denied": denied})).collect::<Vec<_>>(),
     })

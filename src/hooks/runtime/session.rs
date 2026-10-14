@@ -605,6 +605,34 @@ impl Hook {
             "count",
             "session event chain",
         ));
+        // The whole session's model usage, from the agent's transcript
+        if let Some(total) = self
+            .provider
+            .transcript
+            .as_deref()
+            .and_then(|path| crate::telemetry::usage::of_session(std::path::Path::new(path)))
+        {
+            for (name, value, unit) in [
+                ("session_tokens", total.total(), "tokens"),
+                ("session_input_tokens", total.input, "tokens"),
+                ("session_output_tokens", total.output, "tokens"),
+                ("session_cache_read_tokens", total.cache_read, "tokens"),
+                (
+                    "session_cache_creation_tokens",
+                    total.cache_creation,
+                    "tokens",
+                ),
+                ("session_model_turns", total.turns as f64, "count"),
+                ("session_tool_calls_issued", total.calls as f64, "count"),
+            ] {
+                event.measurements.push(Measurement::observed(
+                    name,
+                    value,
+                    unit,
+                    "agent transcript",
+                ));
+            }
+        }
         event.telemetry = if signature.is_some() {
             Telemetry::Observed
         } else {

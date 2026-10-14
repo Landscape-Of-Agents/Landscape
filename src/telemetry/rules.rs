@@ -180,7 +180,8 @@ impl Rule {
                 self.filter
                     .iter()
                     .map(|clause| format!(
-                        "{} {:?} {}",
+                        "{}{} {:?} {}",
+                        if clause.exclude { "not " } else { "" },
                         clause.path,
                         clause.op,
                         clause.values.join(",")
@@ -676,6 +677,7 @@ mod tests {
             op: Op::Is,
             values: vec!["HIGH".into()],
             group: None,
+            exclude: false,
         }];
         assert_eq!(
             measure(&denied, &specs, now).0,

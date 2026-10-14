@@ -276,7 +276,91 @@ fn live_pipeline_reaches_mongodb_without_setup() {
         details.contains("does not chain") && details.contains("never arrived"),
         "{details}"
     );
+    // Retention: every telemetry record expires 30 days after its time; state never does
+    let dated = |collection: &str| {
+        database
+            .collection::<mongodb::bson::Document>(collection)
+            .find(doc! {})
+            .run()
+            .unwrap()
+            .map(|document| document.unwrap())
+            .all(|document| document.get_datetime("expires_at").is_ok())
+    };
+    for collection in ["events", "alerts", "sessions", "service_events", "agents"] {
+        assert!(dated(collection), "{collection} records expire");
+    }
+    assert_eq!(
+        count("autonomy_ledger", doc! {"expires_at": {"$exists": true}}),
+        0
+    );
+    assert_eq!(
+        count("governance_changes", doc! {"expires_at": {"$exists": true}}),
+        0
+    );
+    let event = database
+        .collection::<mongodb::bson::Document>("events")
+        .find_one(doc! {})
+        .run()
+        .unwrap()
+        .unwrap();
+    let occurred = event.get_i64("occurred_at").unwrap();
+    assert_eq!(
+        event.get_datetime("expires_at").unwrap().timestamp_millis() - occurred,
+        30 * 86_400_000
+    );
+    // A machine whose every event expired on the service re-sends them once: the service does not
+    // store them again (they are past the retention period, here two seconds) and remembers how
+    // far they went, so the next sync sends nothing again
+    drop(running);
+    let short = support::service(&uri, &name, &[("CRANE_MONGODB_RETENTION_DAYS", "0.00002")]);
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    database
+        .collection::<mongodb::bson::Document>("events")
+        .delete_many(doc! {})
+        .run()
+        .unwrap();
+    fixture.ingest_url = short.url.clone();
+    fixture.ok(&["agent", "sync"]);
+    let head = database
+        .collection::<mongodb::bson::Document>("chain_heads")
+        .find_one(doc! {})
+        .run()
+        .unwrap()
+        .unwrap();
+    let expired_through = head.get_i64("expired_through").unwrap() as u64;
+    assert!(
+        expired_through >= local,
+        "every expired event was passed over: {head}"
+    );
+    assert!(
+        count(
+            "events",
+            doc! {"occurred_at": {"$lt": crate_now() - 60_000}}
+        ) == 0,
+        "expired events are not stored again"
+    );
+    let again = fixture.ok(&["agent", "sync"]);
+    assert!(!again.contains("re-sent"), "{again}");
+    drop(short);
+    // A larger cluster keeps everything: persist removes every expiry at start
+    let _kept = support::service(&uri, &name, &[("CRANE_MONGODB_RETENTION_DAYS", "persist")]);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert_eq!(count("events", doc! {"expires_at": {"$exists": true}}), 0);
+    assert_eq!(count("sessions", doc! {"expires_at": {"$exists": true}}), 0);
     database.drop().run().unwrap();
+}
+
+/** The current time in Unix milliseconds
+ * Input
+    - None
+ * Output
+    - i64
+*/
+fn crate_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
 }
 
 /** A deployed service (needs CRANE_TEST_INGEST_URL): a fresh machine with only the address set

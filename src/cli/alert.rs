@@ -17,8 +17,11 @@ use crate::trust::require_human;
 const USAGE: &str = "usage:
   crane alert add NAME metric METRIC above|at_least|below|at_most|equals N [window MINUTES|15m|2h|1d]
                   [channels slack,whatsapp] [severity low|medium|high|critical] [cooldown MINUTES]
-                  [where PATH is|not|contains|not-contains|prefix|gt|gte|lt|lte VALUE[,VALUE...]]...
-                  [where PATH exists|missing]... [quiet-resolve]
+                  [where PATH is|not|contains|not-contains|prefix|suffix|like|gt|gte|lt|lte VALUE[,VALUE...]]...
+                  [where PATH between LOW,HIGH]... [where PATH exists|missing]...
+                  [except PATH OPERATOR VALUES]... [quiet-resolve]
+                  (where counts only events that meet the condition, except only those that do not;
+                  like takes patterns with * and ?)
   crane alert list [--json]
   crane alert remove NAME
   crane alert enable NAME | crane alert disable NAME
@@ -95,6 +98,9 @@ fn operator(word: &str) -> Option<Op> {
         "contains" => Op::Contains,
         "not-contains" => Op::NotContains,
         "prefix" => Op::Prefix,
+        "suffix" => Op::Suffix,
+        "like" => Op::Like,
+        "between" => Op::Between,
         "gt" => Op::Gt,
         "gte" => Op::Gte,
         "lt" => Op::Lt,
@@ -152,11 +158,12 @@ pub(crate) fn parse(args: &[String], by: String, now: u64) -> Result<Rule, Strin
                     .collect()
             }
             "quiet_resolve" => rule.notify_resolved = false,
-            "where" => {
-                let path = next(&mut index, "where")?;
+            "where" | "except" => {
+                let exclude = word == "except";
+                let path = next(&mut index, &word)?;
                 let path = facet_path(&path).map_or(path, String::from);
-                let op_word = next(&mut index, "where PATH")?.to_ascii_lowercase();
-                let op = operator(&op_word).ok_or_else(|| format!("unknown operator '{op_word}'; use is, not, contains, not-contains, prefix, gt, gte, lt, lte, exists, or missing"))?;
+                let op_word = next(&mut index, &format!("{word} PATH"))?.to_ascii_lowercase();
+                let op = operator(&op_word).ok_or_else(|| format!("unknown operator '{op_word}'; use is, not, contains, not-contains, prefix, suffix, like, gt, gte, lt, lte, between, exists, or missing"))?;
                 let values = if matches!(op, Op::Exists | Op::Missing) {
                     Vec::new()
                 } else {
@@ -166,11 +173,15 @@ pub(crate) fn parse(args: &[String], by: String, now: u64) -> Result<Rule, Strin
                         .filter(|value| !value.is_empty())
                         .collect()
                 };
+                if op == Op::Between && values.len() != 2 {
+                    return Err("between needs two numbers, such as: between 100,500".into());
+                }
                 rule.filter.push(Clause {
                     path,
                     op,
                     values,
                     group: None,
+                    exclude,
                 });
             }
             comparison if COMPARISONS.iter().any(|(name, _)| *name == comparison) => {
@@ -525,5 +536,22 @@ mod tests {
             1
         )
         .is_err());
+        // The added operators and exclusion
+        let rule = parse(&words("r metric events above 1 where event like TOOL_CALL_* where eval.latency_ms between 100,500 except tool is READ where flow suffix 5"), "me".into(), 1).unwrap();
+        assert_eq!(rule.filter[0].op, Op::Like);
+        assert_eq!(rule.filter[1].op, Op::Between);
+        assert_eq!(rule.filter[1].values, ["100", "500"]);
+        assert!(rule.filter[2].exclude && rule.filter[2].path == "action.action_tool");
+        assert!(!rule.filter[3].exclude && rule.filter[3].op == Op::Suffix);
+        assert!(rule.describe().contains("not action.action_tool"));
+        assert!(
+            parse(
+                &words("r metric events above 1 where eval.latency_ms between 100"),
+                "me".into(),
+                1
+            )
+            .is_err(),
+            "between needs two numbers"
+        );
     }
 }

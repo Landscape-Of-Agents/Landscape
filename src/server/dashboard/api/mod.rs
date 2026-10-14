@@ -5,6 +5,7 @@
 // changes anything. Lists are bounded and paginated.
 
 mod activity;
+mod aggregate;
 mod controls;
 mod filter;
 mod insights;
@@ -107,28 +108,21 @@ pub(crate) fn route(
             None => error(404, format!("no task '{id}'")),
         },
         ["events"] => (200, events(context, &filter, query, kind), None),
-        ["series"] => (
-            200,
-            filter::series(
-                context,
-                &filter,
-                query
-                    .get("by")
-                    .map(String::as_str)
-                    .filter(|by| !by.is_empty()),
-            ),
-            None,
-        ),
+        ["series"] => (200, filter::series(context, &filter, query), None),
+        ["matrix"] => (200, aggregate::matrix(context, &filter, query), None),
+        ["calendar"] => (200, aggregate::calendar(context, &filter, query), None),
+        ["retention"] => (200, activity::retention(context), None),
         ["facets"] => (200, filter::facets(context, &filter), None),
         ["attributes"] => (200, filter::attributes(context, &filter), None),
         ["gantt"] => (200, insights::gantt(context, &filter, query), None),
         ["timeline"] => (200, insights::timeline(context, &filter, query), None),
         ["traces"] => (200, insights::trace_table(context, &filter, query), None),
+        ["usage"] => (200, insights::usage(context, &filter, query), None),
         ["traces", id] => match insights::trace_detail(context, id, kind) {
             Some(view) => (200, view, None),
             None => error(404, format!("no trace '{id}'")),
         },
-        ["topology"] => (200, insights::topology(context, &filter), None),
+        ["topology"] => (200, insights::topology(context, &filter, query), None),
         ["dependencies"] => (200, insights::dependencies(context, &filter), None),
         ["histogram"] => (200, insights::histogram(context, &filter, query), None),
         ["semantics"] => (200, insights::semantics(context, &filter), None),

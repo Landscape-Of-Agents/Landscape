@@ -1,7 +1,12 @@
 // The ingestion service's MongoDB database. Migrations are versioned and idempotent: collections
 // get $jsonSchema validators, unique indexes enforce idempotency per installation, filter indexes
-// serve the dashboard, and a TTL index expires only routine telemetry (events at or below MEDIUM
-// severity); security evidence, the ledger, alerts, and governance history are never expired.
+// serve the dashboard, and TTL indexes expire telemetry (events, service events, alerts, sessions,
+// tasks, and agents) after the retention period, 30 days by default, so a small cluster never
+// fills up. Records older than the retention period less 7 days are shown as stale data on the
+// dashboard. State and history are never expired: the repositories, chain heads, the autonomy
+// ledger, the selection registry, policy versions, the governance audit trail, status reports,
+// approvals, and credit grants. CRANE_MONGODB_RETENTION_DAYS=persist keeps everything (for a
+// larger cluster), and removes the expiry of records already stored.
 // MongoDB is append-only through this service, not immutable by itself, which is why every stored
 // record keeps its SHA-512 chain digest for independent verification.
 
@@ -22,13 +27,71 @@ pub(crate) const SCHEMA_VERSION: i64 = 7;
  * Fields
     - uri: String - connection string (secret)
     - database: String - database name
-    - retention_days: i64 - lifetime of routine telemetry events
+    - retention_ms: Option<i64> - lifetime of telemetry records; None keeps them for ever
 */
 #[derive(Debug, Clone)]
 pub(crate) struct Settings {
     pub(crate) uri: String,
     pub(crate) database: String,
-    pub(crate) retention_days: i64,
+    pub(crate) retention_ms: Option<i64>,
+}
+
+/** Days of telemetry kept by default */
+pub(crate) const DEFAULT_RETENTION_DAYS: i64 = 30;
+
+/** One day in milliseconds */
+pub(crate) const DAY_MS: i64 = 86_400_000;
+
+/** Days before deletion during which a record is shown as stale data */
+pub(crate) const STALE_WINDOW_DAYS: i64 = 7;
+
+/** The collections whose records expire, the time each record's age counts from, and that time's
+ * unit in milliseconds */
+pub(crate) const EXPIRING: [(&str, &str, i64); 6] = [
+    ("events", "occurred_at", 1),
+    ("service_events", "occurred_at", 1),
+    ("alerts", "at", 1000),
+    ("sessions", "last_seen_at", 1),
+    ("tasks", "started_at", 1),
+    ("agents", "last_seen_at", 1),
+];
+
+/** Read the retention period from the environment: CRANE_MONGODB_RETENTION_DAYS (or the older
+ * CRANE_MONGODB_EVENT_RETENTION_DAYS), in days (fractions allowed), 30 by default; persist,
+ * forever, off, or 0 keeps every record
+ * Input
+    - None
+ * Output
+    - Option<i64> milliseconds, None to keep everything
+*/
+pub(crate) fn retention_from_environment() -> Option<i64> {
+    let text = std::env::var("CRANE_MONGODB_RETENTION_DAYS")
+        .or_else(|_| std::env::var("CRANE_MONGODB_EVENT_RETENTION_DAYS"))
+        .unwrap_or_default();
+    match text.trim().to_ascii_lowercase().as_str() {
+        "" => Some(DEFAULT_RETENTION_DAYS * DAY_MS),
+        "persist" | "forever" | "off" | "none" | "0" => None,
+        other => Some(
+            other
+                .parse::<f64>()
+                .ok()
+                .filter(|days| *days > 0.0 && days.is_finite())
+                .map_or(DEFAULT_RETENTION_DAYS * DAY_MS, |days| {
+                    ((days * DAY_MS as f64) as i64).max(1)
+                }),
+        ),
+    }
+}
+
+/** When a record whose age counts from a time expires
+ * Input
+    - retention_ms: Option<i64> - retention period
+    - from_millis: i64 - the record's time (Unix milliseconds)
+ * Output
+    - Option<bson::DateTime>, None when records are kept
+*/
+pub(crate) fn expiry(retention_ms: Option<i64>, from_millis: i64) -> Option<bson::DateTime> {
+    retention_ms.map(|retention| bson::DateTime::from_millis(from_millis + retention))
 }
 
 impl Settings {
@@ -47,10 +110,7 @@ impl Settings {
         Ok(Self {
             uri,
             database: std::env::var("CRANE_MONGODB_DB").unwrap_or_else(|_| "foxx".into()),
-            retention_days: std::env::var("CRANE_MONGODB_EVENT_RETENTION_DAYS")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(30),
+            retention_ms: retention_from_environment(),
         })
     }
 }
@@ -394,8 +454,8 @@ pub(crate) fn migrate(database: &Database) -> Result<i64, String> {
             .run()
             .map_err(io_error)?;
     }
-    // Routine telemetry expires; security evidence is kept
-    for collection in ["events", "service_events"] {
+    // Telemetry expires after the retention period (apply_retention sets each record's time)
+    for (collection, _, _) in EXPIRING {
         database
             .collection::<Document>(collection)
             .create_index(
@@ -419,6 +479,72 @@ pub(crate) fn migrate(database: &Database) -> Result<i64, String> {
         .run()
         .map_err(io_error)?;
     Ok(SCHEMA_VERSION)
+}
+
+/** Bring stored records in line with the retention period, at every start: when records are
+ * kept, remove every expiry; otherwise give records without one their expiry, and recompute all
+ * of them when the period changed since the last start. The period applied is remembered in
+ * service_settings
+ * Input
+    - database: &Database - database
+    - retention_ms: Option<i64> - retention period
+ * Output
+    - Result<u64, String> records changed
+*/
+pub(crate) fn apply_retention(
+    database: &Database,
+    retention_ms: Option<i64>,
+) -> Result<u64, String> {
+    let settings = database.collection::<Document>("service_settings");
+    let wanted = match retention_ms {
+        Some(retention) => Bson::Int64(retention),
+        None => Bson::String("persist".into()),
+    };
+    let applied = settings
+        .find_one(doc! {"name": "retention"})
+        .run()
+        .map_err(io_error)?
+        .and_then(|document| document.get("retention_ms").cloned());
+    let changed_period = applied.as_ref() != Some(&wanted);
+    let mut changed = 0;
+    for (collection, field, unit) in EXPIRING {
+        let records = database.collection::<Document>(collection);
+        let result = match retention_ms {
+            None => records
+                .update_many(
+                    doc! {"expires_at": {"$exists": true}},
+                    doc! {"$unset": {"expires_at": ""}},
+                )
+                .run(),
+            Some(retention) => {
+                let filter = if changed_period {
+                    doc! {field: {"$exists": true}}
+                } else {
+                    doc! {"expires_at": {"$exists": false}, field: {"$exists": true}}
+                };
+                records
+                    .update_many(
+                        filter,
+                        vec![doc! {"$set": {"expires_at": {"$toDate": {"$add": [
+                            {"$multiply": [{"$toLong": format!("${field}")}, unit]},
+                            retention,
+                        ]}}}}],
+                    )
+                    .run()
+            }
+        }
+        .map_err(io_error)?;
+        changed += result.modified_count;
+    }
+    settings
+        .replace_one(
+            doc! {"name": "retention"},
+            doc! {"name": "retention", "retention_ms": wanted, "applied_at": bson::DateTime::now()},
+        )
+        .upsert(true)
+        .run()
+        .map_err(io_error)?;
+    Ok(changed)
 }
 
 #[cfg(test)]

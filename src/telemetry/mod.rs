@@ -16,6 +16,7 @@ pub(crate) mod rules;
 pub(crate) mod spec;
 pub(crate) mod spec_commands;
 pub(crate) mod sync;
+pub(crate) mod usage;
 
 use std::path::{Path, PathBuf};
 

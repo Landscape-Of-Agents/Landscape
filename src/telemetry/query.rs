@@ -5,7 +5,8 @@
 // that share a group number, which combine with OR (so "(severity is HIGH or tool is BASH) and
 // flow is F05" is two clauses in group 1 and one without a group). The values of one clause
 // combine with OR (or, for negative operators, none may match). A list attribute matches when any
-// of its items does.
+// of its items does. Any clause can be excluded (negated), so with AND, OR groups, and NOT every
+// combination of conditions can be written (as a conjunction of OR groups).
 
 use std::collections::BTreeMap;
 
@@ -35,7 +36,10 @@ pub(crate) const FACETS: [(&str, &str); 12] = [
     - Contains - contains one of the values (case-insensitive)
     - NotContains - contains none of the values
     - Prefix - starts with one of the values
+    - Suffix - ends with one of the values
+    - Like - matches one of the patterns, where * is any text and ? any one character
     - Gt, Gte, Lt, Lte - numeric comparison with the first value
+    - Between - a number from the first value to the second, both included
     - Exists - present and not empty
     - Missing - absent, null, or empty
 */
@@ -47,10 +51,13 @@ pub(crate) enum Op {
     Contains,
     NotContains,
     Prefix,
+    Suffix,
+    Like,
     Gt,
     Gte,
     Lt,
     Lte,
+    Between,
     Exists,
     Missing,
 }
@@ -61,6 +68,7 @@ pub(crate) enum Op {
     - op: Op - comparison
     - values: Vec<String> - values to compare with (none for exists and missing)
     - group: Option<u32> - clauses with the same group combine with OR; none stands alone
+    - exclude: bool - negate the clause: an event passes when the condition does not hold
 */
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Clause {
@@ -70,6 +78,8 @@ pub(crate) struct Clause {
     pub(crate) values: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) group: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) exclude: bool,
 }
 
 /** A query over events
@@ -116,14 +126,53 @@ pub(crate) fn values(spec: &Value, path: &str) -> Vec<String> {
     }
 }
 
+/** Match a text against a pattern where * is any text (also none) and ? any one character
+ * Input
+    - text: &[char] - text
+    - pattern: &[char] - pattern
+ * Output
+    - bool
+*/
+fn like(text: &[char], pattern: &[char]) -> bool {
+    // Greedy matching that backtracks to the last star
+    let (mut t, mut p) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while t < text.len() {
+        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == text[t]) {
+            t += 1;
+            p += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some((p, t));
+            p += 1;
+        } else if let Some((star_p, star_t)) = star {
+            p = star_p + 1;
+            t = star_t + 1;
+            star = Some((star_p, star_t + 1));
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|character| *character == '*')
+}
+
 impl Clause {
-    /** Report whether an event satisfies the clause
+    /** Report whether an event satisfies the clause (negated when the clause is excluded)
      * Input
         - spec: &Value - event
      * Output
         - bool
     */
     pub(crate) fn holds(&self, spec: &Value) -> bool {
+        self.exclude != self.condition(spec)
+    }
+
+    /** Report whether an event meets the clause's condition, ignoring exclusion
+     * Input
+        - spec: &Value - event
+     * Output
+        - bool
+    */
+    fn condition(&self, spec: &Value) -> bool {
         let found = values(spec, &self.path);
         let present = found
             .iter()
@@ -163,10 +212,30 @@ impl Clause {
             Op::Prefix => lower()
                 .iter()
                 .any(|value| wanted().any(|wanted| value.starts_with(&wanted))),
+            Op::Suffix => lower()
+                .iter()
+                .any(|value| wanted().any(|wanted| value.ends_with(&wanted))),
+            Op::Like => lower().iter().any(|value| {
+                let text = value.chars().collect::<Vec<_>>();
+                wanted().any(|wanted| like(&text, &wanted.chars().collect::<Vec<_>>()))
+            }),
             Op::Gt => compare(|a, b| a > b),
             Op::Gte => compare(|a, b| a >= b),
             Op::Lt => compare(|a, b| a < b),
             Op::Lte => compare(|a, b| a <= b),
+            Op::Between => {
+                let bounds = self
+                    .values
+                    .iter()
+                    .filter_map(|value| value.trim().parse::<f64>().ok())
+                    .collect::<Vec<_>>();
+                match (number(), bounds.as_slice()) {
+                    (Some(value), [low, high, ..]) => {
+                        value >= low.min(*high) && value <= low.max(*high)
+                    }
+                    _ => false,
+                }
+            }
             Op::Exists => !present.is_empty(),
             Op::Missing => present.is_empty(),
         }
@@ -211,6 +280,7 @@ impl Query {
                     op: Op::Is,
                     values: list(text),
                     group: None,
+                    exclude: false,
                 });
             }
         }
@@ -224,6 +294,7 @@ impl Query {
                     op: Op::Is,
                     values: list(text),
                     group: None,
+                    exclude: false,
                 });
             }
         }
@@ -237,6 +308,7 @@ impl Query {
                 op: Op::Prefix,
                 values: vec![prefix.clone()],
                 group: None,
+                exclude: false,
             });
         }
         Ok(Self {
@@ -382,6 +454,11 @@ mod tests {
             op,
             values: values.iter().map(|value| value.to_string()).collect(),
             group: None,
+            exclude: false,
+        };
+        let excluded = |path: &str, op: Op, values: &[&str]| Clause {
+            exclude: true,
+            ..clause(path, op, values)
         };
         let grouped = |group: u32, path: &str, op: Op, values: &[&str]| Clause {
             group: Some(group),
@@ -529,6 +606,100 @@ mod tests {
             0,
             "a group with no holding clause fails"
         );
+        // The added operators
+        assert_eq!(
+            count(vec![clause("event_name", Op::Suffix, &["_event"])]),
+            4
+        );
+        assert_eq!(
+            count(vec![clause(
+                "action.action_tool",
+                Op::Suffix,
+                &["it", "TE"]
+            )]),
+            2,
+            "EDIT and WRITE (any suffix, any case)"
+        );
+        assert_eq!(count(vec![clause("event_name", Op::Like, &["f0?_*"])]), 3);
+        assert_eq!(count(vec![clause("event_name", Op::Like, &["*13*"])]), 1);
+        assert_eq!(
+            count(vec![clause("event_name", Op::Like, &["f05"])]),
+            0,
+            "a pattern matches the whole text"
+        );
+        assert_eq!(
+            count(vec![clause(
+                "decision.decision_reasons",
+                Op::Like,
+                &["*tree*"]
+            )]),
+            1,
+            "a list matches by any item"
+        );
+        assert_eq!(
+            count(vec![clause("eval.latency_ms", Op::Between, &["40", "120"])]),
+            2,
+            "both ends included"
+        );
+        assert_eq!(
+            count(vec![clause(
+                "eval.latency_ms",
+                Op::Between,
+                &["300", "100"]
+            )]),
+            2,
+            "the bounds may come in either order"
+        );
+        assert_eq!(
+            count(vec![clause("eval.latency_ms", Op::Between, &["100"])]),
+            0,
+            "one bound matches nothing"
+        );
+        // Exclusion negates any clause, alone, combined with AND, and inside an OR group
+        assert_eq!(count(vec![excluded("flow", Op::Is, &["F05"])]), 2);
+        assert_eq!(
+            count(vec![excluded(
+                "eval.latency_ms",
+                Op::Between,
+                &["40", "120"]
+            )]),
+            2
+        );
+        assert_eq!(
+            count(vec![excluded("action.action_tool", Op::Missing, &[])]),
+            3,
+            "not missing is exists"
+        );
+        assert_eq!(
+            count(vec![
+                clause("flow", Op::Is, &["F05", "F06"]),
+                excluded("severity.severity_status", Op::Is, &["HIGH"])
+            ]),
+            2,
+            "F05 or F06, and not HIGH"
+        );
+        assert_eq!(
+            count(vec![
+                Clause {
+                    group: Some(1),
+                    ..excluded("flow", Op::Prefix, &["F0"])
+                },
+                Clause {
+                    group: Some(1),
+                    ..clause("decision.decision", Op::Is, &["DENY"])
+                }
+            ]),
+            2,
+            "(not F0x) or DENY"
+        );
+        assert_eq!(
+            count(vec![
+                excluded("flow", Op::Is, &["F05"]),
+                excluded("flow", Op::Is, &["F06"])
+            ]),
+            count(vec![excluded("flow", Op::Is, &["F05", "F06"])]),
+            "not A and not B is not (A or B)"
+        );
         // Time and free text with clauses
         let query = Query {
             since: Some(1_500),
@@ -581,6 +752,16 @@ mod tests {
             .iter()
             .any(|clause| clause.path == "severity.severity_status"
                 && clause.values == ["HIGH", "CRITICAL"]));
+        params.insert(
+            "filter".to_string(),
+            r#"[{"path":"flow","op":"between","values":["1","2"],"exclude":true,"group":3}]"#
+                .to_string(),
+        );
+        let query = Query::from_params(&params).unwrap();
+        assert!(query
+            .clauses
+            .iter()
+            .any(|clause| clause.exclude && clause.op == Op::Between && clause.group == Some(3)));
         params.insert("filter".to_string(), "not json".to_string());
         assert!(Query::from_params(&params).is_err());
         assert_eq!(facet_path("tool"), Some("action.action_tool"));

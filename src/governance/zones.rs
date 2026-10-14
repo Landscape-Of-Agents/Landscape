@@ -728,7 +728,7 @@ pub(crate) fn resolve(
                         Severity::High,
                         format!("{path}:{line}: source markers overlap or are crossed"),
                     )
-                    .with_path(*path),
+                    .with_path(path),
                 );
             }
         }

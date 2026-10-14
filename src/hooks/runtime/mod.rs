@@ -436,6 +436,7 @@ impl Hook {
             provider_session_id: session.provider_session_id.clone(),
             provider_turn_id: self.provider.turn.clone(),
             provider_task_id: task.as_ref().and_then(|task| task.provider_task_id.clone()),
+            agent_id: Some(session.agent_id.clone()),
             agent_instance_id: Some(session.agent_instance_id.clone()),
             model: session.model.clone(),
             tool_call_id: None,

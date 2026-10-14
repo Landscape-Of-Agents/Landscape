@@ -338,7 +338,7 @@ pub(super) fn base(event: &Event, name: &str, flow: &str) -> Spec {
     }
     let provider = event.scope.provider.as_deref();
     spec.set("agent", "agent_type", agent_type(provider))
-        .set("agent", "agent_id", &event.scope.agent_instance_id)
+        .set("agent", "agent_id", &event.scope.agent_id)
         .set("agent", "model", &event.scope.model)
         .set(
             "agent",
@@ -1788,7 +1788,7 @@ pub(crate) fn staleness(
             "agent_type",
             agent_type(session["provider"].as_str()),
         )
-        .set("agent", "agent_id", &session["agent_instance_id"])
+        .set("agent", "agent_id", &session["agent_id"])
         .set("agent", "model", &session["model"])
         .set(
             "assessment",
@@ -2011,6 +2011,8 @@ mod tests {
         deny.enforcement = Enforcement::Prevented;
         deny.scope.provider = Some("claude".into());
         deny.scope.foxx_session_id = Some("ses_1".into());
+        deny.scope.agent_id = Some("agt_provider".into());
+        deny.scope.agent_instance_id = Some("ins_session".into());
         deny.payload = json!({"hook_event": "pre-tool-use", "tool": "Edit", "operation": "write", "rules": ["PRESERVED_SELECTION"], "user": "Dev", "email": "dev@example.com"});
         deny.resources.push(Resource {
             kind: "file".into(),
@@ -2028,6 +2030,7 @@ mod tests {
         assert_eq!(specs[0]["action"]["action_tool"], "EDIT");
         assert_eq!(specs[0]["action"]["action_email"], "dev@example.com");
         assert_eq!(specs[0]["agent"]["agent_type"], "CLAUDE_CODE");
+        assert_eq!(specs[0]["agent"]["agent_id"], "agt_provider");
         assert_eq!(specs[0]["resource"]["resource"], json!(["FILE_WRITE"]));
         let mut allow = deny.clone();
         allow.decision = Some(Decision::Allow);

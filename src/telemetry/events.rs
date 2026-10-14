@@ -61,6 +61,7 @@ pub(crate) enum Source {
     - provider_session_id: Option<String> - as reported by the provider
     - provider_turn_id: Option<String> - as reported by the provider
     - provider_task_id: Option<String> - as reported by the provider
+    - agent_id: Option<String> - stable provider identity within the repository
     - agent_instance_id: Option<String> - canonical agent instance (provider plus session)
     - model: Option<String> - model reported by the provider
     - tool_call_id: Option<String> - provider tool_use_id, or a derived identifier
@@ -78,6 +79,7 @@ pub(crate) struct Scope {
     pub(crate) provider_session_id: Option<String>,
     pub(crate) provider_turn_id: Option<String>,
     pub(crate) provider_task_id: Option<String>,
+    pub(crate) agent_id: Option<String>,
     pub(crate) agent_instance_id: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) tool_call_id: Option<String>,

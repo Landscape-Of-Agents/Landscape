@@ -482,12 +482,19 @@ pub(super) fn gantt(context: &Context, query: &Query, params: &BTreeMap<String, 
                 .unwrap_or("NOT_IN_SESSION")
                 .to_string()
         } else {
-            trace
+            let value = trace
                 .spans
                 .iter()
                 .map(|spec| first(spec, rows_by))
                 .find(|value| value != "NONE")
-                .unwrap_or_else(|| "NONE".into())
+                .unwrap_or_else(|| "NONE".into());
+            if rows_by == "tool" {
+                crate::telemetry::spec::canonical_tool_type(&value)
+                    .unwrap_or(&value)
+                    .to_string()
+            } else {
+                value
+            }
         };
         let color = trace
             .spans

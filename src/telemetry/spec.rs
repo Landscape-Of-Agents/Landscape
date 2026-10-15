@@ -276,6 +276,13 @@ fn tool(tool: &str) -> &'static str {
     }
 }
 
+pub(crate) fn canonical_tool_type(name: &str) -> Option<&'static str> {
+    match tool(name) {
+        "OTHER" => None,
+        known => Some(known),
+    }
+}
+
 fn reported_tool(name: &str) -> String {
     if name.is_empty() {
         return "UNKNOWN_TOOL".into();

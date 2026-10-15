@@ -676,6 +676,10 @@ pub(super) fn topology(
                 .map(|value| {
                     if paths[layer] == "member_key" {
                         label(context, Some("member"), &value)
+                    } else if paths[layer] == "action.action_tool" {
+                        crate::telemetry::spec::canonical_tool_type(&value)
+                            .unwrap_or(&value)
+                            .to_string()
                     } else {
                         value
                     }

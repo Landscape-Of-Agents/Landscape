@@ -153,6 +153,20 @@ impl Dashboard {
         actor: &str,
         trigger: &str,
     ) -> Result<Value, String> {
+        let configured_agents = self.read.find(
+            "dashboard_agents",
+            mongodb::bson::doc! {"repository_id": repository},
+            mongodb::bson::doc! {},
+            1,
+        )?;
+        if configured_agents.is_empty() {
+            return Ok(json!({
+                "skipped": true,
+                "reason": "no dashboard agents are configured for this repository",
+                "evaluated": 0,
+                "incidents_opened": 0,
+            }));
+        }
         let now = crate::platform::now_millis();
         let lease_owner = random_id()?;
         if !self

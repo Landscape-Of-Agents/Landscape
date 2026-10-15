@@ -56,15 +56,20 @@ impl Reply {
         Self::new(status, "application/json", value.to_string().into_bytes())
     }
 
-    /** A JSON file download
+    /** A JSON or CSV file download
      * Input
-        - text: String - file content (JSON)
+        - text: String - file content
         - name: &str - file name offered to the browser
      * Output
         - Reply
     */
     pub(crate) fn download(text: String, name: &str) -> Self {
-        Self::new(200, "application/json", text.into_bytes()).with_header(
+        let content_type = if name.ends_with(".csv") {
+            "text/csv; charset=utf-8"
+        } else {
+            "application/json"
+        };
+        Self::new(200, content_type, text.into_bytes()).with_header(
             "Content-Disposition",
             &format!("attachment; filename=\"{name}\""),
         )

@@ -197,6 +197,27 @@ GitHub, then choose an account, a repository, and optionally one team member.
   the dashboard answers only signed-in people. A repository appears only after an upload proves its
   GitHub remote, so nobody can attach their uploads to someone else's repository.
 
+### Filtered dashboard data for agents
+
+Signed-in users and agents acting with the same browser session can request compact, filtered
+event context:
+
+```text
+GET /api/agent-context?repository=REPOSITORY_ID&since=...&until=...&filter=...
+GET /api/events.csv?repository=REPOSITORY_ID&since=...&until=...&filter=...
+```
+
+Both routes require the existing `foxx_session` cookie and enforce the viewer's repository and
+member permissions. `agent-context` returns minified JSON in the `foxx-agent-context/v1` format:
+component metadata, the applied filter (identity values shortened for display), bounded summary
+counts, token totals, and at most 500 newest matching events. Timestamps are integer Unix
+milliseconds. The request filter uses the dashboard's normal `filter` JSON clauses (AND by default,
+same-group OR, and optional NOT); component metadata can be supplied as `section`, `subsection`,
+`component`, `kind`, and `context`. `events.csv` returns at most 500 newest matching event rows as
+RFC 4180 CSV. These endpoints return filtered data only; they do not provide access to data outside
+the selected repository/member scope. Dashboard component “AI” controls open the corresponding
+filtered context and API URL for copying or download.
+
 ## Telemetry upload (Foxx service)
 
 Crane uploads events, metrics, sessions, tool calls, alerts, and governance history to the Foxx

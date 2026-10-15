@@ -30,7 +30,7 @@ async function overview(main) {
       kpi("Approvals", evals.approvals, { info: "eval:approvals", spark: points("REQUIRE_APPROVAL"), color: Foxx.STATUS.warning, tone: evals.approvals ? "warnt" : "", drill: to([is("decision.decision", "REQUIRE_APPROVAL")]) }),
       kpi("Evidence completeness", evals.evidence_completeness, { info: "eval:evidence_completeness", format: percent, tone: evals.evidence_completeness >= 0.95 ? "good" : "" }),
       kpi("Credits available", (evals.credits || {}).available, { info: "eval:credits", note: compact((evals.credits || {}).consumed) + " consumed", drill: () => go("#/credits") }))));
-  main.append(zone("fleet", "Agent fleet", "What the agents did and spent: tool calls, the tokens their model turns burnt, how long tools ran, and how often calls failed.",
+  main.append(zone("fleet", "Agent fleet · Golden metrics", "Golden metrics for the agent fleet: model tokens burnt over time and the tool-call distribution. Values are scoped by the selected filters.",
     h("div", { class: "kpis span-12" },
       kpi("Tool calls", totals.calls, { info: "eval:tool_calls", tone: "brand", drill: () => go("#/tools") }),
       kpi("Tokens burnt", totals.tokens && totals.tokens.total, { info: "eval:model_tokens", format: tokens, note: (totals.tokens ? fmt(totals.tokens.measured_calls) : 0) + " calls report tokens", drill: () => go("#/tools") }),
@@ -45,10 +45,12 @@ async function overview(main) {
     })));
   main.append(zone("activity", "Activity", "How many events happened over time, and how they divide.",
     seriesPanel("Events over time", { span: 8, by: "severity", height: 240, info: "page:overview" }),
-    breakdownPanel("Breakdown", { span: 4, by: "severity", info: "facet:severity" })));
+    breakdownPanel("Breakdown", { span: 4, by: "severity", info: "facet:severity" }),
+    matrixPanel("Activity by flow and severity", { span: 12, rows: "flow", cols: "severity" })));
   main.append(zone("decisions", "Decisions", "What Crane decided before each tool call (F05).",
     seriesPanel("Tool call decisions", { span: 8, by: "decision", clauses: [is("flow", "F05")], info: "flow:F05" }),
-    breakdownPanel("Decisions", { span: 4, by: "decision", clauses: [is("flow", "F05")], info: "facet:decision" })));
+    breakdownPanel("Decisions", { span: 4, by: "decision", clauses: [is("flow", "F05")], info: "facet:decision" }),
+    matrixPanel("Decision rule by outcome", { span: 12, rows: "decision.decision_rule", cols: "decision", clauses: [is("flow", "F05")] })));
   main.append(zone("security", "Security", "Attempts to get around Crane, what got through, and what went unobserved. Confirmed bypasses should stay 0.",
     h("div", { class: "kpis span-12" },
       kpi("Bypass attempts", evals.bypass_attempts, { info: "eval:bypass_attempts", tone: evals.bypass_attempts ? "bad" : "", drill: to([is("severity.alert_kind", "BYPASS_ATTEMPT")]) }),
@@ -59,7 +61,8 @@ async function overview(main) {
       kpi("Suspicious prompts", evals.suspicious_prompts, { info: "eval:suspicious_prompts", tone: evals.suspicious_prompts ? "bad" : "", drill: to([is("event_name", "PROMPT_SUSPICIOUS")]) }),
       kpi("Quarantines", evals.quarantines, { info: "eval:quarantines", tone: evals.quarantines ? "crit" : "" }),
       kpi("Signed attestations", evals.attestations_signed, { info: "eval:attestations_signed", drill: to([is("event_name", "SESSION_ATTESTED")]) })),
-    seriesPanel("Security signals", { span: 12, by: "alert", clauses: [{ path: "severity.alert_kind", op: "not", values: ["NONE"] }], info: "facet:alert" })));
+    seriesPanel("Security signals", { span: 6, by: "alert", clauses: [{ path: "severity.alert_kind", op: "not", values: ["NONE"] }], info: "facet:alert" }),
+    matrixPanel("Security signal by enforcement", { span: 6, rows: "alert", cols: "enforcement", clauses: [{ path: "severity.alert_kind", op: "not", values: ["NONE"] }] })));
   main.append(zone("people", "Agents and members", "Who was active.",
     seriesPanel("Activity by agent type", { span: 6, by: "agent", type: "lines", info: "facet:agent" }),
     breakdownPanel("Most active members", { span: 6, by: "member", view: "toplist", limit: 8, info: "facet:member" })));
@@ -69,7 +72,22 @@ async function overview(main) {
       { label: "Time", get: (row) => row.at, render: (row) => h("span", { class: "mono" }, dt(row.at * 1000)) }, { label: "Alert", get: (row) => row.title }, { label: "Severity", get: (row) => row.severity, render: (row) => chip(row.severity) }, { label: "Member", render: (row) => member(row.member) },
     ], data.recent_alerts || [], { noTools: true, sort: 0, pageSize: 8, empty: "No alerts." })); })));
   main.append(zone("evals", "All evals", "Every number the dashboard computes from the events in range and filter.",
-    panel("Evals", { span: 12, flush: true }, async (body, big, ctx) => { ctx.record("value", Object.fromEntries(Object.entries(evals).filter(([, value]) => typeof value === "number"))); put(body, evalsTable(evals)); })));
+    panel("Operational scorecard", { span: 12, info: { title: "Operational scorecard", text: "A quick review of volume, enforcement, reliability, and observability. Select a metric to open its supporting events." } }, async (body, big, ctx) => {
+      const groups = [
+        ["Volume", ["events", "tool_calls_decided"]],
+        ["Enforcement", ["allowed", "denied", "approvals", "quarantines"]],
+        ["Reliability", ["bypass_attempts", "bypasses_confirmed", "violations_after_effect", "coverage_gaps", "scripts_blocked"]],
+        ["Measurement", ["evidence_completeness", "verified", "attestations_signed", "secrets_redacted"]],
+      ];
+      ctx.record("value", Object.fromEntries(Object.entries(evals).filter(([, value]) => typeof value === "number")));
+      put(body, h("div", { class: "eval-scorecard" }, groups.map(([label, keys]) => h("section", {}, h("h4", {}, label), h("div", { class: "metric-grid" }, keys.filter((key) => evals[key] !== undefined).map((key) => h("div", { class: "eval-metric" }, h("span", {}, key.replace(/_/g, " ")), h("b", {}, key === "evidence_completeness" ? percent(evals[key]) : typeof evals[key] === "number" ? compact(evals[key]) : fmt(evals[key])))))))),
+        evalsTable(evals));
+    })));
+}
+
+async function dashboardAgents(main) {
+  if (needRepository(main)) return;
+  main.append(h("section", { class: "zone", id: "zone-dashboard-agents", "aria-label": "Dashboard agents" }));
 }
 
 // ---------------------------------------------------------------- event explorer
@@ -145,7 +163,21 @@ async function timeline(main) {
   main.append(zone("latency", "Latency and tokens", "The cost of each call over time: how long tools ran, how long Crane's hook took to decide, and the tokens burnt.",
     seriesPanel("Tool time", { span: 4, by: "tool", metric: "eval.tool_duration_ms", agg: "p95", metrics: TIME_AGGS, type: "lines", height: 200, format: duration, info: "eval:tool_duration_ms" }),
     seriesPanel("Hook latency", { span: 4, metric: "eval.latency_ms", agg: "p95", metrics: TIME_AGGS, type: "lines", height: 200, format: duration, info: "eval:latency_ms" }),
-    seriesPanel("Tokens", { span: 4, by: "tool", metric: "eval.model_tokens", agg: "sum", metrics: TOKEN_AGGS, type: "bars", height: 200, info: "eval:model_tokens" })));
+    seriesPanel("Tokens", { span: 4, by: "tool", metric: "eval.model_tokens", agg: "sum", metrics: TOKEN_AGGS, type: "bars", height: 200, info: "eval:model_tokens" }),
+    panel("Token cost versus tool latency", { span: 12, info: { title: "Token cost versus tool latency", text: "Each dot is a tool. Horizontal position is the average reported model tokens per call; vertical position is its 95th-percentile execution time; dot size reflects call volume. This reveals expensive or slow tools that either marginal view alone can hide." } }, async (body, big, ctx) => {
+      const usageData = await usage("tool");
+      const points = usageData.groups.filter((group) => group.tokens.per_call !== null && group.tool_ms.p95 !== null).map((group) => ({
+        x: group.tokens.per_call,
+        y: group.tool_ms.p95,
+        key: group.key,
+        label: group.key,
+        id: group.key,
+        r: 4 + Math.min(10, Math.sqrt(group.calls || 0)),
+        rows: [["calls", fmt(group.calls)], ["tokens per call", tokens(group.tokens.per_call)], ["total tokens", tokens(group.tokens.total)], ["tool time p95", duration(group.tool_ms.p95)], ["failed-call share", percent(group.failure_share)]],
+      }));
+      ctx.record("scatter", points, { x: "average tokens per call", y: "tool time p95", size: "tool calls" });
+      put(body, charts.scatter(points, { height: big ? 420 : 260, xLabel: "tokens per call", yLabel: "tool time p95", xFormat: tokens, yFormat: duration, keyLabel: "tool", onPick: (point) => openTool(point.id), empty: "No tools have both token and latency measurements." }));
+    })));
 }
 
 // ---------------------------------------------------------------- logs and traces
@@ -451,11 +483,16 @@ async function agents(main) {
       put(body, charts.donut(items, { unit: "sessions", explain: explained }));
     })));
   main.append(zone("agent-list", "Agent identities", "Every agent identity across all its sessions (all time).", panel("Agents", { span: 12, flush: true, scope: { kind: "state", what: "Agent identities" } }, async (body, big, ctx) => { ctx.record("rows", rows); put(body, dataTable([
-    { label: "Agent", get: (row) => row.agent_id, render: (row) => agentLink(row.agent_id, row.provider) }, { label: "Provider", get: (row) => row.provider, filter: true },
+    { label: "Agent", get: (row) => row.agent_id, render: (row) => agentLink(row.agent_id, row.provider) },
+    { label: "Profile ID", get: (row) => compactIdentity(row.agent_id, "agent"), render: (row) => h("span", { class: "identity-link" }, h("code", {}, compactIdentity(row.agent_id, "agent")), info("", { title: compactIdentity(row.agent_id, "agent"), text: "Short display alias for this stable profile. The complete ID remains internal for filtering and correlation." })) },
+    { label: "Provider", get: (row) => row.provider, filter: true },
+    { label: "Active sessions", get: (row) => sessions.filter((session) => session.session.agent_id === row.agent_id && !session.stale && session.session.status === "ACTIVE").length, num: true },
     { label: "Sessions", get: (row) => row.sessions, num: true }, { label: "Quarantined", get: (row) => row.quarantined_sessions, num: true },
     { label: "Tool calls decided", get: (row) => (row.evals || {}).tool_calls_decided, num: true, info: "eval:tool_calls_decided" }, { label: "Denial share", get: (row) => (row.evals || {}).denial_share, render: (row) => percent((row.evals || {}).denial_share), num: true, info: "eval:denial_share" },
     { label: "Bypass attempts", get: (row) => (row.evals || {}).bypass_attempts, num: true, info: "eval:bypass_attempts" }, { label: "Confirmed bypasses", get: (row) => (row.evals || {}).bypasses_confirmed, num: true, info: "eval:bypasses_confirmed" },
-    { label: "Credits consumed", get: (row) => ((row.evals || {}).credits || {}).consumed, num: true }, { label: "Last seen", get: (row) => row.last_seen, render: (row) => fmt(row.last_seen) },
+    { label: "Tokens", get: (row) => (stats.get(row.agent_id) || {}).tokens?.total, render: (row) => tokens((stats.get(row.agent_id) || {}).tokens?.total), num: true },
+    { label: "Tool time p95", get: (row) => (stats.get(row.agent_id) || {}).tool_ms?.p95, render: (row) => duration((stats.get(row.agent_id) || {}).tool_ms?.p95), num: true },
+    { label: "Credits consumed", get: (row) => ((row.evals || {}).credits || {}).consumed, num: true }, { label: "Last seen", get: (row) => row.last_seen, render: (row) => dt(row.last_seen) },
   ], rows, { sort: 2, onRow: (row) => openAgent(row.agent_id), placeholder: "Search agents…", name: "foxx-agents" })); })));
 }
 
@@ -612,7 +649,7 @@ async function distributions(main) {
     ctx.record("histogram", data, { field: state.field, format: millis ? duration : compact });
     put(body, charts.histogram(data, { height: big ? 420 : 240, format: millis ? duration : compact, onPick: state.field.startsWith("eval.") ? (bin) => drill({ clauses: [{ path: state.field, op: "between", values: [String(bin.from), String(bin.to)] }] }) : null }));
   });
-  main.append(zone("histogram", "Histogram", "The distribution of any number.", hist));
+  main.append(zone("histogram", "Distribution shapes", "The distribution of numeric metrics, including concentration, spread, tails, and outliers.", hist));
   main.append(zone("breakdowns", "Breakdowns", "How events divide by each facet.",
     breakdownPanel("By severity", { span: 4, by: "severity", info: "facet:severity" }),
     breakdownPanel("By origin", { span: 4, by: "origin", info: "facet:origin" }),
@@ -645,4 +682,4 @@ async function semantics(main) {
       h("span", { class: "mono muted" }, dt(line.t)), h("span", { class: "chip " + (TONES[line.severity] || "") }, line.severity || "—"), h("span", { class: "mono" }, line.flow), h("code", {}, line.name), h("span", {}, line.text || ""), line.reasons && line.reasons.length ? h("span", { class: "muted" }, "· " + line.reasons.join("; ")) : null)))); })));
 }
 
-Object.assign(window.FOXX_PAGES, { overview, explorer, timeline, tools, agents, sessions, session, logs, traces, topology: topologyPage, distributions, semantics });
+Object.assign(window.FOXX_PAGES, { overview, explorer, timeline, tools, agents, "dashboard-agents": dashboardAgents, sessions, session, logs, traces, topology: topologyPage, distributions, semantics });

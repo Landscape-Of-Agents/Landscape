@@ -7,7 +7,7 @@
 // in words what it shows and how it is filtered (the funnel icon), and can be refreshed, opened in
 // the lens (a right sidebar with the chart, its metrics, properties, explanation, and an
 // interpretation of what it shows), expanded, shown in monitor mode, or collapsed. Every time is
-// written as DD:MM:YYYY:HH:MM:SS. Charts come from charts.js, explanations from glossary.js, pages
+// written as YYYY:MM:DD:HH:MM:SS:MMM. Charts come from charts.js, explanations from glossary.js, pages
 // from pages.js and govern.js. The only writes are approvals and credit grants, which GitHub
 // authorizes.
 
@@ -53,6 +53,7 @@ const NAV = [
   ]],
   ["AI agents", [
     ["agents", "Agents", [["fleet-kpis", "Fleet"], ["leaderboard", "Leaderboard"], ["agent-activity", "Activity"], ["agent-tools", "Tools per agent"], ["agent-decisions", "Decisions and risk"], ["agent-tokens", "Tokens"], ["agent-models", "Models and autonomy"], ["agent-list", "Agent identities"]]],
+    ["dashboard-agents", "Dashboard agents", []],
     ["tools", "Tool calls", [["tool-kpis", "Summary"], ["tool-types", "Types of tool calls"], ["tool-metrics", "Metrics per tool"], ["tool-waterfall", "Waterfall"], ["tool-tokens", "Tokens per call"], ["tool-time", "Time per call"], ["tool-browser", "Browse tool calls"]]],
     ["sessions", "Sessions", [["session-kpis", "Summary"], ["session-activity", "Activity"], ["session-leaderboard", "Leaderboard"], ["session-waterfall", "Waterfall"], ["session-list", "Sessions"]]],
   ]],
@@ -60,7 +61,7 @@ const NAV = [
     ["logs", "Logs", [["log-table", "Log table"]]],
     ["traces", "Traces", [["trace-durations", "Durations"], ["trace-table", "Trace table"]]],
     ["topology", "Topology", [["who", "Who used what"], ["matrices", "Matrices"], ["hotspots", "Hotspots"], ["dependencies", "Flow dependencies"], ["code", "Code topology"]]],
-    ["distributions", "Distributions", [["histogram", "Histogram"], ["breakdowns", "Breakdowns"]]],
+    ["distributions", "Distributions", [["histogram", "Distribution shapes"], ["breakdowns", "Breakdowns"]]],
     ["semantics", "Texts and reasons", [["words", "Words"], ["texts", "Statements and reasons"], ["lines", "Log lines"]]],
   ]],
   ["Operate", [
@@ -82,6 +83,7 @@ const PAGE_GUIDE = {
   explorer: "Every event, newest first, with a count for each value of each facet on the left. Tick values to filter every view (⊖ excludes a value); open an event to see all thirteen attribute groups.",
   timeline: "When things happened. The Gantt chart draws each traced action as a bar; the event timeline draws every event as a dot; the rhythm heatmap shows the days and hours agents work; concurrency counts the sessions active at once; latency and tokens follow the cost of each call over time. Drag across a time chart to zoom in.",
   agents: "Every AI agent: its identities, sessions, tool calls, decisions, tokens, models, and risk signals. Click an agent anywhere for its profile.",
+  "dashboard-agents": "A reserved area for named dashboard agents. No dashboard-agent features are enabled here.",
   tools: "Every tool call agents made: what kind of calls, how each tool performs (calls, denials, failures, time, tokens), the waterfall of the time each call took and the tokens its model turn burnt, and a browser of every call with its trace.",
   logs: "A detailed log table of the events matching the global filter. Add any attribute as a column, filter columns, sort, search, and export CSV.",
   traces: "A trace is every event of one tool call, command, or alert (joined by action.action_id). The table lists traces with their duration, outcome, tokens, and events; open one for its waterfall.",
@@ -138,6 +140,9 @@ const storage = {
 storage.load("foxx-scope", scope);
 storage.load("foxx-filter-v2", filter);
 if (!Array.isArray(filter.clauses)) filter.clauses = [];
+const areaFilters = storage.read("foxx-area-filters", { pages: {}, zones: {} });
+if (!areaFilters.pages || !areaFilters.zones) Object.assign(areaFilters, { pages: {}, zones: {} });
+let currentDashboardPage = "overview";
 const saveScope = () => storage.save("foxx-scope", scope);
 const saveFilter = () => storage.save("foxx-filter-v2", filter);
 
@@ -153,6 +158,11 @@ function shortIdentity(id) {
   const value = String(id || "").replace(/^[a-z]+_/, "");
   return value.slice(0, 4) || "????";
 }
+function compactIdentity(id, type) {
+  if (!id) return "—";
+  const value = String(id);
+  return value.length > 12 ? type + "_" + shortIdentity(value) : value;
+}
 const agentProviders = new Map();
 function rememberAgents(rows) {
   for (const row of rows || []) if (row.agent_id && row.provider) agentProviders.set(row.agent_id, row.provider);
@@ -163,7 +173,7 @@ function agentName(id, provider) {
   if (kind.includes("codex")) return "Codex";
   if (kind.includes("copilot")) return "Copilot";
   if (kind.includes("gemini")) return "Gemini";
-  return "Agent " + shortIdentity(id);
+  return compactIdentity(id, "agent");
 }
 function facetPath(name) { const found = FACETS.find(([facet]) => facet === name); return found ? found[1] : name; }
 function facetName(path) { const found = FACETS.find(([, known]) => known === path); return found ? found[0] : null; }
@@ -172,12 +182,12 @@ function memberLabel(key) { const row = members.find((item) => item.member.key =
 function valueLabel(path, value) {
   if (path === "member_key") return memberLabel(value);
   if (path === "agent.agent_id") return agentName(value);
-  if (path === "session.session_id") return "Session " + shortIdentity(value);
+  if (path === "session.session_id") return compactIdentity(value, "session");
   return value;
 }
 function sessionLink(id, session) {
   if (!id) return h("span", { class: "muted" }, "—");
-  const label = "Session " + shortIdentity(id);
+  const label = compactIdentity(id, "session");
   const summary = session ? [
     session.provider,
     session.model,
@@ -190,7 +200,10 @@ function sessionLink(id, session) {
     info("", { title: label, text: summary }));
 }
 function agentLink(id, provider) {
-  return id ? link(agentName(id, provider), "#/agents") : h("span", { class: "muted" }, "—");
+  if (!id) return h("span", { class: "muted" }, "—");
+  const label = agentName(id, provider);
+  return h("span", { class: "identity-link" }, link(label, "#/agents"),
+    info("", { title: compactIdentity(id, "agent"), text: "Stable internal agent profile identity " + compactIdentity(id, "agent") + ". Provider: " + (provider || agentProviders.get(id) || "unknown") + ". The full identity is retained internally for filtering and trace correlation." }));
 }
 function consumedCreditsBy(entries, calls, dimension) {
   const toolsByCall = new Map((calls || []).filter((call) => call.tool_call_id && call.tool).map((call) => [call.tool_call_id, call.tool]));
@@ -415,9 +428,91 @@ function staleAt(millis, info) {
 // ---------------------------------------------------------------- panels and zones
 
 let zoneObserver = null;
+function persistAreaFilters() { storage.save("foxx-area-filters", areaFilters, localStorage); }
+function areaConditions(page, zoneId) {
+  return (areaFilters.pages[page] || []).concat(zoneId ? areaFilters.zones[page + ":" + zoneId] || [] : []);
+}
+function scopeFilterRow(list, title, note, apply) {
+  const row = h("div", { class: "area-filter" });
+  const target = { list, title, note, apply: () => { persistAreaFilters(); draw(); apply(); } };
+  const draw = () => put(row, h("button", { class: "btn small", type: "button", onclick: (event) => builder(event.currentTarget, -1, target) }, "+ Add filter"),
+    list.map((clause, index) => h("span", { class: "pill" + (clause.exclude ? " not" : "") },
+      h("button", { type: "button", class: "pill-text", title: "Edit this scoped filter", onclick: (event) => builder(event.currentTarget, index, target) }, clauseText(clause)),
+      h("button", { type: "button", "aria-label": "Remove " + clauseText(clause), onclick: () => { list.splice(index, 1); persistAreaFilters(); draw(); apply(); } }, "×"))));
+  draw();
+  return row;
+}
+function annotatePanel(node, target) {
+  const area = node.dashboardArea || { page: currentDashboardPage, zone: "" };
+  const spec = node.scopeSpec();
+  const metadata = {
+    section: area.page,
+    subsection: area.zone,
+    component: node.title,
+    information: typeof node.options.info === "string" ? explain(node.options.info).text : node.options.info && node.options.info.text,
+    filter: spec,
+  };
+  for (const component of target.querySelectorAll("svg.chart, .table-scroll table")) {
+    component.dataset.section = metadata.section;
+    component.dataset.subsection = metadata.subsection;
+    component.dataset.component = metadata.component;
+    component.dataset.filter = JSON.stringify(spec);
+    component.dataset.context = metadata.information || "";
+    if (component.matches("table")) component.dataset.columns = JSON.stringify([...component.querySelectorAll("thead th")].map((cell) => cell.textContent.trim()));
+  }
+}
+async function openAgentContext(node) {
+  const area = node.dashboardArea || { page: currentDashboardPage, zone: "" };
+  const spec = node.scopeSpec();
+  const componentNode = node.body.querySelector("svg.chart, .table-scroll table");
+  const information = typeof node.options.info === "string" ? explain(node.options.info).text : node.options.info && node.options.info.text;
+  const params = filterParams({
+    clauses: node.queryClauses(),
+    section: area.page,
+    subsection: area.zone,
+    component: node.title,
+    kind: componentNode && componentNode.matches("table") ? "table" : "graph",
+    context: information || "",
+  });
+  const data = await api("/api/agent-context", params);
+  const text = JSON.stringify(data);
+  const download = h("button", { class: "btn", type: "button", onclick: () => {
+    const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+    const anchor = h("a", { href: url, download: "foxx-agent-context.json" });
+    document.body.append(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url);
+  } }, "Download compact JSON");
+  const url = scoped("/api/agent-context");
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+  const actions = h("div", { class: "row-gap" },
+    h("button", { class: "btn small", type: "button", onclick: () => {
+      const button = document.activeElement;
+      navigator.clipboard.writeText(url.toString()).then(() => { button.textContent = "Copied"; }).catch(() => { button.textContent = "Copy failed"; });
+    } }, "Copy API URL"),
+    h("button", { class: "btn small", type: "button", onclick: () => {
+      const button = document.activeElement;
+      navigator.clipboard.writeText(text).then(() => { button.textContent = "Copied"; }).catch(() => { button.textContent = "Copy failed"; });
+    } }, "Copy JSON"),
+    download);
+  details.open("Agent context · " + node.title, h("div", {},
+    h("p", { class: "sentence" }, filterSentence(spec)),
+    h("p", { class: "muted small" }, "Authenticated API URL for this component's filtered context:"),
+    h("div", { class: "code-line" }, h("code", {}, url.toString())),
+    h("pre", { class: "api-preview" }, text)), { wide: true, kind: "foxx-agent-context/v1", actions });
+}
 /** A zone: one subsection of a page, listed in the rail */
 function zone(id, title, guide, ...children) {
-  return h("section", { class: "zone", id: "zone-" + id, "aria-labelledby": "zone-title-" + id }, h("h2", { class: "zone-title", id: "zone-title-" + id }, title, info("", { title, text: guide || title + " groups related dashboard panels. Use each panel's controls and info icon to explore the data." })), h("div", { class: "grid" }, children));
+  const local = areaFilters.zones[currentDashboardPage + ":" + id] || (areaFilters.zones[currentDashboardPage + ":" + id] = []);
+  const section = h("section", { class: "zone", id: "zone-" + id, "aria-labelledby": "zone-title-" + id });
+  const grid = h("div", { class: "grid" }, children);
+  children.filter((child) => child.classList && child.classList.contains("panel")).forEach((child) => {
+    child.dashboardArea = { page: currentDashboardPage, zone: id };
+  });
+  const rerun = () => section.querySelectorAll(".panel").forEach((node) => node.refresh && node.refresh());
+  put(section,
+    h("div", { class: "zone-heading" }, h("h2", { class: "zone-title", id: "zone-title-" + id }, title, info("", { title, text: guide || title + " groups related dashboard panels. Use each panel's controls and info icon to explore the data." })),
+      scopeFilterRow(local, "Filter subsection " + title, "Applies only to charts and tables in this subsection.", rerun)),
+    grid);
+  return section;
 }
 function scrollToZone(id) { const node = document.getElementById("zone-" + id); if (node) node.scrollIntoView({ behavior: "smooth", block: "start" }); }
 /** A panel focused on one thing. Its header: the title and explanation, the funnel (its filter in
@@ -436,27 +531,29 @@ function panel(title, options, draw) {
   node.recorded = null;
   node.title = title;
   node.options = options;
+  node.queryClauses = () => areaConditions(node.dashboardArea ? node.dashboardArea.page : currentDashboardPage, node.dashboardArea && node.dashboardArea.zone).concat(fixed(), local);
   const fixed = () => (typeof options.clauses === "function" ? options.clauses() : options.clauses || []);
   const ctx = (target) => ({
-    clauses: () => fixed().concat(local),
+    clauses: node.queryClauses,
     record: (kind, data, properties) => { if (target === body) node.recorded = { kind, data, properties: properties || {}, at: Date.now() }; else target.recorded = { kind, data, properties: properties || {}, at: Date.now() }; },
   });
   const run = async (target, big) => {
     if (target.childNodes.length && target === body) target.classList.add("loading"); else put(target, h("div", { class: "skeleton" }, "Loading…"));
-    try { await draw(target, big || false, ctx(target)); } catch (error) { if (error instanceof SignedOut) { signIn(); return; } put(target, h("div", { class: "notice error" }, error.message)); }
+    try { await draw(target, big || false, ctx(target)); annotatePanel(node, target); } catch (error) { if (error instanceof SignedOut) { signIn(); return; } put(target, h("div", { class: "notice error" }, error.message)); }
     target.classList.remove("loading");
   };
   node.refresh = () => run(body);
   node.run = run;
   node.scopeSpec = () => {
     const spec = typeof options.scope === "function" ? options.scope() : Object.assign({}, options.scope || {});
-    if (!spec.kind || spec.kind === "events") spec.clauses = (spec.clauses || []).concat(fixed(), local);
+    if (!spec.kind || spec.kind === "events") spec.clauses = (spec.clauses || []).concat(areaConditions(node.dashboardArea ? node.dashboardArea.page : currentDashboardPage, node.dashboardArea && node.dashboardArea.zone), fixed(), local);
     return spec;
   };
   const drawFilterRow = () => put(filterRow, local.map((clause, index) => h("span", { class: "pill" + (clause.exclude ? " not" : "") }, h("button", { type: "button", class: "pill-text", title: "Edit this panel condition", onclick: (event) => builder(event.currentTarget, index, panelTarget) }, clauseText(clause)), h("button", { type: "button", "aria-label": "Remove " + clauseText(clause), onclick: () => { local.splice(index, 1); drawFilterRow(); node.refresh(); } }, "×"))));
   const panelTarget = { list: local, title: "Condition for this panel only", note: "Added to the global filter for this panel; other panels are not affected.", apply: () => { drawFilterRow(); node.refresh(); } };
   const tools = h("div", { class: "tools" },
     scopeIcon(() => node.scopeSpec(), () => lens(node, "properties")),
+    h("button", { class: "icon-btn", type: "button", title: "Open this component's filtered context for an agent", "aria-label": "Agent context for " + title, onclick: () => openAgentContext(node).catch((error) => { if (error instanceof SignedOut) signIn(); else details.open("Agent context unavailable", h("div", { class: "notice error" }, error.message), { kind: "API error" }); }) }, "AI"),
     options.filterable ? h("button", { class: "icon-btn", type: "button", title: "Add a condition for this panel only", "aria-label": "Filter " + title, onclick: (event) => builder(event.currentTarget, -1, panelTarget) }, "+ filter") : null,
     h("button", { class: "icon-btn", type: "button", title: "Refresh", "aria-label": "Refresh " + title, onclick: () => node.refresh() }, "↻"),
     options.noExpand ? null : h("button", { class: "icon-btn", type: "button", title: "Lens: the chart with its metrics, properties, and interpretation", "aria-label": "Lens on " + title, onclick: () => lens(node) }, SVG_ICON(LENS)),
@@ -466,7 +563,7 @@ function panel(title, options, draw) {
   put(node, h("header", {}, h("h3", {}, title, options.info ? (typeof options.info === "string" ? info(options.info) : info("", options.info)) : null), controls, tools), filterRow, body);
   node.controls = controls;
   node.body = body;
-  run(body);
+  queueMicrotask(() => run(body));
   return node;
 }
 /** Show a panel large: expanded, or in monitor mode (full screen, refreshed every 30 seconds) */
@@ -860,7 +957,7 @@ async function openTrace(id) {
       h("div", { class: "wf-time mono" }, "+" + duration(spec.occurred_at - start)));
   }));
   const t = trace.tokens;
-  details.open("Trace " + id, h("div", {},
+  details.open((trace.tool_call_id ? compactIdentity(trace.tool_call_id, "tool") : compactIdentity(id, "tool")), h("div", {},
     h("div", { class: "metric-grid" }, [["duration", duration(trace.duration_ms)], ["tool time", duration(trace.tool_ms)], ["hook latency", duration(trace.latency_ms)], ["tokens", t ? tokens(t.total) : "not reported"], ["events", trace.spans]].map(([label, valueText]) => h("div", {}, h("span", {}, label), h("b", {}, valueText)))),
     h("h4", {}, "Call"), h("div", { class: "kv" }, [["kind", chip(trace.kind)], ["tool", trace.tool || "—"], ["outcome", chip(trace.outcome)], ["severity", chip(trace.severity)], ["decision", chip(trace.decision)], ["start", dt(trace.start)], ["end", dt(trace.end)], ["agent", trace.agent ? agentName(trace.agent_id, trace.agent) : "—"], ["agent identity", trace.agent_id ? agentName(trace.agent_id, trace.agent) : "—"], ["model", trace.model || "—"], ["session", trace.session ? sessionLink(trace.session) : "—"], ["member", member(trace.member)], ["resources", (trace.resources || []).join(", ") || "—"], ["targets", (trace.targets || []).join(", ") || "—"], ["flows", h("span", {}, trace.flows.map((flow) => h("span", {}, flow, info("flow:" + flow), " ")))]].map(([key, item]) => [h("div", {}, key), h("div", {}, item instanceof Node ? item : fmt(item))])),
     t ? h("div", {}, h("h4", {}, "Tokens of the issuing model turn", info("eval:model_tokens")), h("div", { class: "kv" }, [["this call's share", tokens(t.total)], ["input", tokens(t.input)], ["output", tokens(t.output)], ["cache read", tokens(t.cache_read)], ["cache creation", tokens(t.cache_creation)], ["whole turn", tokens(t.turn)], ["calls in the turn", fmt(t.turn_calls)]].map(([key, item]) => [h("div", {}, key), h("div", {}, item)]))) : null,
@@ -969,8 +1066,8 @@ function drawTime() {
   const local = (millis) => { if (!millis) return ""; const date = new Date(millis); return new Date(millis - date.getTimezoneOffset() * 60000).toISOString().slice(0, 19); };
   put(document.getElementById("time"), h("legend", { class: "visually-hidden" }, "Time range"), RANGES.map(([name]) => h("button", { type: "button", class: !custom && filter.range === name ? "on" : "", "aria-pressed": String(!custom && filter.range === name), onclick: () => { filter.range = name; filter.since = null; filter.until = null; saveFilter(); render(); } }, name)),
     h("button", { type: "button", class: custom ? "on" : "", title: "A custom range", onclick: (event) => {
-      const from = h("input", { type: "datetime-local", step: "1", value: local(filter.since || Date.now() - 86400e3), "aria-label": "From" });
-      const to = h("input", { type: "datetime-local", step: "1", value: local(filter.until || Date.now()), "aria-label": "To" });
+      const from = h("input", { type: "datetime-local", step: "0.001", value: local(filter.since || Date.now() - 86400e3), "aria-label": "From" });
+      const to = h("input", { type: "datetime-local", step: "0.001", value: local(filter.until || Date.now()), "aria-label": "To" });
       menu(event.currentTarget, h("div", { class: "form" }, h("strong", {}, "Custom range (your local time)"), h("label", {}, "From", from), h("label", {}, "To", to), h("div", { class: "builder-actions" }, h("button", { class: "btn primary", type: "button", onclick: () => { const since = Date.parse(from.value), until = Date.parse(to.value); if (!(since < until)) { to.classList.add("invalid"); return; } filter.since = since; filter.until = until; saveFilter(); document.querySelectorAll(".menu").forEach((node) => node.remove()); render(); } }, "Apply"))));
     } }, "⋯"));
 }
@@ -1053,6 +1150,14 @@ async function openPalette() {
   for (const item of (cache.facets || {}).tool || []) items.push({ kind: "Tool", label: item.value, hint: compact(item.count) + " events", run: () => { go("#/tools"); setTimeout(() => openTool(item.value), 600); } });
   for (const item of (cache.facets || {}).event || []) items.push({ kind: "Event", label: item.value, hint: compact(item.count), run: () => drill({ clauses: [is("event_name", item.value)] }) });
   if (document.body.contains(palette)) draw();
+}
+function pageFilterBar(page) {
+  const local = areaFilters.pages[page] || (areaFilters.pages[page] = []);
+  return h("div", { class: "page-filter" },
+    h("strong", {}, "This section only", info("", { title: "Section filter", text: "Conditions here apply only to this dashboard section. They do not change the global filter or any other section." })),
+    scopeFilterRow(local, "Filter section " + page, "Applies only to this dashboard section.", () => {
+      document.querySelectorAll(".zone .panel").forEach((node) => node.refresh && node.refresh());
+    }));
 }
 async function controls() {
   if (!me.accounts.some((account) => account.name === scope.account)) {
@@ -1149,6 +1254,7 @@ async function render() {
     history.replaceState(null, "", "#/" + path);
   }
   const [page, id] = (path || "overview").split("/");
+  currentDashboardPage = page;
   if (page === "events") { go("#/explorer"); return; }
   facetCache = null;
   catalog = null;
@@ -1162,6 +1268,7 @@ async function render() {
     drawCrumbs(page, page === "sessions" && id ? decodeURIComponent(id) : null);
     drawFilterBar();
     put(main);
+    if (scope.repository && page !== "dashboard-agents") main.append(pageFilterBar(page));
     if (approval) { main.append(h("div", { class: "notice" + (approval.ok ? " ok" : " error"), role: "status" }, approval.message)); approval = null; }
     const pages = Object.assign({}, window.FOXX_PAGES || {});
     if (page === "sessions" && id) await pages.session(main, decodeURIComponent(id));

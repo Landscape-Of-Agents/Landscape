@@ -7,7 +7,7 @@
 // chart has a tooltip, a click that drills into what it shows, and redraws when its box changes.
 // Colors: a categorical order led by the Foxx orange and validated for color-blind separation in
 // both themes; status colors (good, warning, serious, critical) are reserved for states. Every
-// time is written as DD:MM:YYYY:HH:MM:SS (local time).
+// time is written as YYYY:MM:DD:HH:MM:SS:MMM (local time).
 
 (function () {
   const Foxx = (window.Foxx = window.Foxx || {});
@@ -46,13 +46,16 @@
     return node;
   };
   const pad = (number, width) => String(number).padStart(width || 2, "0");
-  /** A time as DD:MM:YYYY:HH:MM:SS (local) */
+  /** A time as YYYY:MM:DD:HH:MM:SS:MMM (local) */
   Foxx.dt = function dt(millis) {
-    if (millis === null || millis === undefined || millis === "" || Number.isNaN(Number(millis))) return "—";
-    const date = new Date(Number(millis));
-    return pad(date.getDate()) + ":" + pad(date.getMonth() + 1) + ":" + date.getFullYear() + ":" + pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds());
+    if (millis === null || millis === undefined || millis === "") return "—";
+    const value = typeof millis === "string" && !/^-?\d+(?:\.\d+)?$/.test(millis) ? Date.parse(millis) : Number(millis);
+    if (!Number.isFinite(value)) return "—";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "—";
+    return pad(date.getFullYear(), 4) + ":" + pad(date.getMonth() + 1) + ":" + pad(date.getDate()) + ":" + pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds()) + ":" + pad(date.getMilliseconds(), 3);
   };
-  /** A time as [DD:MM:YYYY:, HH:MM:SS] for two-line axis labels (read together, the full stamp) */
+  /** A time as [YYYY:MM:DD:, HH:MM:SS:MMM] for two-line axis labels */
   Foxx.dtParts = function dtParts(millis) {
     const text = Foxx.dt(millis);
     return [text.slice(0, 11), text.slice(11)];
@@ -85,7 +88,10 @@
     return abs >= 100 ? Math.round(value).toLocaleString() : value.toFixed(abs >= 10 ? 1 : 2);
   };
   /** Tokens in words: 1.2k tokens */
-  Foxx.tokens = function tokens(value) { return value === null || value === undefined ? "—" : Foxx.compact(Math.round(Number(value))) + " tok"; };
+  Foxx.tokens = function tokens(value) {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+    return Foxx.compact(Math.max(0, Math.round(Number(value)))) + " tok";
+  };
 
   // ---------------------------------------------------------------- colors and tooltip
 

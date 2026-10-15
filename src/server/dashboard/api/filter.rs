@@ -41,6 +41,187 @@ pub(super) fn filtered<'a>(
         .collect()
 }
 
+/** A compact, filtered event context for a signed-in agent or an LLM client
+ * Input
+    - context: &Context - repository data already scoped to the authorized repository and members
+    - query: &Query - the validated global and component filters
+    - params: &BTreeMap<String, String> - optional component metadata
+ * Output
+    - Value using the versioned foxx-agent-context/v1 format
+*/
+pub(super) fn agent_context(
+    context: &Context,
+    query: &Query,
+    params: &BTreeMap<String, String>,
+) -> Value {
+    let matched = filtered(context, query, None);
+    let mut display_filter = query.clone();
+    for clause in &mut display_filter.clauses {
+        let kind = if clause.path.contains("session") {
+            Some("session")
+        } else if clause.path.contains("agent") {
+            Some("agent")
+        } else if clause.path.contains("action_id") || clause.path.contains("tool_call") {
+            Some("tool")
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
+            clause.values = clause
+                .values
+                .iter()
+                .map(|value| compact_id(value, kind))
+                .collect();
+        }
+    }
+    let total = matched.len();
+    let mut by_event = BTreeMap::<String, usize>::new();
+    let mut by_decision = BTreeMap::<String, usize>::new();
+    let mut token_total = 0_u64;
+    let mut token_samples = 0_u64;
+    for spec in &matched {
+        *by_event.entry(field(spec, "event_name")).or_default() += 1;
+        let decision = crate::telemetry::evals::field(spec, "decision", "decision");
+        if !decision.is_empty() {
+            *by_decision.entry(decision.to_string()).or_default() += 1;
+        }
+        if let Some(tokens) = spec["eval"]["model_tokens"].as_u64() {
+            token_total = token_total.saturating_add(tokens);
+            token_samples += 1;
+        }
+    }
+    let events = matched
+        .iter()
+        .rev()
+        .take(500)
+        .map(|spec| {
+            json!({
+                "at_ms": spec["occurred_at"],
+                "event": spec["event_name"],
+                "flow": spec["flow"],
+                "severity": spec["severity"]["severity_status"],
+                "decision": spec["decision"]["decision"],
+                "tool": spec["action"]["action_tool"],
+                "agent": spec["agent"]["agent_type"],
+                "agent_id": compact_id(&field(spec, "agent.agent_id"), "agent"),
+                "session": compact_id(&field(spec, "session.session_id"), "session"),
+                "tool_call": compact_id(&field(spec, "action.action_id"), "tool"),
+                "statement": spec["response"]["response_statement"],
+                "reason": spec["decision"]["decision_reasons"],
+                "tokens": spec["eval"]["model_tokens"],
+            })
+        })
+        .collect::<Vec<_>>();
+    let metadata = |key: &str| {
+        params
+            .get(key)
+            .map(|value| value.chars().take(160).collect::<String>())
+            .unwrap_or_default()
+    };
+    json!({
+        "format": "foxx-agent-context/v1",
+        "component": {
+            "section": metadata("section"),
+            "subsection": metadata("subsection"),
+            "name": metadata("component"),
+            "kind": metadata("kind"),
+            "context": metadata("context"),
+        },
+        "filter": display_filter,
+        "selected_members": context.selected.len(),
+        "summary": {
+            "matched_events": total,
+            "returned_events": events.len(),
+            "truncated": total > 500,
+            "by_event": by_event,
+            "by_decision": by_decision,
+            "measured_calls": token_samples,
+            "model_tokens": token_total,
+        },
+        "events": events,
+    })
+}
+
+fn compact_id(value: &str, kind: &str) -> String {
+    if value.len() <= 12 {
+        return value.to_string();
+    }
+    let suffix = value
+        .split_once('_')
+        .map_or(value, |(_, suffix)| suffix)
+        .chars()
+        .take(4)
+        .collect::<String>();
+    format!("{kind}_{suffix}")
+}
+
+fn field(spec: &Value, path: &str) -> String {
+    crate::telemetry::query::values(spec, path)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
+}
+
+fn csv_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+/** CSV cells follow RFC 4180 quoting, with a stable bounded projection for event tables. */
+pub(super) fn events_csv(context: &Context, query: &Query) -> String {
+    let mut lines = vec![
+        "occurred_at_ms,event_id,event_name,flow,severity,decision,tool,agent,agent_id,tool_call,session,statement,reason"
+            .to_string(),
+    ];
+    for spec in filtered(context, query, None).into_iter().rev().take(500) {
+        let values = [
+            spec["occurred_at"]
+                .as_u64()
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            compact_id(&field(spec, "event_id"), "event"),
+            field(spec, "event_name"),
+            field(spec, "flow"),
+            field(spec, "severity.severity_status"),
+            field(spec, "decision.decision"),
+            field(spec, "action.action_tool"),
+            field(spec, "agent.agent_type"),
+            compact_id(&field(spec, "agent.agent_id"), "agent"),
+            compact_id(&field(spec, "action.action_id"), "tool"),
+            compact_id(&field(spec, "session.session_id"), "session"),
+            field(spec, "response.response_statement"),
+            field(spec, "decision.decision_reasons"),
+        ];
+        lines.push(
+            values
+                .iter()
+                .map(|value| csv_quote(value))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
+    lines.join("\r\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{compact_id, csv_quote};
+
+    #[test]
+    fn compact_ids_keep_short_values_and_type_long_values() {
+        assert_eq!(compact_id("short", "session"), "short");
+        assert_eq!(
+            compact_id("session_abcdef123456", "session"),
+            "session_abcd"
+        );
+        assert_eq!(compact_id("abcdef1234567", "tool"), "tool_abcd");
+    }
+
+    #[test]
+    fn csv_cells_escape_quotes_and_preserve_newlines() {
+        assert_eq!(csv_quote("a,\"b\"\nc"), "\"a,\"\"b\"\"\nc\"");
+    }
+}
+
 /** Choose a bucket size that gives at most about sixty buckets over a range
  * Input
     - span: u64 - range in milliseconds

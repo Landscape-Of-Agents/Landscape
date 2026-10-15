@@ -108,6 +108,12 @@ pub(crate) fn route(
             None => error(404, format!("no task '{id}'")),
         },
         ["events"] => (200, events(context, &filter, query, kind), None),
+        ["events.csv"] => (
+            200,
+            Value::String(filter::events_csv(context, &filter)),
+            Some("foxx-events.csv".into()),
+        ),
+        ["agent-context"] => (200, filter::agent_context(context, &filter, query), None),
         ["series"] => (200, filter::series(context, &filter, query), None),
         ["matrix"] => (200, aggregate::matrix(context, &filter, query), None),
         ["calendar"] => (200, aggregate::calendar(context, &filter, query), None),

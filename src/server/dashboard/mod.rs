@@ -207,13 +207,15 @@ impl Dashboard {
             let agent_id = measurement["agent_id"].as_str().unwrap_or_default();
             self.approvals.record_dashboard_agent_evaluation(
                 repository,
-                agent_id,
                 actor,
                 trigger,
-                measurement["observed"].as_u64().unwrap_or_default(),
-                measurement["threshold"].as_u64().unwrap_or_default(),
-                measurement["triggered"].as_bool().unwrap_or(false),
-                now,
+                approve::DashboardAgentEvaluation {
+                    agent_id,
+                    observed: measurement["observed"].as_u64().unwrap_or_default(),
+                    threshold: measurement["threshold"].as_u64().unwrap_or_default(),
+                    triggered: measurement["triggered"].as_bool().unwrap_or(false),
+                    evaluated_at: now,
+                },
             )?;
         }
         let mut opened = 0;

@@ -26,6 +26,14 @@ pub(crate) struct Approvals {
     database: Database,
 }
 
+pub(crate) struct DashboardAgentEvaluation<'a> {
+    pub(crate) agent_id: &'a str,
+    pub(crate) observed: u64,
+    pub(crate) threshold: u64,
+    pub(crate) triggered: bool,
+    pub(crate) evaluated_at: u64,
+}
+
 impl Approvals {
     /** Wrap a database
      * Input
@@ -605,29 +613,25 @@ impl Approvals {
     pub(crate) fn record_dashboard_agent_evaluation(
         &self,
         repository: &str,
-        agent_id: &str,
         actor: &str,
         trigger: &str,
-        observed: u64,
-        threshold: u64,
-        triggered: bool,
-        evaluated_at: u64,
+        evaluation: DashboardAgentEvaluation<'_>,
     ) -> Result<(), String> {
         let result = self
             .database
             .collection::<Document>("dashboard_agents")
             .update_one(
-                doc! {"repository_id": repository, "agent_id": agent_id},
+                doc! {"repository_id": repository, "agent_id": evaluation.agent_id},
                 doc! {
                     "$inc": {
                         "metrics.evaluations": 1_i64,
-                        "metrics.matched_events": observed as i64,
-                        "metrics.threshold_hits": i64::from(triggered),
+                        "metrics.matched_events": evaluation.observed as i64,
+                        "metrics.threshold_hits": i64::from(evaluation.triggered),
                     },
                     "$set": {
-                        "metrics.last_evaluated_at": evaluated_at as i64,
-                        "metrics.last_observed": observed as i64,
-                        "metrics.last_triggered": triggered,
+                        "metrics.last_evaluated_at": evaluation.evaluated_at as i64,
+                        "metrics.last_observed": evaluation.observed as i64,
+                        "metrics.last_triggered": evaluation.triggered,
                     },
                 },
             )
@@ -638,14 +642,14 @@ impl Approvals {
         }
         self.record_dashboard_agent_activity(
             repository,
-            agent_id,
+            evaluation.agent_id,
             actor,
             "agent_evaluated",
             &json!({
-                "observed": observed,
-                "threshold": threshold,
-                "triggered": triggered,
-                "evaluated_at": evaluated_at,
+                "observed": evaluation.observed,
+                "threshold": evaluation.threshold,
+                "triggered": evaluation.triggered,
+                "evaluated_at": evaluation.evaluated_at,
                 "trigger": trigger,
             }),
         )

@@ -4,9 +4,9 @@
 // credentials: it sends batches over HTTPS, and every request is signed with this machine's
 // Ed25519 upload key (created automatically on first use, separate from repository signing keys),
 // whose public key identifies the installation. Every teammate's machine therefore uploads, not
-// only the one that ran crane init. The service writes to MongoDB and only ever returns an
-// installation. Machines can only upload: nothing is ever read back, so an agent holding this
-// machine's key cannot read evidence from the service. People read it on the hosted dashboard.
+// only the one that ran crane init. The service writes to MongoDB; a signed policy request may
+// read active quarantine rules, but no machine route returns telemetry or incident evidence.
+// People read evidence on the hosted dashboard.
 //
 // A sync first asks the service how far each local stream already reached it (moving the local
 // checkpoint back when the service holds less, for example after a restore), then sends everything
@@ -315,6 +315,7 @@ pub(crate) struct Client {
     repository: String,
     key: SigningIdentity,
     agent: ureq::Agent,
+    policy_agent: ureq::Agent,
 }
 
 impl Client {
@@ -336,6 +337,9 @@ impl Client {
             repository: workspace.repository_id.clone(),
             key,
             agent: ureq::AgentBuilder::new().timeout(TIMEOUT).build(),
+            policy_agent: ureq::AgentBuilder::new()
+                .timeout(Duration::from_secs(5))
+                .build(),
         }))
     }
 
@@ -389,6 +393,27 @@ impl Client {
         self.call("GET", "owner", &[])
     }
 
+    /** Fetch repository-scoped Dashboard Agent enforcement rules before a tool call. */
+    pub(crate) fn dashboard_agent_policy(&self) -> Result<Value, String> {
+        self.call("GET", "agent-policy", &[])
+    }
+
+    /** Request deletion of this repository's hosted records. The service checks the GitHub token
+     * against the default-branch CODEOWNERS file and never stores the token.
+     */
+    pub(crate) fn clear_repository(
+        &self,
+        remote: &str,
+        github_token: &str,
+    ) -> Result<Value, String> {
+        let body = serde_json::to_vec(&json!({
+            "remote": remote,
+            "github_token": github_token,
+        }))
+        .map_err(io_error)?;
+        self.call("POST", "clear", &body)
+    }
+
     /** Send one signed request about this repository
      * Input
         - method: &str - GET or POST
@@ -408,8 +433,12 @@ impl Client {
             REQUEST_DOMAIN,
             &request_message(method, &path, timestamp, body),
         );
-        let request = self
-            .agent
+        let agent = if method == "GET" && operation == "agent-policy" {
+            &self.policy_agent
+        } else {
+            &self.agent
+        };
+        let request = agent
             .request(method, &format!("{}{path}", self.base))
             .set("X-Crane-Installation", &self.key.public_hex())
             .set("X-Crane-Timestamp", &timestamp.to_string())

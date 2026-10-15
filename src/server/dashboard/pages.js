@@ -38,7 +38,7 @@ async function overview(main) {
       kpi("Tool time p95", totals.tool_ms && totals.tool_ms.p95, { info: "eval:tool_duration_ms", format: duration, note: "median " + duration(totals.tool_ms && totals.tool_ms.p50) }),
       kpi("Failure share", totals.failure_share, { format: percent, tone: totals.failure_share > 0.1 ? "bad" : "", note: fmt(totals.failed) + " failed calls" }),
       kpi("Agents active", totals.agents, { note: fmt(totals.sessions) + " sessions", drill: () => go("#/agents") })),
-    seriesPanel("Tokens burnt over time", { span: 6, by: "agent.agent_id", metric: "eval.model_tokens", agg: "sum", metrics: TOKEN_AGGS, type: "bars", height: 200, info: "eval:model_tokens", empty: "No tool call reported tokens in this range (Claude Code reports them)." }),
+    seriesPanel("Tokens burnt over time", { span: 6, by: "agent.agent_id", metric: "eval.model_tokens", agg: "sum", metrics: TOKEN_AGGS, clauses: [is("flow", "F06")], type: "bars", height: 200, info: "eval:model_tokens", empty: "No tool call reported tokens in this range. Crane currently measures token usage from agent transcripts when the provider supplies them; unsupported providers are not estimated." }),
     panel("Tool calls by tool", { span: 6, info: { title: "Tool calls by tool", text: "How many calls each tool received, with its token share and 95th-percentile tool time. Click a tool for its profile." } }, async (body, big, ctx) => {
       ctx.record("usage", tools, { by: "tool" });
       put(body, charts.toplist(tools.groups.map((group) => ({ value: group.key, count: group.calls })), { onPick: (value) => openTool(value), hint: "Open this tool's profile", byValue: true }));
@@ -85,9 +85,265 @@ async function overview(main) {
     })));
 }
 
+let dashboardAgentIncidentFilter = { status: "OPEN", severity: "all", query: "" };
+
 async function dashboardAgents(main) {
   if (needRepository(main)) return;
-  main.append(h("section", { class: "zone", id: "zone-dashboard-agents", "aria-label": "Dashboard agents" }));
+  const data = await api("/api/dashboard-agents", filterParams());
+  const agents = data.agents || [];
+  const incidents = data.incidents || [];
+  const quarantines = data.quarantines || [];
+  const flowContext = data.flow_context || [];
+  const metrics = data.metrics || [];
+  const activity = data.activity || [];
+  const summary = data.summary || {};
+  const action = async (work) => {
+    try { await work(); await render(); }
+    catch (error) {
+      const message = h("div", { class: "notice error", role: "alert" }, "Dashboard Agent action failed: " + error.message);
+      main.prepend(message);
+    }
+  };
+  const approvalUrl = (actionName, id) => {
+    const params = new URLSearchParams({
+      action: actionName,
+      repository: window.FOXX_REPOSITORY_ID ? window.FOXX_REPOSITORY_ID() : "",
+      id,
+    });
+    return "/auth/agent-action?" + params.toString();
+  };
+  const stateLabels = { active: "Active · all assigned events", idle: "Idle · critical/high events only", sleep: "Sleep · monitoring paused", inactive: "Inactive · stopped" };
+  const metricLabels = { critical_events: "Critical events", denials: "Denied decisions", prompt_injections: "Prompt/injection signals", bypass_attempts: "Bypass attempts", tool_failures: "Tool failures", event_volume: "Event volume" };
+  const statusCount = (state) => agents.filter((agent) => agent.state === state).length;
+  const metricRows = metrics.map((item) => ({ value: item.name + " · " + (metricLabels[item.metric] || item.metric), count: item.observed }));
+  const latestEvaluation = activity.find((item) => item.action === "agent_evaluated");
+  const incidentByAgent = Object.values(incidents.reduce((counts, incident) => {
+    const label = incident.agent_name || incident.agent_id;
+    counts[label] = counts[label] || { value: label, count: 0 };
+    counts[label].count += 1;
+    return counts;
+  }, {}));
+  main.append(hero("Dashboard Agents", "Continuous server-side monitoring · telemetry-triggered checks plus a 60-second recovery sweep · latest evaluation " + (latestEvaluation ? dt(Number(latestEvaluation.at || 0)) : "not yet run"),
+    [["Agents", fmt(summary.total || 0)], ["Active", fmt(summary.active || 0)], ["Idle", fmt(summary.idle || 0)], ["Open incidents", fmt(summary.open_incidents || 0)], ["Active quarantines", fmt(summary.active_quarantines || 0)], ["Pending quarantines", fmt(summary.pending_quarantines || 0)]],
+    [
+      h("button", { class: "btn", type: "button", onclick: () => action(async () => api("/api/dashboard-agents", filterParams())) }, "Refresh"),
+      h("button", { class: "btn", type: "button", onclick: () => action(async () => apiWrite("/api/dashboard-agents", { action: "evaluate" })) }, "Evaluate now"),
+    ]));
+  main.append(zone("da-agents", "Agents", "Create a named monitor, explain why it exists, assign one or more flows, zones, selections, or all events, and define its deterministic event threshold.",
+    panel("Create or edit an agent", { span: 7, info: { title: "Dashboard Agents", text: "Agents evaluate telemetry after uploads and on a 60-second recovery sweep. Repository-admin-approved quarantines are enforced by a signed policy check before every local tool call." } }, (body) => {
+      const id = h("input", { type: "hidden", id: "da-agent-id" });
+      const name = h("input", { id: "da-agent-name", maxlength: "80", placeholder: "e.g. Payment flow sentinel", required: true });
+      const reason = h("textarea", { id: "da-agent-reason", maxlength: "500", rows: "2", placeholder: "Why should this agent monitor this scope?", required: true });
+      const assignments = h("textarea", { id: "da-agent-assignments", rows: "2", placeholder: "flow:F05, zone:payments, selection:ABCD1234 or all:*", required: true });
+      const metric = h("select", { id: "da-agent-metric" }, Object.entries(metricLabels).map(([value, label]) => h("option", { value }, label)));
+      const threshold = h("input", { id: "da-agent-threshold", type: "number", min: "1", max: "100000", value: "3", required: true });
+      const windowMinutes = h("select", { id: "da-agent-window" }, [5, 15, 60, 240, 1440].map((value) => h("option", { value }, value + " minute" + (value === 1 ? "" : "s"))));
+      const state = h("select", { id: "da-agent-state" }, ["active", "idle", "sleep", "inactive"].map((value) => h("option", { value }, stateLabels[value])));
+      const save = h("button", { class: "btn primary", type: "button", onclick: () => action(async () => {
+        const parsedAssignments = assignments.value.split(/[\n,]+/).map((part) => part.trim()).filter(Boolean).map((part) => {
+          const [kind, ...rest] = part.split(":");
+          return { kind: kind.trim(), id: rest.join(":").trim() };
+        });
+        if (!parsedAssignments.length || parsedAssignments.some((item) => !item.kind || !item.id)) throw new Error("Assignments must use type:identifier (for example flow:F05); use all:* for every event.");
+        await apiWrite("/api/dashboard-agents", {
+          action: "save-agent",
+          agent_id: id.value || undefined,
+          name: name.value,
+          reason: reason.value,
+          assignments: parsedAssignments,
+          metric: metric.value,
+          threshold: Number(threshold.value),
+          window_minutes: Number(windowMinutes.value),
+          state: state.value,
+        });
+      }) }, "Save agent");
+      put(body, h("div", { class: "agent-form" },
+        id,
+        h("label", {}, "Agent name", name),
+        h("label", {}, "Reason / monitoring context", reason),
+        h("label", {}, "Assignments · comma or newline separated", assignments),
+        h("div", { class: "agent-form-row" }, h("label", {}, "Signal", metric), h("label", {}, "Threshold count", threshold), h("label", {}, "Lookback window", windowMinutes), h("label", {}, "Starting state", state)),
+        h("div", { class: "row" }, save, h("span", { class: "muted" }, "Active monitors all matching events; idle monitors only CRITICAL/HIGH events."))));
+    }),
+    panel("Current monitoring load", { span: 5, info: "Agent thresholds measured from the configured assignments and lookback windows." }, (body, _big, ctx) => {
+      ctx.record("agent_metrics", metrics, { monitor_only: true });
+      put(body,
+        charts.donut([
+          { value: "active", label: "Active", count: statusCount("active") },
+          { value: "idle", label: "Idle", count: statusCount("idle") },
+          { value: "sleep", label: "Sleep", count: statusCount("sleep") },
+          { value: "inactive", label: "Inactive", count: statusCount("inactive") },
+        ], { title: "Dashboard Agent states", unit: "agents", empty: "Create an agent to see its state." }),
+        charts.toplist(metricRows, { hint: "Threshold observations in each agent's lookback window", explain: (value) => value, empty: "No agents are configured." }));
+    }),
+    panel("Assigned agents", { span: 12 }, (body) => {
+      if (!agents.length) {
+        put(body, h("div", { class: "empty" }, "No Dashboard Agents yet. Create one above; assignments use flow:F05, zone:payments, selection:ID, or all:*."));
+        return;
+      }
+      put(body, h("div", { class: "agent-grid" }, agents.map((agent) => {
+        const measurement = metrics.find((item) => item.agent_id === agent.agent_id);
+        const lastEvaluatedAt = agent.metrics && Number(agent.metrics.last_evaluated_at || 0);
+        const card = h("article", { class: "agent-card", id: "agent-card-" + agent.agent_id },
+          h("div", { class: "agent-card-head" }, h("div", {}, h("h3", {}, agent.name), h("span", { class: "muted" }, "Created by @" + (agent.created_by || "unknown"))), h("span", { class: "badge " + agent.state }, agent.state)),
+          h("p", {}, agent.reason),
+          h("p", { class: "muted" }, "Assignments: " + (agent.assignments || []).map((item) => item.kind + ":" + item.id).join(" · ")),
+          h("p", { class: "muted" }, (metricLabels[agent.metric] || agent.metric) + " ≥ " + fmt(agent.threshold) + " in " + fmt(agent.window_minutes) + " min · observed " + fmt(measurement ? measurement.observed : 0)),
+          h("p", { class: "muted" }, "Evaluations " + fmt(agent.metrics && agent.metrics.evaluations || 0) + " · threshold hits " + fmt(agent.metrics && agent.metrics.threshold_hits || 0) + " · last checked " + (lastEvaluatedAt ? dt(lastEvaluatedAt) : "not yet checked")),
+          h("div", { class: "row" },
+            ...["active", "idle", "sleep", "inactive"].map((next) => h("button", { class: "btn" + (agent.state === next ? " primary" : ""), type: "button", title: stateLabels[next], onclick: () => action(async () => apiWrite("/api/dashboard-agents", { action: "set-state", agent_id: agent.agent_id, state: next })) }, next)),
+            h("button", { class: "btn", type: "button", onclick: () => {
+              id.value = agent.agent_id; name.value = agent.name; reason.value = agent.reason;
+              assignments.value = (agent.assignments || []).map((item) => item.kind + ":" + item.id).join(", ");
+              metric.value = agent.metric; threshold.value = agent.threshold; windowMinutes.value = agent.window_minutes; state.value = agent.state;
+              document.getElementById("da-agent-name").focus();
+            } }, "Edit"),
+            h("button", { class: "btn", type: "button", onclick: () => action(async () => {
+              const incidentReason = window.prompt("Describe the incident you want to record");
+              if (incidentReason) await apiWrite("/api/dashboard-agents", { action: "open-incident", agent_id: agent.agent_id, reason: incidentReason });
+            }) }, "Record incident")));
+        return card;
+      })));
+    })));
+  main.append(zone("da-states", "Action States", "Control monitoring and review repository-admin-approved quarantine policy. Hooks check this policy online before each tool call and deny if the service cannot be reached.",
+    panel("State behavior", { span: 8 }, (body) => {
+      put(body,
+        h("div", { class: "agent-state-list" }, ["active", "idle", "sleep", "inactive"].map((state) => h("article", { class: "agent-state" }, h("span", { class: "badge " + state }, state), h("p", {}, stateLabels[state]), h("small", { class: "muted" }, state === "active" ? "Threshold checks include all assigned event severities." : state === "idle" ? "Threshold checks ignore non-critical events." : "No new event checks are performed.")))),
+        h("div", { class: "notice warn" }, "Quarantine requests remain pending until a GitHub-confirmed repository admin approves them. Releasing a quarantine also requires admin approval; until then, its pre-check continues to block matching calls."));
+    }),
+    panel("Threshold observations", { span: 4 }, (body, _big, ctx) => {
+      ctx.record("agent_thresholds", metrics, { unit: "events per configured lookback" });
+      put(body, charts.toplist(metricRows.map((item) => {
+        const source = metrics.find((metric) => item.value.startsWith(metric.name + " ·"));
+        return Object.assign({}, item, { count: source ? source.threshold : 0 });
+      }), { hint: "Configured threshold by monitoring agent", empty: "No thresholds configured." }));
+    }),
+    panel("Quarantine registry", { span: 12, info: { title: "Quarantine enforcement", text: "Agent and session targets match stable Crane IDs. Tool targets match the exact provider tool name within the selected Crane session. Rules persist until a repository admin approves release. The local pre-tool hook queries the signed service endpoint online and fails closed on service errors." } }, (body) => {
+      put(body, quarantines.length
+        ? h("div", { class: "quarantine-list" }, quarantines.map((item) => {
+          const pendingRelease = item.release_decision === "PENDING";
+          const controls = item.state === "PENDING"
+            ? h("div", { class: "row" },
+              h("a", { class: "btn primary", href: approvalUrl("approve-quarantine", item.quarantine_id) }, "Approve"),
+              h("a", { class: "btn", href: approvalUrl("reject-quarantine", item.quarantine_id) }, "Reject"))
+            : item.state === "ACTIVE" && pendingRelease
+              ? h("div", { class: "row" },
+                h("a", { class: "btn primary", href: approvalUrl("release-quarantine", item.quarantine_id) }, "Approve release"),
+                h("a", { class: "btn", href: approvalUrl("reject-release", item.quarantine_id) }, "Reject release"))
+              : item.state === "ACTIVE"
+                ? h("button", { class: "btn", type: "button", onclick: () => action(async () => apiWrite("/api/dashboard-agents", { action: "request-quarantine-release", quarantine_id: item.quarantine_id })) }, "Request release")
+                : null;
+          return h("article", { class: "quarantine-item" },
+            h("div", {}, h("b", {}, item.kind + " · " + item.target_id + (item.scope_session_id ? " · session " + item.scope_session_id : "")), h("p", { class: "muted" }, item.reason)),
+            h("span", { class: "badge " + item.state }, item.state + (pendingRelease ? " · release requested" : item.release_decision === "REJECTED" ? " · release denied" : "")),
+            h("small", { class: "muted" }, "Requested by @" + (item.requested_by || "unknown") + (item.approved_by ? " · approved by @" + item.approved_by : "")),
+            controls);
+        }))
+        : h("div", { class: "empty" }, "No quarantine requests or active quarantines."));
+    })));
+  main.append(zone("da-activity", "Agent Activity and Metrics", "A persistent, timestamped trail of agent configuration, state changes, evaluations, incident actions, and the cumulative evaluation counters stored on each agent.",
+    panel("Recent agent activity", { span: 8, info: "Activity records are retained for 30 days. Evaluation counters are stored on each agent; the log records the observed count, threshold, whether it fired, and who or what initiated it." }, (body, _big, ctx) => {
+      ctx.record("dashboard_agent_activity", activity, { actions: activity.length, retention_days: 30 });
+      put(body, activity.length
+        ? h("div", { class: "agent-activity-list" }, activity.slice(0, 100).map((item) => {
+          const details = item.details || {};
+          const summary = item.action === "agent_evaluated"
+            ? "Observed " + fmt(details.observed || 0) + " / " + fmt(details.threshold || 0) + (details.triggered ? " · threshold reached" : " · below threshold") + " · via " + (details.trigger || "unknown")
+            : details.name || details.reason || details.note || details.state || details.incident_id || details.error || "";
+          return h("article", { class: "agent-activity-item" },
+            h("time", {}, dt(Number(item.at || 0))),
+            h("strong", {}, String(item.action || "agent action").replace(/_/g, " ")),
+            h("span", {}, item.agent_id ? compactIdentity(item.agent_id, "agent") : "repository"),
+            h("span", { class: "muted" }, "by " + (item.actor || "unknown")),
+            h("p", {}, summary));
+        }))
+        : h("div", { class: "empty" }, "No Dashboard Agent actions have been recorded."));
+    }),
+    panel("Evaluation totals", { span: 4 }, (body, _big, ctx) => {
+      const totals = agents.reduce((sum, agent) => {
+        const metrics = agent.metrics || {};
+        sum.evaluations += Number(metrics.evaluations || 0);
+        sum.hits += Number(metrics.threshold_hits || 0);
+        sum.observed += Number(metrics.matched_events || 0);
+        return sum;
+      }, { evaluations: 0, hits: 0, observed: 0 });
+      ctx.record("dashboard_agent_evaluation_totals", totals, {});
+      put(body, h("div", { class: "kpis" },
+        kpi("Evaluations", fmt(totals.evaluations)),
+        kpi("Threshold hits", fmt(totals.hits), { tone: totals.hits ? "warn" : "good" }),
+        kpi("Event observations", fmt(totals.observed))));
+    })));
+  const incidentStatus = h("select", { "aria-label": "Filter incident status", onchange: (event) => { dashboardAgentIncidentFilter.status = event.target.value; render(); } },
+    ...["OPEN", "RESOLVED", "ALL"].map((value) => h("option", { value, selected: dashboardAgentIncidentFilter.status === value }, value === "ALL" ? "All statuses" : value)));
+  const incidentSeverity = h("select", { "aria-label": "Filter incident severity", onchange: (event) => { dashboardAgentIncidentFilter.severity = event.target.value; render(); } },
+    ...["all", "CRITICAL", "HIGH", "MEDIUM"].map((value) => h("option", { value, selected: dashboardAgentIncidentFilter.severity === value }, value === "all" ? "All severities" : value)));
+  const incidentSearch = h("input", { type: "search", placeholder: "Search incidents, agents, reasons…", value: dashboardAgentIncidentFilter.query, "aria-label": "Search Dashboard Agent incidents", onchange: (event) => { dashboardAgentIncidentFilter.query = event.target.value; render(); } });
+  const incidentQuery = dashboardAgentIncidentFilter.query.toLowerCase();
+  const visibleIncidents = incidents.filter((incident) =>
+    (dashboardAgentIncidentFilter.status === "ALL" || incident.status === dashboardAgentIncidentFilter.status)
+    && (dashboardAgentIncidentFilter.severity === "all" || incident.severity === dashboardAgentIncidentFilter.severity)
+    && (!incidentQuery || [incident.reason, incident.agent_name, incident.metric, incident.created_by].some((value) => String(value || "").toLowerCase().includes(incidentQuery))));
+  main.append(zone("da-incidents", "Incidents and 3A", "Filter monitor findings, review why each threshold fired, request agent/session/tool quarantines, and propose incident response context for a flow. Every enforcement or context attachment requires a fresh GitHub repository-admin approval.",
+    panel("Incident overview", { span: 5 }, (body, _big, ctx) => {
+      const open = incidents.filter((item) => item.status === "OPEN").length;
+      const resolved = incidents.filter((item) => item.status === "RESOLVED").length;
+      const critical = incidents.filter((item) => item.severity === "CRITICAL").length;
+      ctx.record("incident_overview", { open, resolved, critical }, {});
+      put(body, charts.donut([{ value: "OPEN", label: "Open", count: open }, { value: "RESOLVED", label: "Resolved", count: resolved }], { title: "Dashboard incident status", unit: "incidents", empty: "No incidents have been recorded." }),
+        charts.toplist(incidentByAgent, { hint: "Incident count per monitoring agent", empty: "No incident activity." }),
+        h("div", { class: "kpis" }, kpi("Critical", critical, { tone: critical ? "crit" : "good" }), kpi("Open", open), kpi("Resolved", resolved)));
+    }),
+    panel("3A incident journal", { span: 7 }, (body) => {
+      put(body, h("div", { class: "incident-filter" }, incidentStatus, incidentSeverity, incidentSearch, h("span", { class: "muted" }, visibleIncidents.length + " of " + incidents.length + " incidents")),
+        visibleIncidents.length ? h("div", { class: "incident-list" }, visibleIncidents.map((incident) => {
+          const entries = (incident.three_a || []).slice().sort((a, b) => (a.at || 0) - (b.at || 0));
+          return h("article", { class: "incident-card" },
+            h("header", {}, h("div", {}, h("h3", {}, incident.reason), h("p", { class: "muted" }, (incident.agent_name || incident.agent_id) + " · " + (incident.metric || "manual") + " · " + (incident.observed || 0) + " / " + (incident.threshold || "—"))), h("span", { class: "badge " + (incident.severity === "CRITICAL" ? "CRITICAL" : incident.status) }, incident.severity + " · " + incident.status)),
+            h("div", { class: "three-a" }, entries.map((entry) =>
+              h("div", { class: "three-a-entry" },
+                h("span", { class: "three-a-dot" }),
+                h("div", {},
+                  h("b", {}, (entry.kind || "analysis").replace(/_/g, " ")),
+                  h("small", { class: "muted" }, " · " + (entry.actor || "unknown") + " · " + dt(Number(entry.at || 0))),
+                  h("p", {}, entry.text)
+                )
+              )
+            )),
+            h("div", { class: "row" },
+              ...(incident.subjects || []).flatMap((subject) => {
+                const buttons = [];
+                if (subject.agent_id) buttons.push(h("button", { class: "btn", type: "button", onclick: () => action(async () => apiWrite("/api/dashboard-agents", { action: "request-quarantine", kind: "agent", target_id: subject.agent_id, incident_id: incident.incident_id, reason: incident.reason })) }, "Request agent quarantine"));
+                if (subject.session_id) buttons.push(h("button", { class: "btn", type: "button", onclick: () => action(async () => apiWrite("/api/dashboard-agents", { action: "request-quarantine", kind: "session", target_id: subject.session_id, incident_id: incident.incident_id, reason: incident.reason })) }, "Request session quarantine"));
+                if (subject.tool && subject.session_id) buttons.push(h("button", { class: "btn", type: "button", onclick: () => action(async () => apiWrite("/api/dashboard-agents", { action: "request-quarantine", kind: "tool", target_id: subject.tool, scope_session_id: subject.session_id, incident_id: incident.incident_id, reason: incident.reason })) }, "Request tool quarantine · " + subject.tool + " in this session"));
+                return buttons;
+              }),
+              h("button", { class: "btn", type: "button", onclick: () => action(async () => {
+                const flowId = window.prompt("Flow ID to receive this incident context");
+                if (flowId) await apiWrite("/api/dashboard-agents", { action: "propose-flow-context", incident_id: incident.incident_id, flow_id: flowId.trim() });
+              }) }, "Propose flow context"),
+            ),
+            incident.status === "OPEN" ? h("div", { class: "row" },
+              h("button", { class: "btn", type: "button", onclick: () => action(async () => {
+                const note = window.prompt("Add an analysis or monitoring action to the 3A");
+                if (note) await apiWrite("/api/dashboard-agents", { action: "annotate-incident", incident_id: incident.incident_id, note });
+              }) }, "Add 3A note"),
+              h("button", { class: "btn primary", type: "button", onclick: () => action(async () => {
+                const note = window.prompt("Describe the human mitigation or resolution");
+                if (note) await apiWrite("/api/dashboard-agents", { action: "resolve-incident", incident_id: incident.incident_id, note });
+              }) }, "Record mitigation & resolve")) : null);
+        })) : h("div", { class: "empty" }, "No incidents match this status filter. Triggered thresholds are recorded with event IDs and an initial 3A timeline."));
+    }),
+    panel("Flow context proposals", { span: 12, info: { title: "Incident context attachment", text: "An attachment contains the incident reason, event references and 3A timeline. It is not active until a GitHub-confirmed repository admin approves it; approved context is returned by the Dashboard Agents API." } }, (body) => {
+      put(body, flowContext.length
+        ? h("div", { class: "quarantine-list" }, flowContext.map((item) => h("article", { class: "quarantine-item" },
+          h("div", {}, h("b", {}, "Flow " + item.flow_id), h("p", { class: "muted" }, "Incident " + item.incident_id + " · proposed by @" + item.proposed_by), h("p", {}, item.context && item.context.incident_reason || "Incident context attached.")),
+          h("span", { class: "badge " + item.status }, item.status),
+          item.status === "PENDING" ? h("div", { class: "row" },
+            h("a", { class: "btn primary", href: approvalUrl("approve-context", item.context_id) }, "Approve"),
+            h("a", { class: "btn", href: approvalUrl("reject-context", item.context_id) }, "Reject"))
+            : h("small", { class: "muted" }, item.status === "APPROVED" ? "Approved by @" + (item.approved_by || "unknown") : "Rejected by @" + (item.rejected_by || "unknown")))))
+        : h("div", { class: "empty" }, "No incident context has been proposed for a flow."));
+    })));
 }
 
 // ---------------------------------------------------------------- event explorer

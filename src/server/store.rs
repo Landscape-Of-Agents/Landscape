@@ -10,8 +10,9 @@ use mongodb::options::InsertManyOptions;
 use mongodb::sync::Database;
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
-use super::database::{expiry, Settings};
+use super::database::{expiry, repository_collections, Settings};
 use crate::governance::workspace::identity;
 use crate::platform::{io_error, now_millis};
 use crate::telemetry::events::Event;
@@ -372,6 +373,50 @@ fn verified(repository: &str, batch: &Batch) -> bool {
     !batch.root_commits.is_empty()
         && batch.remote.is_some()
         && identity(&batch.root_commits, batch.remote.as_deref()) == repository
+}
+
+/** Delete every stored record for a verified repository, across all installations. */
+pub(super) enum ClearRepositoryError {
+    NotVerified,
+    Database(String),
+}
+
+pub(super) fn clear_repository(
+    database: &Database,
+    repository: &str,
+    installation: &str,
+    remote: &str,
+) -> Result<Value, ClearRepositoryError> {
+    let known = database
+        .collection::<Document>("repositories")
+        .find_one(doc! {
+            "repository_id": repository,
+            "installation": installation,
+            "verified": true,
+            "remote": remote,
+        })
+        .run()
+        .map_err(|error| ClearRepositoryError::Database(io_error(error)))?;
+    if known.is_none() {
+        return Err(ClearRepositoryError::NotVerified);
+    }
+    let mut deleted = BTreeMap::new();
+    let mut total = 0_u64;
+    for name in repository_collections() {
+        let result = database
+            .collection::<Document>(name)
+            .delete_many(doc! {"repository_id": repository})
+            .run()
+            .map_err(|error| {
+                ClearRepositoryError::Database(format!(
+                    "could not clear {name}: {}",
+                    io_error(error)
+                ))
+            })?;
+        total = total.saturating_add(result.deleted_count);
+        deleted.insert(name, result.deleted_count);
+    }
+    Ok(json!({"repository": remote, "deleted_total": total, "deleted_by_collection": deleted}))
 }
 
 /** What an installation already stores

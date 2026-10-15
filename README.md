@@ -190,12 +190,72 @@ GitHub, then choose an account, a repository, and optionally one team member.
   is not arriving.
 - **Broken evidence chains:** the service checks that every upload continues the machine's event
   chain where it left off, and records a critical alert for a rewrite, a gap, or a fork.
-- **Read-only:** the dashboard reads MongoDB through a handle that cannot write, and accepts only
-  GET requests. The one write is an approval (`/auth/approve`): after a fresh GitHub sign-in it
-  asks GitHub for the person's role on that repository, marks the pending link or owner key
-  confirmed, and drops the GitHub token. Machines and agents can only upload: no upload route returns stored records, and
-  the dashboard answers only signed-in people. A repository appears only after an upload proves its
+- **Scoped access:** telemetry and evidence views read MongoDB through a handle that cannot write.
+  Dashboard writes are limited to repository-scoped agent/incident actions and GitHub-confirmed
+  approvals. Signed machine requests can read only active quarantine rules needed by local hooks;
+  they cannot read telemetry or incident records. Dashboard API access requires a signed-in person
+  with access to the selected repository. A repository appears only after an upload proves its
   GitHub remote, so nobody can attach their uploads to someone else's repository.
+
+### Dashboard Agents
+
+Dashboard Agents are repository-scoped monitors configured in the Dashboard Agents page. Each rule
+has a name and purpose, one or more `all`, `flow`, `zone`, or `selection` assignments, a supported
+event metric, a threshold, and a lookback window. Supported metrics are critical events, denials,
+prompt/injection signals, bypass attempts, tool failures, and event volume. `active` monitors all
+matching evidence; `idle` considers only HIGH and CRITICAL evidence; `inactive` and `sleep` pause
+evaluation. The service evaluates enabled agents after successful telemetry uploads and runs a
+60-second recovery sweep (also on startup); dashboard page views only read results. A repository
+lease prevents duplicate work across service instances, and threshold incidents are persisted
+idempotently.
+
+An incident can produce a pending quarantine request for a provider agent ID, a Crane session ID,
+or an exact provider tool name. A fresh GitHub authorization check must confirm repository-admin
+access before a request becomes active or a quarantine is released. Active quarantines persist until
+an admin approves release. Local hooks query the signed ingestion service before every tool call;
+matching calls are denied, and a service/policy error also denies the call. `CRANE_INGEST_URL=off`
+therefore disables this enforcement and causes tool calls to fail closed. Tool quarantines match
+the exact provider tool name only within the incident's Crane session.
+
+Incident response/decision context can be proposed for a flow. It contains the incident reason,
+event references, and 3A timeline, and is visible to agents through the Dashboard Agents API only
+after a fresh GitHub-confirmed repository admin approves it. Dashboard Agent notifications are
+delivered by the hosted service (not a developer's local integration): configure Slack and Resend
+email credentials in the Render service environment as listed below. Recipients are the configured
+email distribution list, which should include the responsible agent creators and repository owners.
+Delivery outcomes are recorded in the service event log; missing or failed delivery configuration is
+not represented as a successful send.
+
+The Incidents view supports status/severity/text filtering, human notes, mitigation, quarantine
+requests, flow-context proposals, and a chronological 3A record that includes linked quarantine and
+context approval decisions. Flow-context proposals include the incident evidence and the related
+response-action audit trail captured when proposed. The Agent Activity view traces agent
+creation/edits, state changes, evaluations, incident actions, and policy actions; detailed activity
+records are retained for 30 days.
+
+Signed-in clients can read the agent view with
+`GET /api/dashboard-agents?repository=REPOSITORY_ID` and make bounded changes with JSON
+`POST /api/dashboard-agents?repository=REPOSITORY_ID`. POST actions include `save-agent`,
+`set-state`, `evaluate`, `open-incident`, `annotate-incident`, `resolve-incident`,
+`request-quarantine`, `request-quarantine-release`, and `propose-flow-context`. Admin approvals use
+the short-lived signed `/auth/agent-action` GitHub OAuth flow and support approval or rejection of
+quarantine, release, and flow-context requests. The OAuth token is used once to check repository
+permissions and is not stored. The API returns active/proposed quarantines and proposed or approved
+flow context along with agent data.
+
+For the hosted service, set these variables under **Render → Environment**. Never commit their
+values or paste them into issue/chat messages:
+
+| Variable | Purpose |
+| --- | --- |
+| `CRANE_DASHBOARD_AGENT_SLACK_WEBHOOK_URL` | Slack incoming webhook URL (`https://hooks.slack.com/services/...`) |
+| `CRANE_DASHBOARD_AGENT_RESEND_API_KEY` | Resend API key used to send incident email |
+| `CRANE_DASHBOARD_AGENT_EMAIL_FROM` | Verified sender address configured in Resend |
+| `CRANE_DASHBOARD_AGENT_EMAIL_TO` | Comma-separated notification recipients; configure the responsible agent creators/repository owners or their team list |
+
+When both notification providers are unset, incident creation still succeeds and the service records
+that delivery is not configured. A configured provider failure is recorded as a failed delivery and
+does not roll back the incident.
 
 ### Filtered dashboard data for agents
 
@@ -225,6 +285,18 @@ ingestion service (`https://agentscript-service.onrender.com`), which stores the
 Nothing needs to be set up: uploads happen when a tool call ends, when a session ends, after every
 command, and every 60 seconds. Hooks never wait for the network, and the local evidence stays
 authoritative when the service is unreachable.
+
+- Tool-call telemetry retains the exact tool name reported by Claude, Codex, Copilot, Gemini, or
+  an MCP server instead of collapsing unrecognized names to `OTHER`. Crane does not ask a separate
+  model to guess a tool's identity. Token measurements are observed only when a provider supplies a
+  readable transcript with usage; unsupported providers are shown as unmeasured, never estimated.
+- From a repository clone, a human CODEOWNER can permanently clear its hosted records with
+  `crane data clear`. The command requires GitHub CLI authentication (`gh auth login`) and an exact
+  typed confirmation. The service independently checks the caller's GitHub identity against a
+  direct account entry in the default-branch `CODEOWNERS` file, then deletes that repository's
+  records across all members and installations. Team entries alone do not authorize this command.
+  The supplied GitHub token is used for that check only and is not stored. Future uploads will
+  create new repository records again.
 
 - Each request is signed with the machine's own upload key (`~/.crane-trust/installation.key`,
   created automatically). Its public key identifies the installation, and an installation can only
@@ -313,7 +385,8 @@ flowchart LR
   Up -->|HTTPS| Ingest
   subgraph Service["Foxx service (crane server)"]
     Ingest["server::ingest: auth, limits"] --> Store["server::store (writes)"]
-    Dash["server::dashboard (read-only)"] --> Read["dashboard::data (ReadOnly)"]
+    Dash["server::dashboard (authenticated views + narrow writes)"] --> Read["dashboard::data (ReadOnly)"]
+    Dash --> Approval["dashboard::approve (approvals + Dashboard Agent records)"]
   end
   Store --> DB[("MongoDB")]
   Read --> DB
@@ -330,7 +403,7 @@ flowchart LR
 | Telemetry | `telemetry` | Events, ledger, metrics, compliance, redaction, alerts, upload (`ingest`, `sync`) |
 | Integrations | `integrations` | One `Provider` per service (`jira`, `slack`, `whatsapp`, `github`): prompts, verification, alert delivery |
 | CLI | `cli` | Dispatch and command audit; `governance/` has one file per command group |
-| Service | `server` | `http` (replies, correlation ids), `ingest` (signed upload API), `limits`, `store`, `log` (JSON lines), `dashboard/` (`auth`, read-only `data`, `api/` by view) |
+| Service | `server` | `http` (replies, correlation ids), `ingest` (signed upload API), `limits`, `store`, `log` (JSON lines), `dashboard/` (`auth`, read-only evidence `data`, narrow `approve` writes, `api/` by view) |
 
 **Extending.** A new service is one module implementing `integrations::Provider` plus one entry in
 `PROVIDERS`. A new agent is one module implementing `hooks::adapter::AgentAdapter`. A new dashboard

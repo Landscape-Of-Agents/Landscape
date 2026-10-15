@@ -180,6 +180,11 @@ pub(crate) fn verified_repositories(read: &ReadOnly) -> Result<Vec<(String, Stri
     - owner: Value - the owner key most recently confirmed by a GitHub admin (null when none)
     - specs: Vec<Value> - the repository's event stream (DASHBOARD.md), oldest first
     - grants: Vec<Value> - credit grants approved on the dashboard, newest first
+    - dashboard_agents: Vec<Value> - configured monitor-only dashboard agents
+    - dashboard_incidents: Vec<Value> - detected and manually recorded 3A incidents
+    - dashboard_agent_activity: Vec<Value> - recent configuration, evaluation, and incident actions
+    - dashboard_quarantines: Vec<Value> - proposed, active, and released enforcement actions
+    - dashboard_flow_context: Vec<Value> - proposed and approved incident context attachments
     - truncated: bool - a member had more events than are loaded
 */
 pub(crate) struct Context {
@@ -197,6 +202,11 @@ pub(crate) struct Context {
     pub(crate) owner: Value,
     pub(crate) specs: Vec<Value>,
     pub(crate) grants: Vec<Value>,
+    pub(crate) dashboard_agents: Vec<Value>,
+    pub(crate) dashboard_incidents: Vec<Value>,
+    pub(crate) dashboard_agent_activity: Vec<Value>,
+    pub(crate) dashboard_quarantines: Vec<Value>,
+    pub(crate) dashboard_flow_context: Vec<Value>,
     pub(crate) truncated: bool,
 }
 
@@ -305,6 +315,56 @@ pub(crate) fn load(
                 "confirmed_at": crate::server::store::number(document.get("confirmed_at")),
             })
         });
+    let dashboard_agents = read
+        .find(
+            "dashboard_agents",
+            doc! {"repository_id": repository},
+            doc! {"updated_at": -1},
+            500,
+        )?
+        .into_iter()
+        .map(json)
+        .collect();
+    let dashboard_incidents = read
+        .find(
+            "dashboard_incidents",
+            doc! {"repository_id": repository},
+            doc! {"created_at": -1},
+            1_000,
+        )?
+        .into_iter()
+        .map(json)
+        .collect();
+    let dashboard_agent_activity = read
+        .find(
+            "dashboard_agent_activity",
+            doc! {"repository_id": repository},
+            doc! {"at": -1},
+            500,
+        )?
+        .into_iter()
+        .map(json)
+        .collect();
+    let dashboard_quarantines = read
+        .find(
+            "dashboard_quarantines",
+            doc! {"repository_id": repository},
+            doc! {"requested_at": -1},
+            500,
+        )?
+        .into_iter()
+        .map(json)
+        .collect();
+    let dashboard_flow_context = read
+        .find(
+            "dashboard_flow_context",
+            doc! {"repository_id": repository},
+            doc! {"proposed_at": -1},
+            500,
+        )?
+        .into_iter()
+        .map(json)
+        .collect();
     let selected = members
         .iter()
         .filter_map(|member| member["installation"].as_str())
@@ -444,6 +504,11 @@ pub(crate) fn load(
         owner,
         specs,
         grants,
+        dashboard_agents,
+        dashboard_incidents,
+        dashboard_agent_activity,
+        dashboard_quarantines,
+        dashboard_flow_context,
         truncated,
     })
 }

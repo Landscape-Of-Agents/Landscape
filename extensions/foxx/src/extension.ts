@@ -11,7 +11,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 import { CommandResult, CraneStatus, craneStatus, Finding, parseJson, RELEASES_URL, runCrane, selectionArgs, selectionIdFrom, Span, TestReport, ValidateReport } from "./core/crane";
-import { activate as activateEntity, addContext, addFlow, addZone, attachToZone, entities, ZoneInput } from "./core/governance";
+import { activate as activateEntity, addContext, addFlow, addZone, attachToZone, checkId, connectZones, entities, sourcePaths, ZoneInput } from "./core/governance";
 import { parsePolicies, Policy } from "./core/policies";
 import { checkName, confirmation, ownerKey, repoArgs } from "./core/setup";
 import { FoxxPanel, PanelHost, PanelState, Progress, ResultAction, RunResult, SelectionInfo } from "./panel";
@@ -293,7 +293,7 @@ const panelHost: PanelHost = {
       entities: ready
         ? entities(readGovernance())
             .filter((entity) => entity.kind !== "context_pack")
-            .map((entity) => ({ kind: entity.kind as "zone" | "flow", id: entity.id, status: entity.status }))
+            .map((entity) => ({ kind: entity.kind as "zone" | "flow", id: entity.id, status: entity.status, description: entity.description }))
         : [],
       selections: ready ? loadRecords().map((record) => ({ id: record.id, label: `${record.operation}${record.name ? ` ${record.name}` : ""}`, policy: record.policy })) : [],
     };
@@ -350,14 +350,14 @@ const sidebarHost: SidebarHost = {
       crane: craneKnown ? { state: craneKnown.state, version: craneKnown.version, message: craneKnown.message } : undefined,
       generation: lastReport?.generation,
       valid: lastReport?.valid,
-      policies: ready ? policies().length : 0,
+      policies: ready ? policies().map((policy) => policy.name) : [],
       selections: ready
         ? loadRecords().map((record) => {
             const span = spans[record.id];
             return { id: record.id, name: record.name, operation: record.operation, policy: record.policy, location: span ? `${span.path}:${span.start_line}-${span.end_line}` : null, outcome: outcomeOf(record.id) };
           })
         : [],
-      entities: governed.filter((entity) => entity.kind !== "context_pack").map((entity) => ({ kind: entity.kind as "zone" | "flow", id: entity.id, status: entity.status })),
+      entities: governed.filter((entity) => entity.kind !== "context_pack").map((entity) => ({ kind: entity.kind as "zone" | "flow", id: entity.id, status: entity.status, description: entity.description })),
       findings: (lastReport?.findings ?? [])
         .filter((finding) => finding.severity !== "LOW")
         .sort((a, b) => (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9))
@@ -751,6 +751,79 @@ async function createCheckpoint(): Promise<void> {
   await change(["checkpoint", name], `checkpoint ${name} recorded.`);
 }
 
+/** Convert a deliberate zone ordering into one proposed flow. */
+async function connectZonesFlow(): Promise<void> {
+  const zones = entities(readGovernance()).filter((entity) => entity.kind === "zone");
+  if (zones.length < 2) {
+    void vscode.window.showInformationMessage("Foxx: create at least two zones before connecting them into a flow.");
+    return;
+  }
+  const ordered: string[] = [];
+  while (ordered.length < zones.length) {
+    const remaining = zones.filter((zone) => !ordered.includes(zone.id));
+    const choices = remaining.map((zone) => ({ label: zone.id, description: zone.description || zone.status, id: zone.id }));
+    if (ordered.length >= 2) choices.unshift({ label: "Finish flow", description: `Keep this order: ${ordered.join(" → ")}`, id: "" });
+    const choice = await vscode.window.showQuickPick(choices, {
+      placeHolder: ordered.length ? `Choose the next zone (${ordered.length} selected in order)` : "Choose the first zone in the flow",
+      title: "Connect zones into an ordered flow",
+    });
+    if (!choice) return;
+    if (!choice.id) break;
+    ordered.push(choice.id);
+  }
+  if (ordered.length < 2) {
+    void vscode.window.showInformationMessage("Foxx: select at least two zones to create a flow.");
+    return;
+  }
+  const id = await vscode.window.showInputBox({
+    prompt: "Flow identifier",
+    value: ordered.join("-").slice(0, 64),
+    validateInput: (value) => checkId(value) ?? (entities(readGovernance()).some((entity) => entity.id === value) ? "this identifier is already used" : undefined),
+  });
+  if (!id) return;
+  const description = await vscode.window.showInputBox({ prompt: "Why does this ordered flow exist?", value: ordered.join(" → ") });
+  if (description === undefined) return;
+  const result = await writeGovernance(
+    (text) => connectZones(text, id, description, ordered),
+    `flow ${id} created in order ${ordered.join(" → ")}; the original zones are preserved as embedded stages`,
+  );
+  (result.ok ? vscode.window.showInformationMessage : vscode.window.showErrorMessage)(`Foxx: ${result.message}`);
+}
+
+/** Open the first governed source file for a zone or flow in the editor. */
+async function openGovernanceEntity(kind: "zone" | "flow", id: string): Promise<void> {
+  const directory = root();
+  if (!directory) return;
+  try {
+    const candidates = sourcePaths(readGovernance(), kind, id);
+    for (const candidate of candidates) {
+      const absolute = path.resolve(directory, candidate);
+      const relative = path.relative(directory, absolute);
+      if (relative.startsWith("..") || path.isAbsolute(relative)) continue;
+      const patterns = candidate.includes("*") || candidate.includes("?") || candidate.includes("{")
+        ? [candidate]
+        : [candidate, `${candidate.replace(/[\\/]+$/, "")}/**`];
+      let uri: vscode.Uri | undefined;
+      for (const pattern of patterns) {
+        const matches = await vscode.workspace.findFiles(new vscode.RelativePattern(directory, pattern), undefined, 1);
+        if (matches[0]) { uri = matches[0]; break; }
+      }
+      uri = uri ?? (fs.existsSync(absolute) && fs.statSync(absolute).isFile() ? vscode.Uri.file(absolute) : undefined);
+      if (uri) {
+        await vscode.window.showTextDocument(uri, { preview: false, viewColumn: vscode.ViewColumn.One });
+        return;
+      }
+    }
+    const governance = vscode.Uri.file(path.join(directory, ".crane", "governance.yaml"));
+    if (fs.existsSync(governance.fsPath)) {
+      await vscode.window.showTextDocument(governance, { preview: false, viewColumn: vscode.ViewColumn.One });
+      void vscode.window.showInformationMessage(`Foxx: ${kind} '${id}' has no resolvable source file; opened its governance definition.`);
+    }
+  } catch (error) {
+    void vscode.window.showErrorMessage(`Foxx: could not open ${kind} '${id}': ${(error as Error).message}`);
+  }
+}
+
 /** Create a policy in a new or existing policy file. */
 async function createPolicy(): Promise<void> {
   const existing = policies().map((policy) => policy.name.toLowerCase());
@@ -1043,7 +1116,7 @@ class GovernanceTree implements vscode.TreeDataProvider<Node> {
     const glyphs: Record<string, string> = { zone: "symbol-namespace", flow: "git-merge", context_pack: "book" };
     const section = (kind: string, label: string) => {
       const items = governed.filter((entity) => entity.kind === kind);
-      return new Node(label, items.map((entity) => new Node(entity.id, [], entity.status, new vscode.MarkdownString(`**${kind.replace("_", " ")} \`${entity.id}\`** · ${entity.status}\n\n${entity.description ?? ""}`), stateIcon(glyphs[kind], entity.status))), String(items.length), undefined, new vscode.ThemeIcon(glyphs[kind]));
+      return new Node(label, items.map((entity) => new Node(entity.id, [], entity.status, new vscode.MarkdownString(`**${kind.replace("_", " ")} \`${entity.id}\`** · ${entity.status}\n\n${entity.description ?? ""}`), stateIcon(glyphs[kind], entity.status), kind === "zone" || kind === "flow" ? { command: "foxx.openEntity", title: "Open source", arguments: [kind, entity.id] } : undefined)), String(items.length), undefined, new vscode.ThemeIcon(glyphs[kind]));
     };
     return [new Node("Policies", policyNodes, String(policyNodes.length), undefined, new vscode.ThemeIcon("law")), section("zone", "Zones"), section("flow", "Flows"), section("context_pack", "Context Packs")];
   }
@@ -1139,6 +1212,11 @@ export function activate(context: vscode.ExtensionContext): void {
   register("foxx.openFile", (uri) => openPanel(uri instanceof vscode.Uri ? uri : undefined, "EXPLORER"));
   register("foxx.setup", () => setUp());
   register("foxx.createPolicy", () => createPolicy());
+  register("foxx.connectZonesFlow", () => connectZonesFlow());
+  register("foxx.openEntity", (kind, id) => {
+    if ((kind === "zone" || kind === "flow") && typeof id === "string") return openGovernanceEntity(kind, id);
+    return undefined;
+  });
   register("foxx.createCheckpoint", () => createCheckpoint());
   register("foxx.moveToPolicy", () => moveToPolicy());
   register("foxx.installHooks", () => installHooks());

@@ -472,6 +472,41 @@ pre.json { background: var(--panel-2); border: 1px solid var(--line); border-rad
 .code-line code { flex: 1; overflow-x: auto; white-space: nowrap; }
 .retention-bar { height: 8px; border-radius: 4px; background: var(--grid); overflow: hidden; display: flex; }
 .retention-bar i { display: block; height: 100%; }
+.agent-form, .agent-state-list, .incident-list { display: flex; flex-direction: column; gap: 9px; }
+.agent-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; }
+.agent-form input, .agent-form textarea, .agent-form select, .incident-filter select, .incident-filter input { width: 100%; min-width: 0; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; font: inherit; }
+.agent-form textarea { resize: vertical; }
+.agent-form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.agent-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 10px; }
+.agent-card, .agent-state, .incident-card { min-width: 0; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2); padding: 10px; }
+.agent-card-head, .incident-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 9px; }
+.agent-card h3, .incident-card h3 { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+.agent-card p, .incident-card p { margin: 7px 0; overflow-wrap: anywhere; }
+.agent-card .row { display: flex; flex-wrap: wrap; gap: 5px; }
+.agent-card .btn { padding: 4px 7px; font-size: 11px; }
+.agent-state-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.agent-state p { margin: 7px 0 3px; }
+.agent-activity-list { display: flex; flex-direction: column; max-height: 620px; overflow-y: auto; }
+.agent-activity-item { display: grid; grid-template-columns: 170px minmax(110px, 1fr) minmax(80px, .7fr) minmax(100px, .8fr); gap: 5px 10px; align-items: baseline; padding: 8px; border-bottom: 1px solid var(--line); }
+.agent-activity-item time { color: var(--muted); font: 10px var(--mono); }
+.agent-activity-item strong { text-transform: capitalize; }
+.agent-activity-item p { grid-column: 2 / -1; margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+.incident-filter { display: flex; align-items: center; gap: 9px; margin-bottom: 9px; flex-wrap: wrap; }
+.incident-filter label { display: flex; align-items: center; gap: 7px; }
+.incident-filter select { width: auto; }
+.incident-filter input { flex: 1 1 220px; width: auto; }
+.incident-card { margin: 8px 0; }
+.incident-card > header p { margin: 4px 0; }
+.quarantine-list { display: flex; flex-direction: column; gap: 8px; }
+.quarantine-item { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px 12px; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); min-width: 0; }
+.quarantine-item > div, .quarantine-item p { min-width: 0; overflow-wrap: anywhere; }
+.quarantine-item p { margin: 4px 0 0; }
+.quarantine-item .btn { white-space: nowrap; text-decoration: none; }
+.three-a { margin: 12px 0 8px 5px; border-left: 2px solid var(--line); }
+.three-a-entry { position: relative; padding: 0 0 10px 14px; overflow-wrap: anywhere; }
+.three-a-entry:last-child { padding-bottom: 0; }
+.three-a-dot { position: absolute; left: -6px; top: 4px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); border: 2px solid var(--panel-2); }
+.three-a-entry small { font-size: 10px; }
 
 /* Messages and sign-in */
 .notice { padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); margin-bottom: 12px; }
@@ -496,7 +531,10 @@ pre.json { background: var(--panel-2); border: 1px solid var(--line); border-rad
   .details, .details.wide { width: 100%; }
   .kv { grid-template-columns: 120px minmax(0, 1fr); }
   .filterbar .right { display: none; }
+  .agent-activity-item { grid-template-columns: 1fr 1fr; }
+  .agent-activity-item p { grid-column: 1 / -1; }
 }
+@media (max-width: 650px) { .quarantine-item { grid-template-columns: minmax(0, 1fr) auto; } .quarantine-item .btn, .quarantine-item small { grid-column: 1 / -1; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
 @media (forced-colors: active) { .chart .bar, .heatmap .cell-box { forced-color-adjust: none; } }
 </style>

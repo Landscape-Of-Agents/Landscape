@@ -1,16 +1,16 @@
 // The hosted Foxx dashboard: one dashboard for individuals and teams, served by the ingestion
 // service at its root. People sign in with GitHub; a personal account sees the repositories it
 // owns, and an organization member sees the organization's repositories, with every teammate's
-// activity and a filter by member. Machines and agents cannot read anything back: the upload API
-// only writes, and the dashboard answers only signed-in browsers. The dashboard holds a read-only
-// database handle (data.rs), so viewing never changes the stored evidence.
+// activity and a filter by member. Telemetry reads use a read-only database handle (data.rs);
+// dashboard-agent configuration, incidents, quarantines, flow-context attachments, and approvals
+// use narrow write methods (approve.rs).
 //
-// Approvals (approve.rs) are the one exception to read-only: /auth/approve?action=link|owner&code=
-// runs a GitHub sign-in, and the callback asks GitHub for the person's role on that repository
-// before marking a pending request confirmed. The GitHub token is used for that one question and
-// never kept.
+// Narrow writes in approve.rs cover GitHub-confirmed linking/owner approval, repository-scoped
+// Dashboard Agent configuration and activity, and action proposals. Admin-only Dashboard Agent
+// changes use a fresh GitHub role check in the OAuth callback; its token is used once and never kept.
 //
-// Routes (GET only): /, /app.js, /charts.js, /glossary.js, /logo.png, and /favicon.png (the page), /auth/login, /auth/approve, /auth/callback, /auth/logout,
+// Routes: GET /, /app.js, /charts.js, /glossary.js, /logo.png, /favicon.png, /auth/login,
+// /auth/approve, /auth/agent-action, /auth/callback, /auth/logout,
 // /api/me (the viewer, accounts, and repositories), /api/accounts/NAME (a summary of an account's
 // repositories), and /api/ROUTE?repository=ID[&members=KEY,...] (api.rs). Responses carry a
 // strict Content-Security-Policy; the page loads only its own script.
@@ -19,9 +19,11 @@ pub(crate) mod api;
 pub(crate) mod approve;
 pub(crate) mod auth;
 pub(crate) mod data;
+mod notifications;
 pub(crate) mod stream;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -30,7 +32,7 @@ use tiny_http::Request;
 
 use super::http::{self, Reply};
 use crate::server::service_events::{self, ServiceLog};
-use crate::trust::crypto::{hex, is_digest, random_bytes};
+use crate::trust::crypto::{hex, is_digest, random_bytes, random_id};
 use approve::Approvals;
 use auth::{Auth, Intent, Viewer, SESSION_MILLIS};
 use data::{Context, ReadOnly};
@@ -58,6 +60,7 @@ const LOGO: &[u8] = include_bytes!("logo.png");
 
 /** The browser tab icon (64 px) */
 const FAVICON: &[u8] = include_bytes!("favicon.png");
+const MAX_DASHBOARD_AGENT_BODY: usize = 64 * 1024;
 
 /** When each repository last received an upload, so its cached views are dropped at once */
 static UPLOADS: std::sync::LazyLock<Mutex<HashMap<String, Instant>>> =
@@ -135,17 +138,259 @@ impl Dashboard {
         self.auth.is_some()
     }
 
+    pub(crate) fn codeowner(&self, token: &str, remote: &str) -> Result<String, String> {
+        self.auth
+            .as_ref()
+            .ok_or_else(|| "GitHub sign-in must be configured on the service".to_string())?
+            .codeowner(token, remote)
+    }
+
+    /** Evaluate the configured agents for a repository from recorded telemetry. */
+    pub(crate) fn evaluate_dashboard_agents(
+        &self,
+        repository: &str,
+        remote: &str,
+        actor: &str,
+        trigger: &str,
+    ) -> Result<Value, String> {
+        let now = crate::platform::now_millis();
+        let lease_owner = random_id()?;
+        if !self
+            .approvals
+            .acquire_dashboard_agent_lease(repository, &lease_owner, now)?
+        {
+            return Ok(
+                json!({"skipped": true, "reason": "another service worker owns this repository evaluation"}),
+            );
+        }
+        let result =
+            self.evaluate_dashboard_agents_with_lease(repository, remote, actor, trigger, now);
+        let result = match result {
+            Ok(value) => Ok(value),
+            Err(error) => match self
+                .approvals
+                .record_dashboard_agent_evaluation_failure(repository, actor, trigger, &error)
+            {
+                Ok(()) => Err(error),
+                Err(log_error) => Err(format!(
+                    "{error}; failed to persist the evaluation failure record: {log_error}"
+                )),
+            },
+        };
+        let release = self
+            .approvals
+            .release_dashboard_agent_lease(repository, &lease_owner);
+        match (result, release) {
+            (Ok(value), Ok(())) => {
+                uploaded(repository);
+                Ok(value)
+            }
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(format!(
+                "agent evaluation completed but its lease could not be released: {error}"
+            )),
+        }
+    }
+
+    fn evaluate_dashboard_agents_with_lease(
+        &self,
+        repository: &str,
+        remote: &str,
+        actor: &str,
+        trigger: &str,
+        now: u64,
+    ) -> Result<Value, String> {
+        let context = self.context(repository, remote, &BTreeSet::new())?;
+        let candidates = api::agents::evaluate(&context, now);
+        let measurements = api::agents::measurements(&context, now);
+        for measurement in &measurements {
+            let agent_id = measurement["agent_id"].as_str().unwrap_or_default();
+            self.approvals.record_dashboard_agent_evaluation(
+                repository,
+                agent_id,
+                actor,
+                trigger,
+                measurement["observed"].as_u64().unwrap_or_default(),
+                measurement["threshold"].as_u64().unwrap_or_default(),
+                measurement["triggered"].as_bool().unwrap_or(false),
+                now,
+            )?;
+        }
+        let mut opened = 0;
+        for incident in &candidates {
+            if self
+                .approvals
+                .record_dashboard_incident(repository, actor, incident)?
+            {
+                opened += 1;
+                self.notify_dashboard_incident(repository, remote, incident);
+            }
+        }
+        Ok(json!({
+            "evaluated": measurements.len(),
+            "triggered": candidates.len(),
+            "opened": opened,
+            "skipped": false,
+            "trigger": trigger,
+            "evaluated_at": now,
+        }))
+    }
+
+    fn notify_dashboard_incident(&self, repository: &str, remote: &str, incident: &Value) {
+        let outcomes = notifications::deliver(repository, remote, incident);
+        let sent = outcomes
+            .iter()
+            .filter(|outcome| outcome["status"] == "sent")
+            .count();
+        let failed = outcomes
+            .iter()
+            .filter(|outcome| outcome["status"] == "failed")
+            .count();
+        let mut spec = service_events::dashboard(
+            "DASHBOARD_AGENT_INCIDENT_NOTIFICATIONS",
+            "F35",
+            "INCIDENT_NOTIFY",
+            Some("system:notifications"),
+            Some((repository, remote)),
+        );
+        spec.respond(
+            if failed > 0 {
+                "PARTIAL"
+            } else if sent > 0 {
+                "OK"
+            } else {
+                "NOT_CONFIGURED"
+            },
+            if failed > 0 { "DELIVERY_FAILED" } else { "NA" },
+            "Dashboard Agent incident notification delivery was attempted.",
+        )
+        .set("other", "notification_outcomes", &outcomes)
+        .set("other", "incident_reason", &incident["reason"])
+        .severity(if failed > 0 { "MEDIUM" } else { "LOW" }, "OUTCOME", "NONE");
+        self.log.record(spec, Some(repository), None);
+    }
+
+    /** Run a periodic recovery sweep for repositories with configured agents. */
+    pub(crate) fn sweep_dashboard_agents(&self, trigger: &str) {
+        let agents = match self.read.find(
+            "dashboard_agents",
+            mongodb::bson::doc! {},
+            mongodb::bson::doc! {"repository_id": 1},
+            10_000,
+        ) {
+            Ok(agents) => agents,
+            Err(error) => {
+                super::log::write(
+                    "error",
+                    "dashboard_agents",
+                    None,
+                    "sweep_failed",
+                    json!({"error": error}),
+                );
+                return;
+            }
+        };
+        let configured = agents
+            .iter()
+            .filter_map(|agent| agent.get_str("repository_id").ok())
+            .collect::<BTreeSet<_>>();
+        let repositories = match data::verified_repositories(&self.read) {
+            Ok(repositories) => repositories,
+            Err(error) => {
+                super::log::write(
+                    "error",
+                    "dashboard_agents",
+                    None,
+                    "sweep_failed",
+                    json!({"error": error}),
+                );
+                return;
+            }
+        };
+        for (repository, remote) in repositories {
+            if !configured.contains(repository.as_str()) {
+                continue;
+            }
+            if let Err(error) =
+                self.evaluate_dashboard_agents(&repository, &remote, "system:monitor", trigger)
+            {
+                super::log::write(
+                    "error",
+                    "dashboard_agents",
+                    None,
+                    "evaluation_failed",
+                    json!({"repository_id": repository, "trigger": trigger, "error": error}),
+                );
+            }
+        }
+    }
+
+    /** Evaluate after one verified repository has received a telemetry batch. */
+    pub(crate) fn evaluate_uploaded_agents(&self, repository: &str) -> Result<Value, String> {
+        let document = self
+            .read
+            .find(
+                "repositories",
+                mongodb::bson::doc! {"repository_id": repository, "verified": true},
+                mongodb::bson::doc! {},
+                1,
+            )?
+            .into_iter()
+            .next()
+            .ok_or_else(|| "uploaded repository does not yet have a verified remote".to_string())?;
+        let remote = document
+            .get_str("remote")
+            .map_err(|error| error.to_string())?;
+        self.evaluate_dashboard_agents(repository, remote, "system:monitor", "telemetry_upload")
+    }
+
     /** Answer a dashboard request
      * Input
         - request: &Request - request
      * Output
         - Reply
     */
-    pub(crate) fn handle(&self, request: &Request) -> Reply {
-        if !request.method().as_str().eq_ignore_ascii_case("GET") {
-            return Reply::json(405, json!({"error": "the dashboard is read-only"}));
-        }
+    pub(crate) fn handle(&self, request: &mut Request) -> Reply {
         let (path, query) = http::split(request.url());
+        if request.method().as_str().eq_ignore_ascii_case("POST") && path == "/api/dashboard-agents"
+        {
+            let content_type = http::header(request, "Content-Type").unwrap_or_default();
+            if !content_type
+                .to_ascii_lowercase()
+                .starts_with("application/json")
+            {
+                return Reply::json(
+                    415,
+                    json!({"error": "Dashboard Agent changes require application/json"}),
+                );
+            }
+            if request
+                .body_length()
+                .is_some_and(|length| length > MAX_DASHBOARD_AGENT_BODY)
+            {
+                return Reply::json(413, json!({"error": "request body too large"}));
+            }
+            let mut body = Vec::new();
+            if request
+                .as_reader()
+                .take(MAX_DASHBOARD_AGENT_BODY as u64 + 1)
+                .read_to_end(&mut body)
+                .is_err()
+                || body.len() > MAX_DASHBOARD_AGENT_BODY
+            {
+                return Reply::json(413, json!({"error": "request body could not be read"}));
+            }
+            return match self.dashboard_agents(request, &query, &body) {
+                Ok(value) => Reply::json(200, value),
+                Err((status, message)) => Reply::json(status, json!({"error": message})),
+            };
+        }
+        if !request.method().as_str().eq_ignore_ascii_case("GET") {
+            return Reply::json(
+                405,
+                json!({"error": "this dashboard route does not accept writes"}),
+            );
+        }
         match path.as_str() {
             "/" | "/index.html" => Reply::page(PAGE),
             "/app.js" => Reply::script(SCRIPT),
@@ -157,6 +402,7 @@ impl Dashboard {
             "/favicon.png" | "/favicon.ico" => Reply::image(FAVICON, "image/png"),
             "/auth/login" => self.login(request),
             "/auth/approve" => self.approve(request, &query),
+            "/auth/agent-action" => self.start_agent_approval(request, &query),
             "/auth/grant" => self.start_grant(request, &query),
             "/auth/callback" => self.callback(request, &query),
             "/auth/logout" => {
@@ -194,6 +440,172 @@ impl Dashboard {
             }
             _ => Reply::json(404, json!({"error": "not found"})),
         }
+    }
+
+    fn dashboard_agents(
+        &self,
+        request: &Request,
+        query: &BTreeMap<String, String>,
+        body: &[u8],
+    ) -> Result<Value, (u16, String)> {
+        let auth = self
+            .auth
+            .as_ref()
+            .ok_or_else(|| (503, "dashboard sign-in is not configured".into()))?;
+        let viewer = auth
+            .viewer(request)
+            .ok_or_else(|| (401, "sign in with GitHub".into()))?;
+        let repository = query.get("repository").cloned().unwrap_or_default();
+        let repositories = data::verified_repositories(&self.read)
+            .map_err(|_| (503, "repository access could not be verified".into()))?;
+        let (_, remote) = repositories
+            .iter()
+            .find(|(id, remote)| *id == repository && viewer.allowed(remote))
+            .ok_or_else(|| {
+                (
+                    403,
+                    "choose a repository visible to this GitHub account".into(),
+                )
+            })?;
+        let input: Value = serde_json::from_slice(body)
+            .map_err(|error| (400, format!("invalid Dashboard Agent request: {error}")))?;
+        let action = input["action"].as_str().unwrap_or_default();
+        let mut result = match action {
+            "save-agent" => self
+                .approvals
+                .save_dashboard_agent(&repository, &viewer.login, &input)
+                .map_err(|message| (400, message))?,
+            "set-state" => {
+                let agent_id = input["agent_id"]
+                    .as_str()
+                    .ok_or_else(|| (400, "agent_id is required".into()))?;
+                let state = input["state"]
+                    .as_str()
+                    .ok_or_else(|| (400, "state is required".into()))?;
+                self.approvals
+                    .set_dashboard_agent_state(&repository, agent_id, &viewer.login, state)
+                    .map_err(|message| (400, message))?;
+                json!({"ok": true, "agent_id": agent_id, "state": state})
+            }
+            "evaluate" => self
+                .evaluate_dashboard_agents(&repository, remote, &viewer.login, "manual")
+                .map_err(|message| (503, message))?,
+            "request-quarantine" => self
+                .approvals
+                .request_dashboard_quarantine(&repository, &viewer.login, &input)
+                .map_err(|message| (400, message))?,
+            "request-quarantine-release" => {
+                let quarantine_id = input["quarantine_id"]
+                    .as_str()
+                    .ok_or_else(|| (400, "quarantine_id is required".into()))?;
+                self.approvals
+                    .request_dashboard_quarantine_release(&repository, quarantine_id, &viewer.login)
+                    .map_err(|message| (404, message))?;
+                json!({"ok": true, "state": "PENDING_RELEASE", "quarantine_id": quarantine_id})
+            }
+            "propose-flow-context" => {
+                let incident_id = input["incident_id"]
+                    .as_str()
+                    .ok_or_else(|| (400, "incident_id is required".into()))?;
+                let flow_id = input["flow_id"]
+                    .as_str()
+                    .ok_or_else(|| (400, "flow_id is required".into()))?;
+                let context = self
+                    .context(&repository, remote, &BTreeSet::new())
+                    .map_err(|_| (503, "repository governance could not be loaded".into()))?;
+                let flow_exists = context
+                    .latest_status()
+                    .and_then(|status| {
+                        status["governance"]["governance_config"]["flows"].as_array()
+                    })
+                    .is_some_and(|flows| {
+                        flows
+                            .iter()
+                            .any(|flow| flow["id"].as_str() == Some(flow_id))
+                    });
+                if !flow_exists {
+                    return Err((
+                        400,
+                        "flow_id must identify a flow in the latest reported repository governance"
+                            .into(),
+                    ));
+                }
+                self.approvals
+                    .propose_dashboard_flow_context(
+                        &repository,
+                        &viewer.login,
+                        incident_id,
+                        flow_id,
+                    )
+                    .map_err(|message| (400, message))?
+            }
+            "open-incident" => {
+                let agent_id = input["agent_id"].as_str().unwrap_or_default();
+                let context = self
+                    .context(&repository, remote, &BTreeSet::new())
+                    .map_err(|_| (503, "repository events could not be loaded".into()))?;
+                let agent = context
+                    .dashboard_agents
+                    .iter()
+                    .find(|agent| agent["agent_id"] == agent_id)
+                    .cloned()
+                    .ok_or_else(|| (404, "dashboard agent not found".into()))?;
+                let reason = input["reason"]
+                    .as_str()
+                    .filter(|reason| !reason.trim().is_empty() && reason.len() <= 1000)
+                    .ok_or_else(|| {
+                        (400, "incident reason must contain 1-1000 characters".into())
+                    })?;
+                let now = crate::platform::now_millis();
+                let incident = json!({
+                    "agent_id": agent_id,
+                    "agent_name": agent["name"],
+                    "incident_key": format!("manual:{}:{}", agent_id, crate::trust::crypto::random_id().map_err(|error| (500, error))?),
+                    "reason": reason,
+                    "severity": "MEDIUM",
+                    "metric": "manual_review",
+                    "observed": 0,
+                    "threshold": 0,
+                    "assignments": agent["assignments"],
+                    "event_ids": [],
+                    "three_a": [
+                        {"at": now, "kind": "incident_reported", "actor": viewer.login, "text": reason}
+                    ],
+                });
+                let inserted = self
+                    .approvals
+                    .record_dashboard_incident(&repository, &viewer.login, &incident)
+                    .map_err(|_| (500, "incident could not be recorded".into()))?;
+                if inserted {
+                    self.notify_dashboard_incident(&repository, remote, &incident);
+                }
+                json!({"ok": true})
+            }
+            "annotate-incident" | "resolve-incident" => {
+                let incident_id = input["incident_id"]
+                    .as_str()
+                    .ok_or_else(|| (400, "incident_id is required".into()))?;
+                let note = input["note"]
+                    .as_str()
+                    .ok_or_else(|| (400, "incident note is required".into()))?;
+                self.approvals
+                    .annotate_dashboard_incident(
+                        &repository,
+                        incident_id,
+                        &viewer.login,
+                        note,
+                        action == "resolve-incident",
+                    )
+                    .map_err(|message| (404, message))?;
+                json!({"ok": true, "incident_id": incident_id})
+            }
+            _ => return Err((400, "unknown Dashboard Agent action".into())),
+        };
+        if let Some(object) = result.as_object_mut() {
+            object.insert("repository_id".into(), json!(repository));
+        }
+        uploaded(&repository);
+        Ok(result)
     }
 
     /** Start GitHub sign-in with a random state bound to a short-lived cookie
@@ -285,6 +697,7 @@ impl Dashboard {
             code,
             state: state.clone(),
             grant: None,
+            dashboard_agent: None,
         };
         let private = query.get("private").is_some_and(|value| value == "1");
         Reply::redirect(&auth.authorize_url(request, &state, private))
@@ -346,9 +759,72 @@ impl Dashboard {
             grant: Some(
                 json!({"repository": repository, "session": session, "amount": amount, "reason": reason}),
             ),
+            dashboard_agent: None,
         };
         let private = query.get("private").is_some_and(|value| value == "1");
         Reply::redirect(&auth.authorize_url(request, &state, private))
+            .with_header(
+                "Set-Cookie",
+                &Auth::cookie(request, "foxx_oauth", &state, 600),
+            )
+            .with_header(
+                "Set-Cookie",
+                &Auth::cookie(request, "foxx_intent", &auth.seal(&intent), 600),
+            )
+    }
+
+    fn start_agent_approval(&self, request: &Request, query: &BTreeMap<String, String>) -> Reply {
+        let Some(auth) = &self.auth else {
+            return Reply::json(503, json!({"error": "GitHub sign-in is not configured"}));
+        };
+        let action = query.get("action").cloned().unwrap_or_default();
+        let repository = query.get("repository").cloned().unwrap_or_default();
+        let record_id = query.get("id").cloned().unwrap_or_default();
+        if !matches!(
+            action.as_str(),
+            "approve-quarantine"
+                | "reject-quarantine"
+                | "release-quarantine"
+                | "reject-release"
+                | "approve-context"
+                | "reject-context"
+        ) || !is_digest(&repository)
+            || !(8..=64).contains(&record_id.len())
+            || !record_id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        {
+            return Reply::json(
+                400,
+                json!({"error": "invalid Dashboard Agent approval request"}),
+            );
+        }
+        let repositories = match data::verified_repositories(&self.read) {
+            Ok(repositories) => repositories,
+            Err(_) => {
+                return Reply::json(
+                    503,
+                    json!({"error": "repository access could not be verified"}),
+                )
+            }
+        };
+        if !repositories.iter().any(|(id, _)| id == &repository) {
+            return Reply::json(404, json!({"error": "repository not found"}));
+        }
+        let state = match random_bytes(16) {
+            Ok(bytes) => hex(&bytes),
+            Err(error) => return Reply::json(500, json!({"error": error})),
+        };
+        let intent = Intent {
+            action: "dashboard-agent".into(),
+            code: String::new(),
+            state: state.clone(),
+            grant: None,
+            dashboard_agent: Some(json!({
+                "action": action,
+                "repository": repository,
+                "record_id": record_id,
+            })),
+        };
+        Reply::redirect(&auth.authorize_url(request, &state, true))
             .with_header(
                 "Set-Cookie",
                 &Auth::cookie(request, "foxx_oauth", &state, 600),
@@ -459,6 +935,92 @@ impl Dashboard {
         );
         self.log
             .record(spec, Some(&repository), Some(&grant.installation));
+        match outcome {
+            Ok(message) => (true, message),
+            Err(error) => (false, error),
+        }
+    }
+
+    fn carry_out_dashboard_agent_action(
+        &self,
+        auth: &Auth,
+        intent: &Intent,
+        viewer: &Viewer,
+        token: &str,
+    ) -> (bool, String) {
+        let Some(request) = intent.dashboard_agent.as_ref() else {
+            return (false, "Dashboard Agent approval data is missing".into());
+        };
+        let action = request["action"].as_str().unwrap_or_default();
+        let repository = request["repository"].as_str().unwrap_or_default();
+        let record_id = request["record_id"].as_str().unwrap_or_default();
+        let remote = match data::verified_repositories(&self.read) {
+            Ok(repositories) => repositories
+                .into_iter()
+                .find(|(id, _)| id == repository)
+                .map(|(_, remote)| remote),
+            Err(error) => return (false, error),
+        };
+        let Some(remote) = remote else {
+            return (false, "the repository is not known to the service".into());
+        };
+        let access = match auth.access(token, &remote) {
+            Ok(access) => access,
+            Err(error) => return (false, error),
+        };
+        let outcome = if access.admin {
+            self.approvals
+                .approve_dashboard_action(repository, action, record_id, &viewer.login)
+                .map(|()| match action {
+                    "approve-quarantine" => "Dashboard Agent quarantine activated.".to_string(),
+                    "reject-quarantine" => {
+                        "Dashboard Agent quarantine request rejected.".to_string()
+                    }
+                    "release-quarantine" => "Dashboard Agent quarantine released.".to_string(),
+                    "reject-release" => {
+                        "Quarantine release was rejected; enforcement remains active.".to_string()
+                    }
+                    "approve-context" => "Incident context attached to the flow.".to_string(),
+                    _ => "Incident context proposal rejected.".to_string(),
+                })
+        } else {
+            Err("GitHub did not confirm repository-admin access; no action was applied.".into())
+        };
+        let approved = outcome.is_ok();
+        let mut spec = service_events::dashboard(
+            if approved {
+                "DASHBOARD_AGENT_ACTION_REVIEWED"
+            } else {
+                "DASHBOARD_AGENT_ACTION_REFUSED"
+            },
+            "F35",
+            "DASHBOARD_AGENT_APPROVAL",
+            Some(&viewer.login),
+            Some((repository, &remote)),
+        );
+        spec.respond(
+            if approved { "OK" } else { "REFUSED" },
+            if approved { "NA" } else { "NOT_ADMIN" },
+            if approved {
+                "Repository admin reviewed a Dashboard Agent action."
+            } else {
+                "Dashboard Agent action was not applied."
+            },
+        )
+        .set("assessment", "assessment_checks", ["GITHUB_ADMIN_ROLE"])
+        .set(
+            "decision",
+            "decision",
+            if approved { "ALLOW" } else { "DENY" },
+        )
+        .set("decision", "decision_rule", "GITHUB_ADMIN_REQUIRED")
+        .set("other", "dashboard_agent_action", action)
+        .set("other", "record_id", record_id)
+        .severity(if approved { "LOW" } else { "MEDIUM" }, "OUTCOME", "NONE");
+        self.log.record(spec, Some(repository), None);
+        if approved {
+            uploaded(repository);
+        }
         match outcome {
             Ok(message) => (true, message),
             Err(error) => (false, error),
@@ -719,8 +1281,11 @@ impl Dashboard {
                 {
                     Some(intent) => {
                         let grant = intent.action == "grant";
+                        let agent_action = intent.action == "dashboard-agent";
                         let (ok, message) = if grant {
                             self.carry_out_grant(auth, &intent, &viewer, &token)
+                        } else if agent_action {
+                            self.carry_out_dashboard_agent_action(auth, &intent, &viewer, &token)
                         } else {
                             self.carry_out(auth, &intent, &viewer, &token)
                         };
@@ -728,7 +1293,13 @@ impl Dashboard {
                             "/?approval={}&ok={}#/{}",
                             auth::encode(&message),
                             u8::from(ok),
-                            if grant { "credits" } else { "settings" }
+                            if grant {
+                                "credits"
+                            } else if agent_action {
+                                "dashboard-agents"
+                            } else {
+                                "settings"
+                            }
                         )
                     }
                     None => "/".into(),

@@ -276,6 +276,13 @@ fn tool(tool: &str) -> &'static str {
     }
 }
 
+fn reported_tool(name: &str) -> String {
+    if name.is_empty() {
+        return "UNKNOWN_TOOL".into();
+    }
+    name.chars().take(160).collect()
+}
+
 /** Fill the groups every machine event shares, from the stored event
  * Input
     - event: &Event - stored event
@@ -707,7 +714,7 @@ fn tool_call(spec: &mut Spec, event: &Event, action_type: &str) {
         .and_then(Value::as_str)
         .unwrap_or_default();
     spec.set("action", "action_type", action_type)
-        .set("action", "action_tool", tool(name))
+        .set("action", "action_tool", reported_tool(name))
         .set(
             "action",
             "action_operation",
@@ -1968,6 +1975,7 @@ mod tests {
         for group in GROUPS {
             assert!(spec[group].is_object(), "{group}");
         }
+
         for (group, key) in [
             ("action", "action_type"),
             ("action", "action_source"),
@@ -1994,6 +2002,17 @@ mod tests {
         ] {
             assert!(spec[group].get(key).is_some(), "{group}.{key}");
         }
+    }
+
+    #[test]
+    fn unrecognized_and_mcp_tool_names_remain_granular() {
+        assert_eq!(reported_tool("Read"), "Read");
+        assert_eq!(
+            reported_tool("mcp__github__search_code"),
+            "mcp__github__search_code"
+        );
+        assert_eq!(reported_tool("custom_search"), "custom_search");
+        assert_eq!(reported_tool(""), "UNKNOWN_TOOL");
     }
 
     /** Check that a denied write to a preserved block, an allowed call with guidance and network
@@ -2027,7 +2046,7 @@ mod tests {
             specs[0]["other"]["simulated_change"],
             "PRESERVED_BYTES_CHANGED"
         );
-        assert_eq!(specs[0]["action"]["action_tool"], "EDIT");
+        assert_eq!(specs[0]["action"]["action_tool"], "Edit");
         assert_eq!(specs[0]["action"]["action_email"], "dev@example.com");
         assert_eq!(specs[0]["agent"]["agent_type"], "CLAUDE_CODE");
         assert_eq!(specs[0]["agent"]["agent_id"], "agt_provider");

@@ -16,7 +16,7 @@ const G = window.FOXX_GLOSSARY || { flows: {}, groups: {}, values: {}, evals: {}
 
 // Explanations the specification does not generate: agent metrics and dashboard states
 Object.assign(G.evals, {
-  model_tokens: "Tokens of the model turn that issued this tool call, shared equally by the calls of that turn (input + output + cache read + cache creation), read from the agent's transcript. Claude Code reports them; Codex does not yet.",
+  model_tokens: "Tokens of the model turn that issued this tool call, shared equally by the calls of that turn (input + output + cache read + cache creation), read from the agent's transcript when the provider exposes usage. Unsupported providers are not estimated.",
   model_input_tokens: "Input tokens of the issuing turn (not read from the prompt cache), this call's share.",
   model_output_tokens: "Output tokens the model generated in the issuing turn, this call's share.",
   cache_read_tokens: "Input tokens read from the prompt cache in the issuing turn, this call's share. Cheap and fast: a high share means the context was reused.",
@@ -53,7 +53,7 @@ const NAV = [
   ]],
   ["AI agents", [
     ["agents", "Agents", [["fleet-kpis", "Fleet"], ["leaderboard", "Leaderboard"], ["agent-activity", "Activity"], ["agent-tools", "Tools per agent"], ["agent-decisions", "Decisions and risk"], ["agent-tokens", "Tokens"], ["agent-models", "Models and autonomy"], ["agent-list", "Agent identities"]]],
-    ["dashboard-agents", "Dashboard agents", []],
+    ["dashboard-agents", "Dashboard agents", [["da-agents", "Agents"], ["da-states", "Action States"], ["da-incidents", "Incidents and 3A"]]],
     ["tools", "Tool calls", [["tool-kpis", "Summary"], ["tool-types", "Types of tool calls"], ["tool-metrics", "Metrics per tool"], ["tool-waterfall", "Waterfall"], ["tool-tokens", "Tokens per call"], ["tool-time", "Time per call"], ["tool-browser", "Browse tool calls"]]],
     ["sessions", "Sessions", [["session-kpis", "Summary"], ["session-activity", "Activity"], ["session-leaderboard", "Leaderboard"], ["session-waterfall", "Waterfall"], ["session-list", "Sessions"]]],
   ]],
@@ -83,7 +83,7 @@ const PAGE_GUIDE = {
   explorer: "Every event, newest first, with a count for each value of each facet on the left. Tick values to filter every view (⊖ excludes a value); open an event to see all thirteen attribute groups.",
   timeline: "When things happened. The Gantt chart draws each traced action as a bar; the event timeline draws every event as a dot; the rhythm heatmap shows the days and hours agents work; concurrency counts the sessions active at once; latency and tokens follow the cost of each call over time. Drag across a time chart to zoom in.",
   agents: "Every AI agent: its identities, sessions, tool calls, decisions, tokens, models, and risk signals. Click an agent anywhere for its profile.",
-  "dashboard-agents": "A reserved area for named dashboard agents. No dashboard-agent features are enabled here.",
+  "dashboard-agents": "Create and edit monitor-only agents for flows, zones, selections, or the whole repository. The service evaluates enabled agents after telemetry uploads, at startup, and on a 60-second recovery sweep. Review their counters and activity log, inspect incidents and the chronological Agent Action Analysis (3A), then add human analysis or mitigation notes. Quarantine, prediction models, and external messaging are not executed by this monitor-only dashboard.",
   tools: "Every tool call agents made: what kind of calls, how each tool performs (calls, denials, failures, time, tokens), the waterfall of the time each call took and the tokens its model turn burnt, and a browser of every call with its trace.",
   logs: "A detailed log table of the events matching the global filter. Add any attribute as a column, filter columns, sort, search, and export CSV.",
   traces: "A trace is every event of one tool call, command, or alert (joined by action.action_id). The table lists traces with their duration, outcome, tokens, and events; open one for its waterfall.",
@@ -116,6 +116,7 @@ const TONES = {
   QUARANTINE: "crit", QUARANTINED: "crit", BYPASS_CONFIRMED: "crit", CRITICAL: "crit",
 };
 const scope = { account: "", repository: "", member: "" };
+window.FOXX_REPOSITORY_ID = () => scope.repository;
 const filter = { range: "7d", since: null, until: null, q: "", clauses: [] };
 let me = null;
 let members = [];
@@ -339,7 +340,7 @@ const details = {
     const entry = NAV.flatMap(([, items]) => items).find(([id]) => id === page);
     details.open("About this page", h("div", { class: "explain" }, h("p", {}, PAGE_GUIDE[page] || ""), entry && entry[2].length ? h("div", {}, h("h4", {}, "Zones"), h("ul", {}, entry[2].map(([id, label]) => h("li", {}, h("a", { href: "#", onclick: (event) => { event.preventDefault(); scrollToZone(id); } }, label))))) : null,
       h("h4", {}, "The current filter"), h("p", { class: "sentence" }, filterSentence({})),
-      h("h4", {}, "Reading the dashboard"), h("ul", {}, h("li", {}, "Hover any ", h("span", { class: "info-icon inline" }, "i"), " for what a number, value, or flow means; click it to read more here."), h("li", {}, "Hover a panel's funnel for how it is filtered, in words; click its lens for the chart with its metrics, properties, and an interpretation."), h("li", {}, "Click a bar, slice, dot, cell, or KPI to see the events behind it; drag across a time chart to zoom in."), h("li", {}, "Every panel can be refreshed, opened in the lens, expanded, shown in monitor mode (full screen, live), or collapsed from its header."), h("li", {}, "Times are DD:MM:YYYY:HH:MM:SS in your local time."), h("li", {}, "Keys: Ctrl K or / to search, ? for this guide, Esc to close."))), { kind: "Guide" });
+      h("h4", {}, "Reading the dashboard"), h("ul", {}, h("li", {}, "Hover any ", h("span", { class: "info-icon inline" }, "i"), " for what a number, value, or flow means; click it to read more here."), h("li", {}, "Hover a panel's funnel for how it is filtered, in words; click its lens for the chart with its metrics, properties, and an interpretation."), h("li", {}, "Click a bar, slice, dot, cell, or KPI to see the events behind it; drag across a time chart to zoom in."), h("li", {}, "Every panel can be refreshed, opened in the lens, expanded, shown in monitor mode (full screen, live), or collapsed from its header."), h("li", {}, "Times are YYYY:MM:DD:HH:MM:SS:MMM in your local time."), h("li", {}, "Keys: Ctrl K or / to search, ? for this guide, Esc to close."))), { kind: "Guide" });
   },
 };
 
@@ -358,6 +359,18 @@ async function api(path, params) {
   const url = scoped(path);
   for (const [key, value] of Object.entries(params || {})) if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, value);
   const response = await fetch(url, { credentials: "same-origin" });
+  const body = await response.json().catch(() => ({ error: "invalid response" }));
+  if (response.status === 401) throw new SignedOut(body.error);
+  if (!response.ok) { const error = new Error(body.error || response.statusText); error.status = response.status; throw error; }
+  return body;
+}
+async function apiWrite(path, payload) {
+  const response = await fetch(scoped(path), {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
   const body = await response.json().catch(() => ({ error: "invalid response" }));
   if (response.status === 401) throw new SignedOut(body.error);
   if (!response.ok) { const error = new Error(body.error || response.statusText); error.status = response.status; throw error; }

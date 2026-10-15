@@ -3,10 +3,11 @@
 // serve the dashboard, and TTL indexes expire telemetry (events, service events, alerts, sessions,
 // tasks, and agents) after the retention period, 30 days by default, so a small cluster never
 // fills up. Records older than the retention period less 7 days are shown as stale data on the
-// dashboard. State and history are never expired: the repositories, chain heads, the autonomy
-// ledger, the selection registry, policy versions, the governance audit trail, status reports,
-// approvals, and credit grants. CRANE_MONGODB_RETENTION_DAYS=persist keeps everything (for a
-// larger cluster), and removes the expiry of records already stored.
+// dashboard. Durable state and history are never expired: repositories, chain heads, the autonomy
+// ledger, selection registry, policy versions, governance audit trail, status reports, approvals,
+// credit grants, Dashboard Agent definitions/incidents/quarantines, and approved flow context.
+// Detailed Dashboard Agent activity logs expire after 30 days. CRANE_MONGODB_RETENTION_DAYS=persist
+// keeps telemetry forever (for a larger cluster), and removes the expiry of records already stored.
 // MongoDB is append-only through this service, not immutable by itself, which is why every stored
 // record keeps its SHA-512 chain digest for independent verification.
 
@@ -20,8 +21,9 @@ use mongodb::IndexModel;
 use crate::platform::io_error;
 
 /** Current schema version applied by the migrations (3: records keyed by installation; 4: the
- * members' repository status and the service's settings) */
-pub(crate) const SCHEMA_VERSION: i64 = 7;
+ * members' repository status and the service's settings; 10: Dashboard Agent enforcement and
+ * approval-gated flow context) */
+pub(crate) const SCHEMA_VERSION: i64 = 10;
 
 /** How the service reaches its database
  * Fields
@@ -371,6 +373,113 @@ const COLLECTIONS: &[Collection] = &[
         ],
     },
     Collection {
+        name: "dashboard_agents",
+        required: &[
+            "agent_id",
+            "repository_id",
+            "name",
+            "reason",
+            "created_by",
+            "created_at",
+            "updated_at",
+            "state",
+            "metric",
+            "threshold",
+            "window_minutes",
+            "assignments",
+        ],
+        indexes: &[
+            (&[("repository_id", 1), ("agent_id", 1)], true),
+            (
+                &[("repository_id", 1), ("state", 1), ("updated_at", -1)],
+                false,
+            ),
+        ],
+    },
+    Collection {
+        name: "dashboard_incidents",
+        required: &[
+            "incident_id",
+            "incident_key",
+            "repository_id",
+            "agent_id",
+            "created_at",
+            "status",
+            "reason",
+            "three_a",
+        ],
+        indexes: &[
+            (&[("repository_id", 1), ("incident_id", 1)], true),
+            (&[("repository_id", 1), ("incident_key", 1)], true),
+            (&[("repository_id", 1), ("created_at", -1)], false),
+            (
+                &[("repository_id", 1), ("status", 1), ("created_at", -1)],
+                false,
+            ),
+        ],
+    },
+    Collection {
+        name: "dashboard_quarantines",
+        required: &[
+            "quarantine_id",
+            "repository_id",
+            "kind",
+            "target_id",
+            "reason",
+            "requested_by",
+            "requested_at",
+            "state",
+        ],
+        indexes: &[
+            (&[("repository_id", 1), ("quarantine_id", 1)], true),
+            (
+                &[("repository_id", 1), ("state", 1), ("requested_at", -1)],
+                false,
+            ),
+        ],
+    },
+    Collection {
+        name: "dashboard_flow_context",
+        required: &[
+            "context_id",
+            "repository_id",
+            "incident_id",
+            "flow_id",
+            "context",
+            "proposed_by",
+            "proposed_at",
+            "status",
+        ],
+        indexes: &[
+            (&[("repository_id", 1), ("context_id", 1)], true),
+            (
+                &[("repository_id", 1), ("flow_id", 1), ("status", 1)],
+                false,
+            ),
+        ],
+    },
+    Collection {
+        name: "dashboard_agent_activity",
+        required: &[
+            "activity_id",
+            "repository_id",
+            "action",
+            "actor",
+            "at",
+            "details",
+            "expires_at",
+        ],
+        indexes: &[
+            (&[("repository_id", 1), ("at", -1)], false),
+            (&[("activity_id", 1)], true),
+        ],
+    },
+    Collection {
+        name: "dashboard_agent_leases",
+        required: &["repository_id", "owner", "lease_until"],
+        indexes: &[(&[("repository_id", 1)], true)],
+    },
+    Collection {
         name: "service_settings",
         required: &["name"],
         indexes: &[(&[("name", 1)], true)],
@@ -381,6 +490,14 @@ const COLLECTIONS: &[Collection] = &[
         indexes: &[(&[("version", 1)], true)],
     },
 ];
+
+/** The repository-scoped collections; global service settings and migration state are excluded. */
+pub(super) fn repository_collections() -> impl Iterator<Item = &'static str> {
+    COLLECTIONS
+        .iter()
+        .filter(|collection| !matches!(collection.name, "service_settings" | "schema_migrations"))
+        .map(|collection| collection.name)
+}
 
 /** Apply the migrations that have not been applied: create missing collections with validators,
  * update the validators of existing ones, replace their indexes with the current ones, and record
@@ -471,6 +588,20 @@ pub(crate) fn migrate(database: &Database) -> Result<i64, String> {
             .run()
             .map_err(io_error)?;
     }
+    database
+        .collection::<Document>("dashboard_agent_activity")
+        .create_index(
+            IndexModel::builder()
+                .keys(doc! {"expires_at": 1})
+                .options(
+                    IndexOptions::builder()
+                        .expire_after(Duration::from_secs(0))
+                        .build(),
+                )
+                .build(),
+        )
+        .run()
+        .map_err(io_error)?;
     database
         .collection::<Document>("schema_migrations")
         .insert_one(

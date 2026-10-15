@@ -176,6 +176,7 @@ pub(crate) struct Flow {
     pub(crate) id: String,
     pub(crate) description: String,
     pub(crate) entry_points: Vec<String>,
+    pub(crate) stages: Vec<Zone>,
     pub(crate) include: Vec<String>,
     pub(crate) exclude: Vec<String>,
     pub(crate) max_depth: Option<usize>,
@@ -532,20 +533,60 @@ pub(crate) fn resolve(
         references(
             "flow",
             &flow.id,
-            &flow.policies,
-            &flow.context_packs,
+            &flow
+                .stages
+                .iter()
+                .flat_map(|stage| stage.policies.iter())
+                .chain(flow.policies.iter())
+                .cloned()
+                .collect::<Vec<_>>(),
+            &flow
+                .stages
+                .iter()
+                .flat_map(|stage| stage.context_packs.iter())
+                .chain(flow.context_packs.iter())
+                .cloned()
+                .collect::<Vec<_>>(),
             &mut resolution.findings,
         );
-        if flow.entry_points.is_empty() {
+        if flow.entry_points.is_empty() && flow.stages.is_empty() {
             resolution.findings.push(finding(
                 "flow_unresolved",
                 Severity::High,
-                format!("flow {} has no entry points", flow.id),
+                format!("flow {} has no entry points or linked zone stages", flow.id),
             ));
         }
-        let graph = index.discover(&flow.entry_points, flow.max_depth.unwrap_or(DEFAULT_DEPTH));
+        let entry_points = flow
+            .entry_points
+            .iter()
+            .cloned()
+            .chain(
+                flow.stages
+                    .iter()
+                    .flat_map(|stage| stage.selectors.symbols.iter().cloned()),
+            )
+            .collect::<Vec<_>>();
+        let graph = index.discover(&entry_points, flow.max_depth.unwrap_or(DEFAULT_DEPTH));
         let mut covered = graph.files.clone();
-        for pattern in &flow.include {
+        let stage_paths = flow
+            .stages
+            .iter()
+            .flat_map(|stage| {
+                stage
+                    .selectors
+                    .paths
+                    .iter()
+                    .chain(stage.selectors.files.iter())
+                    .chain(stage.selectors.directories.iter())
+                    .cloned()
+                    .chain(stage.selectors.selections.iter().filter_map(|id| {
+                        state
+                            .record(id)
+                            .map(|record| record.current.span.path.clone())
+                    }))
+            })
+            .collect::<Vec<_>>();
+        for pattern in flow.include.iter().chain(stage_paths.iter()) {
             covered.extend(
                 files
                     .iter()

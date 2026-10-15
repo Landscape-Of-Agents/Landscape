@@ -6,15 +6,15 @@
 // timestamp within five minutes of the service clock, and a signature over the method, path,
 // timestamp, and body digest (see telemetry/ingest.rs). The public key is the installation's
 // identity: every stored record is tagged with it and every /v1 read is filtered by it, so an
-// installation can only add to and read its own records, and no account or enrollment is needed.
-// Machines can only upload: no /v1 route returns stored records. Uploads are rate-limited and
-// capped (limits.rs). People read the evidence on the hosted dashboard at the service's root
-// (dashboard/), after signing in with GitHub, through a read-only database handle.
+// installation can upload without an account; its only policy read returns active Dashboard Agent
+// quarantines, not event/session evidence. People read evidence on the hosted dashboard at the
+// service's root (dashboard/), after signing in with GitHub, through a read-only database handle.
 //
 // Configuration comes from the service's environment only: CRANE_MONGODB_URI (required),
 // CRANE_MONGODB_DB (default foxx), CRANE_MONGODB_EVENT_RETENTION_DAYS (default 30), the limits,
-// CRANE_GITHUB_CLIENT_ID and CRANE_GITHUB_CLIENT_SECRET for dashboard sign-in, and the listen
-// address from --listen ADDRESS, else 0.0.0.0:$PORT, else 0.0.0.0:8080.
+// CRANE_GITHUB_CLIENT_ID and CRANE_GITHUB_CLIENT_SECRET for dashboard sign-in, optional
+// CRANE_DASHBOARD_AGENT_* notification settings, and the listen address from --listen ADDRESS,
+// else 0.0.0.0:$PORT, else 0.0.0.0:8080.
 
 mod dashboard;
 mod database;
@@ -26,9 +26,11 @@ mod observe;
 pub(crate) mod service_events;
 mod store;
 
+use std::collections::BTreeSet;
 use std::io::Write;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use mongodb::sync::Database;
 use serde_json::json;
@@ -39,6 +41,7 @@ use limits::{Limiter, Limits, Storage};
 
 /** Requests served concurrently */
 const WORKERS: usize = 8;
+const AGENT_SWEEP_SECONDS: u64 = 60;
 
 /** Everything the request handlers share
  * Fields
@@ -56,10 +59,12 @@ struct Service {
     settings: database::Settings,
     limits: Limits,
     installations: Limiter,
+    agent_policies: Limiter,
     addresses: Limiter,
     storage: Storage,
     dashboard: dashboard::Dashboard,
     log: service_events::ServiceLog,
+    agent_wake: SyncSender<String>,
 }
 
 /** Run the service until it is stopped
@@ -84,6 +89,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     database::apply_retention(&connected, settings.retention_ms)?;
     let limits = Limits::from_environment();
     let auth = dashboard::auth::Auth::from_environment(&store::session_seed(&connected)?)?;
+    let (agent_wake, agent_receiver) = mpsc::sync_channel(2048);
     let service = Arc::new(Service {
         dashboard: dashboard::Dashboard::new(
             dashboard::data::ReadOnly::new(connected.clone()),
@@ -94,10 +100,12 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         log: service_events::ServiceLog::new(connected.clone(), settings.retention_ms),
         database: connected,
         installations: Limiter::new(limits.requests_per_minute),
+        agent_policies: Limiter::new(1_200.0),
         addresses: Limiter::new(limits.addresses_per_minute),
         storage: Storage::new(),
         settings,
         limits,
+        agent_wake,
     });
     let server = Arc::new(
         Server::http(&listen).map_err(|error| format!("cannot listen on {listen}: {error}"))?,
@@ -110,6 +118,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         .set("bindings", "third_party", ["MONGODB", "RENDER"])
         .set("eval", "schema_version", database::SCHEMA_VERSION)
         .set("eval", "workers", WORKERS)
+        .set("eval", "dashboard_agent_sweep_seconds", AGENT_SWEEP_SECONDS)
         .set("other", "migration_applied", true)
         .set(
             "other",
@@ -126,7 +135,11 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         "service",
         None,
         "started",
-        json!({"database": service.settings.database, "sign_in": service.dashboard.configured()}),
+        json!({
+            "database": service.settings.database,
+            "sign_in": service.dashboard.configured(),
+            "dashboard_agent_sweep_seconds": AGENT_SWEEP_SECONDS,
+        }),
     );
     println!(
         "Foxx ingestion service listening on {address} (database {}; dashboard sign-in {})",
@@ -138,6 +151,10 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         }
     );
     std::io::stdout().flush().ok();
+    let monitor_service = Arc::clone(&service);
+    let agent_monitor = std::thread::spawn(move || {
+        monitor_dashboard_agents(monitor_service, agent_receiver);
+    });
     let workers = (0..WORKERS)
         .map(|_| {
             let server = Arc::clone(&server);
@@ -152,7 +169,41 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     for worker in workers {
         let _ = worker.join();
     }
+    let _ = agent_monitor.join();
     Ok(())
+}
+
+/** Process upload-triggered evaluations and periodically recover repositories with active agents. */
+fn monitor_dashboard_agents(service: Arc<Service>, receiver: Receiver<String>) {
+    service.dashboard.sweep_dashboard_agents("startup_recovery");
+    let mut next_sweep = Instant::now() + Duration::from_secs(AGENT_SWEEP_SECONDS);
+    loop {
+        let timeout = next_sweep.saturating_duration_since(Instant::now());
+        match receiver.recv_timeout(timeout) {
+            Ok(repository) => {
+                let mut repositories = BTreeSet::from([repository]);
+                while let Ok(repository) = receiver.try_recv() {
+                    repositories.insert(repository);
+                }
+                for repository in repositories {
+                    if let Err(error) = service.dashboard.evaluate_uploaded_agents(&repository) {
+                        log::write(
+                            "error",
+                            "dashboard_agents",
+                            None,
+                            "upload_evaluation_failed",
+                            json!({"repository_id": repository, "error": error}),
+                        );
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                service.dashboard.sweep_dashboard_agents("scheduled_sweep");
+                next_sweep = Instant::now() + Duration::from_secs(AGENT_SWEEP_SECONDS);
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
 }
 
 /** Record a refused or failed request: an upload refusal (F09.4), a limited request (F29.3), or a
@@ -300,7 +351,7 @@ fn respond(mut request: Request, service: &Service) {
         )
         .with_header("Retry-After", "60")
     } else if !url.starts_with("/v1/") && !url.contains("/v1/repositories/") {
-        service.dashboard.handle(&request)
+        service.dashboard.handle(&mut request)
     } else {
         match ingest::handle(&mut request, service, &request_id) {
             Ok(value) => Reply::json(200, value),

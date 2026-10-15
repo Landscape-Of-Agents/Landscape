@@ -23,9 +23,9 @@ export interface SidebarState {
   crane?: { state: "ok" | "missing" | "outdated"; version?: string; message?: string };
   generation?: number;
   valid?: boolean;
-  policies: number;
+  policies: string[];
   selections: SidebarSelection[];
-  entities: { kind: "zone" | "flow"; id: string; status: string }[];
+  entities: { kind: "zone" | "flow"; id: string; status: string; description: string }[];
   findings: { severity: string; code: string; message: string }[];
   activity: { at: number; label: string; ok: boolean; message: string }[];
 }
@@ -146,6 +146,12 @@ h3 .count { margin-left: auto; font-weight: 400; text-transform: none; letter-sp
 .log .ok { color: var(--ok); } .log .bad { color: var(--bad); }
 .finding { font-size: 12px; padding: 4px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px; }
 .more { background: none; border: 0; color: var(--fox); cursor: pointer; padding: 4px 0; font-size: 12px; }
+.filters { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin: 5px 0 8px; }
+.filters input, .filters select { min-width: 0; width: 100%; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }
+.entity { width: 100%; text-align: left; border: 0; background: transparent; cursor: pointer; }
+.entity:hover { background: var(--raised); }
+.entity-title { overflow-wrap: anywhere; }
+.policy { display: flex; justify-content: space-between; gap: 8px; padding: 3px 5px; font: 12px var(--mono); }
 </style>
 </head>
 <body>
@@ -156,7 +162,7 @@ h3 .count { margin-left: auto; font-weight: 400; text-transform: none; letter-sp
 "use strict";
 const vscode = acquireVsCodeApi();
 let state = null;
-let view = { q: "", filter: "all", showAll: false };
+let view = { q: "", filter: "all", showAll: false, entityQ: "", entityKind: "all", entityStatus: "all", policyQ: "", policyUse: "all" };
 const esc = (text) => String(text == null ? "" : text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const post = (id, argument) => vscode.postMessage({ type: "command", id, argument });
 function draw() {
@@ -182,23 +188,39 @@ function draw() {
   const visible = view.showAll ? shown : shown.slice(0, 12);
   const chips = [["all", "All"], ["PASS", "Passing"], ["FAIL", "Failing"], ["UNRESOLVED", "Unresolved"], ["preserve", "Preserved"], ["target", "Targeted"]].map(([key, label]) => '<button class="chip' + (view.filter === key ? " on" : "") + '" data-filter="' + key + '">' + label + "</button>").join("");
   const items = visible.map((x) => '<button class="item" data-reveal="' + esc(x.id) + '" title="Reveal in the editor · ' + esc(x.operation + " " + x.id + " · policy " + x.policy) + '"><span class="op">' + (x.operation === "preserve" ? "⛨" : "◎") + '</span><span><span class="t">' + esc(x.name || x.id) + '</span><span class="s">' + esc((x.location || "not found") + " · " + x.policy) + '</span></span><span class="badge ' + esc(x.outcome) + '">' + esc(x.outcome) + "</span></button>").join("");
-  const entities = s.entities.map((e) => '<div class="item" style="cursor:default"><span class="op">' + (e.kind === "zone" ? "▦" : "⇢") + '</span><span class="t">' + esc(e.id) + '<span class="s">' + e.kind + '</span></span><span class="badge ' + esc(e.status) + '">' + esc(e.status) + "</span></div>").join("");
+  const entityQuery = view.entityQ.toLowerCase();
+  const entityRows = s.entities.filter((e) => (view.entityKind === "all" || e.kind === view.entityKind) && (view.entityStatus === "all" || e.status === view.entityStatus) && (!entityQuery || (e.id + " " + e.description).toLowerCase().includes(entityQuery)));
+  const entities = entityRows.map((e) => '<button class="item entity" data-open-entity="' + esc(e.kind + ":" + e.id) + '" title="Open a source file for ' + esc(e.kind + " " + e.id) + '"><span class="op">' + (e.kind === "zone" ? "▦" : "⇢") + '</span><span><span class="t entity-title">' + esc(e.id) + '</span><span class="s">' + esc(e.description || e.kind) + '</span></span><span class="badge ' + esc(e.status) + '">' + esc(e.status) + "</span></button>").join("");
+  const policyQuery = view.policyQ.toLowerCase();
+  const policyRows = s.policies.filter((name) => (view.policyUse === "all" || (sel.some((item) => item.policy === name)) === (view.policyUse === "used")) && (!policyQuery || name.toLowerCase().includes(policyQuery)));
+  const policyList = policyRows.map((name) => '<div class="policy"><span>' + esc(name) + '</span><span class="muted">' + sel.filter((item) => item.policy === name).length + " selections</span></div>").join("");
   const findings = s.findings.map((f) => '<div class="finding"><span class="badge ' + esc(f.severity) + '">' + esc(f.severity) + "</span><span>" + esc(f.message) + "</span></div>").join("");
   const log = s.activity.map((a) => '<li><span>' + new Date(a.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + '</span><span class="' + (a.ok ? "ok" : "bad") + '">●</span><span><b>' + esc(a.label) + "</b> " + esc(a.message) + "</span></li>").join("");
   document.getElementById("body").innerHTML =
     '<div class="stats">' + stat(passing, "Passing", passing ? "ok" : "", "PASS") + stat(failing, "Failing", failing ? "bad" : "", "FAIL") + stat(unresolved, "Unresolved", unresolved ? "warn" : "", "UNRESOLVED") + stat(s.policies, "Policies", "", "all") + stat(zones, "Zones", "", "all") + stat(flows, "Flows", "", "all") + "</div>" +
-    "<h3>Actions</h3>" + '<div class="actions">' + action("foxx.menu", "✦", "Open panel", "Act on the selected code (Ctrl+Alt+F)") + action("foxx.test", "▶", "Test policies", "Run every preserve and target rule") + action("foxx.validate", "✓", "Validate", "Check integrity, syntax, and markers") + action("foxx.createCheckpoint", "⚑", "Checkpoint", "Record the current commit as trusted") + action("foxx.installHooks", "⚓", "Agent hooks", "Install Crane's hooks for Claude Code, Codex, Copilot CLI, or Gemini CLI") + action("foxx.undoGovernanceChange", "↶", "Undo change", "Undo the last governance change made here") + "</div>" +
+    "<h3>Actions</h3>" + '<div class="actions">' + action("foxx.menu", "✦", "Open panel", "Act on the selected code (Ctrl+Alt+F)") + action("foxx.connectZonesFlow", "⇢", "Connect zones", "Select two or more zones in execution order to create a flow") + action("foxx.test", "▶", "Test policies", "Run every preserve and target rule") + action("foxx.validate", "✓", "Validate", "Check integrity, syntax, and markers") + action("foxx.createCheckpoint", "⚑", "Checkpoint", "Record the current commit as trusted") + action("foxx.installHooks", "⚓", "Agent hooks", "Install Crane's hooks for Claude Code, Codex, Copilot CLI, or Gemini CLI") + action("foxx.undoGovernanceChange", "↶", "Undo change", "Undo the last governance change made here") + "</div>" +
     '<h3>Selections <span class="count">' + shown.length + " of " + sel.length + "</span></h3>" +
     '<input class="search" id="search" type="search" placeholder="Search selections…" value="' + esc(view.q) + '" aria-label="Search selections">' + '<div class="chips">' + chips + "</div>" +
     '<div class="list">' + (items || '<div class="empty">' + (sel.length ? "No selection matches." : "No selections yet. Select code and press Ctrl+Alt+F to preserve or target it.") + "</div>") + "</div>" +
     (shown.length > visible.length ? '<button class="more" id="more">Show all ' + shown.length + "</button>" : "") +
-    '<h3>Zones and flows <span class="count">' + s.entities.length + "</span></h3>" + '<div class="list">' + (entities || '<div class="empty">None yet. Select code and choose "Make these lines a zone".</div>') + "</div>" +
+    '<h3>Zones and flows <span class="count">' + entityRows.length + " of " + s.entities.length + '</span></h3>' +
+    '<div class="filters"><input id="entity-search" type="search" placeholder="Search zones and flows…" value="' + esc(view.entityQ) + '" aria-label="Search zones and flows"><select id="entity-kind" aria-label="Filter entity type"><option value="all">All types</option><option value="zone"' + (view.entityKind === "zone" ? " selected" : "") + '>Zones</option><option value="flow"' + (view.entityKind === "flow" ? " selected" : "") + '>Flows</option></select><select id="entity-status" aria-label="Filter entity status"><option value="all">All statuses</option>' + [...new Set(s.entities.map((e) => e.status))].map((status) => '<option value="' + esc(status) + '"' + (view.entityStatus === status ? " selected" : "") + ">" + esc(status) + "</option>").join("") + '</select><span class="muted">Select type, status and text together</span></div>' +
+    '<div class="list">' + (entities || '<div class="empty">No zone or flow matches these filters.</div>') + "</div>" +
+    "<h3>Policies <span class=\"count\">" + policyRows.length + " of " + s.policies.length + '</span></h3><div class="filters"><input id="policy-search" type="search" placeholder="Search policies…" value="' + esc(view.policyQ) + '" aria-label="Search policies"><select id="policy-use" aria-label="Filter policies by usage"><option value="all">All policies</option><option value="used"' + (view.policyUse === "used" ? " selected" : "") + '>Used by a selection</option><option value="unused"' + (view.policyUse === "unused" ? " selected" : "") + ">Unused</option></select></div>" +
+    '<div class="list">' + (policyList || '<div class="empty">No policies match these filters.</div>') + "</div>" +
     (findings ? '<h3>Findings <span class="count">' + s.findings.length + '</span></h3><div>' + findings + "</div>" : "") +
     '<h3>Activity</h3><ul class="log">' + (log || '<li class="empty" style="display:block">Nothing yet in this window.</li>') + "</ul>";
   const search = document.getElementById("search");
   if (search) search.addEventListener("input", () => { view.q = search.value; const at = search.selectionStart; draw(); const again = document.getElementById("search"); again.focus(); again.setSelectionRange(at, at); });
   const more = document.getElementById("more");
   if (more) more.addEventListener("click", () => { view.showAll = true; draw(); });
+  const entitySearch = document.getElementById("entity-search");
+  if (entitySearch) entitySearch.addEventListener("input", () => { view.entityQ = entitySearch.value; draw(); const again = document.getElementById("entity-search"); again.focus(); again.setSelectionRange(view.entityQ.length, view.entityQ.length); });
+  document.getElementById("entity-kind").addEventListener("change", (event) => { view.entityKind = event.target.value; draw(); });
+  document.getElementById("entity-status").addEventListener("change", (event) => { view.entityStatus = event.target.value; draw(); });
+  const policySearch = document.getElementById("policy-search");
+  if (policySearch) policySearch.addEventListener("input", () => { view.policyQ = policySearch.value; draw(); const again = document.getElementById("policy-search"); again.focus(); again.setSelectionRange(view.policyQ.length, view.policyQ.length); });
+  document.getElementById("policy-use").addEventListener("change", (event) => { view.policyUse = event.target.value; draw(); });
 }
 document.addEventListener("click", (event) => {
   const command = event.target.closest("[data-id]");
@@ -207,6 +229,8 @@ document.addEventListener("click", (event) => {
   if (filter) { view.filter = filter.dataset.filter; view.showAll = false; draw(); return; }
   const reveal = event.target.closest("[data-reveal]");
   if (reveal) post("foxx.revealSelection", reveal.dataset.reveal);
+  const entity = event.target.closest("[data-open-entity]");
+  if (entity) post("foxx.openEntity", entity.dataset.openEntity);
 });
 window.addEventListener("message", (event) => { if (event.data.type === "state") { state = event.data.state; draw(); } });
 vscode.postMessage({ type: "ready" });

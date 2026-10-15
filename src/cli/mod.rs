@@ -6,6 +6,7 @@ mod agent;
 mod alert;
 mod args;
 mod audit;
+mod data;
 mod governance;
 mod link;
 mod repo;
@@ -67,6 +68,7 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["policy", _, "status", ..] => governance::policy_status(&words[1..2].iter().map(std::string::ToString::to_string).chain(rest(3)).collect::<Vec<_>>()),
         ["policy", ..] => Err("usage: crane policy NAME status".into()),
         ["repo", ..] => repo::repo(&rest(1)),
+        ["data", ..] => data::data(&rest(1)),
         ["github", ..] => repo::github(&rest(1)),
         ["task", ..] => runtime::task(&rest(1)),
         ["session", ..] => runtime::session(&rest(1)),
@@ -108,6 +110,9 @@ Repository
   crane repo status
   crane repo --view
   crane repo del
+
+Hosted data
+  crane data clear           (CODEOWNERS only; permanently clears this repository's hosted data)
 
 Policies
   crane create policy NAME FILENAME

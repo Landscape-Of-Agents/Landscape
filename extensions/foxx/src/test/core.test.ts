@@ -7,7 +7,7 @@ import { parse } from "yaml";
 
 import { atLeast, craneStatus, parseVersion, selectionArgs, selectionIdFrom } from "../core/crane";
 import { ACTIONS, search } from "../core/actions";
-import { activate, addContext, addFlow, addZone, attachContextPack, attachToFlow, attachToZone, contextPackOf, entities } from "../core/governance";
+import { activate, addContext, addFlow, addZone, attachContextPack, attachToFlow, attachToZone, connectZones, contextPackOf, entities } from "../core/governance";
 import { parsePolicies } from "../core/policies";
 import { checkName, confirmation, ownerKey, repoArgs } from "../core/setup";
 
@@ -49,6 +49,23 @@ test("attaches selectors, entry points, and context packs without duplicates", (
   text = activate(text, "zone", "z");
   assert.equal(entities(text).find((entity) => entity.id === "z")?.status, "active");
   assert.throws(() => attachToZone(text, "missing", "files", "a"), /no zone/);
+});
+
+test("connects zones in order, preserving stage metadata while removing top-level zones", () => {
+  let text = addZone("", { id: "first", description: "First stage", criticality: "sensitive", autonomy_ceiling: "delegated", selectors: { paths: ["src/first/**"], selections: ["ABCD1234"] } });
+  text = addZone(text, { id: "second", description: "Second stage", criticality: "critical", autonomy_ceiling: "assisted", selectors: { files: ["src/second.py"], symbols: ["src/second.py:run"] } });
+  text = connectZones(text, "ordered-flow", "The ordered process", ["second", "first"]);
+  const parsed = parse(text);
+  assert.deepEqual(parsed.zones, []);
+  assert.deepEqual(parsed.flows[0].stages.map((stage: { id: string }) => stage.id), ["second", "first"]);
+  assert.deepEqual(parsed.flows[0].stages[1].selectors.selections, ["ABCD1234"]);
+  assert.deepEqual(parsed.flows[0].entry_points, ["src/second.py:run"]);
+  assert.deepEqual(parsed.flows[0].include, ["src/second.py", "src/first/**"]);
+  assert.equal(parsed.flows[0].criticality, "critical");
+  assert.equal(parsed.flows[0].autonomy_ceiling, "assisted");
+  assert.equal(parsed.flows[0].status, "proposed");
+  assert.throws(() => connectZones(text, "cycle", "No cycle", ["first", "first"]), /cannot appear twice/);
+  assert.throws(() => connectZones(text, "cycle", "Unknown zone", ["missing", "second"]), /no zone 'missing'/);
 });
 
 test("sets up a repository: remote arguments, owner key, and confirmations", () => {

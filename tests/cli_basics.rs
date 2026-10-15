@@ -23,6 +23,7 @@ fn version_and_help() {
         "crane target",
         "crane checkpoint",
         "crane repo status",
+        "crane data clear",
         "crane integrate",
     ] {
         assert!(help.contains(command), "help lists {command}");

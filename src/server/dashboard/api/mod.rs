@@ -1,10 +1,12 @@
 // The dashboard's JSON API for one repository (and the selected members): the overview, agents and
 // sessions, the action graph, the event timeline, governance, the autonomy ledger, compliance,
 // alerts, health, the repository connection, integrations, session reports, and evidence bundles.
-// Every count comes from the repository's event stream (DASHBOARD.md) and its evals. No route
-// changes anything. Lists are bounded and paginated.
+// Every count comes from the repository's event stream (DASHBOARD.md) and its evals. These GET
+// routes do not change evidence; Dashboard Agent writes are handled separately by the narrow,
+// authenticated POST route in dashboard::mod. Lists are bounded and paginated.
 
 mod activity;
+pub(super) mod agents;
 mod aggregate;
 mod controls;
 mod filter;
@@ -88,6 +90,7 @@ pub(crate) fn route(
         ["health"] => (200, health(context), None),
         ["overview"] => (200, overview(context, &filter, kind), None),
         ["members"] => (200, members(context), None),
+        ["dashboard-agents"] => (200, agents::view(context), None),
         ["agents"] => (
             200,
             json!({"agents": agents(snapshot, &context.specs)}),

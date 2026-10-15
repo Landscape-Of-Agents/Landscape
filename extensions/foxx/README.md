@@ -54,6 +54,7 @@ Install: search for **Foxx** in the Extensions view, or
 | Foxx: Validate Governance | `crane validate --json`; findings become diagnostics |
 | Foxx: Test Policies | `crane test . --json`; failing and unresolved commands become diagnostics and CodeLens outcomes |
 | Foxx: Policy Status | `crane policy NAME status` in the Foxx output |
+| Foxx: Connect Zones into Flow | Select two or more existing zones in execution order; Foxx creates one flow with the original zones embedded as ordered stages, then removes those zones from the top-level list |
 | Foxx: Undo Last Governance Change | Restore (and sign) the previous `governance.yaml` |
 
 Zone, flow, and context changes made in the panel are validated by Crane and signed with
@@ -61,6 +62,11 @@ Zone, flow, and context changes made in the panel are validated by Crane and sig
 reverted if validation or signing fails. An edit to `governance.yaml` that nobody signed fails
 verification and stops agent changes until an admin signs it. Decorations and CodeLens never
 modify source files; only `crane protect` and `crane target` insert anchor comments.
+
+Connecting zones preserves their definitions and selected order inside the new flow. The flow
+inherits the most restrictive criticality and autonomy ceiling among its stages and resolves the
+combined stage selectors; the zones remain available as flow stages, not separate top-level zones.
+Foxx rejects duplicate or missing zone IDs, so a stage cannot be introduced twice or form a cycle.
 
 ## Development
 

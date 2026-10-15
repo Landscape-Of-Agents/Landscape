@@ -226,6 +226,6 @@ pub(super) fn retention(context: &Context) -> Value {
             summary("sessions", "Sessions (by last activity)", snapshot.sessions.iter().map(|session| session.last_seen_at).collect()),
             summary("tasks", "Tasks", snapshot.tasks.iter().map(|task| task.ended_at.unwrap_or(task.started_at)).collect()),
         ],
-        "kept": ["repositories", "chain_heads", "autonomy_ledger", "selection_registry", "policy_versions", "governance_changes", "repository_status", "credit_grants", "member_links", "owner_keys"],
+        "kept": ["repositories", "chain_heads", "autonomy_ledger", "selection_registry", "policy_versions", "governance_changes", "repository_status", "credit_grants", "member_links", "owner_keys", "dashboard_agents", "dashboard_incidents", "dashboard_quarantines", "dashboard_flow_context"],
     })
 }

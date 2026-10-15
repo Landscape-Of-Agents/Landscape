@@ -31,6 +31,7 @@ export interface FlowInput {
   criticality: (typeof CRITICALITY)[number];
   autonomy_ceiling: (typeof CEILINGS)[number];
   entry_points: string[];
+  stages?: ZoneInput[];
 }
 
 /** A summary of one entity for pickers and the tree view. */
@@ -154,6 +155,7 @@ export function addFlow(text: string, flow: FlowInput): string {
       description: flow.description,
       ...(flow.owner ? { owner: flow.owner } : {}),
       entry_points: flow.entry_points,
+      ...(flow.stages?.length ? { stages: flow.stages } : {}),
       criticality: flow.criticality,
       autonomy_ceiling: flow.autonomy_ceiling,
       policies: [],
@@ -163,6 +165,94 @@ export function addFlow(text: string, flow: FlowInput): string {
     }),
   );
   return document.toString();
+}
+
+/**
+ * Replace an ordered list of zones with one proposed flow whose stages preserve each full zone.
+ * @param text current content
+ * @param id flow id
+ * @param description flow purpose
+ * @param zoneIds zones in execution order
+ * @returns new content
+ */
+export function connectZones(text: string, id: string, description: string, zoneIds: string[]): string {
+  const error = checkId(id);
+  if (error) throw new Error(`flow id: ${error}`);
+  if (zoneIds.length < 2) throw new Error("choose at least two zones");
+  if (new Set(zoneIds).size !== zoneIds.length) throw new Error("a zone cannot appear twice in one flow");
+  const document = load(text);
+  if (allIds(document).has(id)) throw new Error(`'${id}' is already used by a zone, flow, or context pack`);
+  const zones = document.get("zones", true);
+  if (!isSeq(zones)) throw new Error("there are no zones to connect");
+  const byId = new Map(zones.items.filter(isMap).map((zone) => [String(zone.get("id")), zone]));
+  const stages = zoneIds.map((zoneId) => {
+    const zone = byId.get(zoneId);
+    if (!zone) throw new Error(`no zone '${zoneId}'`);
+    return zone.toJSON() as ZoneInput & { status?: string; version?: number; policies?: string[]; context_packs?: string[] };
+  });
+  const criticality = [...stages.map((stage) => stage.criticality)].sort((a, b) => CRITICALITY.indexOf(b) - CRITICALITY.indexOf(a))[0];
+  const autonomy = [...stages.map((stage) => stage.autonomy_ceiling)].sort((a, b) => CEILINGS.indexOf(a) - CEILINGS.indexOf(b))[0];
+  const entryPoints = [...new Set(stages.flatMap((stage) => stage.selectors.symbols || []))];
+  const include = [...new Set(stages.flatMap((stage) => [
+    ...(stage.selectors.paths || []),
+    ...(stage.selectors.files || []),
+    ...(stage.selectors.directories || []).map((directory) => `${directory.replace(/\/+$/, "")}/**`),
+  ]))];
+  sequence(document, "flows").add(document.createNode({
+    id,
+    description,
+    entry_points: entryPoints,
+    ...(include.length ? { include } : {}),
+    stages,
+    criticality,
+    autonomy_ceiling: autonomy,
+    policies: [...new Set(stages.flatMap((stage) => stage.policies || []))],
+    context_packs: [...new Set(stages.flatMap((stage) => stage.context_packs || []))],
+    status: "proposed",
+    version: 1,
+  }));
+  zones.items = zones.items.filter((item) => !isMap(item) || !zoneIds.includes(String(item.get("id"))));
+  return document.toString();
+}
+
+/**
+ * List repository-relative source paths covered by a zone or a flow's linked stages.
+ * @param text governance YAML
+ * @param kind entity kind
+ * @param id entity identifier
+ * @returns source paths and globs
+ */
+export function sourcePaths(text: string, kind: "zone" | "flow", id: string): string[] {
+  const document = load(text);
+  const entity = find(document, kind === "zone" ? "zones" : "flows", id);
+  if (!entity) throw new Error(`no ${kind} '${id}'`);
+  const paths = new Set<string>();
+  const collect = (value: unknown) => {
+    if (!value || typeof value !== "object") return;
+    const selectors = (value as { selectors?: Record<string, unknown> }).selectors;
+    if (selectors) {
+      for (const key of ["paths", "files", "directories", "symbols"] as const) {
+        const items = selectors[key];
+        if (Array.isArray(items)) for (const item of items) {
+          const path = String(item).split(":")[0];
+          if (path && (key !== "symbols" || path.includes("/") || path.includes("\\"))) paths.add(key === "directories" ? `${path.replace(/[\\/]+$/, "")}/**` : path);
+        }
+      }
+    }
+  };
+  collect(entity.toJSON());
+  if (kind === "flow") {
+    const stages = entity.get("stages", true);
+    if (isSeq(stages)) for (const stage of stages.items) collect(isMap(stage) ? stage.toJSON() : undefined);
+    const include = entity.get("include", true);
+    if (isSeq(include)) for (const item of include.items) paths.add(String((item as { value?: unknown }).value ?? item));
+    const entries = entity.get("entry_points", true);
+    if (isSeq(entries)) for (const item of entries.items) {
+      const entry = String((item as { value?: unknown }).value ?? item).split(":")[0];
+      if (entry.includes("/")) paths.add(entry);
+    }
+  }
+  return [...paths];
 }
 
 /**

@@ -1,8 +1,10 @@
 # Foxx Dashboard: Event Specification
 
 This document defines every event Crane, the Foxx service, the Foxx dashboard, and the Foxx editor
-extension emit, flow by flow. It replaces the earlier metric set: every number, chart, table, and
-alert on the dashboard is derived from these events.
+extension emit, flow by flow. It replaces the earlier metric set: dashboard telemetry charts,
+tables, and alerts are derived from these events. Dashboard Agent configurations and incident
+journals are separately persisted, repository-scoped monitor state; their measurements are computed
+from the same event evidence.
 
 - Part 1 defines the event envelope, the 13 attribute groups, their compulsory sub-attributes,
   the shared value lists, and the severity rules.
@@ -3073,7 +3075,7 @@ the zones are listed under the page in the rail. Every panel has:
   words, what it is, and an interpretation generated from what it drew), expand, monitor view (full
   screen, refreshed every 30 seconds), and collapse.
 
-Every time is shown as `DD:MM:YYYY:HH:MM:SS`. Colors follow the Foxx logo (fox orange, ember, cream on
+Every time is shown as `YYYY:MM:DD:HH:MM:SS:MMM` (local time). Colors follow the Foxx logo (fox orange, ember, cream on
 warm charcoal); series use a categorical order led by the Foxx orange that was checked for
 color-blind separation in both themes, and states use reserved status colors. The theme is the
 system's, or light or dark when chosen.
@@ -3086,6 +3088,7 @@ system's, or light or dark when chosen.
 | **Event explorer** | every event, as volume over time (split by any attribute) and as a stream; facets include and exclude values |
 | **Timeline** | Gantt chart of traces; event timeline (every event as a dot in lanes); activity rhythm (day of week by hour, and per day); concurrency (distinct sessions and agents per time bucket); tool time, hook latency, and tokens over time |
 | **Agents** | fleet numbers; a leaderboard per agent identity (calls, tools, denial and failure shares, tool time, tokens, sessions, quarantines, bypass attempts); events and Gantt by agent; agent by tool and agent by decision matrices; a risk map (calls against denial share); bypass attempts and denials by agent; tokens by agent; models, autonomy modes, and session safety; a profile per agent |
+| **Dashboard Agents** | separately stored monitoring rules, action states, incidents, quarantine requests/releases, and flow-context proposals; evaluated after telemetry uploads, at startup recovery, and every 60 seconds; incidents filtered by status, severity, and text; threshold evidence, evaluation metrics, action logs, and chronological 3A notes/resolution. Repository-admin-approved quarantines are checked by local hooks before every tool call. |
 | **Tool calls** | every traced tool call (F05 decision to F06 verification): summary, types (by tool, resource kind, decision), metrics per tool, decisions per tool, tools by resource, the waterfall (time per call, packed or in real time, with the tokens of its turn), tokens per call, time against tokens, tool time, and a browser of every call; a profile per tool |
 | **Sessions** | summary, activity, active sessions, a leaderboard (calls, time, tokens), the waterfall of one session's calls, and the session list |
 | **Session page** | tiles: F03, F05.10, F06.4, F06.5, F27; the waterfall of its tool calls; tool mix; tokens over the session; Gantt; action graph: every event with that `session_id` in `sequence` order; tasks: F04, F07; downloads: F30.3 |
@@ -3122,6 +3125,53 @@ system's, or light or dark when chosen.
 ## Part 4: Implementation notes
 
 ### Where each event comes from
+
+Dashboard Agent definitions, incident journals, activity records, evaluation leases, quarantines,
+and incident-flow context are stored in `dashboard_agents`, `dashboard_incidents`,
+`dashboard_agent_activity`, `dashboard_agent_leases`, `dashboard_quarantines`, and
+`dashboard_flow_context`. Activity records expire after 30 days; quarantine and approved context
+records persist. Evaluation reads repository-scoped event evidence and writes evaluation counters,
+its action record, and any resulting incident and 3A timeline; a repository lease prevents
+concurrent evaluation by multiple service instances.
+
+Each local pre-tool hook makes a signed
+`GET /v1/repositories/{repository_id}/agent-policy` request before evaluating a tool call. It
+receives only active quarantine rules (never telemetry); matching agent/session/tool targets become
+a `QUARANTINE` decision, and network, HTTP, or malformed-policy errors deny the call. This is
+intentionally online and fail-closed: `CRANE_INGEST_URL=off`, service outages, or a cold-start
+timeout prevent tool calls until the policy endpoint responds. Tool quarantines match the exact
+provider tool name within the incident's Crane session; session and agent quarantines match stable
+Crane session/agent IDs.
+
+Any signed-in dashboard user may request a quarantine or release, but a request remains pending
+until the short-lived GitHub OAuth approval flow confirms that the approving account has repository
+admin permission. A release request does not deactivate a quarantine; the quarantine remains
+enforced until an admin approves its release. The OAuth token is used once for GitHub's permission
+check and is not persisted. Incident context proposals contain the incident reason, event IDs, the
+3A timeline, and the related response-action audit trail captured at proposal time. They are
+returned through the Dashboard Agents API only after the same admin check approves them. Linked
+quarantine and context approval/rejection decisions appear in the incident's 3A timeline. These are
+service-side context attachments, not edits to `.crane/governance.yaml`.
+
+New incidents attempt Slack and email delivery using server-side configuration. Delivery outcomes
+are recorded in service events, never include credentials, and do not roll back incident creation.
+The service does not read developer-machine integration secrets. Configure the following in the
+hosted service environment (for Render, **Render → Environment**):
+
+| Variable | Meaning |
+| --- | --- |
+| `CRANE_DASHBOARD_AGENT_SLACK_WEBHOOK_URL` | Slack incoming webhook URL |
+| `CRANE_DASHBOARD_AGENT_RESEND_API_KEY` | Resend API key |
+| `CRANE_DASHBOARD_AGENT_EMAIL_FROM` | Verified sender address |
+| `CRANE_DASHBOARD_AGENT_EMAIL_TO` | Comma-separated recipient list; route to the responsible agent creators/repository owners or their team list |
+
+`GET /api/dashboard-agents?repository=REPOSITORY_ID` returns agent definitions, incidents,
+pending/active/released quarantines, activity, and pending/approved flow-context attachments.
+Bounded JSON `POST /api/dashboard-agents?repository=...` actions include `save-agent`,
+`set-state`, `evaluate`, `open-incident`, `annotate-incident`, `resolve-incident`,
+`request-quarantine`, `request-quarantine-release`, and `propose-flow-context`. Admin approvals are
+initiated at `/auth/agent-action` and can approve or reject quarantine, release, and flow-context
+requests; GitHub must confirm repository-admin access before application.
 
 The envelope's `origin` says which producer wrote an event:
 

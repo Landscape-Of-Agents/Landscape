@@ -11,6 +11,7 @@
 // registered for the app, so a forged Host header cannot redirect a sign-in elsewhere.
 // CRANE_GITHUB_URL and CRANE_GITHUB_API_URL point at GitHub (changed only by tests).
 
+use std::io::Read;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,8 @@ pub(crate) struct Intent {
     pub(crate) state: String,
     #[serde(default)]
     pub(crate) grant: Option<Value>,
+    #[serde(default)]
+    pub(crate) dashboard_agent: Option<Value>,
 }
 
 /** The viewer's access to a repository, as GitHub reports it
@@ -381,6 +384,128 @@ impl Auth {
             access.to_string(),
         ))
     }
+
+    /** Verify the token's GitHub identity and a direct account entry in the repository's default
+     * branch CODEOWNERS file. The token is used only for these requests and is never retained.
+     */
+    pub(crate) fn codeowner(&self, token: &str, remote: &str) -> Result<String, String> {
+        if token.is_empty() || token.len() > 4096 || token.chars().any(char::is_whitespace) {
+            return Err("a valid GitHub CLI token is required".into());
+        }
+        let parts = remote.split('/').collect::<Vec<_>>();
+        if parts.len() != 3
+            || parts[0].is_empty()
+            || parts[1].is_empty()
+            || parts[2].is_empty()
+            || parts[1..].iter().any(|part| {
+                !part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+            })
+        {
+            return Err("the repository remote is not a normalized GitHub repository".into());
+        }
+        let host_allowed = parts[0] == "github.com"
+            || std::env::var("CRANE_GITHUB_HOSTS")
+                .unwrap_or_default()
+                .split(',')
+                .any(|host| host.trim().eq_ignore_ascii_case(parts[0]));
+        if !host_allowed {
+            return Err(format!(
+                "GitHub host '{}' is not configured on this service",
+                parts[0]
+            ));
+        }
+        let repository_path = format!("{}/{}", parts[1], parts[2]);
+        let api_get = |path: &str, accept: &str| -> Result<(u16, String), String> {
+            let response = match self
+                .agent
+                .get(&format!("{}{path}", self.api_url))
+                .set("Authorization", &format!("Bearer {token}"))
+                .set("Accept", accept)
+                .set("User-Agent", concat!("crane/", env!("CARGO_PKG_VERSION")))
+                .call()
+            {
+                Ok(response) => response,
+                Err(ureq::Error::Status(_, response)) => response,
+                Err(error) => return Err(format!("GitHub authorization request failed: {error}")),
+            };
+            let status = response.status();
+            let mut body = String::new();
+            response
+                .into_reader()
+                .take(1_000_001)
+                .read_to_string(&mut body)
+                .map_err(|error| format!("could not read GitHub's response: {error}"))?;
+            if body.len() > 1_000_000 {
+                return Err("GitHub response exceeded the one-megabyte limit".into());
+            }
+            Ok((status, body))
+        };
+        let json_get = |path: &str| -> Result<Value, String> {
+            let (status, body) = api_get(path, "application/vnd.github+json")?;
+            if !(200..300).contains(&status) {
+                return Err(format!("GitHub returned HTTP {status} for {path}"));
+            }
+            serde_json::from_str(&body)
+                .map_err(|error| format!("GitHub returned invalid JSON for {path}: {error}"))
+        };
+        let user = json_get("/user")?;
+        let login = user["login"]
+            .as_str()
+            .filter(|login| !login.is_empty())
+            .ok_or("GitHub returned no login for this token")?
+            .to_ascii_lowercase();
+        let repository = json_get(&format!("/repos/{repository_path}"))?;
+        let full_name = repository["full_name"]
+            .as_str()
+            .ok_or("GitHub returned no repository identity")?;
+        if !full_name.eq_ignore_ascii_case(&repository_path) {
+            return Err("GitHub repository identity did not match the requested remote".into());
+        }
+        let branch = repository["default_branch"]
+            .as_str()
+            .filter(|branch| !branch.is_empty())
+            .ok_or("GitHub returned no default branch")?;
+        for file in [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"] {
+            let path = format!(
+                "/repos/{repository_path}/contents/{file}?ref={}",
+                encode(branch)
+            );
+            let (status, contents) = api_get(&path, "application/vnd.github.raw+json")?;
+            if status == 404 {
+                continue;
+            }
+            if !(200..300).contains(&status) {
+                return Err(format!(
+                    "GitHub returned HTTP {status} while reading {file}"
+                ));
+            }
+            if codeowners_contains(&contents, &login) {
+                return Ok(login);
+            }
+            return Err(format!(
+                "GitHub login @{login} is not directly listed in the default-branch CODEOWNERS file"
+            ));
+        }
+        Err("the repository has no CODEOWNERS file on its default branch".into())
+    }
+}
+
+fn codeowners_contains(contents: &str, login: &str) -> bool {
+    contents.lines().any(|line| {
+        let mut fields = line
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            .split_whitespace();
+        fields.next();
+        fields.any(|owner| {
+            owner
+                .strip_prefix('@')
+                .is_some_and(|name| !name.contains('/') && name.eq_ignore_ascii_case(login))
+        })
+    })
 }
 
 /** Percent-encode a query value
@@ -402,7 +527,7 @@ pub(crate) fn encode(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{account, Viewer};
+    use super::{account, codeowners_contains, Viewer};
 
     /** Check owner matching for personal accounts and organizations
      * Input
@@ -424,5 +549,13 @@ mod tests {
         assert!(!viewer.allowed("local:/tmp/acme"));
         assert_eq!(account("github.com/Acme/w").as_deref(), Some("acme"));
         assert!(viewer.owns("ACME") && !viewer.owns("other"));
+    }
+
+    #[test]
+    fn codeowners_authorization_requires_a_direct_account_entry() {
+        let contents = "* @alice\nsrc/ @acme/team\n# @bob\n";
+        assert!(codeowners_contains(contents, "ALICE"));
+        assert!(!codeowners_contains(contents, "team"));
+        assert!(!codeowners_contains(contents, "bob"));
     }
 }

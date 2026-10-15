@@ -1,9 +1,8 @@
 // The signed upload API (/v1): every request carries a machine's upload key, a timestamp within
 // five minutes of the service clock, and an Ed25519 signature over the method, path, timestamp,
 // and body digest (see telemetry/ingest.rs). Uploads pass the limits (limits.rs) before they are
-// stored (store.rs). The only routes are positions (how far each stream is stored, as counts) and
-// batch (store records): no route returns stored records, so a machine, or an agent holding its
-// key, cannot read evidence back.
+// stored (store.rs). Positions and batch handle evidence uploads; the sole policy read returns
+// active repository quarantine rules, never telemetry or incident records.
 
 use std::io::Read;
 
@@ -238,7 +237,12 @@ pub(super) fn handle(
         return Err((413, "the request body is too large".into()));
     }
     let installation = authenticate(request, &method, &path, &body)?;
-    if !service.installations.allow(&installation) {
+    let allowed = if operation == "agent-policy" {
+        service.agent_policies.allow(&installation)
+    } else {
+        service.installations.allow(&installation)
+    };
+    if !allowed {
         return Err((
             429,
             "too many requests from this installation; try again in a minute".into(),
@@ -263,6 +267,25 @@ pub(super) fn handle(
             );
             if let Ok(stored) = &stored {
                 super::dashboard::uploaded(&repository);
+                if let Err(error) = service.agent_wake.try_send(repository.clone()) {
+                    let (level, message) = match error {
+                        std::sync::mpsc::TrySendError::Full(_) => (
+                            "warn",
+                            "agent evaluation queue is full; the periodic sweep will recover it",
+                        ),
+                        std::sync::mpsc::TrySendError::Disconnected(_) => (
+                            "error",
+                            "agent evaluation worker is unavailable; check service health",
+                        ),
+                    };
+                    log::write(
+                        level,
+                        "dashboard_agents",
+                        None,
+                        "upload_evaluation_enqueue_failed",
+                        json!({"repository_id": repository, "reason": message}),
+                    );
+                }
                 let verified = !batch.root_commits.is_empty()
                     && batch.remote.is_some()
                     && identity(&batch.root_commits, batch.remote.as_deref()) == repository;
@@ -285,6 +308,7 @@ pub(super) fn handle(
             store::hold_approval(database, &repository, &installation, operation, &approval)
         }
         ("GET", "owner") => store::confirmed_owner(database, &repository),
+        ("GET", "agent-policy") => dashboard_agent_policy(database, &repository),
         // Credit grants an admin approved on the dashboard, for this machine only
         ("GET", "grants") => store::pending_grants(database, &repository, &installation),
         ("POST", "grants") => {
@@ -292,7 +316,51 @@ pub(super) fn handle(
                 .map_err(|error| (400, format!("invalid grant results: {error}")))?;
             store::settle_grants(database, &repository, &installation, &results)
         }
-        (_, "positions" | "batch" | "link" | "owner" | "grants") => {
+        ("POST", "clear") => {
+            let request: Value = serde_json::from_slice(&body)
+                .map_err(|error| (400, format!("invalid clear request: {error}")))?;
+            let remote = request["remote"]
+                .as_str()
+                .ok_or_else(|| (400, "repository remote is required".to_string()))?;
+            let token = request["github_token"]
+                .as_str()
+                .ok_or_else(|| (400, "GitHub authorization is required".to_string()))?;
+            let login = service
+                .dashboard
+                .codeowner(token, remote)
+                .map_err(|message| (403, message))?;
+            let mut result = match store::clear_repository(
+                database,
+                &repository,
+                &installation,
+                remote,
+            ) {
+                Ok(result) => result,
+                Err(store::ClearRepositoryError::NotVerified) => {
+                    return Err((
+                        403,
+                        "this machine has no verified record for that repository remote".into(),
+                    ))
+                }
+                Err(store::ClearRepositoryError::Database(error)) => {
+                    log::write(
+                        "error",
+                        "ingest",
+                        Some(request_id),
+                        "repository data clear failed",
+                        json!({"operation": operation, "installation": &installation[..16], "error": database::redact_uri(&error)}),
+                    );
+                    return Err((
+                        500,
+                        "repository data could not be cleared; try again later".into(),
+                    ));
+                }
+            };
+            result["authorized_as"] = json!(login);
+            super::dashboard::uploaded(&repository);
+            Ok(result)
+        }
+        (_, "positions" | "batch" | "link" | "owner" | "agent-policy" | "grants" | "clear") => {
             return Err((405, "method not allowed".into()))
         }
         _ => return Err(not_found()),
@@ -310,4 +378,34 @@ pub(super) fn handle(
             "the record could not be stored; try again later".to_string(),
         )
     })
+}
+
+/** Return only active quarantine rules; telemetry remains unavailable to installations. */
+fn dashboard_agent_policy(
+    database: &mongodb::sync::Database,
+    repository: &str,
+) -> Result<Value, String> {
+    let documents = database
+        .collection::<mongodb::bson::Document>("dashboard_quarantines")
+        .find(mongodb::bson::doc! {
+            "repository_id": repository,
+            "state": "ACTIVE",
+        })
+        .projection(mongodb::bson::doc! {
+            "_id": 0,
+            "quarantine_id": 1,
+            "kind": 1,
+            "target_id": 1,
+            "scope_session_id": 1,
+            "reason": 1,
+        })
+        .run()
+        .map_err(crate::platform::io_error)?
+        .map(|document| document.map_err(crate::platform::io_error))
+        .collect::<Result<Vec<_>, _>>()?;
+    let quarantines = documents
+        .into_iter()
+        .map(|document| serde_json::to_value(document).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(json!({"quarantines": quarantines}))
 }

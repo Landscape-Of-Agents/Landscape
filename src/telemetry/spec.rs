@@ -276,6 +276,7 @@ fn tool(tool: &str) -> &'static str {
     }
 }
 
+#[cfg(feature = "server")]
 pub(crate) fn canonical_tool_type(name: &str) -> Option<&'static str> {
     match tool(name) {
         "OTHER" => None,

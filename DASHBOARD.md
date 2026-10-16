@@ -1480,7 +1480,7 @@ it never lets an action through because it could not check it.
 
 ---
 
-### F12. The rules are tampered with, rolled back, or forked
+### F12. The rules are tampered with, rolled back, or fork
 
 On every check Crane verifies the signed rules: signatures and trusted signers, the digest of every
 rules file, the audit and checkpoint chains, the admin list version, and this machine's memory of

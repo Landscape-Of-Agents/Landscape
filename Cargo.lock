@@ -313,7 +313,7 @@ dependencies = [
 
 [[package]]
 name = "crane"
-version = "0.4.22"
+version = "0.4.23"
 dependencies = [
  "argon2",
  "chacha20poly1305",

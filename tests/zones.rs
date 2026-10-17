@@ -495,7 +495,7 @@ context_packs:
         assert!(
             answer["systemMessage"]
                 .as_str()
-                .is_some_and(|message| message.contains("Crane context · zone:payment-core")),
+                .is_some_and(|message| message.contains("Crane context · zone payment-core")),
             "every touch is visible to the user: {answer}"
         );
     }
@@ -548,7 +548,7 @@ context_packs:
         assert!(output.status.success(), "{profile}: {}", text(&output));
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains("Crane context · zone:payment-core")
+            stdout.contains("Crane context · zone payment-core")
                 && stdout.contains("Core payment resources, updated"),
             "{profile} must show zone context in the agent window: {stdout}"
         );
@@ -668,4 +668,65 @@ flows:
     let (_, graph) = fixture.json(&["governance", "graph", "--json"]);
     assert_eq!(graph["acyclic"], false, "{graph}");
     assert_eq!(graph["rejected"].as_array().unwrap().len(), 1, "{graph}");
+}
+
+/** While an agent works in a zone with context, the context is shown in the agent's window with a
+ * bar on every line, and published for Foxx ('crane foxx live') with where it applies
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn live_context_follows_the_agent() {
+    let fixture = fixture();
+    let (_, before) = fixture.json(&["foxx", "live", "--json"]);
+    assert!(before["live"].is_null(), "{before}");
+    govern(
+        &fixture,
+        "version: 1
+zones:
+  - id: payment-core
+    selectors:
+      files: [\"app/payments.py\"]
+    autonomy_ceiling: autonomous
+    context_packs: [payment-invariants]
+context_packs:
+  - id: payment-invariants
+    version: 1
+    content:
+      - Charges must be idempotent; never retry a capture.
+",
+    );
+    fixture.hook("claude", "SessionStart", &json!({"session_id": "l1"}));
+    let read = fixture.hook(
+        "claude",
+        "pre-tool-use",
+        &json!({"session_id": "l1", "tool_use_id": "l-1", "cwd": fixture.work.to_string_lossy(), "tool_name": "Read", "tool_input": {"file_path": fixture.work.join("app/payments.py").to_string_lossy()}}),
+    );
+    assert!(read.status.success(), "{}", text(&read));
+    let answer: Value = serde_json::from_slice(&read.stdout).unwrap();
+    let shown = answer["systemMessage"].as_str().unwrap_or_default();
+    assert!(
+        shown.starts_with("▌ Crane context · zone payment-core"),
+        "{shown}"
+    );
+    assert!(
+        shown
+            .lines()
+            .all(|line| line.starts_with("▌ ") || line.is_empty()),
+        "{shown}"
+    );
+    let (ok, live) = fixture.json(&["foxx", "live", "--json"]);
+    assert!(ok, "{live}");
+    let context = &live["live"]["contexts"][0];
+    assert_eq!(context["entity"], "zone:payment-core", "{live}");
+    assert_eq!(context["kind"], "zone");
+    assert!(context["text"]
+        .as_str()
+        .unwrap()
+        .contains("never retry a capture"));
+    assert_eq!(context["locations"][0]["path"], "app/payments.py", "{live}");
+    assert_eq!(live["live"]["tool"], "Read");
+    assert!(live["live"]["at"].as_u64().unwrap() > 0);
 }

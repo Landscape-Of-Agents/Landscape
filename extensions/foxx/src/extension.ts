@@ -12,12 +12,13 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 import { CommandResult, CraneStatus, craneStatus, Finding, parseJson, RELEASES_URL, runCrane, selectionArgs, selectionIdFrom, Span, TestReport, ValidateReport } from "./core/crane";
-import { activate as activateEntity, addContext, addFlow, addZone, attachToZone, checkId, connectZones, entities, sourcePaths, stageCycle, ZoneInput } from "./core/governance";
+import { activate as activateEntity, addContext, addFlow, addZone, attachToZone, entities, linkZones, sourcePaths, unlinkZones, ZoneInput } from "./core/governance";
 import { busiest, GraphData } from "./core/graph";
 import { parsePolicies, Policy } from "./core/policies";
 import { checkName, confirmation, ownerKey, repoArgs } from "./core/setup";
 import { FoxxPanel, PanelHost, PanelState, Progress, ResultAction, RunResult, SelectionInfo } from "./panel";
-import { FoxxGraph, GraphHost } from "./graphView";
+import { contextLabel, guidanceLines, LiveContext, liveFresh } from "./core/live";
+import { FoxxGraph, GraphHost, Positions } from "./graphView";
 import { FoxxSidebar, SidebarHost, SidebarState } from "./sidebar";
 
 /** A registry record as stored in .crane/registry.json (only the fields Foxx shows). */
@@ -39,6 +40,10 @@ let status: vscode.StatusBarItem;
 let extensionUri: vscode.Uri;
 let lastSelection: SelectionInfo | undefined;
 let extensionVersion = "";
+/** The extension's context, for remembering graph positions per workspace. */
+let extensionContext: vscode.ExtensionContext | undefined;
+/** The latest agent context Crane published, while it is fresh. */
+let liveContext: LiveContext | undefined;
 /** What was done in this window, newest first (the sidebar's Activity). */
 const activity: SidebarState["activity"] = [];
 
@@ -340,15 +345,34 @@ const graphHost: GraphHost = {
     const editor = await vscode.window.showTextDocument(vscode.Uri.file(absolute), { preview: false, viewColumn: vscode.ViewColumn.One, selection: new vscode.Range(line, 0, line, 0) });
     editor.revealRange(new vscode.Range(line, 0, line, 0), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
   },
-  connect: async (zones, id, description) => {
-    const checked = await checkCrane();
-    if (checked.state !== "ok") return { ok: false, message: checked.message ?? "Crane cannot be used.", actions: CRANE_FIXES };
-    const result = await writeGovernance((text) => connectZones(text, id, description, zones), `flow ${id} created in order ${zones.join(" → ")}; the zones became its stages`);
-    remember("connect zones", result.ok, result.message);
-    return result;
-  },
+  positions: () => extensionContext?.workspaceState.get<Positions>("foxx.graph.positions") ?? {},
+  savePositions: (positions) => void extensionContext?.workspaceState.update("foxx.graph.positions", positions),
+  link: (from, to) => editGraph("link zones", (text) => linkZones(text, from, to)),
+  unlink: (from, to) => editGraph("unlink zones", (text) => unlinkZones(text, from, to)),
   command: (id) => panelHost.command(id),
 };
+
+/**
+ * Apply a link or unlink drawn on the graph to .crane/governance.yaml: validated and signed by
+ * Crane like every governance change (restored when either fails), and undoable.
+ * @param label what was done, for the activity list
+ * @param edit the change, returning the new text and what it did
+ * @returns whether it was kept, and what to tell the person
+ */
+async function editGraph(label: string, edit: (text: string) => { text: string; summary: string }): Promise<RunResult> {
+  const checked = await checkCrane();
+  if (checked.state !== "ok") return { ok: false, message: checked.message ?? "Crane cannot be used.", actions: CRANE_FIXES };
+  let summary = "";
+  const result = await writeGovernance((text) => {
+    const changed = edit(text);
+    summary = changed.summary;
+    return changed.text;
+  }, "governance updated");
+  const told = result.ok ? { ...result, message: `${summary[0].toUpperCase()}${summary.slice(1)}.` } : result;
+  remember(label, told.ok, told.message);
+  record("FOXX_ACTION_RUN", { status: told.ok ? "OK" : "FAILED", failure_state: told.ok ? "NA" : failureOf(told.message), statement: told.ok ? "Graph edit kept." : "Graph edit refused.", panel_action: label.toUpperCase().replace(/ /g, "_") });
+  return told;
+}
 
 /** The extension side of the Foxx panel. */
 const panelHost: PanelHost = {
@@ -449,6 +473,14 @@ const sidebarHost: SidebarHost = {
         : undefined,
       graphError,
       agents: busiest(lastGraph?.activity ?? []),
+      live: liveContext && liveFresh(liveContext, Date.now())
+        ? {
+            agent: liveContext.agent,
+            tool: liveContext.tool,
+            at: liveContext.at,
+            contexts: liveContext.contexts.map((context) => ({ kind: context.kind, name: context.name ?? context.id, lines: guidanceLines(context.text), path: context.locations[0]?.path, line: context.locations[0]?.start_line })),
+          }
+        : undefined,
     };
   },
   command: async (id, argument) => {
@@ -840,51 +872,9 @@ async function createCheckpoint(): Promise<void> {
   await change(["checkpoint", name], `checkpoint ${name} recorded.`);
 }
 
-/** Convert a deliberate zone ordering into one proposed flow. */
+/** Connect zones: open the graph, where zones are linked by dragging (nothing to type). */
 async function connectZonesFlow(): Promise<void> {
-  const zones = entities(readGovernance()).filter((entity) => entity.kind === "zone");
-  if (zones.length < 2) {
-    void vscode.window.showInformationMessage("Foxx: create at least two zones before connecting them into a flow.");
-    return;
-  }
-  const ordered: string[] = [];
-  while (ordered.length < zones.length) {
-    // Zones that would make the flows cyclic are not offered
-    const text = readGovernance();
-    const remaining = zones.filter((zone) => !ordered.includes(zone.id) && !stageCycle(text, [...ordered, zone.id]));
-    if (!remaining.length && ordered.length < 2) {
-      void vscode.window.showInformationMessage("Foxx: no zone can follow without making the flows cyclic.");
-      return;
-    }
-    if (!remaining.length) break;
-    const choices = remaining.map((zone) => ({ label: zone.id, description: zone.description || zone.status, id: zone.id }));
-    if (ordered.length >= 2) choices.unshift({ label: "Finish flow", description: `Keep this order: ${ordered.join(" → ")}`, id: "" });
-    const choice = await vscode.window.showQuickPick(choices, {
-      placeHolder: ordered.length ? `Choose the next zone (${ordered.length} selected in order)` : "Choose the first zone in the flow",
-      title: "Connect zones into an ordered flow",
-    });
-    if (!choice) return;
-    if (!choice.id) break;
-    ordered.push(choice.id);
-  }
-  if (ordered.length < 2) {
-    void vscode.window.showInformationMessage("Foxx: select at least two zones to create a flow.");
-    return;
-  }
-  const id = await vscode.window.showInputBox({
-    prompt: "Flow identifier",
-    value: ordered.join("-").slice(0, 64),
-    validateInput: (value) => checkId(value) ?? (entities(readGovernance()).some((entity) => entity.id === value) ? "this identifier is already used" : undefined),
-  });
-  if (!id) return;
-  const description = await vscode.window.showInputBox({ prompt: "Why does this ordered flow exist?", value: ordered.join(" → ") });
-  if (description === undefined) return;
-  const result = await writeGovernance(
-    (text) => connectZones(text, id, description, ordered),
-    `flow ${id} created in order ${ordered.join(" → ")}; the original zones are preserved as embedded stages`,
-  );
-  (result.ok ? vscode.window.showInformationMessage : vscode.window.showErrorMessage)(`Foxx: ${result.message}`);
-  if (result.ok) void refreshGraph();
+  FoxxGraph.show(extensionUri, graphHost, true);
 }
 
 /** Open the first governed source file for a zone or flow in the editor. */
@@ -1302,6 +1292,114 @@ async function pick<T extends string>(values: readonly T[], placeHolder: string)
   return (await vscode.window.showQuickPick([...values], { placeHolder })) as T | undefined;
 }
 
+// ---------------------------------------------------------------- live agent context
+
+/** Lines an agent is working in that have context: a tinted background and a bar on the left. */
+const liveHighlight = vscode.window.createTextEditorDecorationType({
+  isWholeLine: true,
+  backgroundColor: "rgba(255, 122, 26, 0.10)",
+  borderColor: "rgba(255, 122, 26, 0.85)",
+  borderStyle: "solid",
+  borderWidth: "0 0 0 3px",
+  overviewRulerColor: "rgba(255, 122, 26, 0.9)",
+  overviewRulerLane: vscode.OverviewRulerLane.Right,
+});
+/** The context itself, after the first line, on a highlighted label. */
+const liveLabel = vscode.window.createTextEditorDecorationType({
+  after: { margin: "0 0 0 2.5em", color: "#1a0d05", backgroundColor: "#ffb347", fontWeight: "600" },
+});
+/** The status bar while an agent works in code with context. */
+const liveStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
+liveStatus.command = { command: "foxx.openSidebar", title: "Show the agent context" };
+let liveWatcher: fs.FSWatcher | undefined;
+let liveClear: NodeJS.Timeout | undefined;
+
+/**
+ * Ask Crane where it publishes the live agent context ('crane foxx live --json'), show the current
+ * one, and watch the file for the next. Older Crane releases have no live context: nothing starts.
+ */
+async function watchLive(): Promise<void> {
+  const directory = root();
+  if (!directory || liveWatcher) return;
+  const result = await runCrane(executable(), directory, ["foxx", "live", "--json"]);
+  const answer = result.code === 0 ? parseJson<{ path: string; live: LiveContext | null }>(result) : undefined;
+  if (!answer?.path) return;
+  const file = answer.path;
+  if (answer.live) showLive(answer.live);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  let pending: NodeJS.Timeout | undefined;
+  liveWatcher = fs.watch(path.dirname(file), (_event, name) => {
+    if (name && String(name) !== path.basename(file)) return;
+    clearTimeout(pending);
+    pending = setTimeout(() => {
+      try {
+        showLive(JSON.parse(fs.readFileSync(file, "utf8")) as LiveContext);
+      } catch {
+        // The file is replaced atomically; a read between writes is retried on the next change
+      }
+    }, 120);
+  });
+}
+
+/**
+ * Show an agent context: highlight it in the editor, the sidebar, and the status bar, and clear it
+ * when the agent moves on (no new context for a while).
+ * @param live the context Crane published
+ */
+function showLive(live: LiveContext): void {
+  if (!vscode.workspace.getConfiguration("foxx").get<boolean>("agentContext", true) || !liveFresh(live, Date.now())) return;
+  liveContext = live;
+  const where = live.contexts.map((context) => `${context.kind} ${context.name ?? context.id}`).join(", ");
+  liveStatus.text = `$(sparkle) ${live.agent || "Agent"} · ${where}`;
+  const tooltip = new vscode.MarkdownString(`**Crane context while ${live.agent || "the agent"} runs ${live.tool}**\n\n${live.contexts.map((context) => `**${context.kind} ${context.name ?? context.id}**\n\n${context.text.split(/\r?\n/).map((line) => `> ${line}`).join("\n")}`).join("\n\n")}`);
+  liveStatus.tooltip = tooltip;
+  liveStatus.show();
+  decorateLive();
+  FoxxSidebar.update();
+  clearTimeout(liveClear);
+  liveClear = setTimeout(() => {
+    liveContext = undefined;
+    liveStatus.hide();
+    decorateLive();
+    FoxxSidebar.update();
+  }, 45_000);
+}
+
+/** Highlight the live context in every visible editor showing a file it applies to. */
+function decorateLive(): void {
+  for (const editor of vscode.window.visibleTextEditors) {
+    const file = relative(editor.document.uri.fsPath);
+    const lines: vscode.DecorationOptions[] = [];
+    const labels: vscode.DecorationOptions[] = [];
+    for (const context of liveContext?.contexts ?? []) {
+      for (const location of context.locations.filter((item) => item.path === file)) {
+        const start = Math.max(0, (location.start_line ?? 1) - 1);
+        const end = Math.min(editor.document.lineCount - 1, Math.max(start, (location.end_line ?? location.start_line ?? 1) - 1));
+        const hover = new vscode.MarkdownString(`**Crane context · ${context.kind} ${context.name ?? context.id}**\n\n${context.text.split(/\r?\n/).map((line) => `> ${line}`).join("\n")}\n\n_${liveContext?.agent || "The agent"} · ${liveContext?.tool}_`);
+        lines.push({ range: new vscode.Range(start, 0, end, 0), hoverMessage: hover });
+        labels.push({ range: new vscode.Range(start, Number.MAX_SAFE_INTEGER, start, Number.MAX_SAFE_INTEGER), hoverMessage: hover, renderOptions: { after: { contentText: ` ${contextLabel(context, liveContext?.agent)} ` } } });
+      }
+    }
+    editor.setDecorations(liveHighlight, lines);
+    editor.setDecorations(liveLabel, labels);
+  }
+}
+
+/**
+ * Open the code a live context applies to.
+ * @param file repository-relative path
+ * @param line 1-based line
+ */
+async function revealContext(file: string, line: number): Promise<void> {
+  const directory = root();
+  if (!directory) return;
+  const absolute = path.resolve(directory, file);
+  const inside = path.relative(directory, absolute);
+  if (inside.startsWith("..") || path.isAbsolute(inside) || !fs.existsSync(absolute)) return;
+  const at = Math.max(0, (Number.isFinite(line) ? line : 1) - 1);
+  await vscode.window.showTextDocument(vscode.Uri.file(absolute), { preview: false, viewColumn: vscode.ViewColumn.One, selection: new vscode.Range(at, 0, at, 0) });
+}
+
 /**
  * Register the commands, views, and listeners.
  * @param context extension context
@@ -1368,6 +1466,13 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
   extensionUri = context.extensionUri;
+  extensionContext = context;
+  // The sidebar passes one "path#Lline" argument
+  register("foxx.revealContext", (target) => {
+    const [file, line] = String(target).split("#L");
+    return revealContext(file, Number(line));
+  });
+  context.subscriptions.push(liveStatus, liveHighlight, liveLabel, vscode.window.onDidChangeVisibleTextEditors(() => decorateLive()), { dispose: () => liveWatcher?.close() });
   context.subscriptions.push(
     vscode.window.onDidChangeTextEditorSelection(async (event) => {
       if (event.textEditor.document.uri.scheme !== "file") return;
@@ -1388,7 +1493,10 @@ export function activate(context: vscode.ExtensionContext): void {
   void checkCrane().then((checked) => {
     updateStatus();
     if (checked.state !== "ok") void warnCrane(checked);
-    else if (root()) void validate(true);
+    else if (root()) {
+      void validate(true);
+      void watchLive();
+    }
   });
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {

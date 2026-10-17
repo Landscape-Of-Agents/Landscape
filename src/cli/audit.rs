@@ -4,8 +4,9 @@
 // the internal hook and sync entry points are not recorded (hooks record their own events). Credentials embedded in URL
 // arguments are removed, and the event store redacts known secret patterns as well.
 
-use serde_json::json;
+use serde_json::{json, Value};
 
+use super::args::Args;
 use crate::governance::workspace::Workspace;
 use crate::platform::now_millis;
 use crate::telemetry::events::{Event, EventStore, Measurement, Source};
@@ -156,5 +157,34 @@ pub(crate) fn foxx_event(args: &[String]) -> Result<(), String> {
     event.source = Source::FoxxExtension;
     event.payload = payload;
     EventStore::open(&trust.runtime()).append(event)?;
+    Ok(())
+}
+
+/** Print where the live context is and its current content: crane foxx live [--json]
+ * Input
+    - args: &[String] - optional --json
+ * Output
+    - Result<(), String>
+    - Error if the repository cannot be located
+*/
+pub(crate) fn foxx_live(args: &[String]) -> Result<(), String> {
+    let parsed = Args::parse(args, &[], &["json"])?;
+    parsed.expect_positional(0, "crane foxx live [--json]")?;
+    let path = crate::foxx::live::path(&Workspace::locate()?)?;
+    let current = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    if parsed.flag("json") {
+        println!("{}", json!({"path": path, "live": current}));
+    } else {
+        println!("{}", path.display());
+        match current {
+            Some(live) => println!(
+                "{}",
+                serde_json::to_string_pretty(&live).map_err(|error| error.to_string())?
+            ),
+            None => println!("No agent context yet."),
+        }
+    }
     Ok(())
 }

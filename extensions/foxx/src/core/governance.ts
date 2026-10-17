@@ -278,6 +278,233 @@ export function connectZones(text: string, id: string, description: string, zone
   return document.toString();
 }
 
+/** Where a zone is defined: a top-level zone, or a stage of a flow at a position. */
+interface Placement {
+  zone: YAMLMap;
+  flow?: YAMLMap;
+  stages?: YAMLSeq;
+  index: number;
+}
+
+/**
+ * Find where a zone is defined.
+ * @param document YAML document
+ * @param id zone id
+ * @returns its placement, or undefined
+ */
+function placement(document: Document, id: string): Placement | undefined {
+  const zones = document.get("zones", true);
+  const zone = isSeq(zones) ? zones.items.find((item): item is YAMLMap => isMap(item) && item.get("id") === id) : undefined;
+  if (zone) return { zone, index: -1 };
+  const flows = document.get("flows", true);
+  if (!isSeq(flows)) return undefined;
+  for (const flow of flows.items) {
+    if (!isMap(flow)) continue;
+    const stages = flow.get("stages", true);
+    if (!isSeq(stages)) continue;
+    const index = stages.items.findIndex((item) => isMap(item) && item.get("id") === id);
+    if (index >= 0) return { zone: stages.items[index] as YAMLMap, flow, stages, index };
+  }
+  return undefined;
+}
+
+/**
+ * An identifier not yet used by a zone, flow, or context pack.
+ * @param document YAML document
+ * @param base preferred identifier
+ * @returns base, or base-2, base-3, …
+ */
+function freeId(document: Document, base: string): string {
+  const used = allIds(document);
+  const stem = base.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^[^A-Za-z]+/, "").slice(0, 58) || "flow";
+  let candidate = stem;
+  for (let index = 2; used.has(candidate); index += 1) candidate = `${stem}-${index}`;
+  return candidate;
+}
+
+/**
+ * The values a stage contributes to its flow: entry points from its symbols, included paths from
+ * its paths, files, and directories, and its policies and context packs.
+ * @param stage stage (a zone's fields)
+ * @returns contributions
+ */
+function contributions(stage: ZoneInput & { policies?: string[]; context_packs?: string[] }) {
+  const selectors = stage.selectors ?? {};
+  return {
+    entry_points: selectors.symbols ?? [],
+    include: [...(selectors.paths ?? []), ...(selectors.files ?? []), ...(selectors.directories ?? []).map((directory) => `${directory.replace(/\/+$/, "")}/**`)],
+    policies: stage.policies ?? [],
+    context_packs: stage.context_packs ?? [],
+  };
+}
+
+/**
+ * Add a stage to a flow, at its start or end, merging what the stage contributes and keeping the
+ * strictest criticality and autonomy ceiling.
+ * @param document YAML document
+ * @param flow flow mapping
+ * @param stage the stage's fields
+ * @param where start or end
+ */
+function absorb(document: Document, flow: YAMLMap, stage: ZoneInput & { policies?: string[]; context_packs?: string[] }, where: "start" | "end"): void {
+  const existingStages = flow.get("stages", true);
+  const stages: YAMLSeq = isSeq(existingStages) ? existingStages : (document.createNode([]) as YAMLSeq);
+  if (!isSeq(existingStages)) flow.set("stages", stages);
+  const node = document.createNode(stage);
+  if (where === "end") stages.add(node);
+  else stages.items.unshift(node);
+  const added = contributions(stage);
+  for (const key of ["entry_points", "include", "policies", "context_packs"] as const) {
+    if (!added[key].length) continue;
+    const existing = flow.get(key, true);
+    if (isSeq(existing)) {
+      const values = existing.items.map((item) => String((item as { value?: unknown }).value ?? item));
+      for (const value of added[key]) if (!values.includes(value)) existing.add(value);
+    } else flow.set(key, document.createNode([...new Set(added[key])]));
+  }
+  const criticality = String(flow.get("criticality") ?? "routine") as ZoneInput["criticality"];
+  if (CRITICALITY.indexOf(stage.criticality) > CRITICALITY.indexOf(criticality)) flow.set("criticality", stage.criticality);
+  const ceiling = String(flow.get("autonomy_ceiling") ?? "autonomous") as ZoneInput["autonomy_ceiling"];
+  if (stage.autonomy_ceiling && CEILINGS.indexOf(stage.autonomy_ceiling) < CEILINGS.indexOf(ceiling)) flow.set("autonomy_ceiling", stage.autonomy_ceiling);
+}
+
+/**
+ * Remove a mapping from a top-level sequence.
+ * @param document YAML document
+ * @param key zones or flows
+ * @param map the mapping to remove
+ */
+function removeFrom(document: Document, key: string, map: YAMLMap): void {
+  const items = document.get(key, true);
+  if (isSeq(items)) items.items = items.items.filter((item) => item !== map);
+}
+
+/** What a link or unlink did, for the person. */
+export interface GraphEdit {
+  text: string;
+  summary: string;
+}
+
+/**
+ * Link one zone to the next, the way dragging a connector does: two free zones become a new flow
+ * (named after them, enforced when both zones were), a zone joins the end or the start of a flow,
+ * or two flows merge when the first ends where the second begins. A link must keep every flow one
+ * ordered path and the stage orders acyclic.
+ * @param text current content
+ * @param from the zone that runs first
+ * @param to the zone that runs next
+ * @returns the new content and what changed
+ */
+export function linkZones(text: string, from: string, to: string): GraphEdit {
+  if (from === to) throw new Error("a zone cannot follow itself");
+  const document = load(text);
+  const a = placement(document, from);
+  const b = placement(document, to);
+  if (!a) throw new Error(`no zone '${from}'`);
+  if (!b) throw new Error(`no zone '${to}'`);
+  const name = (map: YAMLMap | undefined) => String(map?.get("id"));
+  if (a.flow && a.flow === b.flow) {
+    if (b.index === a.index + 1) throw new Error(`${from} already leads to ${to} in flow ${name(a.flow)}`);
+    throw new Error(`${from} and ${to} are already in flow ${name(a.flow)}, which runs each zone once`);
+  }
+  const cycle = stageCycle(text, [from, to]);
+  if (cycle) throw new Error(`linking ${from} → ${to} would make a cycle (${cycle.join(" → ")})`);
+  if (a.flow && a.stages && a.index !== a.stages.items.length - 1) {
+    throw new Error(`${from} already leads to ${name(a.stages.items[a.index + 1] as YAMLMap)} in flow ${name(a.flow)}; a flow is one ordered path, so link from its last zone`);
+  }
+  if (b.flow && b.index !== 0) {
+    throw new Error(`${to} already follows ${name(b.stages?.items[b.index - 1] as YAMLMap)} in flow ${name(b.flow)}; link to its first zone`);
+  }
+  type Stage = ZoneInput & { status?: string; policies?: string[]; context_packs?: string[] };
+  let summary: string;
+  if (!a.flow && !b.flow) {
+    const first = a.zone.toJSON() as Stage;
+    const second = b.zone.toJSON() as Stage;
+    const id = freeId(document, `${from}-to-${to}`);
+    const flow = document.createNode({ id, description: `${from} → ${to}`, entry_points: [], criticality: "routine", autonomy_ceiling: "autonomous", policies: [], context_packs: [], status: "proposed", version: 1 }) as YAMLMap;
+    absorb(document, flow, first, "end");
+    absorb(document, flow, second, "end");
+    // Two enforced zones stay enforced as one flow; otherwise the flow waits for review
+    flow.set("status", first.status !== "proposed" && second.status !== "proposed" ? "active" : "proposed");
+    sequence(document, "flows").add(flow);
+    removeFrom(document, "zones", a.zone);
+    removeFrom(document, "zones", b.zone);
+    summary = `flow ${id} created: ${from} → ${to}`;
+  } else if (a.flow && !b.flow) {
+    absorb(document, a.flow, b.zone.toJSON() as Stage, "end");
+    removeFrom(document, "zones", b.zone);
+    summary = `${to} added after ${from} in flow ${name(a.flow)}`;
+  } else if (!a.flow && b.flow) {
+    absorb(document, b.flow, a.zone.toJSON() as Stage, "start");
+    removeFrom(document, "zones", a.zone);
+    summary = `${from} added before ${to} in flow ${name(b.flow)}`;
+  } else {
+    const target = a.flow as YAMLMap;
+    const merged = b.flow as YAMLMap;
+    for (const stage of (b.stages as YAMLSeq).items) if (isMap(stage)) absorb(document, target, stage.toJSON() as Stage, "end");
+    removeFrom(document, "flows", merged);
+    summary = `flows ${name(target)} and ${name(merged)} merged at ${from} → ${to}`;
+  }
+  const flow = placement(document, from)?.flow as YAMLMap;
+  flow.set("version", Number(flow.get("version") ?? 0) + 1);
+  return { text: document.toString(), summary };
+}
+
+/**
+ * Remove the link between two consecutive zones of a flow, splitting it there: each side with two
+ * or more zones stays a flow (the second gets a new name), and a zone left alone becomes a
+ * top-level zone again. A flow with its own entry points is kept even with one zone.
+ * @param text current content
+ * @param from the zone before the link
+ * @param to the zone after it
+ * @returns the new content and what changed
+ */
+export function unlinkZones(text: string, from: string, to: string): GraphEdit {
+  const document = load(text);
+  const a = placement(document, from);
+  if (!a?.flow || !a.stages) throw new Error(`${from} is not in a flow`);
+  const next = a.stages.items[a.index + 1];
+  if (!isMap(next) || next.get("id") !== to) throw new Error(`${from} does not lead to ${to}`);
+  const flow = a.flow;
+  const flowId = String(flow.get("id"));
+  const left = a.stages.items.slice(0, a.index + 1).filter(isMap);
+  const right = a.stages.items.slice(a.index + 1).filter(isMap);
+  type Stage = ZoneInput & { policies?: string[]; context_packs?: string[] };
+  // What the moved stages brought into the flow leaves with them
+  const moved = right.map((stage) => contributions(stage.toJSON() as Stage));
+  for (const key of ["entry_points", "include"] as const) {
+    const existing = flow.get(key, true);
+    const gone = new Set(moved.flatMap((item) => item[key]));
+    if (isSeq(existing)) existing.items = existing.items.filter((item) => !gone.has(String((item as { value?: unknown }).value ?? item)));
+  }
+  a.stages.items = left;
+  const restore = (stages: YAMLMap[]) => { for (const stage of stages) sequence(document, "zones").add(document.createNode(stage.toJSON())); };
+  const parts: string[] = [];
+  if (right.length >= 2) {
+    const id = freeId(document, `${flowId}-${to}`);
+    const created = document.createNode({ id, description: `Split from ${flowId}`, entry_points: [], criticality: "routine", autonomy_ceiling: "autonomous", policies: [], context_packs: [], status: String(flow.get("status") ?? "proposed"), version: 1 }) as YAMLMap;
+    for (const stage of right) absorb(document, created, stage.toJSON() as Stage, "end");
+    sequence(document, "flows").add(created);
+    parts.push(`flow ${id} now runs ${right.map((stage) => stage.get("id")).join(" → ")}`);
+  } else {
+    restore(right);
+    parts.push(`${to} is a zone again`);
+  }
+  // Entry points the flow was given itself, not brought in by the zone that remains
+  const entries = flow.get("entry_points", true);
+  const fromLeft = new Set(left.flatMap((stage) => contributions(stage.toJSON() as Stage).entry_points));
+  const own = isSeq(entries) ? entries.items.filter((item) => !fromLeft.has(String((item as { value?: unknown }).value ?? item))) : [];
+  if (left.length >= 2 || own.length) {
+    flow.set("version", Number(flow.get("version") ?? 0) + 1);
+    parts.unshift(`flow ${flowId} ends at ${from}`);
+  } else {
+    restore(left);
+    removeFrom(document, "flows", flow);
+    parts.unshift(`flow ${flowId} removed, ${from} is a zone again`);
+  }
+  return { text: document.toString(), summary: parts.join("; ") };
+}
+
 /**
  * List repository-relative source paths covered by a zone or a flow's linked stages.
  * @param text governance YAML

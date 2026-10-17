@@ -37,6 +37,16 @@ export interface SidebarState {
   graphError?: string;
   /** Agent tool calls per zone and flow over the last 24 hours, busiest first. */
   agents: ActivityEntry[];
+  /** The context the agent received for its latest tool call, while it is fresh. */
+  live?: LiveView;
+}
+
+/** The live agent context as the sidebar shows it. */
+export interface LiveView {
+  agent: string;
+  tool: string;
+  at: number;
+  contexts: { kind: string; name: string; lines: string[]; path?: string; line?: number }[];
 }
 
 /** The extension side of the sidebar. */
@@ -176,6 +186,17 @@ h3 .count { margin-left: auto; font-weight: 400; text-transform: none; letter-sp
 .badge.live { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 50%, transparent); }
 .badge.live::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 4px; vertical-align: 1px; }
 .note { color: var(--muted); font-size: 10.5px; margin-top: 4px; }
+.live { margin: 0 0 10px; padding: 9px 10px; border-radius: 9px; border: 1px solid color-mix(in srgb, var(--fox) 60%, transparent); background: color-mix(in srgb, var(--fox) 13%, var(--vscode-sideBar-background)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--fox) 8%, transparent); }
+.live-head { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.live-head .spark { color: var(--fox); animation: glow 1.6s ease-in-out infinite; }
+.live-head .ago { margin-left: auto; color: var(--muted); font-size: 11px; }
+@keyframes glow { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .live-head .spark { animation: none; } }
+.live-item { display: block; width: 100%; margin-top: 8px; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; }
+.live-item .kind { display: block; font-size: 10.5px; letter-spacing: .5px; text-transform: uppercase; color: var(--fox); font-weight: 700; margin-bottom: 3px; }
+.live-item mark { display: block; padding: 5px 8px; border-radius: 6px; background: #ffb347; color: #1a0d05; font-size: 12px; line-height: 1.45; font-weight: 500; white-space: pre-wrap; overflow-wrap: anywhere; }
+.live-item:hover mark { background: #ffc46e; }
+.live-item small { display: block; margin-top: 3px; color: var(--muted); font-size: 10.5px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -219,6 +240,8 @@ function draw() {
   const policyRows = s.policies.filter((name) => (view.policyUse === "all" || (sel.some((item) => item.policy === name)) === (view.policyUse === "used")) && (!policyQuery || name.toLowerCase().includes(policyQuery)));
   const policyList = policyRows.map((name) => '<div class="policy"><span>' + esc(name) + '</span><span class="muted">' + sel.filter((item) => item.policy === name).length + " selections</span></div>").join("");
   const findings = s.findings.map((f) => '<div class="finding"><span class="badge ' + esc(f.severity) + '">' + esc(f.severity) + "</span><span>" + esc(f.message) + "</span></div>").join("");
+  const liveCard = s.live ? '<div class="live" role="status" aria-live="polite"><div class="live-head"><span class="spark" aria-hidden="true">✦</span><span><b>' + esc(s.live.agent || "Agent") + "</b> is working · " + esc(s.live.tool) + '</span><span class="ago">' + esc(new Date(s.live.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })) + "</span></div>" +
+    s.live.contexts.map((context) => '<button class="live-item" data-id="foxx.revealContext" data-argument="' + esc((context.path || "") + "#L" + (context.line || 1)) + '" title="Open the code this context applies to"><span class="kind">' + esc(context.kind + " " + context.name) + "</span><mark>" + context.lines.map(esc).join("<br>") + "</mark>" + (context.path ? "<small>" + esc(context.path + (context.line ? ":" + context.line : "")) + "</small>" : "") + "</button>").join("") + "</div>" : "";
   const g = s.graph;
   const graphCard = '<div class="card">' + (g
     ? '<div class="graph-line">' + g.zones + " zone" + (g.zones === 1 ? "" : "s") + " · " + g.flows + " flow" + (g.flows === 1 ? "" : "s") + " · " + g.selections + " selection" + (g.selections === 1 ? "" : "s") + " · " + g.edges + " connection" + (g.edges === 1 ? "" : "s") + " · " + (g.acyclic ? '<span class="ok">acyclic</span>' : '<span class="bad">' + g.rejected + " cyclic connection" + (g.rejected === 1 ? "" : "s") + " left out</span>") + "</div>"
@@ -234,8 +257,8 @@ function draw() {
   const liveFlows = s.agents.filter((entry) => entry.active && entry.kind === "flow").length;
   const insight = liveAgents.size ? '<div class="insight"><b>' + liveAgents.size + " agent" + (liveAgents.size === 1 ? "" : "s") + " active now</b>" + (liveFlows ? " on " + liveFlows + " flow" + (liveFlows === 1 ? "" : "s") : " in zones") + "</div>" : "";
   const log = s.activity.map((a) => '<li><span>' + new Date(a.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + '</span><span class="' + (a.ok ? "ok" : "bad") + '">●</span><span><b>' + esc(a.label) + "</b> " + esc(a.message) + "</span></li>").join("");
-  document.getElementById("body").innerHTML =
-    '<div class="stats">' + stat(passing, "Passing", passing ? "ok" : "", "PASS") + stat(failing, "Failing", failing ? "bad" : "", "FAIL") + stat(unresolved, "Unresolved", unresolved ? "warn" : "", "UNRESOLVED") + stat(s.policies, "Policies", "", "all") + stat(zones, "Zones", "", "all") + stat(flows, "Flows", "", "all") + "</div>" +
+  document.getElementById("body").innerHTML = liveCard +
+    '<div class="stats">' + stat(passing, "Passing", passing ? "ok" : "", "PASS") + stat(failing, "Failing", failing ? "bad" : "", "FAIL") + stat(unresolved, "Unresolved", unresolved ? "warn" : "", "UNRESOLVED") + stat(s.policies.length, "Policies", "", "all") + stat(zones, "Zones", "", "all") + stat(flows, "Flows", "", "all") + "</div>" +
     "<h3>Actions</h3>" + '<div class="actions">' + action("foxx.menu", "✦", "Open panel", "Act on the selected code (Ctrl+Alt+F)") + action("foxx.connectZonesFlow", "⇢", "Connect zones", "Select two or more zones in execution order to create a flow") + action("foxx.test", "▶", "Test policies", "Run every preserve and target rule") + action("foxx.validate", "✓", "Validate", "Check integrity, syntax, and markers") + action("foxx.createCheckpoint", "⚑", "Checkpoint", "Record the current commit as trusted") + action("foxx.installHooks", "⚓", "Agent hooks", "Install Crane's hooks for Claude Code, Codex, Copilot CLI, or Gemini CLI") + action("foxx.undoGovernanceChange", "↶", "Undo change", "Undo the last governance change made here") + "</div>" +
     '<h3>Governance graph</h3>' + graphCard +
     '<h3>Agents on flows <span class="count">last 24 h</span></h3>' + insight +

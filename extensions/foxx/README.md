@@ -54,7 +54,8 @@ Install: search for **Foxx** in the Extensions view, or
 | Foxx: Validate Governance | `crane validate --json`; findings become diagnostics |
 | Foxx: Test Policies | `crane test . --json`; failing and unresolved commands become diagnostics and CodeLens outcomes |
 | Foxx: Policy Status | `crane policy NAME status` in the Foxx output |
-| Foxx: Connect Zones into Flow | Select two or more existing zones in execution order; Foxx creates one flow with the original zones embedded as ordered stages, then removes those zones from the top-level list |
+| Foxx: Show Governance Graph | Zones, flows, and selections on a canvas: drag zones around, drag from a zone's right handle onto another zone to link them into a flow, click a link and press Delete to remove it, and filter what is shown |
+| Foxx: Connect Zones in the Graph | Open the graph ready for linking (no names to type) |
 | Foxx: Undo Last Governance Change | Restore (and sign) the previous `governance.yaml` |
 
 Zone, flow, and context changes made in the panel are validated by Crane and signed with
@@ -63,10 +64,17 @@ reverted if validation or signing fails. An edit to `governance.yaml` that nobod
 verification and stops agent changes until an admin signs it. Decorations and CodeLens never
 modify source files; only `crane protect` and `crane target` insert anchor comments.
 
-Connecting zones preserves their definitions and selected order inside the new flow. The flow
-inherits the most restrictive criticality and autonomy ceiling among its stages and resolves the
-combined stage selectors; the zones remain available as flow stages, not separate top-level zones.
-Foxx rejects duplicate or missing zone IDs, so a stage cannot be introduced twice or form a cycle.
+Linking zones on the graph follows one rule: a flow is one ordered path, and the order of all
+flows together stays acyclic. Linking two free zones creates a flow (enforced when both zones
+were); linking from the last zone of a flow, or to its first, extends it; linking the end of one
+flow to the start of another merges them. A link to itself, from the middle of a flow, or one that
+would close a cycle is refused while you drag, and checked again by Crane before it is signed.
+Removing a link splits the flow; a zone left alone becomes a zone again. Flows inherit the most
+restrictive criticality and autonomy ceiling of their zones.
+
+While an agent works in a selection, zone, or flow that has context, Foxx highlights that context
+next to the code (a tinted background and a label), at the top of the Overview, and in the status
+bar, so you see what the agent was told. Turn it off with `foxx.agentContext`.
 
 ## Development
 

@@ -207,7 +207,7 @@ fn selection_context_is_shown_when_a_selection_is_touched() {
     assert!(
         answer["systemMessage"]
             .as_str()
-            .is_some_and(|message| message.contains(&format!("selection:{keep}"))),
+            .is_some_and(|message| message.contains(&format!("Crane context · selection {keep}"))),
         "{answer}"
     );
 }

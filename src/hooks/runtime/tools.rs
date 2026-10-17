@@ -132,6 +132,8 @@ impl Hook {
             .filter(|text| !text.is_empty());
         let mut selection_guidance = Vec::new();
         let mut context_candidates = Vec::new();
+        // What Foxx highlights in the editor while the agent works (see foxx::live)
+        let mut live_contexts = Vec::new();
         for record in self.state.registry.selections.iter().filter(|record| {
             record.status == Status::Active
                 && (touched.contains(&record.current.span.path)
@@ -139,6 +141,11 @@ impl Hook {
         }) {
             let text = self.selection_guidance(record)?;
             let entity = format!("selection:{}", record.id);
+            let span = &record.current.span;
+            live_contexts.push(json!({
+                "entity": entity, "kind": "selection", "id": record.id, "name": record.name, "text": text,
+                "locations": [{"path": span.path, "start_line": span.start_line, "end_line": span.end_line}],
+            }));
             context_candidates.push((entity, text.clone()));
             selection_guidance.push(text);
         }
@@ -160,6 +167,17 @@ impl Hook {
                 let single = std::collections::BTreeSet::from([entity.clone()]);
                 let text = crate::governance::zones::guidance(&self.workspace, governance, &single);
                 if !text.is_empty() {
+                    let (kind, id) = entity.split_once(':').unwrap_or(("zone", entity.as_str()));
+                    let files = touched
+                        .iter()
+                        .filter(|file| {
+                            limits
+                                .get(*file)
+                                .is_some_and(|limit| limit.entities.contains(entity))
+                        })
+                        .map(|file| json!({"path": file}))
+                        .collect::<Vec<_>>();
+                    live_contexts.push(json!({"entity": entity, "kind": kind, "id": id, "text": text, "locations": files}));
                     context_candidates.push((entity.clone(), text));
                 }
             }
@@ -414,9 +432,33 @@ impl Hook {
                 self.emit(session, event, Some("low_credits"))?;
             }
         }
+        if !live_contexts.is_empty() {
+            // Best effort: the editor view never changes the decision
+            let _ = crate::foxx::live::publish(
+                &self.workspace,
+                &json!({
+                    "at": crate::platform::now_millis(),
+                    "agent": session.agent_id,
+                    "session": session.foxx_session_id,
+                    "tool": action.tool,
+                    "operation": action.operation.name(),
+                    "decision": decided.verdict.decision,
+                    "contexts": live_contexts,
+                }),
+            );
+        }
+        // Shown in the agent's window: agents render it as plain text, so a bar marks each line
         let notices = context_candidates
             .into_iter()
-            .map(|(entity, text)| format!("Crane context · {entity}:\n{text}"))
+            .map(|(entity, text)| {
+                let title = entity.replacen(':', " ", 1);
+                let body = text
+                    .lines()
+                    .map(|line| format!("▌ {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("▌ Crane context · {title}\n{body}")
+            })
             .collect::<Vec<_>>();
         let system_message = (!notices.is_empty()).then(|| notices.join("\n"));
         let verdict = Verdict {

@@ -79,7 +79,7 @@
       },
       {
         "command": "foxx.connectZonesFlow",
-        "title": "Connect Zones into Flow",
+        "title": "Connect Zones in the Graph",
         "category": "Foxx"
       },
       {
@@ -141,6 +141,11 @@
         "title": "Show Overview",
         "category": "Foxx",
         "icon": "$(dashboard)"
+      },
+      {
+        "command": "foxx.revealContext",
+        "title": "Open Code of Agent Context",
+        "category": "Foxx"
       }
     ],
     "menus": {
@@ -232,6 +237,10 @@
         {
           "command": "foxx.revealSelection",
           "when": "false"
+        },
+        {
+          "command": "foxx.revealContext",
+          "when": "false"
         }
       ]
     },
@@ -273,6 +282,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show the selection, its policy and its last test outcome above every preserved or targeted block."
+        },
+        "foxx.agentContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "While an agent works in a selection, zone, or flow that has context, highlight that context next to the code, in the Overview, and in the status bar."
         }
       }
     },

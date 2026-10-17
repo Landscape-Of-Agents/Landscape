@@ -78,6 +78,7 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["admin", ..] => governance::admin(&rest(1)),
         ["governance", ..] => governance::governance(&rest(1)),
         ["foxx", "event", ..] => audit::foxx_event(&rest(2)),
+        ["foxx", "live", ..] => audit::foxx_live(&rest(2)),
         #[cfg(feature = "server")]
         ["server", ..] => crate::server::run(&rest(1)),
         [command, ..] => Err(format!("unknown command '{command}'; run 'crane help'")),

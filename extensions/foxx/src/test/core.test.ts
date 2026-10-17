@@ -7,8 +7,9 @@ import { parse } from "yaml";
 
 import { atLeast, craneStatus, parseVersion, selectionArgs, selectionIdFrom } from "../core/crane";
 import { ACTIONS, GROUPS, groupActions, search } from "../core/actions";
-import { activate, addContext, addFlow, addZone, attachContextPack, attachToFlow, attachToZone, connectZones, contextPackOf, entities, findCycle, stageCycle } from "../core/governance";
+import { activate, addContext, addFlow, addZone, attachContextPack, attachToFlow, attachToZone, connectZones, contextPackOf, entities, findCycle, linkZones, stageCycle, unlinkZones } from "../core/governance";
 import { busiest, layout } from "../core/graph";
+import { contextLabel, guidanceLines, liveFresh } from "../core/live";
 import { parsePolicies } from "../core/policies";
 import { checkName, confirmation, ownerKey, repoArgs } from "../core/setup";
 
@@ -180,4 +181,63 @@ test("keeps flow stage orders acyclic when zones are connected", () => {
 test("lists active agents first, then the most recent", () => {
   const entry = (id: string, active: boolean, last_at: number) => ({ node: "flow:" + id, kind: "flow" as const, id, calls: 1, denied: 0, last_at, active, agents: [] });
   assert.deepEqual(busiest([entry("old", false, 1), entry("live", true, 2), entry("recent", false, 9)]).map((item) => item.id), ["live", "recent", "old"]);
+});
+
+test("links zones by dragging: new flows, appends, prepends, merges, and refusals", () => {
+  let text = "version: 1\n";
+  for (const [id, status] of [["cart", "active"], ["pay", "active"], ["ledger", "active"], ["audit", "proposed"], ["mail", "active"]]) {
+    text = addZone(text, { id, description: "", criticality: id === "pay" ? "critical" : "routine", autonomy_ceiling: id === "pay" ? "assisted" : "delegated", selectors: { files: [`app/${id}.py`] } });
+    if (status === "active") text = activate(text, "zone", id);
+  }
+  const flows = (yaml: string) => (parse(yaml).flows ?? []).map((flow: { id: string; status: string; stages: { id: string }[] }) => `${flow.id}:${flow.status}:${flow.stages.map((stage) => stage.id).join(">")}`);
+  const zones = (yaml: string) => (parse(yaml).zones ?? []).map((zone: { id: string }) => zone.id);
+  let edit = linkZones(text, "cart", "pay");
+  assert.deepEqual(flows(edit.text), ["cart-to-pay:active:cart>pay"], "two enforced zones become an enforced flow");
+  assert.deepEqual(zones(edit.text), ["ledger", "audit", "mail"]);
+  const created = parse(edit.text).flows[0];
+  assert.equal(created.criticality, "critical", "the strictest criticality wins");
+  assert.equal(created.autonomy_ceiling, "assisted", "the strictest ceiling wins");
+  assert.deepEqual(created.include, ["app/cart.py", "app/pay.py"]);
+  edit = linkZones(edit.text, "pay", "ledger");
+  assert.deepEqual(flows(edit.text), ["cart-to-pay:active:cart>pay>ledger"], "a zone joins the end");
+  edit = linkZones(edit.text, "mail", "cart");
+  assert.deepEqual(flows(edit.text), ["cart-to-pay:active:mail>cart>pay>ledger"], "a zone joins the start");
+  assert.throws(() => linkZones(edit.text, "ledger", "mail"), /already in flow/, "a flow runs each zone once");
+  assert.throws(() => linkZones(edit.text, "cart", "audit"), /one ordered path/, "no branching from the middle");
+  assert.throws(() => linkZones(edit.text, "audit", "pay"), /link to its first zone/);
+  assert.throws(() => linkZones(edit.text, "audit", "audit"), /cannot follow itself/);
+  let other = linkZones(text, "audit", "mail");
+  assert.deepEqual(flows(other.text), ["audit-to-mail:proposed:audit>mail"], "a proposed zone keeps the flow proposed");
+  other = linkZones(linkZones(other.text, "cart", "pay").text, "mail", "cart");
+  assert.deepEqual(flows(other.text), ["audit-to-mail:proposed:audit>mail>cart>pay"], "two flows merge where one ends and the other starts");
+});
+
+test("unlinks zones by splitting the flow, giving lone zones back", () => {
+  let text = "version: 1\n";
+  for (const id of ["a", "b", "c", "d"]) text = activate(addZone(text, { id, description: "", criticality: "routine", autonomy_ceiling: "delegated", selectors: { files: [`app/${id}.py`] } }), "zone", id);
+  for (const [from, to] of [["a", "b"], ["b", "c"], ["c", "d"]]) text = linkZones(text, from, to).text;
+  const flows = (yaml: string) => (parse(yaml).flows ?? []).map((flow: { id: string; stages: { id: string }[]; include?: string[] }) => `${flow.id}:${flow.stages.map((stage) => stage.id).join(">")}:${(flow.include ?? []).join(",")}`);
+  const zones = (yaml: string) => (parse(yaml).zones ?? []).map((zone: { id: string }) => zone.id);
+  const middle = unlinkZones(text, "b", "c");
+  assert.deepEqual(flows(middle.text), ["a-to-b:a>b:app/a.py,app/b.py", "a-to-b-c:c>d:app/c.py,app/d.py"], "the split keeps both halves as flows");
+  const edge = unlinkZones(text, "a", "b");
+  assert.deepEqual(flows(edge.text), ["a-to-b-b:b>c>d:app/b.py,app/c.py,app/d.py"]);
+  assert.deepEqual(zones(edge.text), ["a"], "a lone zone becomes a zone again");
+  let two = "version: 1\n";
+  for (const id of ["x", "y"]) two = addZone(two, { id, description: "", criticality: "routine", autonomy_ceiling: "delegated", selectors: {} });
+  const pair = unlinkZones(linkZones(two, "x", "y").text, "x", "y");
+  assert.deepEqual(flows(pair.text), [], "unlinking a two-zone flow removes it");
+  assert.deepEqual(zones(pair.text), ["y", "x"], "both zones are zones again");
+  assert.throws(() => unlinkZones(two, "x", "y"), /not in a flow/);
+});
+
+test("shows an agent's live context only while it is fresh, with its guidance", () => {
+  const context = { entity: "zone:payments", kind: "zone" as const, id: "payments", text: ["Crane guidance for the code this tool call touches (guidance only, never authorization):", "Zone payments (critical, autonomy ceiling assisted): Card charging", "  - Charges must be idempotent; never retry a capture."].join("\n"), locations: [{ path: "app/payments.py" }] };
+  const live = { at: 1_000_000, agent: "agt_claude", tool: "Edit", contexts: [context] };
+  assert.equal(liveFresh(live, 1_000_000 + 60_000), true);
+  assert.equal(liveFresh(live, 1_000_000 + 121_000), false, "older than two minutes is gone");
+  assert.equal(liveFresh({ ...live, contexts: [] }, 1_000_000), false, "nothing to show");
+  assert.deepEqual(guidanceLines(context.text), ["Zone payments (critical, autonomy ceiling assisted): Card charging", "Charges must be idempotent; never retry a capture."]);
+  assert.equal(contextLabel(context, "agt_claude"), "◆ agt_claude · zone payments — Charges must be idempotent; never retry a capture.");
+  assert.ok(contextLabel({ ...context, text: "x".repeat(400) }).length <= 140);
 });

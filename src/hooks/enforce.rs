@@ -1010,7 +1010,7 @@ pub(crate) fn self_test(
             Some("crane validate".into()),
             Vec::new(),
         )),
-        true,
+        false,
     ));
     if let Some(home) = &guard.trust_home {
         let key = home

@@ -34,18 +34,25 @@ impl Hook {
             .action
             .clone()
             .ok_or("the hook payload has no tool call")?;
-        let client = crate::telemetry::ingest::Client::open(&self.workspace)?.ok_or(
-            "Dashboard Agent enforcement requires the ingestion service; tool call denied",
-        )?;
-        let policy = client.dashboard_agent_policy().map_err(|error| {
-            format!("Dashboard Agent policy could not be checked; tool call denied: {error}")
-        })?;
-        let remote_quarantine = Self::dashboard_quarantine(
-            &policy,
-            &session.agent_id,
-            &session.foxx_session_id,
-            &action.tool,
-        )?;
+        // With uploads off (CRANE_INGEST_URL=off) the service never sees this machine's agents,
+        // so no Dashboard Agent can quarantine them; with uploads on, an unreachable service
+        // fails closed
+        let remote_quarantine = match crate::telemetry::ingest::Client::open(&self.workspace)? {
+            None => None,
+            Some(client) => {
+                let policy = client.dashboard_agent_policy().map_err(|error| {
+                    format!(
+                        "Dashboard Agent policy could not be checked; tool call denied: {error}"
+                    )
+                })?;
+                Self::dashboard_quarantine(
+                    &policy,
+                    &session.agent_id,
+                    &session.foxx_session_id,
+                    &action.tool,
+                )?
+            }
+        };
         let (call, provided) = self.tool_call_id(session, &action);
         let trust = self.workspace.trust()?;
         let integrity_ok = !integrity(&self.workspace, &self.state, &trust)

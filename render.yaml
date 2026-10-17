@@ -1,0 +1,31 @@
+# Render Blueprint for the Agent Landscape landing page: a static site served from landing/.
+# It has no build step, and it lists the release downloads from the GitHub API in the browser,
+# so a new Crane release appears without redeploying. Only changes under landing/ redeploy it.
+# This Blueprint manages only this static site; the ingestion service is configured separately.
+services:
+  - type: web
+    name: agent-landscape
+    runtime: static
+    rootDir: landing
+    buildCommand: echo "static site, nothing to build"
+    staticPublishPath: .
+    autoDeploy: true
+    buildFilter:
+      paths:
+        - landing/**
+    headers:
+      - path: /*
+        name: Content-Security-Policy
+        value: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src https://api.github.com; frame-ancestors 'none'; base-uri 'self'"
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*.css
+        name: Cache-Control
+        value: public, max-age=3600
+      - path: /*.js
+        name: Cache-Control
+        value: public, max-age=3600

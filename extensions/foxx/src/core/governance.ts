@@ -168,6 +168,67 @@ export function addFlow(text: string, flow: FlowInput): string {
 }
 
 /**
+ * Find a cycle in a directed graph (depth first, without recursion).
+ * @param edges from and to pairs
+ * @returns the nodes of one cycle, starting and ending with the same node, or undefined when acyclic
+ */
+export function findCycle(edges: [string, string][]): string[] | undefined {
+  const next = new Map<string, string[]>();
+  for (const [from, to] of edges) {
+    next.set(from, [...(next.get(from) ?? []), to]);
+    if (!next.has(to)) next.set(to, []);
+  }
+  // 0: not visited, 1: on the current path, 2: finished
+  const color = new Map([...next.keys()].map((node) => [node, 0]));
+  for (const start of next.keys()) {
+    if (color.get(start) !== 0) continue;
+    color.set(start, 1);
+    const path: [string, number][] = [[start, 0]];
+    while (path.length) {
+      const top = path[path.length - 1];
+      const child = (next.get(top[0]) ?? [])[top[1]];
+      if (child === undefined) {
+        color.set(top[0], 2);
+        path.pop();
+        continue;
+      }
+      top[1] += 1;
+      if (color.get(child) === 0) {
+        color.set(child, 1);
+        path.push([child, 0]);
+      } else if (color.get(child) === 1) {
+        return [...path.slice(path.findIndex(([node]) => node === child)).map(([node]) => node), child];
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Check that connecting zones in an order keeps every flow's stage order acyclic, the rule Crane
+ * enforces when it validates and signs governance.yaml: no zone twice in one flow, and no flows
+ * that run the same zones in opposite orders.
+ * @param text current content
+ * @param zoneIds zones in the proposed execution order
+ * @returns the cycle (zone ids, first and last equal), or undefined when the order is acyclic
+ */
+export function stageCycle(text: string, zoneIds: string[]): string[] | undefined {
+  const document = load(text);
+  const edges: [string, string][] = [];
+  const flows = document.get("flows", true);
+  if (isSeq(flows)) {
+    for (const flow of flows.items) {
+      if (!isMap(flow) || flow.get("status") === "deprecated") continue;
+      const stages = flow.get("stages", true);
+      const ids = isSeq(stages) ? stages.items.filter(isMap).map((stage) => String(stage.get("id"))) : [];
+      for (let index = 1; index < ids.length; index += 1) edges.push([ids[index - 1], ids[index]]);
+    }
+  }
+  for (let index = 1; index < zoneIds.length; index += 1) edges.push([zoneIds[index - 1], zoneIds[index]]);
+  return findCycle(edges);
+}
+
+/**
  * Replace an ordered list of zones with one proposed flow whose stages preserve each full zone.
  * @param text current content
  * @param id flow id
@@ -182,6 +243,8 @@ export function connectZones(text: string, id: string, description: string, zone
   if (new Set(zoneIds).size !== zoneIds.length) throw new Error("a zone cannot appear twice in one flow");
   const document = load(text);
   if (allIds(document).has(id)) throw new Error(`'${id}' is already used by a zone, flow, or context pack`);
+  const cycle = stageCycle(text, zoneIds);
+  if (cycle) throw new Error(`this order would make the flows cyclic (${cycle.join(" → ")}); keep one order for zones shared by flows`);
   const zones = document.get("zones", true);
   if (!isSeq(zones)) throw new Error("there are no zones to connect");
   const byId = new Map(zones.items.filter(isMap).map((zone) => [String(zone.get("id")), zone]));

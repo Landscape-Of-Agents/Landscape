@@ -1,5 +1,6 @@
 // The Foxx panel: an agent-style workspace for the selected code. It shows what it acts on (the
-// selection, with line numbers), lets the person ask for an action (search, or a quick chip),
+// selection, with line numbers), lets the person ask for an action (search, a quick chip, or the
+// grouped action menu behind its toggle),
 // configures it with an explicit plan of every step Foxx will take, then runs it with a live
 // timeline of those steps and a result with follow-up buttons (undo, open the file, fix Crane).
 // The panel holds no state of its own beyond this session's activity: the extension sends the
@@ -7,7 +8,7 @@
 
 import * as vscode from "vscode";
 
-import { ACTIONS, search, SETUP, words } from "./core/actions";
+import { ACTIONS, groupActions, search, SETUP, words } from "./core/actions";
 import { CEILINGS, CRITICALITY } from "./core/governance";
 
 /** The code the panel acts on. */
@@ -166,7 +167,7 @@ export class FoxxPanel {
 function html(cspSource: string, logo: string): string {
   const nonce = Array.from({ length: 32 }, () => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 62)]).join("");
   const data = JSON.stringify({ actions: ACTIONS, setup: SETUP, criticality: CRITICALITY, ceilings: CEILINGS }).replace(/</g, "\\u003c");
-  const searchSource = `const words = ${words.toString()};\nconst searchActions = ${search.toString()};\nconst searchWords = words;`;
+  const searchSource = `const words = ${words.toString()};\nconst searchActions = ${search.toString()};\nconst groupActions = ${groupActions.toString()};\nconst searchWords = words;`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -238,7 +239,17 @@ pre.code span.l::before { counter-increment: line; content: counter(line); displ
 .chip[disabled] { opacity: .45; cursor: not-allowed; }
 .kbd { font-family: var(--mono); font-size: 10.5px; padding: 0 5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; color: var(--muted); }
 .composer .tools .kbd { margin-left: auto; }
-.actions { margin-top: 10px; display: grid; gap: 6px; }
+.actions { margin-top: 10px; display: grid; gap: 10px; }
+.group { display: grid; gap: 6px; }
+.group-head { display: flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 700; letter-spacing: .9px; text-transform: uppercase; color: var(--muted); padding: 0 2px; }
+.group-head::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.group-head span { font-weight: 400; letter-spacing: 0; }
+.menu-toggle { border: 1px solid var(--line); background: var(--bg); border-radius: 999px; padding: 2px 10px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+.menu-toggle:hover, .menu-toggle[aria-expanded=true] { border-color: var(--fox); color: var(--fox); }
+.menu-toggle svg { width: 13px; height: 13px; }
+.menu-toggle .chev { transition: transform .15s; }
+.menu-toggle[aria-expanded=true] .chev { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) { .menu-toggle .chev { transition: none; } }
 .action { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--raised); cursor: pointer; text-align: left; width: 100%; }
 .action:hover, .action.active { border-color: var(--fox); background: var(--fox-soft); }
 .action.disabled { opacity: .5; cursor: not-allowed; }
@@ -349,6 +360,8 @@ let current = null;
 let draft = {};
 let run = null;
 let codeOpen = true;
+// The grouped action list stays behind its toggle until opened (remembered) or something is typed
+let menuOpen = Boolean((vscode.getState() || {}).menuOpen);
 const activity = [];
 const $ = (id) => document.getElementById(id);
 const esc = (text) => String(text == null ? "" : text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -370,6 +383,9 @@ const ICONS = {
   test: "M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3",
   status: "M4 19V9M10 19V5M16 19v-7M22 19H2",
   hooks: "M8 3v6a4 4 0 0 0 8 0V3M12 13v8",
+  connect: "M5 6h4v4H5zM15 14h4v4h-4zM9 8h2a2 2 0 0 1 2 2v4a2 2 0 0 0 2 2",
+  graph: "M6 5a2 2 0 1 0 0 .01M18 12a2 2 0 1 0 0 .01M6 19a2 2 0 1 0 0 .01M8 6l8 5M8 18l8-5",
+  menu: "M4 6h16M4 12h16M4 18h10",
   setup: "M12 3l9 5-9 5-9-5z M3 13l9 5 9-5",
 };
 const glyph = (id) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + (ICONS[id] || ICONS.validate) + '"/></svg>';
@@ -430,25 +446,38 @@ function highlight(text) {
 function pool() { return state.ready ? DATA.actions : [DATA.setup]; }
 function blocked(action) { return !usable() ? "Fix Crane first" : action.needsSelection && !selected() ? "Select code first" : ""; }
 
+function setMenu(open) { menuOpen = open; vscode.setState(Object.assign({}, vscode.getState() || {}, { menuOpen })); }
 function renderCompose(focus) {
-  shown = searchActions(query, pool());
+  // With nothing typed and the menu closed, only the search bar and the quick chips show
+  const listing = menuOpen || Boolean(query.trim()) || !state.ready;
+  const groups = groupActions(searchActions(query, pool()));
+  shown = listing ? groups.flatMap((group) => group.actions) : [];
   if (active >= shown.length) active = 0;
   const chips = state.ready ? QUICK.map(([id, label]) => { const action = DATA.actions.find((a) => a.id === id); return '<button class="chip" data-pick="' + id + '" title="' + esc(blocked(action) || action.detail) + '"' + (blocked(action) ? " disabled" : "") + ">" + glyph(id) + esc(label) + "</button>"; }).join("") : "";
+  const toggle = state.ready ? '<button type="button" class="menu-toggle" id="menu-toggle" aria-expanded="' + listing + '" aria-controls="actions" title="' + (listing ? "Hide" : "Show") + ' every action, by group">' + glyph("menu") + "Actions" + '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>' : "";
+  let index = -1;
+  const item = (action) => {
+    index += 1;
+    const why = blocked(action);
+    return '<button type="button" role="option" class="action' + (index === active ? " active" : "") + (why ? " disabled" : "") + '" data-index="' + index + '" aria-selected="' + (index === active) + '">' +
+      '<span class="glyph">' + glyph(action.id) + "</span><span><b>" + highlight(action.label) + "</b><small>" + esc(action.detail) + "</small></span>" + (why ? '<span class="need">' + esc(why) + "</span>" : '<span class="kbd">↵</span>') + "</button>";
+  };
+  const list = !listing ? "" : '<div class="actions" id="actions" role="listbox" aria-label="Actions">' + (shown.length ? groups.map((group) =>
+    '<div class="group" role="group" aria-label="' + esc(group.group) + '"><div class="group-head">' + esc(group.group) + " <span>" + group.actions.length + "</span></div>" + group.actions.map(item).join("") + "</div>").join("")
+    : '<div class="empty-state"><b>No action matches</b>Try "zone", "protect", "context", or "graph".</div>') + "</div>";
   $("stage").innerHTML =
     '<div class="composer"><textarea id="composer" rows="2" placeholder="' + (state.ready ? "What should Foxx do with this code? e.g. zone, protect, add context…" : "Type setup, or press Enter") + '" aria-label="Search actions" spellcheck="false">' + esc(query) + "</textarea>" +
-    '<div class="tools">' + chips + '<span class="kbd">↑↓ choose · Enter open</span></div></div>' +
-    '<div class="actions" role="listbox" aria-label="Actions">' + (shown.length ? shown.map((action, index) => {
-      const why = blocked(action);
-      return '<button type="button" role="option" class="action' + (index === active ? " active" : "") + (why ? " disabled" : "") + '" data-index="' + index + '" aria-selected="' + (index === active) + '">' +
-        '<span class="glyph">' + glyph(action.id) + "</span><span><b>" + highlight(action.label) + "</b><small>" + esc(action.detail) + "</small></span>" + (why ? '<span class="need">' + esc(why) + "</span>" : '<span class="kbd">↵</span>') + "</button>";
-    }).join("") : '<div class="empty-state"><b>No action matches</b>Try "zone", "protect", "context", or "checkpoint".</div>') + "</div>";
+    '<div class="tools">' + chips + toggle + '<span class="kbd">' + (listing ? "↑↓ choose · Enter open" : "Type to search · ↓ all actions") + "</span></div></div>" + list;
+  const menu = $("menu-toggle");
+  if (menu) menu.addEventListener("click", () => { if (listing) { setMenu(false); query = ""; } else setMenu(true); active = 0; renderCompose(true); });
   const box = $("composer");
   box.addEventListener("input", () => { query = box.value; active = 0; renderList(); });
   box.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowDown") { event.preventDefault(); active = Math.min(active + 1, shown.length - 1); renderList(); }
+    if (event.key === "ArrowDown" && !shown.length && !query.trim()) { event.preventDefault(); setMenu(true); renderList(); }
+    else if (event.key === "ArrowDown") { event.preventDefault(); active = Math.min(active + 1, shown.length - 1); renderList(); }
     else if (event.key === "ArrowUp") { event.preventDefault(); active = Math.max(active - 1, 0); renderList(); }
     else if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); open(shown[active]); }
-    else if (event.key === "Escape") { query = ""; box.value = ""; active = 0; renderList(); }
+    else if (event.key === "Escape") { if (!query && menuOpen) setMenu(false); query = ""; box.value = ""; active = 0; renderList(); }
   });
   if (focus) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
 }

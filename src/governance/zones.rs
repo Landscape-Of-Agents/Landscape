@@ -325,6 +325,60 @@ fn contains_marker_tag(path: &std::path::Path) -> Result<bool, String> {
     }
 }
 
+/** Findings for flow stages that do not keep one acyclic order: a flow that runs through the same
+ * zone twice, and flows whose stage orders loop back together (one runs a before b, another b
+ * before a). Deprecated flows are ignored
+ * Input
+    - governance: &Governance - configuration
+ * Output
+    - Vec<Finding> - flow_stage_cycle findings (High, so signing refuses them)
+*/
+fn stage_findings(governance: &Governance) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let mut order = Vec::new();
+    for flow in governance
+        .flows
+        .iter()
+        .filter(|flow| flow.status != Lifecycle::Deprecated)
+    {
+        let mut seen = BTreeSet::new();
+        let repeated = flow
+            .stages
+            .iter()
+            .filter(|stage| !seen.insert(stage.id.as_str()))
+            .map(|stage| stage.id.clone())
+            .collect::<BTreeSet<_>>();
+        if repeated.is_empty() {
+            order.extend(
+                flow.stages
+                    .windows(2)
+                    .map(|pair| (pair[0].id.clone(), pair[1].id.clone())),
+            );
+        } else {
+            findings.push(finding(
+                "flow_stage_cycle",
+                Severity::High,
+                format!(
+                    "flow {} runs through zone {} more than once; a flow's stages must form an acyclic order",
+                    flow.id,
+                    repeated.into_iter().collect::<Vec<_>>().join(", ")
+                ),
+            ));
+        }
+    }
+    if let Some(cycle) = super::graph::find_cycle(&order) {
+        findings.push(finding(
+            "flow_stage_cycle",
+            Severity::High,
+            format!(
+                "the stage orders of the flows form a cycle ({}); zones connected into flows must keep one acyclic order",
+                cycle.join(" → ")
+            ),
+        ));
+    }
+    findings
+}
+
 /** Resolve zones and flows against the repository and validate the configuration: unique and
  * distinct identifiers, references to existing policies, context packs, and selections, stale
  * selectors, unresolved or partial flows, missing context files, overlapping scopes with
@@ -623,6 +677,7 @@ pub(crate) fn resolve(
             graph: Some(graph),
         });
     }
+    resolution.findings.extend(stage_findings(governance));
     for path in &files {
         let full = workspace.root.join(path);
         if fs::metadata(&full).is_ok_and(|metadata| metadata.len() > 8 * 1024 * 1024)
@@ -1155,6 +1210,64 @@ pub(crate) fn guidance(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /** A flow whose stages are the given zones, in order
+     * Input
+        - id: &str - flow id
+        - stages: &[&str] - zone ids
+     * Output
+        - Flow
+    */
+    fn staged(id: &str, stages: &[&str]) -> Flow {
+        Flow {
+            id: id.into(),
+            stages: stages
+                .iter()
+                .map(|stage| Zone {
+                    id: (*stage).into(),
+                    ..Zone::default()
+                })
+                .collect(),
+            ..Flow::default()
+        }
+    }
+
+    /** Check that stage orders must stay acyclic, within one flow and across flows
+     * Input
+        - None
+     * Output
+        - None (panics on failure)
+    */
+    #[test]
+    fn stage_orders_must_be_acyclic() {
+        let codes = |flows: Vec<Flow>| {
+            stage_findings(&Governance {
+                flows,
+                ..Governance::default()
+            })
+            .into_iter()
+            .map(|finding| (finding.code, finding.message))
+            .collect::<Vec<_>>()
+        };
+        assert!(codes(vec![
+            staged("checkout", &["cart", "payments", "ledger"]),
+            staged("refunds", &["payments", "ledger"]),
+        ])
+        .is_empty());
+        let repeated = codes(vec![staged("loop", &["cart", "payments", "cart"])]);
+        assert_eq!(repeated.len(), 1);
+        assert!(repeated[0].1.contains("more than once"), "{repeated:?}");
+        let crossed = codes(vec![
+            staged("checkout", &["payments", "ledger"]),
+            staged("audit", &["ledger", "payments"]),
+        ]);
+        assert_eq!(crossed.len(), 1, "{crossed:?}");
+        assert!(crossed[0].1.contains("form a cycle"), "{crossed:?}");
+        // A deprecated flow no longer takes part
+        let mut old = staged("audit", &["ledger", "payments"]);
+        old.status = Lifecycle::Deprecated;
+        assert!(codes(vec![staged("checkout", &["payments", "ledger"]), old]).is_empty());
+    }
 
     /** Check that the suggested YAML layout parses and unknown top-level keys are rejected
      * Input

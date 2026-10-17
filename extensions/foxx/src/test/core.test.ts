@@ -6,8 +6,9 @@ import { test } from "node:test";
 import { parse } from "yaml";
 
 import { atLeast, craneStatus, parseVersion, selectionArgs, selectionIdFrom } from "../core/crane";
-import { ACTIONS, search } from "../core/actions";
-import { activate, addContext, addFlow, addZone, attachContextPack, attachToFlow, attachToZone, connectZones, contextPackOf, entities } from "../core/governance";
+import { ACTIONS, GROUPS, groupActions, search } from "../core/actions";
+import { activate, addContext, addFlow, addZone, attachContextPack, attachToFlow, attachToZone, connectZones, contextPackOf, entities, findCycle, stageCycle } from "../core/governance";
+import { busiest, layout } from "../core/graph";
 import { parsePolicies } from "../core/policies";
 import { checkName, confirmation, ownerKey, repoArgs } from "../core/setup";
 
@@ -129,4 +130,54 @@ test("checks the Crane version before running anything", () => {
   assert.equal(current.state, "ok");
   assert.equal(current.events, true);
   assert.equal(craneStatus("crane", { code: 0, stdout: "crane 0.4.8", stderr: "" }).events, false, "editor events need 0.4.10");
+});
+
+test("groups actions under menu headings, keeping search rank", () => {
+  const all = groupActions(ACTIONS);
+  assert.deepEqual(all.map((entry) => entry.group), GROUPS.filter((group) => group !== "Setup"), "headings follow the menu order");
+  assert.equal(all.flatMap((entry) => entry.actions).length, ACTIONS.length, "every action is under one heading");
+  const zone = groupActions(search("zone", ACTIONS));
+  assert.equal(zone[0].group, "Zones", "the best match's heading comes first");
+  assert.deepEqual(zone[0].actions.map((action) => action.id), ["zone", "zone_attach"]);
+  assert.ok(groupActions(search("connect", ACTIONS)).some((entry) => entry.group === "Flows" && entry.actions[0].id === "connect"));
+});
+
+test("lays out a graph in acyclic layers and drops cycle-closing edges", () => {
+  const nodes = ["flow", "a", "b", "s1", "s2", "lonely"].map((id) => ({ id }));
+  const edges = [
+    { from: "flow", to: "a" },
+    { from: "a", to: "b" },
+    { from: "b", to: "s1" },
+    { from: "s1", to: "s2" },
+    { from: "flow", to: "a" },
+    { from: "missing", to: "a" },
+  ];
+  const drawn = layout(nodes, edges, 100, 10);
+  assert.deepEqual(["flow", "a", "b", "s1", "s2"].map((id) => drawn.placed[id].layer), [0, 1, 2, 3, 4]);
+  assert.equal(drawn.placed.lonely.layer, 0);
+  assert.equal(drawn.placed.s2.x, 400);
+  assert.deepEqual(drawn.dropped, [{ from: "missing", to: "a" }], "the duplicate is merged, the dangling edge dropped");
+  const looped = layout([{ id: "x" }, { id: "y" }, { id: "z" }], [{ from: "x", to: "y" }, { from: "y", to: "z" }, { from: "z", to: "x" }]);
+  assert.equal(looped.dropped.length, 1, "one edge of the cycle is left out");
+  assert.equal(new Set(Object.values(looped.placed).map((place) => place.layer)).size, 3);
+});
+
+test("keeps flow stage orders acyclic when zones are connected", () => {
+  assert.equal(findCycle([["a", "b"], ["b", "c"], ["a", "c"]]), undefined);
+  assert.deepEqual(findCycle([["a", "b"], ["b", "a"]]), ["a", "b", "a"]);
+  let text = "version: 1\n";
+  for (const id of ["cart", "payments", "ledger"]) text = addZone(text, { id, description: "", criticality: "routine", autonomy_ceiling: "delegated", selectors: { files: [`app/${id}.py`] } });
+  // Another flow already runs payments before cart
+  const shared = text + "flows:\n  - id: audit\n    stages:\n      - id: payments\n      - id: cart\n";
+  assert.equal(stageCycle(text, ["cart", "payments"]), undefined);
+  const cycle = stageCycle(shared, ["cart", "payments"]);
+  assert.ok(cycle && cycle[0] === cycle[cycle.length - 1], "a cycle starts and ends with the same zone");
+  assert.deepEqual(new Set(cycle), new Set(["cart", "payments"]), "the other flow runs payments before cart");
+  assert.throws(() => connectZones(shared, "checkout", "", ["cart", "payments"]), /cyclic/);
+  assert.match(connectZones(shared, "checkout", "", ["payments", "ledger"]), /id: checkout/, "the same order as the other flow is fine");
+});
+
+test("lists active agents first, then the most recent", () => {
+  const entry = (id: string, active: boolean, last_at: number) => ({ node: "flow:" + id, kind: "flow" as const, id, calls: 1, denied: 0, last_at, active, agents: [] });
+  assert.deepEqual(busiest([entry("old", false, 1), entry("live", true, 2), entry("recent", false, 9)]).map((item) => item.id), ["live", "recent", "old"]);
 });

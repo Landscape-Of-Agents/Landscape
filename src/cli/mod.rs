@@ -128,6 +128,7 @@ Tasks and sessions
 
 Zones and flows (.crane/governance.yaml)
   crane governance sign
+  crane governance graph [--json]   (zones, flows, and selections as an acyclic graph)
 
 Admins
   crane admin register          (owner: a GitHub admin confirms the owner key on the dashboard)

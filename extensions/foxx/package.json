@@ -83,6 +83,12 @@
         "category": "Foxx"
       },
       {
+        "command": "foxx.openGraph",
+        "title": "Show Governance Graph",
+        "category": "Foxx",
+        "icon": "$(type-hierarchy)"
+      },
+      {
         "command": "foxx.createCheckpoint",
         "title": "Create Checkpoint",
         "category": "Foxx"
@@ -154,6 +160,11 @@
       ],
       "view/title": [
         {
+          "command": "foxx.openGraph",
+          "when": "view == foxx.sidebar",
+          "group": "navigation@0"
+        },
+        {
           "command": "foxx.test",
           "when": "view == foxx.sidebar || view == foxx.governance",
           "group": "navigation@1"
@@ -194,6 +205,16 @@
           "command": "foxx.test",
           "when": "isWorkspaceTrusted && foxx.ready",
           "group": "4_policy@3"
+        },
+        {
+          "command": "foxx.openGraph",
+          "when": "isWorkspaceTrusted && foxx.ready",
+          "group": "5_graph@1"
+        },
+        {
+          "command": "foxx.connectZonesFlow",
+          "when": "isWorkspaceTrusted && foxx.ready",
+          "group": "5_graph@2"
         }
       ],
       "editor/title": [
@@ -328,7 +349,7 @@
           {
             "id": "overview",
             "title": "Watch the overview",
-            "description": "The Foxx overview shows every selection, whether it passes, zones and flows, findings and what you did.\n[Show Overview](command:foxx.openSidebar)",
+            "description": "The Foxx overview shows every selection, whether it passes, zones and flows, the governance graph, which agents are working in which flows, findings and what you did.\n[Show Overview](command:foxx.openSidebar)\n[Show Governance Graph](command:foxx.openGraph)",
             "media": {
               "markdown": "media/walkthrough/overview.md"
             },

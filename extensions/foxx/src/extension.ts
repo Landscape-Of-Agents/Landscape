@@ -1,6 +1,7 @@
 // Foxx for VS Code: set up Crane in a repository, create policies, checkpoints, and selection
-// contracts from the editor, see where selections are and whether they pass, and manage zones,
-// flows, and context packs in .crane/governance.yaml.
+// contracts from the editor, see where selections are and whether they pass, manage zones, flows,
+// and context packs in .crane/governance.yaml, and see them as Crane's governance graph with the
+// agents working in them.
 // Everything runs through the Crane CLI; decorations never modify source files, and governance
 // edits are validated and signed by Crane (only admins can sign) and reversible.
 
@@ -11,10 +12,12 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 import { CommandResult, CraneStatus, craneStatus, Finding, parseJson, RELEASES_URL, runCrane, selectionArgs, selectionIdFrom, Span, TestReport, ValidateReport } from "./core/crane";
-import { activate as activateEntity, addContext, addFlow, addZone, attachToZone, checkId, connectZones, entities, sourcePaths, ZoneInput } from "./core/governance";
+import { activate as activateEntity, addContext, addFlow, addZone, attachToZone, checkId, connectZones, entities, sourcePaths, stageCycle, ZoneInput } from "./core/governance";
+import { busiest, GraphData } from "./core/graph";
 import { parsePolicies, Policy } from "./core/policies";
 import { checkName, confirmation, ownerKey, repoArgs } from "./core/setup";
 import { FoxxPanel, PanelHost, PanelState, Progress, ResultAction, RunResult, SelectionInfo } from "./panel";
+import { FoxxGraph, GraphHost } from "./graphView";
 import { FoxxSidebar, SidebarHost, SidebarState } from "./sidebar";
 
 /** A registry record as stored in .crane/registry.json (only the fields Foxx shows). */
@@ -277,6 +280,76 @@ const CRANE_FIXES: ResultAction[] = [
 /** The latest validation, for the panel's header. */
 let lastReport: ValidateReport | undefined;
 
+/** The latest governance graph from Crane, and why there is none when it failed. */
+let lastGraph: GraphData | undefined;
+let graphError: string | undefined;
+/** The graph request in flight, so views asking together share one Crane run. */
+let graphRunning: Promise<GraphData | undefined> | undefined;
+
+/**
+ * Ask Crane for the governance graph ('crane governance graph --json') and update the views. It
+ * runs quietly: nothing is written to the Foxx output unless it fails.
+ * @returns the graph, or undefined (graphError says why)
+ */
+function refreshGraph(): Promise<GraphData | undefined> {
+  graphRunning ??= (async () => {
+    const directory = root();
+    const checked = await checkCrane();
+    if (!directory || checked.state !== "ok") {
+      graphError = !directory ? "Crane is not set up in this repository." : checked.message;
+      return undefined;
+    }
+    const result = await runCrane(executable(), directory, ["governance", "graph", "--json"]);
+    const data = result.code === 0 ? parseJson<GraphData>(result) : undefined;
+    if (data) {
+      lastGraph = data;
+      graphError = undefined;
+    } else {
+      const message = (result.stderr || result.stdout).trim().replace(/^crane: /, "");
+      graphError = /usage: crane governance sign/.test(message)
+        ? `Crane ${checked.version ?? ""} cannot report the governance graph yet; install the latest Crane.`
+        : `crane governance graph failed: ${message || "no JSON output"}`;
+      output.appendLine(`$ crane governance graph --json\n${message}`);
+    }
+    return data;
+  })().finally(() => {
+    graphRunning = undefined;
+    FoxxSidebar.update();
+    FoxxGraph.update(lastGraph, graphError);
+  });
+  return graphRunning;
+}
+
+/** The extension side of the graph panel. */
+const graphHost: GraphHost = {
+  load: async (refresh) => {
+    if (refresh || !lastGraph) await refreshGraph();
+    return { data: lastGraph, error: graphError };
+  },
+  open: async (id) => {
+    const target = lastGraph?.nodes.find((node) => node.id === id)?.open;
+    const directory = root();
+    if (!target || !directory) return;
+    const absolute = path.resolve(directory, target.path);
+    const inside = path.relative(directory, absolute);
+    if (inside.startsWith("..") || path.isAbsolute(inside) || !fs.existsSync(absolute)) {
+      void vscode.window.showWarningMessage(`Foxx: ${target.path} is not a file of this repository.`);
+      return;
+    }
+    const line = Math.max(0, target.line - 1);
+    const editor = await vscode.window.showTextDocument(vscode.Uri.file(absolute), { preview: false, viewColumn: vscode.ViewColumn.One, selection: new vscode.Range(line, 0, line, 0) });
+    editor.revealRange(new vscode.Range(line, 0, line, 0), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+  },
+  connect: async (zones, id, description) => {
+    const checked = await checkCrane();
+    if (checked.state !== "ok") return { ok: false, message: checked.message ?? "Crane cannot be used.", actions: CRANE_FIXES };
+    const result = await writeGovernance((text) => connectZones(text, id, description, zones), `flow ${id} created in order ${zones.join(" → ")}; the zones became its stages`);
+    remember("connect zones", result.ok, result.message);
+    return result;
+  },
+  command: (id) => panelHost.command(id),
+};
+
 /** The extension side of the Foxx panel. */
 const panelHost: PanelHost = {
   state(): PanelState {
@@ -364,6 +437,18 @@ const sidebarHost: SidebarHost = {
         .slice(0, 8)
         .map((finding) => ({ severity: finding.severity, code: finding.code, message: finding.message })),
       activity,
+      graph: lastGraph
+        ? {
+            zones: lastGraph.nodes.filter((node) => node.kind === "zone").length,
+            flows: lastGraph.nodes.filter((node) => node.kind === "flow").length,
+            selections: lastGraph.nodes.filter((node) => node.kind === "selection").length,
+            edges: lastGraph.edges.length,
+            acyclic: lastGraph.acyclic,
+            rejected: lastGraph.rejected.length,
+          }
+        : undefined,
+      graphError,
+      agents: busiest(lastGraph?.activity ?? []),
     };
   },
   command: async (id, argument) => {
@@ -522,6 +607,10 @@ async function runAction(action: string, values: Record<string, string | boolean
       return passed === undefined ? { ok: false, message: "crane test did not produce a report; see the Foxx output.", actions: [{ id: "open:output", label: "Show Crane output", kind: "command" }] }
         : { ok: passed, message: passed ? "Every policy passes." : "Some policies fail; failures are shown as problems.", actions: passed ? undefined : [{ id: "open:problems", label: "Open Problems", kind: "command" }] };
     }
+    case "graph":
+    case "connect":
+      await step("open", action === "graph" ? "Open the governance graph" : "Open the graph to connect zones", () => Promise.resolve(vscode.commands.executeCommand("foxx.openGraph", action === "connect" ? "connect" : undefined)));
+      return { ok: true, message: action === "graph" ? "The governance graph is open beside the editor." : "Click zones in the graph, in execution order, then Create flow." };
     case "status":
       await step("run", "crane policy status", () => Promise.resolve(vscode.commands.executeCommand("foxx.policyStatus")));
       return { ok: true, message: "Policy status is in the Foxx output.", actions: [{ id: "open:output", label: "Show Crane output", kind: "command" }] };
@@ -760,7 +849,14 @@ async function connectZonesFlow(): Promise<void> {
   }
   const ordered: string[] = [];
   while (ordered.length < zones.length) {
-    const remaining = zones.filter((zone) => !ordered.includes(zone.id));
+    // Zones that would make the flows cyclic are not offered
+    const text = readGovernance();
+    const remaining = zones.filter((zone) => !ordered.includes(zone.id) && !stageCycle(text, [...ordered, zone.id]));
+    if (!remaining.length && ordered.length < 2) {
+      void vscode.window.showInformationMessage("Foxx: no zone can follow without making the flows cyclic.");
+      return;
+    }
+    if (!remaining.length) break;
     const choices = remaining.map((zone) => ({ label: zone.id, description: zone.description || zone.status, id: zone.id }));
     if (ordered.length >= 2) choices.unshift({ label: "Finish flow", description: `Keep this order: ${ordered.join(" → ")}`, id: "" });
     const choice = await vscode.window.showQuickPick(choices, {
@@ -788,6 +884,7 @@ async function connectZonesFlow(): Promise<void> {
     `flow ${id} created in order ${ordered.join(" → ")}; the original zones are preserved as embedded stages`,
   );
   (result.ok ? vscode.window.showInformationMessage : vscode.window.showErrorMessage)(`Foxx: ${result.message}`);
+  if (result.ok) void refreshGraph();
 }
 
 /** Open the first governed source file for a zone or flow in the editor. */
@@ -934,6 +1031,7 @@ async function validate(quiet = false): Promise<ValidateReport | undefined> {
   publish(report.findings, []);
   decorateAll();
   tree.refresh();
+  void refreshGraph();
   if (!quiet) {
     vscode.window.showInformationMessage(report.valid ? `Foxx: governance valid (generation ${report.generation})` : `Foxx: ${report.findings.filter((finding) => finding.severity === "HIGH" || finding.severity === "CRITICAL").length} validation errors`);
   }
@@ -1029,22 +1127,29 @@ class SelectionHovers implements vscode.HoverProvider {
   provideHover(document: vscode.TextDocument, position: vscode.Position): vscode.Hover | undefined {
     const file = relative(document.uri.fsPath);
     const line = position.line + 1;
-    const record = records.find((record) => {
-      const span = spans[record.id];
-      return span?.path === file && line >= span.start_line && line <= span.end_line;
-    });
-    if (!record) return undefined;
-    const span = spans[record.id] as Span;
-    const outcome = outcomeOf(record.id);
-    const argument = encodeURIComponent(JSON.stringify([record.id, true]));
-    const text = new vscode.MarkdownString(
-      `$(${record.operation === "preserve" ? "shield" : "target"}) **Foxx · ${record.operation === "preserve" ? "Preserved" : "Targeted"} code**${record.name ? ` — ${record.name}` : ""}\n\n` +
+    // Nested selections all cover the line: show each, the innermost first
+    const covering = records
+      .filter((record) => {
+        const span = spans[record.id];
+        return span?.path === file && line >= span.start_line && line <= span.end_line;
+      })
+      .sort((a, b) => {
+        const left = spans[a.id] as Span, right = spans[b.id] as Span;
+        return left.end_byte - left.start_byte - (right.end_byte - right.start_byte) || right.start_byte - left.start_byte;
+      });
+    if (!covering.length) return undefined;
+    const sections = covering.map((record, index) => {
+      const span = spans[record.id] as Span;
+      const outcome = outcomeOf(record.id);
+      const argument = encodeURIComponent(JSON.stringify([record.id, true]));
+      const nesting = covering.length > 1 ? (index === 0 ? " · innermost" : index === covering.length - 1 ? " · outermost" : " · nested") : "";
+      return `$(${record.operation === "preserve" ? "shield" : "target"}) **Foxx · ${record.operation === "preserve" ? "Preserved" : "Targeted"} code**${record.name ? ` — ${record.name}` : ""}${nesting}\n\n` +
         `| | |\n|---|---|\n| Selection | \`${record.id}\` |\n| Policy | ${record.policy} |\n| Lines | ${span.start_line}–${span.end_line} |\n${record.change_type ? `| Change type | ${record.change_type} |\n` : ""}| Last outcome | ${outcome} |\n\n` +
         (record.operation === "preserve" ? "Agents may not change these lines; Crane denies the tool call and records it.\n\n" : "Agents are expected to change these lines as the policy describes.\n\n") +
-        `[Open in Foxx](command:foxx.revealSelection?${argument}) · [Test policies](command:foxx.test) · [Overview](command:foxx.openSidebar)`,
-      true,
-    );
-    text.isTrusted = { enabledCommands: ["foxx.revealSelection", "foxx.test", "foxx.openSidebar"] };
+        `[Open in Foxx](command:foxx.revealSelection?${argument})`;
+    });
+    const text = new vscode.MarkdownString(`${sections.join("\n\n---\n\n")} · [Test policies](command:foxx.test) · [Graph](command:foxx.openGraph) · [Overview](command:foxx.openSidebar)`, true);
+    text.isTrusted = { enabledCommands: ["foxx.revealSelection", "foxx.test", "foxx.openGraph", "foxx.openSidebar"] };
     return new vscode.Hover(text);
   }
 }
@@ -1214,9 +1319,12 @@ export function activate(context: vscode.ExtensionContext): void {
   register("foxx.createPolicy", () => createPolicy());
   register("foxx.connectZonesFlow", () => connectZonesFlow());
   register("foxx.openEntity", (kind, id) => {
+    // The sidebar passes one "kind:id" argument; the governance tree passes two
+    if (typeof kind === "string" && id === undefined && kind.includes(":")) [kind, id] = kind.split(/:(.*)/s);
     if ((kind === "zone" || kind === "flow") && typeof id === "string") return openGovernanceEntity(kind, id);
     return undefined;
   });
+  register("foxx.openGraph", (mode) => FoxxGraph.show(extensionUri, graphHost, mode === "connect"));
   register("foxx.createCheckpoint", () => createCheckpoint());
   register("foxx.moveToPolicy", () => moveToPolicy());
   register("foxx.installHooks", () => installHooks());
@@ -1267,6 +1375,11 @@ export function activate(context: vscode.ExtensionContext): void {
       FoxxPanel.select(lastSelection);
     }),
   );
+  // Agents keep working while the views are open: refresh their activity every 30 seconds then
+  const activityTimer = setInterval(() => {
+    if ((FoxxSidebar.visible || FoxxGraph.open) && root() && craneKnown?.state === "ok") void refreshGraph();
+  }, 30_000);
+  context.subscriptions.push({ dispose: () => clearInterval(activityTimer) });
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   status.command = { command: "foxx.menu", title: "Foxx", arguments: ["STATUS_BAR"] };
   context.subscriptions.push(status);

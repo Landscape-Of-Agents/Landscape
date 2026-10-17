@@ -1,10 +1,13 @@
 // The Foxx sidebar (activity bar → Foxx → Overview): the repository's state at a glance. It shows
 // Crane's status (with how to fix an unusable Crane), health counts, one-click actions, every
 // selection with where it is and whether it passes (searchable, filterable, click to reveal, open in
-// the Foxx panel), zones and flows, the most serious findings, and this window's activity. It holds
+// the Foxx panel), zones and flows, the governance graph (opened in its own panel), which agents are
+// working in which flows and zones, the most serious findings, and this window's activity. It holds
 // no state: the extension sends a snapshot whenever something changes.
 
 import * as vscode from "vscode";
+
+import { ActivityEntry } from "./core/graph";
 
 /** One selection as the sidebar lists it. */
 export interface SidebarSelection {
@@ -28,6 +31,12 @@ export interface SidebarState {
   entities: { kind: "zone" | "flow"; id: string; status: string; description: string }[];
   findings: { severity: string; code: string; message: string }[];
   activity: { at: number; label: string; ok: boolean; message: string }[];
+  /** The governance graph's size, when Crane reported it. */
+  graph?: { zones: number; flows: number; selections: number; edges: number; acyclic: boolean; rejected: number };
+  /** Why there is no graph. */
+  graphError?: string;
+  /** Agent tool calls per zone and flow over the last 24 hours, busiest first. */
+  agents: ActivityEntry[];
 }
 
 /** The extension side of the sidebar. */
@@ -54,6 +63,11 @@ export class FoxxSidebar implements vscode.WebviewViewProvider {
   /** Send a fresh snapshot to the sidebar, when it is visible. */
   static update(): void {
     FoxxSidebar.current?.refresh();
+  }
+
+  /** Whether the sidebar is showing (agent activity is refreshed only then). */
+  static get visible(): boolean {
+    return Boolean(FoxxSidebar.current?.view?.visible);
   }
 
   /**
@@ -152,6 +166,16 @@ h3 .count { margin-left: auto; font-weight: 400; text-transform: none; letter-sp
 .entity:hover { background: var(--raised); }
 .entity-title { overflow-wrap: anywhere; }
 .policy { display: flex; justify-content: space-between; gap: 8px; padding: 3px 5px; font: 12px var(--mono); }
+.card { border: 1px solid var(--line); border-radius: 8px; background: var(--raised); padding: 8px; }
+.card .row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.card .row .btn { flex: 1; justify-content: center; }
+.graph-line { font-size: 12px; }
+.graph-line .ok { color: var(--ok); } .graph-line .bad { color: var(--bad); }
+.insight { font-size: 12px; margin-bottom: 6px; }
+.insight b { color: var(--ok); }
+.badge.live { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 50%, transparent); }
+.badge.live::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 4px; vertical-align: 1px; }
+.note { color: var(--muted); font-size: 10.5px; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -195,10 +219,28 @@ function draw() {
   const policyRows = s.policies.filter((name) => (view.policyUse === "all" || (sel.some((item) => item.policy === name)) === (view.policyUse === "used")) && (!policyQuery || name.toLowerCase().includes(policyQuery)));
   const policyList = policyRows.map((name) => '<div class="policy"><span>' + esc(name) + '</span><span class="muted">' + sel.filter((item) => item.policy === name).length + " selections</span></div>").join("");
   const findings = s.findings.map((f) => '<div class="finding"><span class="badge ' + esc(f.severity) + '">' + esc(f.severity) + "</span><span>" + esc(f.message) + "</span></div>").join("");
+  const g = s.graph;
+  const graphCard = '<div class="card">' + (g
+    ? '<div class="graph-line">' + g.zones + " zone" + (g.zones === 1 ? "" : "s") + " · " + g.flows + " flow" + (g.flows === 1 ? "" : "s") + " · " + g.selections + " selection" + (g.selections === 1 ? "" : "s") + " · " + g.edges + " connection" + (g.edges === 1 ? "" : "s") + " · " + (g.acyclic ? '<span class="ok">acyclic</span>' : '<span class="bad">' + g.rejected + " cyclic connection" + (g.rejected === 1 ? "" : "s") + " left out</span>") + "</div>"
+    : '<div class="empty" style="padding:0">' + esc(s.graphError || "Crane reports the graph after the next validation.") + "</div>") +
+    '<div class="row"><button class="btn" data-id="foxx.openGraph" title="Open the zones, flows, and selections as a graph beside the editor"><span class="g">◇</span>Open graph</button><button class="btn" data-id="foxx.openGraph" data-argument="connect" title="Click zones in the graph, in execution order, to join them into a flow"><span class="g">⇢</span>Connect zones</button></div></div>';
+  const ago = (at) => { const seconds = Math.max(0, Math.round((Date.now() - at) / 1000)); return seconds < 60 ? "just now" : seconds < 3600 ? Math.round(seconds / 60) + " min ago" : Math.round(seconds / 3600) + " h ago"; };
+  const agentRows = s.agents.map((entry) => {
+    const lead = entry.agents[0] || {};
+    const who = esc(lead.agent || "agent") + (lead.model ? " (" + esc(lead.model) + ")" : "") + (entry.agents.length > 1 ? " +" + (entry.agents.length - 1) + " more" : "");
+    return '<button class="item entity" data-open-entity="' + esc(entry.kind + ":" + entry.id) + '" title="' + esc(entry.agents.map((agent) => agent.agent + ": " + agent.calls + " calls, " + agent.denied + " denied").join(" · ")) + '"><span class="op">' + (entry.kind === "zone" ? "▦" : "⇢") + '</span><span><span class="t entity-title">' + esc(entry.id) + '</span><span class="s">' + who + " · " + entry.calls + " call" + (entry.calls === 1 ? "" : "s") + (entry.denied ? " · " + entry.denied + " denied" : "") + " · " + ago(entry.last_at) + '</span></span><span class="badge ' + (entry.active ? "live" : "") + '">' + (entry.active ? "active" : "idle") + "</span></button>";
+  }).join("");
+  const liveAgents = new Set(s.agents.filter((entry) => entry.active).flatMap((entry) => entry.agents.filter((agent) => agent.active).map((agent) => agent.agent)));
+  const liveFlows = s.agents.filter((entry) => entry.active && entry.kind === "flow").length;
+  const insight = liveAgents.size ? '<div class="insight"><b>' + liveAgents.size + " agent" + (liveAgents.size === 1 ? "" : "s") + " active now</b>" + (liveFlows ? " on " + liveFlows + " flow" + (liveFlows === 1 ? "" : "s") : " in zones") + "</div>" : "";
   const log = s.activity.map((a) => '<li><span>' + new Date(a.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + '</span><span class="' + (a.ok ? "ok" : "bad") + '">●</span><span><b>' + esc(a.label) + "</b> " + esc(a.message) + "</span></li>").join("");
   document.getElementById("body").innerHTML =
     '<div class="stats">' + stat(passing, "Passing", passing ? "ok" : "", "PASS") + stat(failing, "Failing", failing ? "bad" : "", "FAIL") + stat(unresolved, "Unresolved", unresolved ? "warn" : "", "UNRESOLVED") + stat(s.policies, "Policies", "", "all") + stat(zones, "Zones", "", "all") + stat(flows, "Flows", "", "all") + "</div>" +
     "<h3>Actions</h3>" + '<div class="actions">' + action("foxx.menu", "✦", "Open panel", "Act on the selected code (Ctrl+Alt+F)") + action("foxx.connectZonesFlow", "⇢", "Connect zones", "Select two or more zones in execution order to create a flow") + action("foxx.test", "▶", "Test policies", "Run every preserve and target rule") + action("foxx.validate", "✓", "Validate", "Check integrity, syntax, and markers") + action("foxx.createCheckpoint", "⚑", "Checkpoint", "Record the current commit as trusted") + action("foxx.installHooks", "⚓", "Agent hooks", "Install Crane's hooks for Claude Code, Codex, Copilot CLI, or Gemini CLI") + action("foxx.undoGovernanceChange", "↶", "Undo change", "Undo the last governance change made here") + "</div>" +
+    '<h3>Governance graph</h3>' + graphCard +
+    '<h3>Agents on flows <span class="count">last 24 h</span></h3>' + insight +
+    '<div class="list">' + (agentRows || '<div class="empty">No agent tool call touched a zone or flow in the last 24 hours.</div>') + "</div>" +
+    '<div class="note">From this machine’s Crane event log; the hosted dashboard shows the whole team.</div>' +
     '<h3>Selections <span class="count">' + shown.length + " of " + sel.length + "</span></h3>" +
     '<input class="search" id="search" type="search" placeholder="Search selections…" value="' + esc(view.q) + '" aria-label="Search selections">' + '<div class="chips">' + chips + "</div>" +
     '<div class="list">' + (items || '<div class="empty">' + (sel.length ? "No selection matches." : "No selections yet. Select code and press Ctrl+Alt+F to preserve or target it.") + "</div>") + "</div>" +
@@ -206,7 +248,7 @@ function draw() {
     '<h3>Zones and flows <span class="count">' + entityRows.length + " of " + s.entities.length + '</span></h3>' +
     '<div class="filters"><input id="entity-search" type="search" placeholder="Search zones and flows…" value="' + esc(view.entityQ) + '" aria-label="Search zones and flows"><select id="entity-kind" aria-label="Filter entity type"><option value="all">All types</option><option value="zone"' + (view.entityKind === "zone" ? " selected" : "") + '>Zones</option><option value="flow"' + (view.entityKind === "flow" ? " selected" : "") + '>Flows</option></select><select id="entity-status" aria-label="Filter entity status"><option value="all">All statuses</option>' + [...new Set(s.entities.map((e) => e.status))].map((status) => '<option value="' + esc(status) + '"' + (view.entityStatus === status ? " selected" : "") + ">" + esc(status) + "</option>").join("") + '</select><span class="muted">Select type, status and text together</span></div>' +
     '<div class="list">' + (entities || '<div class="empty">No zone or flow matches these filters.</div>') + "</div>" +
-    "<h3>Policies <span class=\"count\">" + policyRows.length + " of " + s.policies.length + '</span></h3><div class="filters"><input id="policy-search" type="search" placeholder="Search policies…" value="' + esc(view.policyQ) + '" aria-label="Search policies"><select id="policy-use" aria-label="Filter policies by usage"><option value="all">All policies</option><option value="used"' + (view.policyUse === "used" ? " selected" : "") + '>Used by a selection</option><option value="unused"' + (view.policyUse === "unused" ? " selected" : "") + ">Unused</option></select></div>" +
+    '<h3>Policies <span class="count">' + policyRows.length + " of " + s.policies.length + '</span></h3><div class="filters"><input id="policy-search" type="search" placeholder="Search policies…" value="' + esc(view.policyQ) + '" aria-label="Search policies"><select id="policy-use" aria-label="Filter policies by usage"><option value="all">All policies</option><option value="used"' + (view.policyUse === "used" ? " selected" : "") + '>Used by a selection</option><option value="unused"' + (view.policyUse === "unused" ? " selected" : "") + ">Unused</option></select></div>" +
     '<div class="list">' + (policyList || '<div class="empty">No policies match these filters.</div>') + "</div>" +
     (findings ? '<h3>Findings <span class="count">' + s.findings.length + '</span></h3><div>' + findings + "</div>" : "") +
     '<h3>Activity</h3><ul class="log">' + (log || '<li class="empty" style="display:block">Nothing yet in this window.</li>') + "</ul>";
@@ -224,7 +266,7 @@ function draw() {
 }
 document.addEventListener("click", (event) => {
   const command = event.target.closest("[data-id]");
-  if (command) { post(command.dataset.id); return; }
+  if (command) { post(command.dataset.id, command.dataset.argument); return; }
   const filter = event.target.closest("[data-filter]");
   if (filter) { view.filter = filter.dataset.filter; view.showAll = false; draw(); return; }
   const reveal = event.target.closest("[data-reveal]");

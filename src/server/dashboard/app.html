@@ -477,6 +477,33 @@ pre.json { background: var(--panel-2); border: 1px solid var(--line); border-rad
 .agent-form input, .agent-form textarea, .agent-form select, .incident-filter select, .incident-filter input { width: 100%; min-width: 0; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; font: inherit; }
 .agent-form textarea { resize: vertical; }
 .agent-form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.agent-field { display: flex; flex-direction: column; gap: 4px; }
+.field-head, .signal-label { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; font-weight: 600; }
+.assign-picker { position: relative; }
+.assign-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-height: 36px; padding: 5px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); }
+.assign-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 1px 2px 1px 8px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--panel); font-size: 12px; overflow-wrap: anywhere; }
+.assign-chip b { font-size: 9.5px; letter-spacing: .5px; text-transform: uppercase; color: var(--accent); }
+.assign-chip button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 6px; border-radius: 999px; font-size: 14px; line-height: 1; }
+.assign-chip button:hover { color: var(--ink); background: var(--hover); }
+.agent-form .assign-toggle { width: auto; margin-left: auto; padding: 3px 10px; font-size: 12px; }
+.assign-menu { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px); max-height: 340px; overflow: auto; padding: 6px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel); box-shadow: 0 12px 32px rgba(0, 0, 0, .18); }
+.assign-menu[hidden] { display: none; }
+.agent-form .assign-menu input[type=search] { position: sticky; top: -6px; z-index: 1; margin-bottom: 4px; }
+.assign-group h4 { margin: 8px 4px 3px; font-size: 10.5px; letter-spacing: .6px; text-transform: uppercase; color: var(--muted); }
+.agent-form label.assign-option { flex-direction: row; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 5px; font-weight: 400; cursor: pointer; }
+.assign-option:hover { background: var(--hover); }
+.agent-form .assign-option input { width: auto; flex: none; margin: 0; }
+.assign-option span { overflow-wrap: anywhere; }
+.assign-option small { margin-left: auto; color: var(--muted); text-align: right; overflow-wrap: anywhere; }
+.signal-editor { display: flex; flex-direction: column; gap: 6px; }
+.signal-list { display: flex; flex-direction: column; gap: 6px; }
+.signal-row { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+.signal-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.signal-remove { align-self: end; margin-bottom: 4px; }
+.signal-remove[disabled] { opacity: .35; cursor: not-allowed; }
+.agent-form .signal-add { align-self: flex-start; width: auto; }
+.signal-summary { margin: 7px 0; padding-left: 16px; }
+@media (max-width: 640px) { .signal-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .signal-row .signal-field:first-child { grid-column: 1 / -1; } }
 .agent-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 10px; }
 .agent-card, .agent-state, .incident-card { min-width: 0; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2); padding: 10px; }
 .agent-card-head, .incident-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 9px; }

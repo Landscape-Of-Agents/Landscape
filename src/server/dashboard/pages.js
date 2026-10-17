@@ -87,9 +87,133 @@ async function overview(main) {
 
 let dashboardAgentIncidentFilter = { status: "OPEN", severity: "all", query: "" };
 
+// What each Dashboard Agent signal counts, for its label and its info icon
+const AGENT_METRICS = {
+  critical_events: ["Critical events", "Events Crane rated CRITICAL, such as confirmed bypasses, tampering, and quarantines. A threshold of 1 is usual: every one deserves a look."],
+  denials: ["Denied decisions", "Tool calls Crane denied before they ran (decision DENY), for example an edit of preserved lines or a write above a zone's autonomy ceiling. A rising count means an agent keeps trying something it may not do."],
+  prompt_injections: ["Prompt/injection signals", "Events that report a suspicious prompt or an injection attempt, such as instructions hidden in files or tool output that try to steer the agent. Incidents from this signal are CRITICAL."],
+  bypass_attempts: ["Bypass attempts", "Attempts to get around Crane: editing .crane, disabling hooks, or reaching protected files through the shell. Incidents from this signal are CRITICAL."],
+  tool_failures: ["Tool failures", "Tool calls that ran and failed. A burst usually means an agent is stuck retrying or working against a broken environment."],
+  event_volume: ["Event volume", "Every event in the assigned scope. Use it to catch unusual bursts of activity, with a threshold above the normal rate for the window."],
+};
+const AGENT_HELP = {
+  assignments: "The parts of the repository this agent watches: zones, flows, and selections from the codebase (as the newest member report describes them), Crane's event flows, or all events. An event counts when it touches any assignment.",
+  signals: "Each signal is its own check: a kind of event, a threshold, and a lookback window. The agent opens an incident for every signal that reaches its threshold. Use + Add signal for more (up to 10).",
+  threshold: "How many matching events inside the lookback window open an incident. It opens once per window, when the count first reaches the threshold.",
+  window: "How far back the agent counts matching events at each evaluation. Short windows react to bursts; long windows catch slow, steady patterns.",
+};
+const AGENT_WINDOWS = [5, 15, 60, 240, 1440];
+function windowLabel(minutes) { minutes = Number(minutes); return minutes >= 60 && minutes % 60 === 0 ? minutes / 60 + " hour" + (minutes === 60 ? "" : "s") : minutes + " minute" + (minutes === 1 ? "" : "s"); }
+
+/** The assignment choices: everything, the repository's zones, flows, and selections from the
+ * newest governance report, and Crane's event flows */
+function assignmentCatalog(gov) {
+  const groups = [{ title: "Everything", items: [{ kind: "all", id: "*", label: "All events", note: "every event in the repository" }] }];
+  if (gov) {
+    const config = gov.governance_config || {};
+    const resolved = (gov.zones_and_flows || {}).entities || [];
+    const status = (kind, item) => item.status || (resolved.find((entity) => entity.kind === kind && entity.id === item.id) || {}).status;
+    groups.push({ title: "Zones", items: (config.zones || []).map((zone) => ({ kind: "zone", id: zone.id, label: zone.id, note: [status("zone", zone), zone.description].filter(Boolean).join(" · ") })) });
+    groups.push({ title: "Flows", items: (config.flows || []).map((flow) => ({ kind: "flow", id: flow.id, label: flow.id, note: [status("flow", flow), (flow.stages || []).length ? "stages " + flow.stages.map((stage) => stage.id).join(" → ") : flow.description].filter(Boolean).join(" · ") })) });
+    groups.push({ title: "Selections", items: (gov.selections || []).map((row) => ({ kind: "selection", id: row.id, label: row.name ? row.name + " · " + row.id : row.id, note: [row.operation, row.policy, row.resolved ? row.resolved.path : "unresolved"].filter(Boolean).join(" · ") })) });
+  }
+  const flows = (window.FOXX_GLOSSARY || {}).flows || {};
+  groups.push({ title: "Crane event flows", items: Object.entries(flows).map(([id, entry]) => ({ kind: "flow", id, label: id + " · " + entry[0], note: "telemetry flow" })) });
+  return groups;
+}
+
+/** A multi-select drop-down of assignments: chosen ones as removable chips, and a searchable,
+ * grouped list of checkboxes behind the "+ Add" toggle */
+function assignmentPicker(catalog, reported) {
+  let chosen = [];
+  const key = (item) => item.kind + ":" + item.id;
+  const known = new Map(catalog.flatMap((group) => group.items.map((item) => [key(item), item])));
+  const chips = h("div", { class: "assign-chips" });
+  const search = h("input", { type: "search", placeholder: "Search zones, flows, selections…", "aria-label": "Search assignments" });
+  const list = h("div", { class: "assign-list" });
+  const menu = h("div", { class: "assign-menu", hidden: true, role: "listbox", "aria-multiselectable": "true", "aria-label": "Assignments" }, search,
+    reported ? null : h("p", { class: "muted small" }, "No member has reported the repository's zones, flows, and selections yet; they appear after the next upload."), list);
+  const toggle = h("button", { type: "button", class: "btn assign-toggle", "aria-haspopup": "listbox", "aria-expanded": "false" }, "+ Add ▾");
+  const root = h("div", { class: "assign-picker" }, chips, menu);
+  const setOpen = (open) => { menu.hidden = !open; toggle.setAttribute("aria-expanded", String(open)); if (open) { drawList(); search.focus(); } };
+  const add = (item) => { if (!chosen.some((other) => key(other) === key(item))) chosen.push({ kind: item.kind, id: item.id }); drawChips(); };
+  const remove = (item) => { chosen = chosen.filter((other) => key(other) !== key(item)); drawChips(); if (!menu.hidden) drawList(); };
+  function drawChips() {
+    put(chips, chosen.length
+      ? chosen.map((item) => h("span", { class: "assign-chip", title: key(item) }, h("b", {}, item.kind), (known.get(key(item)) || item).label || item.id, h("button", { type: "button", "aria-label": "Remove " + key(item), onclick: () => remove(item) }, "×")))
+      : h("span", { class: "muted" }, "Nothing assigned yet"), toggle);
+  }
+  function drawList() {
+    const query = search.value.trim().toLowerCase();
+    const groups = catalog.map((group) => {
+      const items = group.items.filter((item) => !query || (item.label + " " + item.id + " " + (item.note || "")).toLowerCase().includes(query));
+      if (!items.length) return null;
+      return h("div", { class: "assign-group" }, h("h4", {}, group.title, " ", h("span", { class: "muted" }, String(items.length))), items.map((item) => {
+        const box = h("input", { type: "checkbox", checked: chosen.some((other) => key(other) === key(item)) });
+        box.addEventListener("change", () => (box.checked ? add(item) : remove(item)));
+        return h("label", { class: "assign-option" }, box, h("span", {}, item.label), item.note ? h("small", {}, item.note) : null);
+      }));
+    }).filter(Boolean);
+    put(list, groups.length ? groups : h("div", { class: "empty" }, "Nothing matches “" + search.value + "”."));
+  }
+  toggle.addEventListener("click", () => setOpen(menu.hidden));
+  search.addEventListener("input", drawList);
+  root.addEventListener("keydown", (event) => { if (event.key === "Escape" && !menu.hidden) { event.stopPropagation(); setOpen(false); toggle.focus(); } });
+  root.addEventListener("focusout", (event) => { if (!root.contains(event.relatedTarget)) setOpen(false); });
+  drawChips();
+  return {
+    node: root,
+    get: () => chosen.map((item) => ({ kind: item.kind, id: item.id })),
+    set: (items) => { chosen = []; for (const item of items || []) add(item); drawChips(); },
+  };
+}
+
+/** The signals of an agent: one row per signal (what it counts, threshold, window, each with an
+ * info icon), removable, and "+ Add signal" for another */
+function signalEditor() {
+  const list = h("div", { class: "signal-list" });
+  const rows = [];
+  const addButton = h("button", { type: "button", class: "btn signal-add", "aria-label": "Add a signal" }, "+ Add signal");
+  const metricInfo = (metric) => info("signal:" + metric, { title: AGENT_METRICS[metric][0], text: AGENT_METRICS[metric][1] });
+  const sync = () => { for (const row of rows) row.remove.disabled = rows.length === 1; addButton.disabled = rows.length >= 10; };
+  const field = (label, help, control) => h("div", { class: "signal-field" }, h("span", { class: "signal-label" }, label, help), control);
+  function row(signal) {
+    const metric = h("select", { "aria-label": "Signal" }, Object.entries(AGENT_METRICS).map(([value, [label]]) => h("option", { value }, label)));
+    metric.value = AGENT_METRICS[signal.metric] ? signal.metric : "critical_events";
+    const help = h("span", {}, metricInfo(metric.value));
+    metric.addEventListener("change", () => put(help, metricInfo(metric.value)));
+    const threshold = h("input", { type: "number", min: "1", max: "100000", value: String(signal.threshold || 1), "aria-label": "Threshold count" });
+    const windows = AGENT_WINDOWS.includes(Number(signal.window_minutes)) ? AGENT_WINDOWS : AGENT_WINDOWS.concat([Number(signal.window_minutes)]).sort((a, b) => a - b);
+    const windowMinutes = h("select", { "aria-label": "Lookback window" }, windows.map((value) => h("option", { value }, windowLabel(value))));
+    windowMinutes.value = String(signal.window_minutes || 15);
+    const entry = { metric, threshold, windowMinutes };
+    entry.remove = h("button", { type: "button", class: "icon-btn signal-remove", title: "Remove this signal", "aria-label": "Remove this signal", onclick: () => { rows.splice(rows.indexOf(entry), 1); entry.node.remove(); sync(); } }, "✕");
+    entry.node = h("div", { class: "signal-row" },
+      field("Signal", help, metric),
+      field("Threshold count", info("signal:threshold", { title: "Threshold count", text: AGENT_HELP.threshold }), threshold),
+      field("Lookback window", info("signal:window", { title: "Lookback window", text: AGENT_HELP.window }), windowMinutes),
+      entry.remove);
+    rows.push(entry);
+    list.append(entry.node);
+    sync();
+  }
+  addButton.addEventListener("click", () => {
+    const used = new Set(rows.map((entry) => entry.metric.value));
+    row({ metric: Object.keys(AGENT_METRICS).find((metric) => !used.has(metric)) || "critical_events", threshold: 3, window_minutes: 15 });
+    rows[rows.length - 1].metric.focus();
+  });
+  return {
+    node: h("div", { class: "signal-editor" }, list, addButton),
+    get: () => rows.map((entry) => ({ metric: entry.metric.value, threshold: Number(entry.threshold.value), window_minutes: Number(entry.windowMinutes.value) })),
+    set: (signals) => { rows.splice(0); list.replaceChildren(); (signals && signals.length ? signals : [{ metric: "critical_events", threshold: 3, window_minutes: 5 }]).forEach(row); },
+  };
+}
+/** An agent's signals, falling back to its one top-level signal (agents saved before signals) */
+function agentSignals(agent) { return agent.signals && agent.signals.length ? agent.signals : [{ metric: agent.metric, threshold: agent.threshold, window_minutes: agent.window_minutes }]; }
+
 async function dashboardAgents(main) {
   if (needRepository(main)) return;
-  const data = await api("/api/dashboard-agents", filterParams());
+  const [data, gov] = await Promise.all([api("/api/dashboard-agents", filterParams()), api("/api/governance").catch(() => null)]);
   const agents = data.agents || [];
   const incidents = data.incidents || [];
   const quarantines = data.quarantines || [];
@@ -113,9 +237,12 @@ async function dashboardAgents(main) {
     return "/auth/agent-action?" + params.toString();
   };
   const stateLabels = { active: "Active · all assigned events", idle: "Idle · critical/high events only", sleep: "Sleep · monitoring paused", inactive: "Inactive · stopped" };
-  const metricLabels = { critical_events: "Critical events", denials: "Denied decisions", prompt_injections: "Prompt/injection signals", bypass_attempts: "Bypass attempts", tool_failures: "Tool failures", event_volume: "Event volume" };
+  const metricLabels = Object.fromEntries(Object.entries(AGENT_METRICS).map(([key, [label]]) => [key, label]));
   const statusCount = (state) => agents.filter((agent) => agent.state === state).length;
-  const metricRows = metrics.map((item) => ({ value: item.name + " · " + (metricLabels[item.metric] || item.metric), count: item.observed }));
+  // Set by the form panel, so an agent card's Edit can fill the form
+  let editAgent = null;
+  // One row per signal of every agent
+  const metricRows = metrics.flatMap((item) => agentSignals(item).map((signal) => ({ value: item.name + " · " + (metricLabels[signal.metric] || signal.metric) + " · " + windowLabel(signal.window_minutes), count: Number(signal.observed !== undefined ? signal.observed : item.observed) || 0, threshold: Number(signal.threshold) || 0 })));
   const latestEvaluation = activity.find((item) => item.action === "agent_evaluated");
   const incidentByAgent = Object.values(incidents.reduce((counts, incident) => {
     const label = incident.agent_name || incident.agent_id;
@@ -134,35 +261,43 @@ async function dashboardAgents(main) {
       const id = h("input", { type: "hidden", id: "da-agent-id" });
       const name = h("input", { id: "da-agent-name", maxlength: "80", placeholder: "e.g. Payment flow sentinel", required: true });
       const reason = h("textarea", { id: "da-agent-reason", maxlength: "500", rows: "2", placeholder: "Why should this agent monitor this scope?", required: true });
-      const assignments = h("textarea", { id: "da-agent-assignments", rows: "2", placeholder: "flow:F05, zone:payments, selection:ABCD1234 or all:*", required: true });
-      const metric = h("select", { id: "da-agent-metric" }, Object.entries(metricLabels).map(([value, label]) => h("option", { value }, label)));
-      const threshold = h("input", { id: "da-agent-threshold", type: "number", min: "1", max: "100000", value: "3", required: true });
-      const windowMinutes = h("select", { id: "da-agent-window" }, [5, 15, 60, 240, 1440].map((value) => h("option", { value }, value + " minute" + (value === 1 ? "" : "s"))));
+      const assignments = assignmentPicker(assignmentCatalog(gov), Boolean(gov));
+      const signals = signalEditor();
+      signals.set([]);
       const state = h("select", { id: "da-agent-state" }, ["active", "idle", "sleep", "inactive"].map((value) => h("option", { value }, stateLabels[value])));
       const save = h("button", { class: "btn primary", type: "button", onclick: () => action(async () => {
-        const parsedAssignments = assignments.value.split(/[\n,]+/).map((part) => part.trim()).filter(Boolean).map((part) => {
-          const [kind, ...rest] = part.split(":");
-          return { kind: kind.trim(), id: rest.join(":").trim() };
-        });
-        if (!parsedAssignments.length || parsedAssignments.some((item) => !item.kind || !item.id)) throw new Error("Assignments must use type:identifier (for example flow:F05); use all:* for every event.");
+        const chosen = assignments.get();
+        if (!chosen.length) throw new Error("Assign at least one zone, flow, or selection, or choose All events.");
+        const list = signals.get();
+        if (list.some((signal) => !(signal.threshold >= 1 && signal.threshold <= 100000))) throw new Error("Every threshold must be between 1 and 100000.");
+        const seen = new Set(list.map((signal) => signal.metric + "/" + signal.window_minutes));
+        if (seen.size !== list.length) throw new Error("Two signals count the same events over the same window; change one of them.");
         await apiWrite("/api/dashboard-agents", {
           action: "save-agent",
           agent_id: id.value || undefined,
           name: name.value,
           reason: reason.value,
-          assignments: parsedAssignments,
-          metric: metric.value,
-          threshold: Number(threshold.value),
-          window_minutes: Number(windowMinutes.value),
+          assignments: chosen,
+          signals: list,
           state: state.value,
         });
       }) }, "Save agent");
+      const heading = (text, help) => h("span", { class: "field-head" }, text, info("agent:" + text, { title: text, text: help }));
+      // Edit fills the same form from a card
+      editAgent = (agent) => {
+        id.value = agent.agent_id; name.value = agent.name; reason.value = agent.reason;
+        assignments.set(agent.assignments);
+        signals.set(agentSignals(agent));
+        state.value = agent.state;
+        name.focus();
+      };
       put(body, h("div", { class: "agent-form" },
         id,
         h("label", {}, "Agent name", name),
         h("label", {}, "Reason / monitoring context", reason),
-        h("label", {}, "Assignments · comma or newline separated", assignments),
-        h("div", { class: "agent-form-row" }, h("label", {}, "Signal", metric), h("label", {}, "Threshold count", threshold), h("label", {}, "Lookback window", windowMinutes), h("label", {}, "Starting state", state)),
+        h("div", { class: "agent-field" }, heading("Assignments", AGENT_HELP.assignments), assignments.node),
+        h("div", { class: "agent-field" }, heading("Signals", AGENT_HELP.signals), signals.node),
+        h("div", { class: "agent-form-row" }, h("label", {}, "Starting state", state)),
         h("div", { class: "row" }, save, h("span", { class: "muted" }, "Active monitors all matching events; idle monitors only CRITICAL/HIGH events."))));
     }),
     panel("Current monitoring load", { span: 5, info: "Agent thresholds measured from the configured assignments and lookback windows." }, (body, _big, ctx) => {
@@ -178,7 +313,7 @@ async function dashboardAgents(main) {
     }),
     panel("Assigned agents", { span: 12 }, (body) => {
       if (!agents.length) {
-        put(body, h("div", { class: "empty" }, "No Dashboard Agents yet. Create one above; assignments use flow:F05, zone:payments, selection:ID, or all:*."));
+        put(body, h("div", { class: "empty" }, "No Dashboard Agents yet. Create one above: assign zones, flows, or selections, then add its signals."));
         return;
       }
       put(body, h("div", { class: "agent-grid" }, agents.map((agent) => {
@@ -187,17 +322,15 @@ async function dashboardAgents(main) {
         const card = h("article", { class: "agent-card", id: "agent-card-" + agent.agent_id },
           h("div", { class: "agent-card-head" }, h("div", {}, h("h3", {}, agent.name), h("span", { class: "muted" }, "Created by @" + (agent.created_by || "unknown"))), h("span", { class: "badge " + agent.state }, agent.state)),
           h("p", {}, agent.reason),
-          h("p", { class: "muted" }, "Assignments: " + (agent.assignments || []).map((item) => item.kind + ":" + item.id).join(" · ")),
-          h("p", { class: "muted" }, (metricLabels[agent.metric] || agent.metric) + " ≥ " + fmt(agent.threshold) + " in " + fmt(agent.window_minutes) + " min · observed " + fmt(measurement ? measurement.observed : 0)),
+          h("p", { class: "muted" }, "Assignments: " + (agent.assignments || []).map((item) => (item.kind === "all" ? "all events" : item.kind + " " + item.id)).join(" · ")),
+          h("ul", { class: "signal-summary" }, agentSignals(agent).map((signal, index) => {
+            const observed = measurement && measurement.signals && measurement.signals[index] ? measurement.signals[index].observed : index === 0 && measurement ? measurement.observed : 0;
+            return h("li", { class: "muted" }, (metricLabels[signal.metric] || signal.metric) + " ≥ " + fmt(signal.threshold) + " in " + windowLabel(signal.window_minutes) + " · observed " + fmt(observed), AGENT_METRICS[signal.metric] ? info("signal:" + signal.metric, { title: AGENT_METRICS[signal.metric][0], text: AGENT_METRICS[signal.metric][1] }) : null);
+          })),
           h("p", { class: "muted" }, "Evaluations " + fmt(agent.metrics && agent.metrics.evaluations || 0) + " · threshold hits " + fmt(agent.metrics && agent.metrics.threshold_hits || 0) + " · last checked " + (lastEvaluatedAt ? dt(lastEvaluatedAt) : "not yet checked")),
           h("div", { class: "row" },
             ...["active", "idle", "sleep", "inactive"].map((next) => h("button", { class: "btn" + (agent.state === next ? " primary" : ""), type: "button", title: stateLabels[next], onclick: () => action(async () => apiWrite("/api/dashboard-agents", { action: "set-state", agent_id: agent.agent_id, state: next })) }, next)),
-            h("button", { class: "btn", type: "button", onclick: () => {
-              id.value = agent.agent_id; name.value = agent.name; reason.value = agent.reason;
-              assignments.value = (agent.assignments || []).map((item) => item.kind + ":" + item.id).join(", ");
-              metric.value = agent.metric; threshold.value = agent.threshold; windowMinutes.value = agent.window_minutes; state.value = agent.state;
-              document.getElementById("da-agent-name").focus();
-            } }, "Edit"),
+            h("button", { class: "btn", type: "button", onclick: () => { if (editAgent) editAgent(agent); } }, "Edit"),
             h("button", { class: "btn", type: "button", onclick: () => action(async () => {
               const incidentReason = window.prompt("Describe the incident you want to record");
               if (incidentReason) await apiWrite("/api/dashboard-agents", { action: "open-incident", agent_id: agent.agent_id, reason: incidentReason });
@@ -213,10 +346,7 @@ async function dashboardAgents(main) {
     }),
     panel("Threshold observations", { span: 4 }, (body, _big, ctx) => {
       ctx.record("agent_thresholds", metrics, { unit: "events per configured lookback" });
-      put(body, charts.toplist(metricRows.map((item) => {
-        const source = metrics.find((metric) => item.value.startsWith(metric.name + " ·"));
-        return Object.assign({}, item, { count: source ? source.threshold : 0 });
-      }), { hint: "Configured threshold by monitoring agent", empty: "No thresholds configured." }));
+      put(body, charts.toplist(metricRows.map((item) => Object.assign({}, item, { count: item.threshold })), { hint: "Configured threshold of every agent signal", empty: "No thresholds configured." }));
     }),
     panel("Quarantine registry", { span: 12, info: { title: "Quarantine enforcement", text: "Agent and session targets match stable Crane IDs. Tool targets match the exact provider tool name within the selected Crane session. Rules persist until a repository admin approves release. The local pre-tool hook queries the signed service endpoint online and fails closed on service errors." } }, (body) => {
       put(body, quarantines.length

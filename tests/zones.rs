@@ -566,3 +566,106 @@ context_packs:
         }
     }
 }
+
+/** The governance graph: flows point to their stage zones in order, a stage named like a zone is
+ * that zone, a nested selection hangs under its parent instead of its zone, agent tool calls are
+ * counted per zone and flow, and stage orders that loop are refused by signing and left out of
+ * the graph
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn governance_graph_is_acyclic_and_nests_selections() {
+    let fixture = fixture();
+    let outer = fixture.protect(&["app/payments.py", "start-line", "1", "end-line", "4"]);
+    let inner = fixture.target(&["app/payments.py", "start-line", "3", "end-line", "3"]);
+    let flows = "version: 1
+zones:
+  - id: billing
+    selectors:
+      files: [app/payments.py]
+flows:
+  - id: checkout
+    entry_points: [\"app/service.py:submit\"]
+    stages:
+      - id: intake
+        selectors:
+          files: [app/service.py]
+      - id: billing
+        selectors:
+          files: [app/payments.py]
+";
+    govern(&fixture, flows);
+    fixture.hook("claude", "SessionStart", &json!({"session_id": "g1"}));
+    write(&fixture, "g1", "g-1", "app/payments.py", "x = 1\n");
+    let (ok, graph) = fixture.json(&["governance", "graph", "--json"]);
+    assert!(ok, "{graph}");
+    assert_eq!(graph["acyclic"], true, "{graph}");
+    let node = |id: &str| {
+        graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("no node {id}: {graph}"))
+    };
+    let edge = |from: &str, to: &str| {
+        graph["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|edge| edge["from"] == from && edge["to"] == to)
+            .map(|edge| edge["kind"].as_str().unwrap().to_string())
+    };
+    let outer_node = format!("selection:{outer}");
+    let inner_node = format!("selection:{inner}");
+    assert_eq!(node("zone:billing")["stage_of"], json!(["checkout"]));
+    assert_eq!(
+        node("flow:checkout")["stages"],
+        json!(["intake", "billing"])
+    );
+    assert_eq!(
+        edge("flow:checkout", "zone:intake").as_deref(),
+        Some("stage")
+    );
+    assert_eq!(edge("zone:intake", "zone:billing").as_deref(), Some("next"));
+    assert_eq!(
+        edge("zone:billing", &outer_node).as_deref(),
+        Some("contains")
+    );
+    // The nested selection is shown under its parent, not beside it
+    assert_eq!(edge(&outer_node, &inner_node).as_deref(), Some("nests"));
+    assert_eq!(edge("zone:billing", &inner_node), None);
+    assert_eq!(node(&inner_node)["parent"], json!(outer_node));
+    assert_eq!(node(&outer_node)["open"]["path"], "app/payments.py");
+    let billing = graph["activity"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["node"] == "zone:billing")
+        .unwrap_or_else(|| panic!("no activity in zone billing: {graph}"));
+    assert!(billing["calls"].as_u64().unwrap() >= 1, "{billing}");
+    assert_eq!(billing["agents"].as_array().unwrap().len(), 1, "{billing}");
+    // A second flow running the same zones the other way round would loop
+    let looping = format!(
+        "{flows}  - id: audit
+    entry_points: [\"app/service.py:audit\"]
+    stages:
+      - id: billing
+        selectors:
+          files: [app/payments.py]
+      - id: intake
+        selectors:
+          files: [app/service.py]
+"
+    );
+    fixture.write(".crane/governance.yaml", &looping);
+    let refused = fixture.fails(&["governance", "sign"]);
+    assert!(refused.contains("form a cycle"), "{refused}");
+    let (_, graph) = fixture.json(&["governance", "graph", "--json"]);
+    assert_eq!(graph["acyclic"], false, "{graph}");
+    assert_eq!(graph["rejected"].as_array().unwrap().len(), 1, "{graph}");
+}

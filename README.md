@@ -69,7 +69,7 @@ comments); whitespace-only changes never satisfy a target.
 | Runtime | `task current [ID]`, `task .`, `session current [ID]`, `session .` |
 | Agents | `agent install\|uninstall\|hooks --profile claude\|codex\|copilot\|gemini`, `agent link` |
 | Admins | `admin list`, `admin register`, `admin add PUBLIC_KEY [name NAME]`, `admin del PUBLIC_KEY` |
-| Zones and flows | `governance sign` |
+| Zones and flows | `governance sign`, `governance graph [--json]` (zones, flows, and selections as an acyclic graph, with the agents active in each) |
 | Integrations | `integrate jira\|slack\|whatsapp\|github` |
 
 `protect` and `target` options: `policy NAME`, `checkpoint NAME`, `start-line N`, `end-line N`,

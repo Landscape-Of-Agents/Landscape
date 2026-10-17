@@ -726,13 +726,14 @@ fn dashboard_shows_every_view_for_a_team() {
             .sum::<u64>(),
         histogram["count"].as_u64().unwrap()
     );
-    // Metrics over time: any aggregation of any attribute, by any facet
+    // Metrics over time: any aggregation of any attribute, by any facet. Tools keep the exact
+    // provider name, so quarantines can match it
     let tokens = api("series?metric=eval.model_tokens&agg=sum&by=tool").json();
     let bash = tokens["series"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|series| series["key"] == "BASH")
+        .find(|series| series["key"] == "Bash")
         .unwrap_or_else(|| panic!("{tokens}"));
     assert_eq!(bash["total"], 1250, "{bash}");
     assert_eq!(tokens["agg"], "sum");
@@ -780,7 +781,7 @@ fn dashboard_shows_every_view_for_a_team() {
     let rows = matrix["rows"].as_array().unwrap();
     let cols = matrix["cols"].as_array().unwrap();
     let deny = rows.iter().position(|row| row["key"] == "DENY").unwrap();
-    let edit = cols.iter().position(|col| col["key"] == "EDIT").unwrap();
+    let edit = cols.iter().position(|col| col["key"] == "Edit").unwrap();
     assert_eq!(matrix["cells"][deny][edit], 1, "{matrix}");
     assert_eq!(matrix["denied"][deny][edit], 1);
     let calendar = api("calendar?tz_offset=-330").json();
@@ -811,7 +812,7 @@ fn dashboard_shows_every_view_for_a_team() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|group| group["key"] == "BASH")
+        .find(|group| group["key"] == "Bash")
         .unwrap();
     assert_eq!(bash["tokens"]["total"], 1250.0, "{bash}");
     assert_eq!(bash["tokens"]["measured_calls"], 3);
@@ -820,7 +821,7 @@ fn dashboard_shows_every_view_for_a_team() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|group| group["key"] == "EDIT")
+        .find(|group| group["key"] == "Edit")
         .unwrap();
     assert_eq!(edit_usage["denied"], 1);
     let sessions = api("usage?by=session").json();

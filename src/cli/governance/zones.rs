@@ -8,17 +8,20 @@ use crate::governance::zones::{self, Lifecycle};
 use crate::trust::require_human;
 use serde_json::json;
 
-/** Run a governance command: sign
+/** Run a governance command: sign, or graph
  * Input
-    - args: &[String] - "sign"
+    - args: &[String] - "sign", or "graph" with an optional --json
  * Output
     - Result<(), String>
     - Error if run by an agent, by a machine that is not an admin, or the file is invalid or has
-      blocking findings (unknown references, duplicate identifiers, unresolved flows)
+      blocking findings (unknown references, duplicate identifiers, unresolved flows, stage cycles)
 */
 pub(crate) fn governance(args: &[String]) -> Result<(), String> {
+    if args.first().map(String::as_str) == Some("graph") {
+        return graph(&args[1..]);
+    }
     if args.first().map(String::as_str) != Some("sign") || args.len() != 1 {
-        return Err("usage: crane governance sign".into());
+        return Err("usage: crane governance sign | crane governance graph [--json]".into());
     }
     require_human("crane governance sign")?;
     let workspace = Workspace::locate()?;
@@ -70,5 +73,71 @@ pub(crate) fn governance(args: &[String]) -> Result<(), String> {
         governance.flows.len(),
         governance.context_packs.len()
     );
+    Ok(())
+}
+
+/** Print the governance graph: zones, flows in stage order, and the selections inside them (nested
+ * selections under their parent), kept acyclic, with the agents recently active in each
+ * Input
+    - args: &[String] - optional --json
+ * Output
+    - Result<(), String>
+    - Error if the governance state cannot be read
+*/
+fn graph(args: &[String]) -> Result<(), String> {
+    let parsed = crate::cli::args::Args::parse(args, &[], &["json"])?;
+    parsed.expect_positional(0, "crane governance graph [--json]")?;
+    let graph = crate::governance::graph::build(&Workspace::locate()?)?;
+    if parsed.flag("json") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&graph).map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
+    let nodes = graph["nodes"].as_array().cloned().unwrap_or_default();
+    let count = |kind: &str| nodes.iter().filter(|node| node["kind"] == kind).count();
+    println!(
+        "Governance graph at generation {}: {} zones, {} flows, {} selections, {} edges ({})",
+        graph["generation"],
+        count("zone"),
+        count("flow"),
+        count("selection"),
+        graph["edges"].as_array().map_or(0, Vec::len),
+        if graph["acyclic"] == true {
+            "acyclic"
+        } else {
+            "cycles left out"
+        }
+    );
+    for edge in graph["edges"].as_array().into_iter().flatten() {
+        println!(
+            "  {} -[{}]-> {}",
+            edge["from"].as_str().unwrap_or_default(),
+            edge["kind"].as_str().unwrap_or_default(),
+            edge["to"].as_str().unwrap_or_default()
+        );
+    }
+    for edge in graph["rejected"].as_array().into_iter().flatten() {
+        println!(
+            "  left out: {}",
+            edge["reason"].as_str().unwrap_or_default()
+        );
+    }
+    for entry in graph["activity"].as_array().into_iter().flatten() {
+        println!(
+            "  {} {}: {} tool calls ({} denied) by {} agent(s){}",
+            entry["kind"].as_str().unwrap_or_default(),
+            entry["id"].as_str().unwrap_or_default(),
+            entry["calls"],
+            entry["denied"],
+            entry["agents"].as_array().map_or(0, Vec::len),
+            if entry["active"] == true {
+                ", active now"
+            } else {
+                ""
+            }
+        );
+    }
     Ok(())
 }

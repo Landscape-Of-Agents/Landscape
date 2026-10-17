@@ -229,6 +229,7 @@ impl Dashboard {
                     threshold: measurement["threshold"].as_u64().unwrap_or_default(),
                     triggered: measurement["triggered"].as_bool().unwrap_or(false),
                     evaluated_at: now,
+                    signals: measurement["signals"].clone(),
                 },
             )?;
         }

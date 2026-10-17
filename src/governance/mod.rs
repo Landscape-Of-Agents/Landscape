@@ -10,6 +10,7 @@ pub(crate) mod config;
 pub(crate) mod context;
 pub(crate) mod diff;
 pub(crate) mod flows;
+pub(crate) mod graph;
 pub(crate) mod policy;
 pub(crate) mod state;
 pub(crate) mod verify;

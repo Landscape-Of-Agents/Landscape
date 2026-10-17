@@ -26,12 +26,22 @@ pub(crate) struct Approvals {
     database: Database,
 }
 
+/** One evaluation of a dashboard agent
+ * Fields
+    - agent_id: &str - agent
+    - observed: u64 - matching events of its headline signal
+    - threshold: u64 - threshold of its headline signal
+    - triggered: bool - whether any signal met its threshold
+    - evaluated_at: u64 - evaluation time in milliseconds
+    - signals: Value - every signal with its observation
+*/
 pub(crate) struct DashboardAgentEvaluation<'a> {
     pub(crate) agent_id: &'a str,
     pub(crate) observed: u64,
     pub(crate) threshold: u64,
     pub(crate) triggered: bool,
     pub(crate) evaluated_at: u64,
+    pub(crate) signals: Value,
 }
 
 impl Approvals {
@@ -58,26 +68,39 @@ impl Approvals {
         if !matches!(state, "active" | "inactive" | "sleep" | "idle") {
             return Err("agent state must be active, inactive, sleep, or idle".into());
         }
-        let metric = input["metric"].as_str().unwrap_or_default();
-        if !matches!(
-            metric,
-            "critical_events"
-                | "denials"
-                | "prompt_injections"
-                | "bypass_attempts"
-                | "tool_failures"
-                | "event_volume"
-        ) {
-            return Err("agent metric is not supported".into());
+        // Clients from before signals existed send one metric, threshold, and window
+        let requested = match input["signals"].as_array() {
+            Some(items) => items.clone(),
+            None => vec![json!({
+                "metric": input["metric"],
+                "threshold": input["threshold"],
+                "window_minutes": input["window_minutes"],
+            })],
+        };
+        if requested.is_empty() || requested.len() > 10 {
+            return Err("an agent needs between 1 and 10 signals".into());
         }
-        let threshold = input["threshold"]
-            .as_u64()
-            .filter(|value| (1..=100_000).contains(value))
-            .ok_or("agent threshold must be between 1 and 100000")?;
-        let window_minutes = input["window_minutes"]
-            .as_u64()
-            .filter(|value| (1..=1440).contains(value))
-            .ok_or("agent window must be between 1 and 1440 minutes")?;
+        let signals = requested
+            .iter()
+            .map(Self::dashboard_agent_signal)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut seen = std::collections::BTreeSet::new();
+        if !signals.iter().all(|signal| {
+            seen.insert((
+                signal["metric"].to_string(),
+                signal["window_minutes"].as_i64(),
+            ))
+        }) {
+            return Err("each signal needs a different metric or window".into());
+        }
+        // The first signal is mirrored at the top level, which older readers and the
+        // collection's required fields expect
+        let metric = signals[0]["metric"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let threshold = signals[0]["threshold"].as_i64().unwrap_or_default();
+        let window_minutes = signals[0]["window_minutes"].as_i64().unwrap_or_default();
         let assignments = input["assignments"]
             .as_array()
             .filter(|items| !items.is_empty() && items.len() <= 100)
@@ -111,9 +134,10 @@ impl Approvals {
             "name": &name,
             "reason": reason,
             "state": state,
-            "metric": metric,
-            "threshold": threshold as i64,
-            "window_minutes": window_minutes as i64,
+            "metric": &metric,
+            "threshold": threshold,
+            "window_minutes": window_minutes,
+            "signals": bson::to_bson(&signals).map_err(|error| error.to_string())?,
             "assignments": assignments,
             "monitoring": "METRICS_AND_CRITICAL_EVENTS",
             "updated_at": now,
@@ -151,10 +175,43 @@ impl Approvals {
                 "metric": metric,
                 "threshold": threshold,
                 "window_minutes": window_minutes,
+                "signals": signals,
                 "assignments": input["assignments"],
             }),
         )?;
         Ok(json!({"agent_id": agent_id, "name": name, "state": state, "updated_at": now}))
+    }
+
+    /** Validate one signal of a dashboard agent
+     * Input
+        - input: &Value - {metric, threshold, window_minutes}
+     * Output
+        - Result<Value, String> - the signal with only those three fields
+        - Error if the metric is unknown, the threshold is outside 1..=100000, or the window is
+          outside 1..=1440 minutes
+    */
+    fn dashboard_agent_signal(input: &Value) -> Result<Value, String> {
+        let metric = input["metric"].as_str().unwrap_or_default();
+        if !matches!(
+            metric,
+            "critical_events"
+                | "denials"
+                | "prompt_injections"
+                | "bypass_attempts"
+                | "tool_failures"
+                | "event_volume"
+        ) {
+            return Err("agent metric is not supported".into());
+        }
+        let threshold = input["threshold"]
+            .as_u64()
+            .filter(|value| (1..=100_000).contains(value))
+            .ok_or("agent threshold must be between 1 and 100000")?;
+        let window_minutes = input["window_minutes"]
+            .as_u64()
+            .filter(|value| (1..=1440).contains(value))
+            .ok_or("agent window must be between 1 and 1440 minutes")?;
+        Ok(json!({"metric": metric, "threshold": threshold, "window_minutes": window_minutes}))
     }
 
     /** Change only an agent's monitoring state. */
@@ -649,6 +706,7 @@ impl Approvals {
                 "observed": evaluation.observed,
                 "threshold": evaluation.threshold,
                 "triggered": evaluation.triggered,
+                "signals": evaluation.signals,
                 "evaluated_at": evaluation.evaluated_at,
                 "trigger": trigger,
             }),

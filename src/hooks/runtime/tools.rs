@@ -538,6 +538,9 @@ impl Hook {
             record.current.span.start_line,
             record.current.span.end_line,
         );
+        if let Some(context) = &record.context {
+            text.push_str(&format!("\nContext: {context}"));
+        }
         for binding in self.state.context.of(&record.policy) {
             let path = self.workspace.root.join(&binding.path);
             let bytes = fs::read(&path).map_err(|error| {

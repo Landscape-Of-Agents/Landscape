@@ -379,6 +379,55 @@ function removeFrom(document: Document, key: string, map: YAMLMap): void {
   if (isSeq(items)) items.items = items.items.filter((item) => item !== map);
 }
 
+/**
+ * Make sure a flow carries context, as Crane requires: when none of its own or its stages' context
+ * packs has guidance, give it its own pack describing the order of its zones.
+ * @param document YAML document
+ * @param flow flow mapping
+ */
+function ensureFlowContext(document: Document, flow: YAMLMap): void {
+  const packs = document.get("context_packs", true);
+  const withGuidance = new Set(
+    (isSeq(packs) ? packs.items.filter(isMap) : [])
+      .filter((pack) => {
+        const content = pack.get("content", true);
+        const files = pack.get("files", true);
+        return (isSeq(content) && content.items.some((item) => String((item as { value?: unknown }).value ?? item).trim())) || (isSeq(files) && files.items.length > 0);
+      })
+      .map((pack) => String(pack.get("id"))),
+  );
+  const named = (map: YAMLMap) => {
+    const list = map.get("context_packs", true);
+    return isSeq(list) ? list.items.map((item) => String((item as { value?: unknown }).value ?? item)) : [];
+  };
+  const stages = flow.get("stages", true);
+  const stageMaps = isSeq(stages) ? stages.items.filter(isMap) : [];
+  const id = String(flow.get("id"));
+  const order = stageMaps.map((stage) => String(stage.get("id")));
+  const orderLine = order.length ? `Flow ${id} runs ${order.join(" → ")} in this order; a change in one stage must keep the stages after it working.` : `Flow ${id}: keep changes consistent along the whole call path.`;
+  // The order line Foxx wrote follows the flow as zones join or leave; other guidance is kept
+  for (const pack of isSeq(packs) ? packs.items.filter(isMap) : []) {
+    if (!named(flow).includes(String(pack.get("id")))) continue;
+    const content = pack.get("content", true);
+    if (!isSeq(content)) continue;
+    const at = content.items.findIndex((item) => String((item as { value?: unknown }).value ?? item).startsWith(`Flow ${id} runs `));
+    if (at >= 0 && String((content.items[at] as { value?: unknown }).value ?? content.items[at]) !== orderLine) {
+      content.items[at] = document.createNode(orderLine);
+      pack.set("version", Number(pack.get("version") ?? 0) + 1);
+    }
+  }
+  if ([...named(flow), ...stageMaps.flatMap(named)].some((pack) => withGuidance.has(pack))) return;
+  const lines = [
+    orderLine,
+    ...stageMaps.filter((stage) => String(stage.get("description") ?? "").trim()).map((stage) => `${stage.get("id")}: ${stage.get("description")}`),
+  ];
+  const packId = freeId(document, contextPackOf(id));
+  sequence(document, "context_packs").add(document.createNode({ id: packId, version: 1, description: `Guidance for flow ${id}`, content: lines }));
+  const list = flow.get("context_packs", true);
+  if (isSeq(list)) list.add(packId);
+  else flow.set("context_packs", document.createNode([packId]));
+}
+
 /** What a link or unlink did, for the person. */
 export interface GraphEdit {
   text: string;
@@ -446,6 +495,7 @@ export function linkZones(text: string, from: string, to: string): GraphEdit {
     summary = `flows ${name(target)} and ${name(merged)} merged at ${from} → ${to}`;
   }
   const flow = placement(document, from)?.flow as YAMLMap;
+  ensureFlowContext(document, flow);
   flow.set("version", Number(flow.get("version") ?? 0) + 1);
   return { text: document.toString(), summary };
 }
@@ -485,6 +535,7 @@ export function unlinkZones(text: string, from: string, to: string): GraphEdit {
     const created = document.createNode({ id, description: `Split from ${flowId}`, entry_points: [], criticality: "routine", autonomy_ceiling: "autonomous", policies: [], context_packs: [], status: String(flow.get("status") ?? "proposed"), version: 1 }) as YAMLMap;
     for (const stage of right) absorb(document, created, stage.toJSON() as Stage, "end");
     sequence(document, "flows").add(created);
+    ensureFlowContext(document, created);
     parts.push(`flow ${id} now runs ${right.map((stage) => stage.get("id")).join(" → ")}`);
   } else {
     restore(right);
@@ -495,6 +546,7 @@ export function unlinkZones(text: string, from: string, to: string): GraphEdit {
   const fromLeft = new Set(left.flatMap((stage) => contributions(stage.toJSON() as Stage).entry_points));
   const own = isSeq(entries) ? entries.items.filter((item) => !fromLeft.has(String((item as { value?: unknown }).value ?? item))) : [];
   if (left.length >= 2 || own.length) {
+    ensureFlowContext(document, flow);
     flow.set("version", Number(flow.get("version") ?? 0) + 1);
     parts.unshift(`flow ${flowId} ends at ${from}`);
   } else {

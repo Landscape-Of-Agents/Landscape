@@ -27,17 +27,26 @@ pub(crate) fn governance(args: &[String]) -> Result<(), String> {
     let workspace = Workspace::locate()?;
     // Refuse a file the hooks could not enforce, so broken rules are never approved
     let governance = zones::load(&workspace)?;
-    let blocking = zones::resolve(
+    let resolution = zones::resolve(
         &workspace,
         &governance,
         &State::load(&workspace)?,
         &PolicySet::load(&workspace)?,
-    )?
-    .findings
-    .into_iter()
-    .filter(crate::governance::Finding::blocking)
-    .map(|finding| finding.message)
-    .collect::<Vec<_>>();
+    )?;
+    // Signing is what approves added, moved, or removed zone and flow markers
+    let blocking = resolution
+        .findings
+        .iter()
+        .filter(|finding| finding.blocking())
+        .filter(|finding| {
+            !matches!(
+                finding.code.as_str(),
+                "source_marker_unsigned" | "source_marker_removed"
+            )
+        })
+        .map(|finding| finding.message.clone())
+        .collect::<Vec<_>>();
+    let markers = resolution.source_markers.clone();
     if !blocking.is_empty() {
         return Err(format!(
             "not signing .crane/governance.yaml: {}",
@@ -63,15 +72,23 @@ pub(crate) fn governance(args: &[String]) -> Result<(), String> {
             "zones": governance.zones.len(),
             "flows": governance.flows.len(),
             "context_packs": governance.context_packs.len(),
+            "source_markers": markers,
         }),
-        |_, _| Ok(()),
+        |state, _| {
+            // Recorded only once there are markers, so repositories without them keep their digest
+            if !markers.is_empty() || state.config.source_markers.is_some() {
+                state.config.source_markers = Some(markers.clone());
+            }
+            Ok(())
+        },
     )?;
     println!(
-        "Signed .crane/governance.yaml at generation {}: {} zones ({zones_active} active), {} flows ({flows_active} active), {} context packs",
+        "Signed .crane/governance.yaml at generation {}: {} zones ({zones_active} active), {} flows ({flows_active} active), {} context packs, {} zone/flow source blocks",
         state.generation(),
         governance.zones.len(),
         governance.flows.len(),
-        governance.context_packs.len()
+        governance.context_packs.len(),
+        markers.len()
     );
     Ok(())
 }

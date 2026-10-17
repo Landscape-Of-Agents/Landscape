@@ -37,6 +37,7 @@ const ID_ATTEMPTS: usize = 32;
     - start_line: Option<usize> - first line (inclusive), the first line of the file when None
     - end_line: Option<usize> - last line (inclusive), the last line of the file when None
     - name: Option<String> - optional selection name
+    - context: Option<String> - guidance for agents working in the selection (the CLI requires it)
     - change_type: Option<ChangeType> - required change kind (target only)
 */
 #[derive(Debug, Clone)]
@@ -48,6 +49,7 @@ pub(crate) struct Request {
     pub(crate) start_line: Option<usize>,
     pub(crate) end_line: Option<usize>,
     pub(crate) name: Option<String>,
+    pub(crate) context: Option<String>,
     pub(crate) change_type: Option<ChangeType>,
 }
 
@@ -313,6 +315,7 @@ pub(crate) fn create(request: &Request) -> Result<Record, String> {
     let mut record = Record {
         id: id.clone(),
         name: request.name.clone(),
+        context: request.context.clone(),
         repository_id: workspace.repository_id.clone(),
         operation: request.operation,
         change_type: request

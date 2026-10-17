@@ -95,7 +95,14 @@ pub(crate) fn select(operation: Operation, args: &[String]) -> Result<(), String
     };
     require_human(&format!("crane {command}"))?;
     let keys: &[&str] = match operation {
-        Operation::Preserve => &["policy", "checkpoint", "start-line", "end-line", "name"],
+        Operation::Preserve => &[
+            "policy",
+            "checkpoint",
+            "start-line",
+            "end-line",
+            "name",
+            "context",
+        ],
         Operation::Target => &[
             "policy",
             "checkpoint",
@@ -103,15 +110,27 @@ pub(crate) fn select(operation: Operation, args: &[String]) -> Result<(), String
             "end-line",
             "name",
             "change-type",
+            "context",
         ],
     };
     let parsed = Args::parse(args, keys, &[])?;
     parsed.expect_positional(
         1,
         &format!(
-            "crane {command} FILE [policy NAME] [checkpoint NAME] [start-line N] [end-line N]"
+            "crane {command} FILE context TEXT [policy NAME] [checkpoint NAME] [start-line N] [end-line N]"
         ),
     )?;
+    // Every selection tells the agent why it exists and what to keep in mind there
+    let context = parsed
+        .value("context")
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .ok_or(format!(
+            "a selection needs context for the agents that work in it: add context \"why these lines matter\" (crane {command} FILE context TEXT ...)"
+        ))?;
+    if context.chars().count() > 2000 {
+        return Err("selection context must be at most 2000 characters".into());
+    }
     let request = Request {
         operation,
         file: parsed.positional[0].clone(),
@@ -120,6 +139,7 @@ pub(crate) fn select(operation: Operation, args: &[String]) -> Result<(), String
         start_line: parsed.line("start-line")?,
         end_line: parsed.line("end-line")?,
         name: parsed.value("name"),
+        context: Some(context),
         change_type: parsed
             .value("change-type")
             .map(|value| ChangeType::parse(&value))

@@ -268,6 +268,9 @@ pub(crate) struct Resolved {
     - uncovered: Vec<String> - source files covered by no active zone or flow
     - analyzed: usize - files the flow analysis understood
     - unsupported: usize - source files in languages the flow analysis does not support
+    - source_scopes: Vec<SourceScope> - the line blocks zone and flow markers enclose
+    - source_markers: Vec<String> - every well-formed zone and flow block as "kind:ID:PATH", the
+      set 'crane governance sign' signs
 */
 #[derive(Debug, Clone, Default, Serialize)]
 pub(crate) struct Resolution {
@@ -278,6 +281,8 @@ pub(crate) struct Resolution {
     pub(crate) unsupported: usize,
     #[serde(default)]
     pub(crate) source_scopes: Vec<SourceScope>,
+    #[serde(default)]
+    pub(crate) source_markers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -323,6 +328,91 @@ fn contains_marker_tag(path: &std::path::Path) -> Result<bool, String> {
         }
         carry.extend_from_slice(&chunk[chunk.len().saturating_sub(tag.len() - 1)..]);
     }
+}
+
+/** Whether a flow gives agents context: one of its context packs (or a stage's) exists and has
+ * guidance lines or files
+ * Input
+    - flow: &Flow - flow
+    - governance: &Governance - configuration
+ * Output
+    - bool
+*/
+fn flow_has_context(flow: &Flow, governance: &Governance) -> bool {
+    flow.context_packs
+        .iter()
+        .chain(
+            flow.stages
+                .iter()
+                .flat_map(|stage| stage.context_packs.iter()),
+        )
+        .any(|id| {
+            governance.context_packs.iter().any(|pack| {
+                &pack.id == id
+                    && (pack.content.iter().any(|line| !line.trim().is_empty())
+                        || !pack.files.is_empty())
+            })
+        })
+}
+
+/** Findings comparing the zone and flow source blocks in the code with the set an admin signed.
+ * Before the first sign that covers markers, existing blocks are only reported (Medium); after
+ * it, a block added or moved to another file, or a signed block that is gone, is blocking (High)
+ * until an admin signs again, like an unsigned edit of governance.yaml
+ * Input
+    - found: &[String] - blocks in the code ("kind:ID:PATH")
+    - signed: Option<&[String]> - blocks the last sign covered, None before any
+ * Output
+    - Vec<Finding>
+*/
+pub(crate) fn marker_signature_findings(
+    found: &[String],
+    signed: Option<&[String]>,
+) -> Vec<Finding> {
+    let describe = |block: &str| {
+        let mut parts = block.splitn(3, ':');
+        let (kind, id, path) = (
+            parts.next().unwrap_or("zone"),
+            parts.next().unwrap_or(""),
+            parts.next().unwrap_or(""),
+        );
+        (format!("{kind} {id}"), path.to_string())
+    };
+    let Some(signed) = signed else {
+        return if found.is_empty() {
+            Vec::new()
+        } else {
+            vec![finding(
+                "source_marker_unsigned",
+                Severity::Medium,
+                format!("{} zone or flow source block(s) are not signed yet; an admin can run 'crane governance sign' to protect their markers", found.len()),
+            )]
+        };
+    };
+    let mut findings = Vec::new();
+    for block in found.iter().filter(|block| !signed.contains(block)) {
+        let (entity, path) = describe(block);
+        findings.push(
+            finding(
+                "source_marker_unsigned",
+                Severity::High,
+                format!("{path}: the {entity} markers were added or moved since governance was signed; if an admin made the change, run 'crane governance sign', otherwise remove them"),
+            )
+            .with_path(&path),
+        );
+    }
+    for block in signed.iter().filter(|block| !found.contains(block)) {
+        let (entity, path) = describe(block);
+        findings.push(
+            finding(
+                "source_marker_removed",
+                Severity::High,
+                format!("{path}: the signed {entity} markers are gone; restore them, or an admin signs the change with 'crane governance sign'"),
+            )
+            .with_path(&path),
+        );
+    }
+    findings
 }
 
 /** Findings for flow stages that do not keep one acyclic order: a flow that runs through the same
@@ -603,6 +693,13 @@ pub(crate) fn resolve(
                 .collect::<Vec<_>>(),
             &mut resolution.findings,
         );
+        if flow.status != Lifecycle::Deprecated && !flow_has_context(flow, governance) {
+            resolution.findings.push(finding(
+                "flow_context_missing",
+                Severity::High,
+                format!("flow {} has no context: attach a context pack with guidance for agents working in it (context_packs: [ID], with content or files)", flow.id),
+            ));
+        }
         if flow.entry_points.is_empty() && flow.stages.is_empty() {
             resolution.findings.push(finding(
                 "flow_unresolved",
@@ -785,6 +882,9 @@ pub(crate) fn resolve(
             );
             continue;
         }
+        resolution
+            .source_markers
+            .push(format!("{kind}:{id}:{path}"));
         let entity = resolution
             .entities
             .iter()
@@ -802,6 +902,11 @@ pub(crate) fn resolve(
         }
         let _ = end_path;
     }
+    resolution.source_markers.sort();
+    resolution.findings.extend(marker_signature_findings(
+        &resolution.source_markers,
+        state.config.source_markers.as_deref(),
+    ));
     let mut scope_events = BTreeMap::<&str, Vec<(usize, bool, &str)>>::new();
     for scope in &resolution.source_scopes {
         scope_events.entry(&scope.path).or_default().extend([
@@ -1001,7 +1106,7 @@ pub(crate) fn cached_limits(
     if let Some(problem) = resolution
         .findings
         .iter()
-        .find(|finding| finding.code.starts_with("source_marker_"))
+        .find(|finding| finding.code.starts_with("source_marker_") && finding.blocking())
     {
         return Err(problem.message.clone());
     }

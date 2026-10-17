@@ -198,7 +198,7 @@ fn source_marked_zone_and_flow_enforce_only_their_lines() {
     );
     govern(
         &fixture,
-        "version: 1\nzones:\n  - id: ledger-window\n    autonomy_ceiling: observe\nflows:\n  - id: greeting-window\n    entry_points: [\"app/service.py:submit\"]\n    autonomy_ceiling: observe\n",
+        "version: 1\nzones:\n  - id: ledger-window\n    autonomy_ceiling: observe\ncontext_packs:\n  - id: greeting-notes\n    version: 1\n    content: [Keep the greeting window stable.]\nflows:\n  - id: greeting-window\n    entry_points: [\"app/service.py:submit\"]\n    autonomy_ceiling: observe\n    context_packs: [greeting-notes]\n",
     );
     assert!(fixture.ok(&["validate"]).contains("Crane validate: PASS"));
     fixture.hook("claude", "SessionStart", &json!({"session_id": "marked"}));
@@ -332,7 +332,7 @@ fn source_marker_integrity_and_resolution_fail_closed() {
 fn flows_are_discovered_and_enforced() {
     let fixture = fixture();
     govern(&fixture,
-        "version: 1\nflows:\n  - id: order-submission\n    description: Order submission and charging\n    entry_points: [\"app/service.py:submit\"]\n    criticality: critical\n    autonomy_ceiling: assisted\n",
+        "version: 1\ncontext_packs:\n  - id: order-notes\n    version: 1\n    content: [Orders are charged once.]\nflows:\n  - id: order-submission\n    description: Order submission and charging\n    entry_points: [\"app/service.py:submit\"]\n    criticality: critical\n    autonomy_ceiling: assisted\n    context_packs: [order-notes]\n",
     );
     assert!(fixture.ok(&["validate"]).contains("PASS"));
     fixture.hook("claude", "SessionStart", &json!({"session_id": "f1"}));
@@ -586,9 +586,14 @@ zones:
   - id: billing
     selectors:
       files: [app/payments.py]
+context_packs:
+  - id: checkout-notes
+    version: 1
+    content: [Checkout runs intake before billing.]
 flows:
   - id: checkout
     entry_points: [\"app/service.py:submit\"]
+    context_packs: [checkout-notes]
     stages:
       - id: intake
         selectors:
@@ -729,4 +734,54 @@ context_packs:
     assert_eq!(context["locations"][0]["path"], "app/payments.py", "{live}");
     assert_eq!(live["live"]["tool"], "Read");
     assert!(live["live"]["at"].as_u64().unwrap() > 0);
+}
+
+/** Zone and flow markers are signed with governance: markers present when an admin signs are
+ * recorded, a block added later or removed fails validation and stops agent changes until it is
+ * signed again, and a flow without context cannot be signed
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn zone_and_flow_markers_are_signed_and_flows_need_context() {
+    let fixture = fixture();
+    fixture.write(
+        ".crane/governance.yaml",
+        "version: 1\nflows:\n  - id: bare\n    entry_points: [\"app/service.py:submit\"]\n",
+    );
+    let refused = fixture.fails(&["governance", "sign"]);
+    assert!(refused.contains("flow bare has no context"), "{refused}");
+    let zones = "version: 1\nzones:\n  - id: ledger-core\n    autonomy_ceiling: observe\n  - id: payments-core\n    autonomy_ceiling: observe\n";
+    fixture.write(
+        "app/ledger.py",
+        "# @crane:zone:ledger-core:start\ndef post(entry):\n    return entry\n# @crane:zone:ledger-core:end\n",
+    );
+    govern(&fixture, zones);
+    assert_eq!(
+        fixture.crane_json("config.json")["source_markers"],
+        json!(["zone:ledger-core:app/ledger.py"]),
+        "the markers present at signing are signed"
+    );
+    assert!(fixture.ok(&["validate"]).contains("PASS"));
+    // A block added without signing fails validation and stops agent changes
+    fixture.write(
+        "app/payments.py",
+        "# @crane:zone:payments-core:start\ndef charge(amount):\n    return amount\n# @crane:zone:payments-core:end\n",
+    );
+    let unsigned = fixture.fails(&["validate"]);
+    assert!(unsigned.contains("source_marker_unsigned"), "{unsigned}");
+    assert!(unsigned.contains("app/payments.py"), "{unsigned}");
+    fixture.hook("claude", "SessionStart", &json!({"session_id": "sm1"}));
+    let blocked = write(&fixture, "sm1", "sm-1", "web/app.js", "x\n");
+    assert_eq!(blocked.status.code(), Some(2), "{}", text(&blocked));
+    // An admin approves it by signing
+    govern(&fixture, zones);
+    assert!(fixture.ok(&["validate"]).contains("PASS"));
+    // A signed block that disappears is caught too
+    fixture.write("app/ledger.py", "def post(entry):\n    return entry\n");
+    let removed = fixture.fails(&["validate"]);
+    assert!(removed.contains("source_marker_removed"), "{removed}");
+    assert!(removed.contains("app/ledger.py"), "{removed}");
 }

@@ -41,7 +41,7 @@ git push -q origin HEAD:main
 "$BIN" init | grep "Initialized" > /dev/null
 "$BIN" checkpoint baseline | grep "Created checkpoint 'baseline'" > /dev/null
 "$BIN" create policy payment_gateway gateway | grep "Created policy payment_gateway" > /dev/null
-"$BIN" protect GatewayService.java policy payment_gateway start-line 2 end-line 4 | grep "as selection" > /dev/null
+"$BIN" protect GatewayService.java policy payment_gateway start-line 2 end-line 4 context "Gateway calls must stay idempotent." | grep "as selection" > /dev/null
 grep -q "// @crane:selection:" GatewayService.java
 "$BIN" validate | grep "Crane validate: PASS" > /dev/null
 "$BIN" test . | grep "Crane test: PASS" > /dev/null

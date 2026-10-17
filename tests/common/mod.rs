@@ -180,6 +180,21 @@ impl Fixture {
         - Command
     */
     pub fn command(&self, args: &[&str]) -> Command {
+        // Selections require context; tests that do not name one get a default
+        let mut args = args.to_vec();
+        if matches!(args.first(), Some(&"protect" | &"target")) && !args.contains(&"context") {
+            args.extend(["context", "Test selection context."]);
+        }
+        self.raw(&args)
+    }
+
+    /** Build a crane command exactly as given (no default selection context)
+     * Input
+        - args: &[&str] - crane arguments
+     * Output
+        - Command
+    */
+    pub fn raw(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_crane"));
         command
             .current_dir(&self.work)

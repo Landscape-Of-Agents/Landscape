@@ -543,7 +543,8 @@ async function runAction(action: string, values: Record<string, string | boolean
       const document = vscode.workspace.textDocuments.find((open) => open.uri.toString() === selection.uri);
       if (document?.isDirty) await step("save", `Save ${selection.file}`, () => Promise.resolve(document.save()));
       const operation = action === "preserve" ? "preserve" : "target";
-      const args = selectionArgs(operation, selection.file, selection.start, selection.end, { policy: value("policy") || undefined, changeType: value("changeType") || undefined, name: value("name") || undefined });
+      if (!lines.length) return { ok: false, message: "Write the context agents should receive for these lines." };
+      const args = selectionArgs(operation, selection.file, selection.start, selection.end, { context: lines.join(" "), policy: value("policy") || undefined, changeType: value("changeType") || undefined, name: value("name") || undefined });
       const result = await step("run", `crane ${args[0]} ${selection.file} lines ${selection.start}-${selection.end}`, () => crane(args), (result) => ({ ok: Boolean(result) && result!.code === 0 && Boolean(selectionIdFrom(result!.stdout)), detail: result && selectionIdFrom(result.stdout) ? "selection " + selectionIdFrom(result.stdout) : result ? failed(result) : undefined }));
       if (!result) return { ok: false, message: "Crane is not set up in this repository." };
       const id = selectionIdFrom(result.stdout);
@@ -566,10 +567,11 @@ async function runAction(action: string, values: Record<string, string | boolean
       const id = value("id");
       const entry = value("entry");
       if (!entry) return { ok: false, message: "Give the flow an entry point (path:function)." };
+      if (!lines.length) return { ok: false, message: "Every flow needs context: write at least one line of guidance." };
       const ceiling = value("ceiling") as ZoneInput["autonomy_ceiling"];
       return governed((text) => {
         let next = addFlow(text, { id, description: value("description"), criticality: value("criticality") as ZoneInput["criticality"], autonomy_ceiling: ceiling, entry_points: [entry] });
-        if (lines.length) next = addContext(next, "flow", id, lines);
+        next = addContext(next, "flow", id, lines);
         return values.enforce ? activateEntity(next, "flow", id) : next;
       }, `flow ${id} created from ${entry}${values.enforce ? " and enforced" : " as a proposal"}, autonomy ceiling ${ceiling}`);
     }

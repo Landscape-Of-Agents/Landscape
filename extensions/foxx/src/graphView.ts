@@ -167,9 +167,15 @@ svg#canvas.linking { cursor: crosshair; }
 .hit { fill: none; stroke: transparent; stroke-width: 14; cursor: pointer; }
 .edge-g.removable:hover .edge, .edge-g.selected .edge { stroke: var(--fox); stroke-width: 3.2; }
 .edge-g.selected .edge { filter: drop-shadow(0 0 4px var(--fox)); }
-.remove { cursor: pointer; }
-.remove circle { fill: var(--bad); stroke: var(--bg); stroke-width: 2; }
-.remove path { stroke: #fff; stroke-width: 1.8; stroke-linecap: round; }
+.edge-g:not(.removable):hover .edge { stroke: color-mix(in srgb, var(--fg) 60%, transparent); }
+.edge-menu { position: fixed; z-index: 8; width: 270px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--vscode-menu-background, var(--bg)); box-shadow: 0 12px 32px rgba(0, 0, 0, .4); font-size: 12px; }
+.edge-menu .kind { font-size: 10px; letter-spacing: .7px; text-transform: uppercase; color: var(--muted); }
+.edge-menu b { display: block; margin: 2px 0 6px; font-size: 13px; overflow-wrap: anywhere; }
+.edge-menu p { margin: 0 0 10px; color: var(--muted); line-height: 1.45; }
+.edge-menu .row { display: flex; gap: 6px; justify-content: flex-end; }
+.btn.danger { border-color: transparent; background: var(--bad); color: #fff; font-weight: 600; }
+.btn.danger:hover { filter: brightness(1.1); border-color: transparent; }
+.btn.danger svg { width: 14px; height: 14px; }
 #temp { fill: none; stroke: var(--fox); stroke-width: 2.2; stroke-dasharray: 6 5; pointer-events: none; }
 #temp.valid { stroke: var(--ok); stroke-dasharray: none; }
 #temp.invalid { stroke: var(--bad); }
@@ -227,7 +233,7 @@ svg.dim .edge-g:not(.lit) { opacity: .15; }
   <button class="btn" id="arrange" title="Lay the graph out again, left to right">Arrange</button>
   <button class="btn" id="refresh" title="Ask Crane for the graph again">Refresh</button>
 </div>
-<div class="hint" id="hint"><span class="dot" aria-hidden="true"></span><span id="hint-text">Drag from a zone's right handle onto another zone to link them into a flow. Click a link, then press Delete to remove it. Drag zones to move them.</span></div>
+<div class="hint" id="hint"><span class="dot" aria-hidden="true"></span><span id="hint-text">Drag from a zone's right handle onto another zone to link them into a flow. Click a link to delete it. Drag zones to move them.</span></div>
 <div id="stage">
   <div class="notices" id="notices" aria-live="polite"></div>
   <svg id="canvas" role="application" aria-label="Governance graph canvas"><defs>
@@ -237,6 +243,7 @@ svg.dim .edge-g:not(.lit) { opacity: .15; }
   <div class="zoom"><button id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button><button id="zoom-out" title="Zoom out" aria-label="Zoom out">−</button><button id="fit" title="Fit the graph" aria-label="Fit the graph">⤢</button></div>
 </div>
 <div id="tip" role="tooltip"></div>
+<div class="edge-menu" id="edge-menu" role="dialog" aria-labelledby="edge-menu-title" hidden></div>
 <script nonce="${nonce}">
 "use strict";
 const vscode = acquireVsCodeApi();
@@ -334,10 +341,9 @@ function draw() {
     const selected = selectedEdge && selectedEdge.from === edge.from && selectedEdge.to === edge.to;
     const d = curve(anchor(edge.from, "out"), anchor(edge.to, "in"));
     const unlinking = pending.some((item) => item.op === "unlink" && "zone:" + item.from === edge.from && "zone:" + item.to === edge.to);
-    return '<g class="edge-g' + (removable ? " removable" : "") + (selected ? " selected" : "") + '" data-from="' + esc(edge.from) + '" data-to="' + esc(edge.to) + '" data-kind="' + edge.kind + '">' +
-      (removable ? '<path class="hit" d="' + d + '"><title>' + esc(zoneName(edge.from) + " → " + zoneName(edge.to) + (edge.label ? " · flow " + edge.label : "") + " · click, then Delete to remove") + "</title></path>" : "") +
-      '<path class="edge ' + edge.kind + (edge.pending || unlinking ? " pending" : "") + '" d="' + d + '" marker-end="url(#arrow)"></path>' +
-      (selected ? removeButton(edge) : "") + "</g>";
+    return '<g class="edge-g' + (removable ? " removable" : "") + (selected ? " selected" : "") + '" data-from="' + esc(edge.from) + '" data-to="' + esc(edge.to) + '" data-kind="' + edge.kind + '" data-label="' + esc(edge.label || "") + '">' +
+      (edge.pending ? "" : '<path class="hit" d="' + d + '"><title>' + esc(edgeTitle(edge) + (removable ? " · click to delete" : " · click for details")) + "</title></path>") +
+      '<path class="edge ' + edge.kind + (edge.pending || unlinking ? " pending" : "") + '" d="' + d + '" marker-end="url(#arrow)"></path>' + "</g>";
   }).join("");
   $("nodes").innerHTML = nodes.map((node) => {
     const at = pos[node.id];
@@ -353,11 +359,32 @@ function draw() {
   }).join("");
   apply();
 }
-function removeButton(edge) {
-  const a = anchor(edge.from, "out"), b = anchor(edge.to, "in");
-  const x = (a.x + b.x) / 2, y = (a.y + b.y) / 2;
-  return '<g class="remove" data-unlink="1" transform="translate(' + x + " " + y + ')" role="button" aria-label="Remove this link"><circle r="10"></circle><path d="M-3.5 -3.5L3.5 3.5M3.5 -3.5L-3.5 3.5"></path><title>Remove this link (Delete)</title></g>';
+const nameOf = (id) => { const node = nodeById(id); return node ? node.name : id.replace(/^[a-z]+:/, ""); };
+function edgeTitle(edge) { return nameOf(edge.from) + " → " + nameOf(edge.to); }
+// What each kind of edge means, and how to change it when it cannot be deleted from here
+function edgeDetails(edge) {
+  const from = nameOf(edge.from), to = nameOf(edge.to);
+  if (edge.kind === "next") return { kind: "Link in flow " + (edge.label || placeOf(to).flow || ""), title: from + " → " + to, text: "Deleting it splits the flow here. A zone left on its own becomes a free zone again; Crane signs the change.", removable: true };
+  if (edge.kind === "stage") return { kind: "Flow start", title: "Flow " + from + " starts at " + to, text: "This shows where the flow begins. To change it, delete the link after " + to + ", or link another zone before it." };
+  if (edge.kind === "contains") return { kind: "Contains", title: from + " contains " + to, text: "The selection lies in the files this " + (edge.from.startsWith("flow:") ? "flow" : "zone") + " covers. It follows the code: move or remove the selection to change it." };
+  if (edge.kind === "nests") return { kind: "Nested selection", title: to + " is inside " + from, text: "A nested selection keeps its own rule inside its parent's lines." };
+  return { kind: "Reaches", title: "Flow " + from + " reaches " + to, text: "The flow's calls reach this zone's files without it being a stage. Link it into the flow to make it a stage." };
 }
+const TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>';
+function openEdgeMenu(edge, x, y) {
+  const menu = $("edge-menu");
+  const info = edgeDetails(edge);
+  menu.innerHTML = '<div class="kind">' + esc(info.kind) + '</div><b id="edge-menu-title">' + esc(info.title) + "</b><p>" + esc(info.text) + '</p><div class="row">' +
+    (info.removable ? '<button class="btn danger" id="edge-delete">' + TRASH + "Delete link</button>" : "") + '<button class="btn" id="edge-close">' + (info.removable ? "Cancel" : "Close") + "</button></div>";
+  menu.hidden = false;
+  menu.style.left = Math.max(8, Math.min(window.innerWidth - menu.offsetWidth - 8, x + 10)) + "px";
+  menu.style.top = Math.max(8, Math.min(window.innerHeight - menu.offsetHeight - 8, y + 10)) + "px";
+  const remove = $("edge-delete");
+  if (remove) remove.addEventListener("click", () => { closeEdgeMenu(); unlink(edge); });
+  $("edge-close").addEventListener("click", () => { closeEdgeMenu(); selectedEdge = null; draw(); });
+  (remove || $("edge-close")).focus();
+}
+function closeEdgeMenu() { $("edge-menu").hidden = true; }
 // Move one node without redrawing everything: its transform and the edges that touch it
 function moveNode(id) {
   const group = document.querySelector('.node[data-id="' + CSS.escape(id) + '"]');
@@ -366,8 +393,6 @@ function moveNode(id) {
     if (edge.dataset.from !== id && edge.dataset.to !== id) continue;
     const d = curve(anchor(edge.dataset.from, "out"), anchor(edge.dataset.to, "in"));
     for (const path of edge.querySelectorAll("path.edge, path.hit")) path.setAttribute("d", d);
-    const remove = edge.querySelector(".remove");
-    if (remove) { const a = anchor(edge.dataset.from, "out"), b = anchor(edge.dataset.to, "in"); remove.setAttribute("transform", "translate(" + (a.x + b.x) / 2 + " " + (a.y + b.y) / 2 + ")"); }
   }
 }
 function apply() {
@@ -463,9 +488,8 @@ canvas.addEventListener("pointerdown", (event) => {
   hideTip();
   const port = event.target.closest("[data-port]");
   const node = nodeOf(event.target);
-  const remove = event.target.closest("[data-unlink]");
-  if (remove && selectedEdge) { event.preventDefault(); unlink(selectedEdge); return; }
-  const edge = event.target.closest(".edge-g.removable");
+  closeEdgeMenu();
+  const edge = event.target.closest(".edge-g") && event.target.closest("path.hit") ? event.target.closest(".edge-g") : null;
   if (port) {
     gesture = { kind: "link", from: port.dataset.port, start: anchor("zone:" + port.dataset.port, "out"), target: null };
     canvas.classList.add("linking");
@@ -474,8 +498,9 @@ canvas.addEventListener("pointerdown", (event) => {
     const point = toGraph(event.clientX, event.clientY);
     gesture = { kind: "move", id: node.id, dx: point.x - pos[node.id].x, dy: point.y - pos[node.id].y, x: event.clientX, y: event.clientY, moved: false };
   } else if (edge) {
-    selectedEdge = { from: edge.dataset.from, to: edge.dataset.to };
+    selectedEdge = { from: edge.dataset.from, to: edge.dataset.to, kind: edge.dataset.kind, label: edge.dataset.label };
     draw();
+    openEdgeMenu(selectedEdge, event.clientX, event.clientY);
     return;
   } else {
     if (selectedEdge) { selectedEdge = null; draw(); }
@@ -549,8 +574,8 @@ canvas.addEventListener("wheel", (event) => { event.preventDefault(); zoomBy(Mat
 // ---------------------------------------------------------------- keyboard
 canvas.addEventListener("keydown", (event) => {
   const node = nodeOf(event.target);
-  if (event.key === "Escape") { keyLink = null; selectedEdge = null; if (gesture && gesture.kind === "link") endGesture(null); setHint(DEFAULT_HINT, false); draw(); return; }
-  if ((event.key === "Delete" || event.key === "Backspace") && selectedEdge) { event.preventDefault(); unlink(selectedEdge); return; }
+  if (event.key === "Escape") { closeEdgeMenu(); keyLink = null; selectedEdge = null; if (gesture && gesture.kind === "link") endGesture(null); setHint(DEFAULT_HINT, false); draw(); return; }
+  if ((event.key === "Delete" || event.key === "Backspace") && selectedEdge && selectedEdge.kind === "next") { event.preventDefault(); closeEdgeMenu(); unlink(selectedEdge); return; }
   if (!node) return;
   if ((event.key === "c" || event.key === "C") && node.kind === "zone") { keyLink = node.name; setHint("Linking from " + node.name + ": focus another zone and press Enter. Esc cancels.", true); draw(); focusAgain(node.id); return; }
   if (event.key === "Enter" || event.key === " ") {
@@ -562,7 +587,10 @@ canvas.addEventListener("keydown", (event) => {
 canvas.addEventListener("focusin", (event) => { const node = nodeOf(event.target); if (node) { focusNode(node.id); const box = event.target.getBoundingClientRect(); tipAt(box.right, box.top, details(node)); } });
 canvas.addEventListener("focusout", () => blur());
 function focusAgain(id) { const group = document.querySelector('.node[data-id="' + CSS.escape(id) + '"]'); if (group) group.focus(); }
-document.addEventListener("keydown", (event) => { if ((event.key === "Delete" || event.key === "Backspace") && selectedEdge && document.activeElement === document.body) { event.preventDefault(); unlink(selectedEdge); } });
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("edge-menu").hidden) { closeEdgeMenu(); selectedEdge = null; draw(); return; }
+  if ((event.key === "Delete" || event.key === "Backspace") && selectedEdge && selectedEdge.kind === "next" && !event.target.closest("input")) { event.preventDefault(); closeEdgeMenu(); unlink(selectedEdge); }
+});
 
 // ---------------------------------------------------------------- toolbar
 const filterButton = $("filter"), filterMenu = $("filter-menu");

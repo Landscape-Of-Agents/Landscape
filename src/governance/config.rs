@@ -20,6 +20,8 @@ pub(crate) const DEFAULT_POLICY: &str = "default";
     - tests: Vec<TestCommand> - commands 'crane test .' runs after the policies
     - admins: Option<AdminStatement> - the owner's signed admin list (absent until the owner adds
       an admin, and then not written, so existing repositories keep their signed digests)
+    - source_markers: Option<Vec<String>> - the zone and flow source blocks ("zone:ID:PATH") an
+      admin signed with 'crane governance sign'; absent until the first sign that sees markers
 */
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -31,6 +33,8 @@ pub(crate) struct Config {
     pub(crate) tests: Vec<TestCommand>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) admins: Option<AdminStatement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source_markers: Option<Vec<String>>,
 }
 
 impl Default for Config {
@@ -49,6 +53,7 @@ impl Default for Config {
             autonomy: Autonomy::default(),
             tests: Vec::new(),
             admins: None,
+            source_markers: None,
         }
     }
 }

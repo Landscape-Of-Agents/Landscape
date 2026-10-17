@@ -663,6 +663,26 @@ pub(crate) fn evaluate(
     findings.extend(integrity(workspace, &state, &trust));
     let policies = PolicySet::load(workspace)?;
     findings.extend(consistency(workspace, &state, &policies));
+    // Selections created before context was required still work, but are reported
+    for record in state.registry.selections.iter().filter(|record| {
+        record
+            .context
+            .as_deref()
+            .is_none_or(|text| text.trim().is_empty())
+    }) {
+        findings.push(
+            Finding::new(
+                "selection_context_missing",
+                Severity::Medium,
+                format!(
+                    "selection {} has no context for agents; create it again with 'crane {} FILE context TEXT ...' to add it",
+                    record.id,
+                    if record.operation == crate::selection::registry::Operation::Preserve { "protect" } else { "target" }
+                ),
+            )
+            .with_selection(&record.id),
+        );
+    }
     let mut zones = None;
     if options.governance {
         match super::zones::load(workspace) {

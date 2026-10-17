@@ -72,13 +72,58 @@
       <a href="#products" class="btn-ghost">How it works</a>
     </div>
 
-    <!-- A terminal that types a short session -->
-    <div class="glass mt-14 w-full max-w-2xl animate-rise text-left [animation-delay:.34s]" aria-label="A terminal: Crane protects lines and denies an agent's edit of them" role="img">
-      <div class="flex items-center gap-2 border-b border-white/[0.06] px-4 py-3">
+    <!-- AgentScript at work: a policy, the code it governs, and an agent meeting both (app.js plays it) -->
+    <div id="scene" class="glass mt-14 w-full max-w-4xl animate-rise overflow-hidden text-left [animation-delay:.34s]" role="img" aria-label="AgentScript at work: the policy preserves the fee rule and targets the refund. An agent's edit of the fee is denied with its context, its rewrite of the refund passes, and crane test reports 2 of 2 rules passing.">
+      <div class="flex items-center gap-2 border-b border-white/[0.06] px-4 py-3" aria-hidden="true">
         <span class="h-2.5 w-2.5 rounded-full bg-white/15"></span><span class="h-2.5 w-2.5 rounded-full bg-white/15"></span><span class="h-2.5 w-2.5 rounded-full bg-white/15"></span>
-        <span class="ml-2 font-mono text-xs text-ink-3">~/payments</span>
+        <span class="ml-2 font-mono text-xs text-ink-3">payments · AgentScript</span>
+        <span class="ml-auto hidden items-center gap-1.5 font-mono text-[11px] text-ink-3 sm:flex"><span class="scene-live h-1.5 w-1.5 rounded-full bg-white/70"></span><span id="scene-agent">claude-code is working</span></span>
       </div>
-      <pre id="terminal" class="min-h-[10.5rem] whitespace-pre-wrap [overflow-wrap:anywhere] p-4 text-[12.5px] leading-7 text-ink-2 sm:p-5 sm:text-[13px]"></pre>
+      <div class="grid md:grid-cols-[minmax(0,0.95fr)_minmax(0,1.25fr)]" aria-hidden="true">
+        <!-- The policy, in AgentScript -->
+        <div class="border-b border-white/[0.06] p-4 md:border-b-0 md:border-r sm:p-5">
+          <p class="mb-3 font-mono text-[11px] text-ink-3">.crane/policies/payments.crane</p>
+          <pre class="font-mono text-[12px] leading-[1.9] text-ink-2 sm:text-[12.5px]"><span class="text-ink-3">policy</span> <span class="text-ink">payments</span> {
+<span id="rule-preserve" class="scene-rule">  <span class="text-ink">preserve</span> K7M2P9RX;<span class="scene-badge" data-badge>✕ denied</span></span>
+<span id="rule-target" class="scene-rule">  <span class="text-ink">target</span>   4QZ8M2LD
+           change_type logical_bn;<span class="scene-badge" data-badge>✓ passed</span></span>
+}</pre>
+          <div class="mt-4 rounded-lg border border-white/[0.06] bg-black/30 p-3 font-mono text-[11px] leading-5 text-ink-3">
+            <span class="text-ink-2">K7M2P9RX</span> · context<br><span class="text-ink-2">"Fees are audited; keep the rate."</span>
+          </div>
+        </div>
+        <!-- The code it governs -->
+        <div class="relative p-4 sm:p-5">
+          <p class="mb-3 font-mono text-[11px] text-ink-3">app/payments.py</p>
+          <div class="relative font-mono text-[12px] leading-[1.9] sm:text-[12.5px]">
+            <div id="block-preserve" class="scene-block preserve">
+              <div class="scene-line text-ink-3"><i>1</i># @crane:selection:K7M2P9RX:start</div>
+              <div class="scene-line"><i>2</i><span class="text-ink-3">def</span> fee(amount):</div>
+              <div class="scene-line" id="line-fee"><i>3</i>    <span class="text-ink-3">return</span> amount * <span id="fee-rate">0.03</span></div>
+              <div class="scene-line text-ink-3"><i>4</i># @crane:selection:K7M2P9RX:end</div>
+            </div>
+            <div class="scene-line"><i>5</i></div>
+            <div id="block-target" class="scene-block target">
+              <div class="scene-line text-ink-3"><i>6</i># @crane:selection:4QZ8M2LD:start</div>
+              <div class="scene-line"><i>7</i><span class="text-ink-3">def</span> refund(order):</div>
+              <div class="scene-line" id="line-refund"><i>8</i>    <span class="text-ink-3">return</span> <span id="refund-code">order.total</span></div>
+              <div class="scene-line text-ink-3"><i>9</i># @crane:selection:4QZ8M2LD:end</div>
+            </div>
+            <!-- The agent's cursor -->
+            <div id="scene-cursor" class="scene-cursor"><span class="scene-caret"></span><span class="scene-tag">Claude</span></div>
+            <!-- Crane's answer to the denied edit -->
+            <div id="scene-deny" class="scene-toast">
+              <b class="text-red-300">✕ Denied by Crane</b> · preserve K7M2P9RX
+              <span class="mt-1 block text-ink-2">Context: Fees are audited; keep the rate.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- What crane test says at the end -->
+      <div class="flex items-center gap-3 border-t border-white/[0.06] px-4 py-2.5 font-mono text-[11.5px] sm:px-5" aria-hidden="true">
+        <span class="text-ink-3">$ crane test .</span>
+        <span id="scene-result" class="scene-result">PASS · 2 of 2 rules</span>
+      </div>
     </div>
   </section>
 
@@ -261,7 +306,7 @@ crane agent install --profile claude</pre>
       <a href="https://github.com/VishuKalier2003/Agentscript" rel="noopener" class="hover:text-ink">GitHub</a>
       <a href="https://github.com/VishuKalier2003/Agentscript/releases" rel="noopener" class="hover:text-ink">Releases</a>
       <a href="https://agentscript-service.onrender.com" rel="noopener" class="hover:text-ink">Dashboard</a>
-      <a href="https://github.com/VishuKalier2003/Agentscript/blob/main/LICENSE" rel="noopener" class="hover:text-ink">Apache-2.0</a>
+      <a href="https://github.com/VishuKalier2003/Agentscript/blob/main/LICENSE.md" rel="noopener" class="hover:text-ink">Apache-2.0</a>
     </nav>
   </div>
 </footer>

@@ -5,7 +5,7 @@ mod common;
 
 use std::fs;
 
-use common::{git, Fixture, PAYMENTS};
+use common::{git, text, Fixture, PAYMENTS};
 use serde_json::Value;
 
 /** Find a registry record
@@ -575,5 +575,74 @@ fn registries_do_not_transfer() {
         trusted.status.success(),
         "a CI machine with the public key verifies: {}",
         common::text(&trusted)
+    );
+}
+
+/** Every selection needs context for agents: protect and target refuse to create one without
+ * it, the context is signed into the record, and the agent receives it
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn selections_require_context() {
+    let fixture = Fixture::ready();
+    for command in ["protect", "target"] {
+        let missing = fixture
+            .raw(&[
+                command,
+                "app/payments.py",
+                "start-line",
+                "1",
+                "end-line",
+                "2",
+            ])
+            .output()
+            .unwrap();
+        assert!(!missing.status.success(), "{}", text(&missing));
+        assert!(
+            text(&missing).contains("a selection needs context"),
+            "{}",
+            text(&missing)
+        );
+    }
+    let blank = fixture
+        .raw(&[
+            "protect",
+            "app/payments.py",
+            "start-line",
+            "1",
+            "end-line",
+            "2",
+            "context",
+            "  ",
+        ])
+        .output()
+        .unwrap();
+    assert!(!blank.status.success(), "blank context is no context");
+    let id = fixture.protect(&[
+        "app/payments.py",
+        "start-line",
+        "1",
+        "end-line",
+        "2",
+        "context",
+        "Fees are audited; never change the rate here.",
+    ]);
+    let record = fixture.crane_json("registry.json")["selections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["id"] == id.as_str())
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        record["context"],
+        "Fees are audited; never change the rate here."
+    );
+    assert!(
+        fixture.ok(&["validate"]).contains("PASS"),
+        "the signed record verifies"
     );
 }

@@ -21,8 +21,8 @@ test("parses policies and commands", () => {
 });
 
 test("builds protect and target arguments", () => {
-  assert.deepEqual(selectionArgs("preserve", "a.py", 3, 9, { policy: "p" }), ["protect", "a.py", "start-line", "3", "end-line", "9", "policy", "p"]);
-  assert.deepEqual(selectionArgs("target", "a.py", 1, 1, { changeType: "semantic", name: "n" }), ["target", "a.py", "start-line", "1", "end-line", "1", "change_type", "semantic", "name", "n"]);
+  assert.deepEqual(selectionArgs("preserve", "a.py", 3, 9, { context: "Keep the fee", policy: "p" }), ["protect", "a.py", "start-line", "3", "end-line", "9", "context", "Keep the fee", "policy", "p"]);
+  assert.deepEqual(selectionArgs("target", "a.py", 1, 1, { context: "Rename it", changeType: "semantic", name: "n" }), ["target", "a.py", "start-line", "1", "end-line", "1", "context", "Rename it", "change_type", "semantic", "name", "n"]);
   assert.equal(selectionIdFrom("Protected a.py lines 1-4 as selection K7M2P9RX (policy default)"), "K7M2P9RX");
 });
 
@@ -206,6 +206,12 @@ test("links zones by dragging: new flows, appends, prepends, merges, and refusal
   assert.throws(() => linkZones(edit.text, "cart", "audit"), /one ordered path/, "no branching from the middle");
   assert.throws(() => linkZones(edit.text, "audit", "pay"), /link to its first zone/);
   assert.throws(() => linkZones(edit.text, "audit", "audit"), /cannot follow itself/);
+  // Every flow carries context, as Crane requires; Foxx's order line follows the flow
+  const packs = parse(edit.text).context_packs as { id: string; content: string[] }[];
+  const own = packs.find((pack) => pack.id === "cart-to-pay-context");
+  assert.ok(own, "a flow made by linking gets its own context pack");
+  assert.equal(own?.content[0], "Flow cart-to-pay runs mail → cart → pay → ledger in this order; a change in one stage must keep the stages after it working.");
+  assert.deepEqual(parse(edit.text).flows[0].context_packs, ["cart-to-pay-context"]);
   let other = linkZones(text, "audit", "mail");
   assert.deepEqual(flows(other.text), ["audit-to-mail:proposed:audit>mail"], "a proposed zone keeps the flow proposed");
   other = linkZones(linkZones(other.text, "cart", "pay").text, "mail", "cart");

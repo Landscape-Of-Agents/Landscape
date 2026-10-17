@@ -515,6 +515,7 @@ pub(crate) fn build(workspace: &Workspace) -> Result<Value, String> {
             "kind": "selection",
             "name": record.name.clone().unwrap_or_else(|| record.id.clone()),
             "selection": record.id,
+            "context": record.context,
             "operation": record.operation,
             "policy": record.policy,
             "status": if span.is_some() { "resolved" } else { "UNRESOLVED" },

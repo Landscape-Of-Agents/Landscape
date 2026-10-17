@@ -532,12 +532,14 @@ function defaults(action) {
 
 function formFor(action) {
   switch (action.form) {
-    case "preserve": return '<div class="section"><h4>Rule</h4>' + policyChoice() + text("name", "Name", "Optional: shown in reports and the governance tree.", "e.g. payment capture") + "</div>";
-    case "target": return '<div class="section"><h4>Rule</h4>' + policyChoice() + choose("changeType", "Required kind of change", [option("", "Any real change", draft.changeType), option("logical_bn", "Business logic", draft.changeType), option("logical_cn", "Loops or branches", draft.changeType), option("logical_sn", "Structure", draft.changeType), option("semantic", "Names or comments", draft.changeType)], "The task passes only when the agent makes this kind of change here.") + text("name", "Name", "Optional.", "") + "</div>";
+    case "preserve": return '<div class="section"><h4>Rule</h4>' + policyChoice() + text("name", "Name", "Optional: shown in reports and the governance tree.", "e.g. payment capture") + "</div>" +
+      '<div class="section"><h4>Agent guidance</h4>' + contextBox("Context (required)", "Why these lines matter. Agents receive it whenever they touch them; Crane signs it into the selection.") + "</div>";
+    case "target": return '<div class="section"><h4>Rule</h4>' + policyChoice() + choose("changeType", "Required kind of change", [option("", "Any real change", draft.changeType), option("logical_bn", "Business logic", draft.changeType), option("logical_cn", "Loops or branches", draft.changeType), option("logical_sn", "Structure", draft.changeType), option("semantic", "Names or comments", draft.changeType)], "The task passes only when the agent makes this kind of change here.") + text("name", "Name", "Optional.", "") + "</div>" +
+      '<div class="section"><h4>Agent guidance</h4>' + contextBox("Context (required)", "What the change should achieve. Agents receive it whenever they touch these lines.") + "</div>";
     case "zone": return '<div class="section"><h4>Zone</h4>' + text("id", "Name", "Letters, digits, '-' or '_'.", "") + text("description", "Description", "What this code does and why it is guarded.", "e.g. Card charging and refunds") + coverChoice() + "</div>" + governance() +
       '<div class="section"><h4>Agent guidance</h4>' + contextBox("Context", "Given to the agent whenever a tool call touches this zone. Guidance, never authorization.") + toggle("enforce", "Enforce now", "Off: created as a proposal to review first.") + "</div>";
     case "flow": return '<div class="section"><h4>Flow</h4>' + text("id", "Name", "Letters, digits, '-' or '_'.", "") + text("entry", "Entry point", "<code>path:function</code>. The flow covers it and everything it calls.", "src/app.py:handler") + text("description", "Description", "", "") + "</div>" + governance() +
-      '<div class="section"><h4>Agent guidance</h4>' + contextBox("Context", "Given to the agent whenever a tool call touches this flow.") + toggle("enforce", "Enforce now", "Off: created as a proposal to review first.") + "</div>";
+      '<div class="section"><h4>Agent guidance</h4>' + contextBox("Context (required)", "Given to the agent whenever a tool call touches this flow. Every flow needs context.") + toggle("enforce", "Enforce now", "Off: created as a proposal to review first.") + "</div>";
     case "context":
       return '<div class="section"><h4>Where</h4>' + (state.entities.length ? choose("target", "Zone or flow", state.entities.map((e) => option(e.kind + ":" + e.id, e.kind + " · " + e.id + (e.status === "active" ? "" : " (" + e.status + ")"), draft.target)), "") : '<div class="help">No zones or flows yet. Create one first.</div>') + "</div>" +
         '<div class="section"><h4>Guidance</h4>' + contextBox("Context", "Added to any context it already has.") + "</div>";
@@ -617,7 +619,7 @@ function problems(action) {
   const name = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
   if ((action.id === "zone" || action.id === "flow") && !name.test(draft.id || "")) out.id = "Use letters, digits, '-' or '_' (starting with a letter or digit).";
   if (action.id === "flow" && !/.+:.+/.test(draft.entry || "")) out.entry = "Write path:function, for example src/app.py:handler.";
-  if (action.id === "context" && !String(draft.context || "").trim()) out.context = "Write at least one line of guidance.";
+  if (["context", "preserve", "target", "flow"].includes(action.id) && !String(draft.context || "").trim()) out.context = "Write at least one line of guidance for the agent.";
   if ((action.id === "policy" || action.id === "checkpoint") && !name.test(draft.name || "")) out.name = "Use letters, digits, '-' or '_'.";
   return out;
 }

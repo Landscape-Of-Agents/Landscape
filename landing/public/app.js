@@ -113,41 +113,103 @@ for (const card of $$(".spotlight")) {
   });
 }
 
-// A terminal that types a short session, then starts over
-const SCRIPT = [
-  ["cmd", "crane protect app/payments.py start-line 12 end-line 30"],
-  ["out", "Protected app/payments.py lines 12-30 as selection K7M2P9RX"],
-  ["cmd", "crane agent install --profile claude"],
-  ["out", "Hooks installed: every tool call is checked before it runs"],
-  ["deny", "✕ denied  Edit app/payments.py · preserved K7M2P9RX"],
-];
-const terminal = $("#terminal");
-function line(kind, text) {
-  const node = make("div", { class: kind === "cmd" ? "text-ink" : kind === "deny" ? "text-red-300" : "text-ink-3" });
-  if (kind === "cmd") node.append(make("span", { class: "select-none text-ink-3" }, "$ "));
-  node.append(document.createTextNode(text));
-  return node;
+// AgentScript at work: the agent tries to change the preserved fee (denied, with its context),
+// rewrites the targeted refund (passes), and crane test reports both rules passing; then again.
+// While the hero is off screen or the tab is hidden it waits; under reduced motion it shows the
+// end state.
+const scene = {
+  root: $("#scene"),
+  cursor: $("#scene-cursor"),
+  toast: $("#scene-deny"),
+  agent: $("#scene-agent"),
+  result: $("#scene-result"),
+  preserve: $("#block-preserve"),
+  target: $("#block-target"),
+  rulePreserve: $("#rule-preserve"),
+  ruleTarget: $("#rule-target"),
+  fee: $("#fee-rate"),
+  refund: $("#refund-code"),
+};
+const REFUND = "order.total - order.refunded";
+let sceneVisible = true;
+new IntersectionObserver((entries) => { sceneVisible = entries.some((entry) => entry.isIntersecting); }).observe(scene.root);
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Waits that hold while nobody can see the scene
+async function beat(ms) { await pause(ms); while (!sceneVisible || document.hidden) await pause(400); }
+// Put the cursor at the end of a line of code
+// Positions come from the screen, relative to the code area the cursor and the message live in
+const sceneHost = () => scene.cursor.parentElement.getBoundingClientRect();
+function cursorTo(line, offset) {
+  const host = sceneHost();
+  const text = (line.lastElementChild || line).getBoundingClientRect();
+  const row = line.getBoundingClientRect();
+  const x = Math.min(host.width - 70, text.right - host.left + (offset || 2));
+  scene.cursor.style.transform = "translate(" + x + "px," + (row.top - host.top + row.height / 2 - 9) + "px)";
 }
-async function typeSession() {
-  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  if (STILL) { terminal.replaceChildren(...SCRIPT.map(([kind, text]) => line(kind, text))); return; }
+function sceneReset() {
+  for (const node of [scene.preserve, scene.target, scene.rulePreserve, scene.ruleTarget]) node.classList.remove("deny", "pass");
+  scene.toast.classList.remove("on");
+  scene.result.classList.remove("on");
+  scene.cursor.classList.remove("on");
+  scene.fee.textContent = "0.03";
+  scene.fee.className = "";
+  scene.refund.textContent = "order.total";
+  scene.refund.className = "";
+  scene.agent.textContent = "claude-code is working";
+}
+function sceneEnd() {
+  sceneReset();
+  scene.rulePreserve.classList.add("deny");
+  scene.preserve.classList.add("deny");
+  scene.refund.textContent = REFUND;
+  scene.ruleTarget.classList.add("pass");
+  scene.target.classList.add("pass");
+  scene.result.classList.add("on");
+}
+async function playScene() {
+  if (STILL) { sceneEnd(); return; }
+  const feeLine = $("#line-fee"), refundLine = $("#line-refund");
   for (;;) {
-    terminal.replaceChildren();
-    for (const [kind, text] of SCRIPT) {
-      const node = line(kind, kind === "cmd" ? "" : text);
-      terminal.append(node);
-      if (kind === "cmd") {
-        const caret = make("span", { class: "ml-px inline-block h-4 w-2 translate-y-0.5 animate-caret bg-ink/80" });
-        node.append(caret);
-        for (const character of text) { caret.before(document.createTextNode(character)); await wait(22 + Math.random() * 40); }
-        await wait(380);
-        caret.remove();
-      } else await wait(520);
+    sceneReset();
+    await beat(700);
+    // 1. The agent goes for the preserved fee
+    cursorTo(feeLine);
+    scene.cursor.classList.add("on");
+    scene.agent.textContent = "claude-code · Edit app/payments.py";
+    await beat(1100);
+    scene.fee.className = "scene-struck";
+    await beat(500);
+    // 2. Crane denies it before it runs, and gives the agent the selection's context
+    scene.preserve.classList.add("deny");
+    scene.rulePreserve.classList.add("deny");
+    scene.toast.style.top = feeLine.getBoundingClientRect().bottom - sceneHost().top + 6 + "px";
+    scene.toast.classList.add("on");
+    await beat(2600);
+    scene.toast.classList.remove("on");
+    scene.fee.className = "";
+    // 3. The agent rewrites the targeted refund instead
+    cursorTo(refundLine);
+    await beat(1000);
+    scene.refund.textContent = "";
+    scene.refund.className = "scene-typed";
+    for (const character of REFUND) {
+      scene.refund.textContent += character;
+      cursorTo(refundLine, 3);
+      await pause(28 + Math.random() * 30);
     }
-    await wait(4200);
+    await beat(500);
+    scene.refund.className = "";
+    scene.target.classList.add("pass");
+    scene.ruleTarget.classList.add("pass");
+    scene.cursor.classList.remove("on");
+    // 4. crane test agrees
+    await beat(700);
+    scene.agent.textContent = "claude-code is done";
+    scene.result.classList.add("on");
+    await beat(3800);
   }
 }
-typeSession();
+playScene();
 
 // The dashboard card's bars move like live data
 const bars = $("#bars");

@@ -121,6 +121,8 @@ pub(crate) enum Status {
  * Fields
     - id: String - 8-character identifier written in the markers
     - name: Option<String> - optional human-readable name
+    - context: Option<String> - guidance for agents working in the selection (required since 0.4.23;
+      absent in older records, which keep their signed digests)
     - repository_id: String - identity digest of the repository the selection belongs to
     - operation: Operation - preserve or target, as bound by the policy command
     - change_type: Option<String> - required change kind of a target
@@ -140,6 +142,8 @@ pub(crate) enum Status {
 pub(crate) struct Record {
     pub(crate) id: String,
     pub(crate) name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) context: Option<String>,
     pub(crate) repository_id: String,
     pub(crate) operation: Operation,
     pub(crate) change_type: Option<String>,
@@ -369,6 +373,7 @@ mod tests {
         let mut record = Record {
             id: "K7M2P9RX".into(),
             name: None,
+            context: None,
             repository_id: "repo".into(),
             operation: Operation::Preserve,
             change_type: None,

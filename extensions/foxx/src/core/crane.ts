@@ -94,7 +94,7 @@ export function parseJson<T>(result: CraneResult): T | undefined {
  * @param file repository-relative path
  * @param startLine first line, 1-based
  * @param endLine last line, 1-based
- * @param options policy, change type, and name
+ * @param options context (required by Crane), policy, change type, and name
  * @returns arguments
  */
 export function selectionArgs(
@@ -102,9 +102,9 @@ export function selectionArgs(
   file: string,
   startLine: number,
   endLine: number,
-  options: { policy?: string; changeType?: string; name?: string },
+  options: { context: string; policy?: string; changeType?: string; name?: string },
 ): string[] {
-  const args = [operation === "preserve" ? "protect" : "target", file, "start-line", String(startLine), "end-line", String(endLine)];
+  const args = [operation === "preserve" ? "protect" : "target", file, "start-line", String(startLine), "end-line", String(endLine), "context", options.context];
   if (options.policy) args.push("policy", options.policy);
   if (operation === "target" && options.changeType) args.push("change_type", options.changeType);
   if (options.name) args.push("name", options.name);

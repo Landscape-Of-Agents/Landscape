@@ -92,9 +92,10 @@ Basic
   crane --version
   crane init
   crane checkpoint [NAME]
-  crane protect FILE [policy NAME] [checkpoint NAME] [start-line N] [end-line N] [name LABEL]
-  crane target FILE [policy NAME] [checkpoint NAME] [start-line N] [end-line N] [name LABEL]
-               [change_type logical_bn|logical_cn|logical_sn|semantic]
+  crane protect FILE context TEXT [policy NAME] [checkpoint NAME] [start-line N] [end-line N]
+                [name LABEL]
+  crane target FILE context TEXT [policy NAME] [checkpoint NAME] [start-line N] [end-line N]
+               [name LABEL] [change_type logical_bn|logical_cn|logical_sn|semantic]
   crane --set default policy NAME
   crane --set default checkpoint NAME
   crane parse file FILE

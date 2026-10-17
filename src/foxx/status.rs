@@ -82,6 +82,7 @@ fn governance(workspace: &Workspace) -> Result<Value, String> {
             json!({
                 "id": record.id,
                 "name": record.name,
+                "context": record.context,
                 "operation": record.operation,
                 "change_type": record.change_type,
                 "policy": record.policy,

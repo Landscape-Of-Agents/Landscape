@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root { color-scheme: dark; }
+  /* The hidden attribute always wins over display utilities such as grid or flex */
+  [hidden] { display: none !important; }
+  html { scroll-behavior: smooth; scroll-padding-top: 6rem; -webkit-text-size-adjust: 100%; }
+  body { @apply bg-night font-sans text-ink antialiased; overflow-x: clip; }
+  ::selection { background: rgba(255, 255, 255, 0.18); }
+  :focus-visible { @apply rounded-md outline outline-2 outline-offset-2 outline-white/70; }
+  code, pre, kbd { @apply font-mono; }
+}
+
+@layer components {
+  /* Frosted glass: translucent fill, hairline border, a glossy sheen along the top edge */
+  .glass {
+    @apply relative rounded-2xl border border-white/[0.08] bg-white/[0.03] backdrop-blur-xl;
+    background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0) 40%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 30px 60px -30px rgba(0, 0, 0, 0.9);
+  }
+  /* A card whose border and fill light up where the pointer is (--x and --y are set by app.js) */
+  .spotlight { @apply glass overflow-hidden transition-colors duration-300 hover:border-white/[0.16]; }
+  .spotlight::before {
+    content: ""; @apply pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-300;
+    background: radial-gradient(420px circle at var(--x, 50%) var(--y, 50%), rgba(255, 255, 255, 0.07), transparent 45%);
+  }
+  .spotlight:hover::before { @apply opacity-100; }
+
+  .btn { @apply inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl px-5 py-2.5 text-sm font-medium transition duration-200 active:scale-[.98]; }
+  .btn-light { @apply btn bg-gradient-to-b from-white to-zinc-300 text-night shadow-[inset_0_1px_0_rgba(255,255,255,.9),0_10px_30px_-10px_rgba(255,255,255,.35)] hover:to-zinc-200; }
+  .btn-ghost { @apply btn border border-white/10 bg-white/[0.04] text-ink hover:border-white/20 hover:bg-white/[0.08]; }
+
+  .eyebrow { @apply font-mono text-[11px] uppercase tracking-[0.2em] text-ink-3; }
+  .title { @apply text-3xl font-medium tracking-tight text-ink sm:text-4xl; }
+  .accent { @apply font-serif font-normal italic tracking-normal text-transparent; background: linear-gradient(100deg, #fafafa 20%, #8e8e94 50%, #fafafa 80%) 0 0 / 200% 100%; -webkit-background-clip: text; background-clip: text; }
+  .accent-shine { @apply accent animate-shine; }
+  .chip { @apply inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-ink-2; }
+  .field { @apply w-full rounded-xl border border-white/10 bg-black/40 px-3.5 py-2.5 text-sm text-ink placeholder:text-ink-3 transition focus:border-white/30 focus:outline-none focus:ring-4 focus:ring-white/5; }
+  .icon-btn { @apply grid h-8 w-8 shrink-0 place-items-center rounded-lg text-ink-3 transition hover:bg-white/[0.07] hover:text-ink; }
+
+  /* Sections fade up the first time they scroll into view (app.js adds .seen) */
+  .reveal { opacity: 0; transform: translateY(18px); transition: opacity .8s cubic-bezier(.2, .7, .2, 1), transform .8s cubic-bezier(.2, .7, .2, 1); }
+  .reveal.seen { opacity: 1; transform: none; }
+}
+
+@layer utilities {
+  .mask-fade-x { mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent); }
+  .mask-fade-b { mask-image: linear-gradient(180deg, #000 60%, transparent); }
+  .grain { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E"); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+  .reveal { opacity: 1; transform: none; }
+}

@@ -1,14 +1,15 @@
-# Render Blueprint for the Agent Landscape landing page: a static site served from landing/.
-# It has no build step, and it lists the release downloads from the GitHub API in the browser,
-# so a new Crane release appears without redeploying. Only changes under landing/ redeploy it.
+# Render Blueprint for the Agent Landscape landing page: a static site built from landing/.
+# The build compiles Tailwind CSS (landing/src/input.css -> landing/public/styles.css). Release
+# downloads, download totals, and the visit counter are read in the browser, so a new Crane
+# release appears without redeploying. Only changes under landing/ redeploy it.
 # This Blueprint manages only this static site; the ingestion service is configured separately.
 services:
   - type: web
     name: agent-landscape
     runtime: static
     rootDir: landing
-    buildCommand: echo "static site, nothing to build"
-    staticPublishPath: .
+    buildCommand: npm ci && npm run build
+    staticPublishPath: public
     autoDeploy: true
     buildFilter:
       paths:
@@ -16,7 +17,7 @@ services:
     headers:
       - path: /*
         name: Content-Security-Policy
-        value: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src https://api.github.com; form-action https://formsubmit.co; frame-ancestors 'none'; base-uri 'self'"
+        value: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src https://api.github.com https://abacus.jasoncameron.dev; form-action https://formsubmit.co; frame-ancestors 'none'; base-uri 'self'"
       - path: /*
         name: X-Content-Type-Options
         value: nosniff

@@ -1,0 +1,375 @@
+"use strict";
+// Agent Landscape: the latest Crane release and download totals (read from GitHub on every visit,
+// so new releases appear without redeploying), a visit counter, install snippets, the CLI
+// reference, the feedback form, and the page's motion (all of it off under reduced motion).
+
+const REPO = "VishuKalier2003/Agentscript";
+const RELEASES = "https://github.com/" + REPO + "/releases";
+// Free, public counter (abacus.jasoncameron.dev): one hit per browser session
+const VISITS = "https://abacus.jasoncameron.dev";
+const VISITS_KEY = "agent-landscape/visits";
+const STILL = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const COMMANDS = [
+  ["Basics", "crane --version", "Print the installed Crane version."],
+  ["Basics", "crane help", "Print the full command reference with every option."],
+  ["Basics", "crane init", "Create the repository's signed rules and this machine's signing key (owner), or join them after confirming the owner key (teammate)."],
+  ["Basics", "crane checkpoint baseline", "Record the current commit as a trusted checkpoint. Selections and later checks are compared against it."],
+  ["Selections", "crane protect FILE start-line N end-line N", "Preserve lines: agents may not change them. Crane inserts anchor comments, signs the selection, and adds it to the policy. Options: policy NAME, checkpoint NAME, name LABEL."],
+  ["Selections", "crane target FILE start-line N end-line N change_type logical_bn", "Target lines: the task passes only once the agent changes them, optionally by kind: logical_bn, logical_cn, logical_sn, or semantic."],
+  ["Selections", "crane --set default policy NAME", "Use this policy for new selections when none is given."],
+  ["Selections", "crane --set default checkpoint NAME", "Use this checkpoint for new selections when none is given."],
+  ["Checks", "crane validate --json", "Verify integrity, signatures, policy syntax, markers, zones, and flows."],
+  ["Checks", "crane test . --json", "Run every preserve and target rule. A policy passes only if all its rules pass."],
+  ["Checks", "crane parse file FILE", "Check the syntax of one policy file."],
+  ["Policies", "crane create policy NAME FILENAME", "Create a policy in .crane/policies/FILENAME.crane."],
+  ["Policies", "crane add policy NAME marker MARKER", "Move a selection's rule into another policy."],
+  ["Policies", "crane policy NAME status", "Run one policy end to end, with an enforcement self-test and a check of the hooks and CI."],
+  ["Policies", "crane add policy-context file FILE policy NAME", "Attach a text file as guidance agents receive with the policy."],
+  ["Policies", "crane policy-context NAME --view", "Show the context files bound to a policy."],
+  ["Zones", "crane governance sign", "Approve .crane/governance.yaml (zones, flows, context packs) with an admin key. Refused while flows form a cycle."],
+  ["Zones", "crane governance graph --json", "Zones, flows in stage order, and selections as an acyclic graph, with the agents active in each."],
+  ["Repository", "crane repo --https https://github.com/OWNER/REPO", "Connect this clone to its GitHub repository (or --ssh, --gh-cli), with optional privileges."],
+  ["Repository", "crane repo status", "Check the live connection: CONNECTED, NOT_CONNECTED, or FAILURE."],
+  ["Repository", "crane repo --view", "Show the privileges granted to Crane and the GitHub grant."],
+  ["Repository", "crane repo del", "Delete the repository connection."],
+  ["Repository", "crane github", "Sign in with gh and grant read access for this terminal session."],
+  ["Repository", "crane github days DAYS", "Grant read access through gh for a number of days."],
+  ["Repository", "crane data clear", "Permanently clear this repository's hosted data. CODEOWNERS only."],
+  ["Sessions", "crane task current", "Show the current task of the most recently active agent session."],
+  ["Sessions", "crane task .", "List the tasks of the current session."],
+  ["Sessions", "crane session current", "Show the current agent session."],
+  ["Sessions", "crane session .", "List every recorded agent session."],
+  ["Agents", "crane agent install --profile claude", "Install Crane's hooks for claude, codex, copilot, or gemini."],
+  ["Agents", "crane agent uninstall --profile claude", "Remove Crane's hooks for an agent. Refused inside an agent session."],
+  ["Agents", "crane agent hooks --profile claude", "Validate an agent's installed hooks."],
+  ["Agents", "crane agent link", "Link this machine's upload key to your GitHub account."],
+  ["Admins", "crane admin register", "Owner: ask a GitHub admin to confirm the owner key on the dashboard."],
+  ["Admins", "crane admin list", "Show the owner, the admins, and this machine's role."],
+  ["Admins", "crane admin add PUBLIC_KEY name NAME", "Owner: let another key sign governance changes."],
+  ["Admins", "crane admin del PUBLIC_KEY", "Owner: revoke an admin key."],
+  ["Alerts", "crane integrate slack", "Set up an integration: jira, whatsapp, slack, or github."],
+  ["Alerts", "crane alert add NAME metric METRIC above N window 15m", "Add an alert rule on a metric, with channels, severity, cooldown, and filters."],
+  ["Alerts", "crane alert list --json", "List the alert rules with their state."],
+  ["Alerts", "crane alert check --json", "Evaluate every rule now and deliver new notifications."],
+  ["Alerts", "crane alert test NAME", "Send a test notification (also remove, enable, or disable NAME)."],
+  ["Alerts", "crane alert log --json", "Show the history of firings, resolutions, and deliveries."],
+  ["Alerts", "crane alert metrics", "List the metrics an alert rule can use."],
+].map(([group, command, help]) => ({ group, command, help }));
+
+const $ = (selector, root) => (root || document).querySelector(selector);
+const $$ = (selector, root) => [...(root || document).querySelectorAll(selector)];
+const make = (tag, attributes, ...children) => {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attributes || {})) {
+    if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else if (value !== false && value != null) node.setAttribute(key, value === true ? "" : value);
+  }
+  node.append(...children.filter((child) => child != null));
+  return node;
+};
+const store = (kind) => ({
+  get(key) { try { return JSON.parse(window[kind].getItem(key)); } catch { return null; } },
+  set(key, value) { try { window[kind].setItem(key, JSON.stringify(value)); } catch { /* blocked storage */ } },
+});
+const session = store("sessionStorage");
+const COPY_ICON = '<svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>';
+const CHECK_ICON = '<svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m5 12 5 5L20 7"/></svg>';
+
+// ------------------------------------------------------------------ toast and copy
+let toastTimer;
+function toast(text) {
+  const node = $("#toast");
+  node.textContent = text;
+  node.classList.remove("opacity-0", "translate-y-4");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => node.classList.add("opacity-0", "translate-y-4"), 1600);
+}
+async function copy(text, button) {
+  try { await navigator.clipboard.writeText(text); } catch {
+    const area = make("textarea", { class: "fixed opacity-0", "aria-hidden": "true" });
+    area.value = text;
+    document.body.append(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+  toast("Copied");
+  if (button) { const before = button.innerHTML; button.innerHTML = CHECK_ICON; setTimeout(() => (button.innerHTML = before), 1200); }
+}
+for (const button of $$("[data-copy]")) button.addEventListener("click", () => copy(document.getElementById(button.dataset.copy).textContent, button));
+
+// ------------------------------------------------------------------ motion
+// Sections fade up once; cards light up under the pointer
+const seen = new IntersectionObserver((entries) => {
+  for (const entry of entries) if (entry.isIntersecting) { entry.target.classList.add("seen"); seen.unobserve(entry.target); }
+}, { rootMargin: "0px 0px -10% 0px" });
+for (const node of $$(".reveal")) seen.observe(node);
+for (const card of $$(".spotlight")) {
+  card.addEventListener("pointermove", (event) => {
+    const box = card.getBoundingClientRect();
+    card.style.setProperty("--x", event.clientX - box.left + "px");
+    card.style.setProperty("--y", event.clientY - box.top + "px");
+  });
+}
+
+// A terminal that types a short session, then starts over
+const SCRIPT = [
+  ["cmd", "crane protect app/payments.py start-line 12 end-line 30"],
+  ["out", "Protected app/payments.py lines 12-30 as selection K7M2P9RX"],
+  ["cmd", "crane agent install --profile claude"],
+  ["out", "Hooks installed: every tool call is checked before it runs"],
+  ["deny", "✕ denied  Edit app/payments.py · preserved K7M2P9RX"],
+];
+const terminal = $("#terminal");
+function line(kind, text) {
+  const node = make("div", { class: kind === "cmd" ? "text-ink" : kind === "deny" ? "text-red-300" : "text-ink-3" });
+  if (kind === "cmd") node.append(make("span", { class: "select-none text-ink-3" }, "$ "));
+  node.append(document.createTextNode(text));
+  return node;
+}
+async function typeSession() {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  if (STILL) { terminal.replaceChildren(...SCRIPT.map(([kind, text]) => line(kind, text))); return; }
+  for (;;) {
+    terminal.replaceChildren();
+    for (const [kind, text] of SCRIPT) {
+      const node = line(kind, kind === "cmd" ? "" : text);
+      terminal.append(node);
+      if (kind === "cmd") {
+        const caret = make("span", { class: "ml-px inline-block h-4 w-2 translate-y-0.5 animate-caret bg-ink/80" });
+        node.append(caret);
+        for (const character of text) { caret.before(document.createTextNode(character)); await wait(22 + Math.random() * 40); }
+        await wait(380);
+        caret.remove();
+      } else await wait(520);
+    }
+    await wait(4200);
+  }
+}
+typeSession();
+
+// The dashboard card's bars move like live data
+const bars = $("#bars");
+const barNodes = Array.from({ length: 16 }, () => bars.appendChild(make("span", { class: "flex-1 rounded-t-md bg-gradient-to-t from-white/[0.06] to-white/40 transition-[height] duration-1000 ease-out" })));
+function shuffleBars() { for (const node of barNodes) node.style.height = 18 + Math.random() * 78 + "%"; }
+shuffleBars();
+if (!STILL) setInterval(() => { if (!document.hidden) shuffleBars(); }, 2400);
+
+// ------------------------------------------------------------------ download and install
+const TARGETS = { linux: "x86_64-unknown-linux-gnu", macos: "aarch64-apple-darwin", windows: "x86_64-pc-windows-msvc" };
+const INSTALL = {
+  linux: (tag) => `curl -LO ${RELEASES}/download/${tag}/crane-${tag}-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf crane-${tag}-x86_64-unknown-linux-gnu.tar.gz
+sudo mv crane-${tag}-x86_64-unknown-linux-gnu/crane /usr/local/bin/
+crane --version`,
+  macos: (tag) => `# Apple silicon; use x86_64-apple-darwin on Intel
+curl -LO ${RELEASES}/download/${tag}/crane-${tag}-aarch64-apple-darwin.tar.gz
+tar -xzf crane-${tag}-aarch64-apple-darwin.tar.gz
+xattr -d com.apple.quarantine crane-${tag}-aarch64-apple-darwin/crane
+sudo mv crane-${tag}-aarch64-apple-darwin/crane /usr/local/bin/`,
+  windows: (tag) => `# PowerShell
+Invoke-WebRequest ${RELEASES}/download/${tag}/crane-${tag}-x86_64-pc-windows-msvc.zip -OutFile crane.zip
+Expand-Archive crane.zip -DestinationPath "$env:LOCALAPPDATA\\Crane"
+$bin = "$env:LOCALAPPDATA\\Crane\\crane-${tag}-x86_64-pc-windows-msvc"
+[Environment]::SetEnvironmentVariable("Path", "$env:Path;$bin", "User")`,
+};
+const NAMES = { linux: "Linux", macos: "macOS", windows: "Windows" };
+let latest = null;
+function detect() {
+  const agent = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || "";
+  return /win/i.test(agent) ? "windows" : /mac|iphone|ipad/i.test(agent) ? "macos" : "linux";
+}
+let os = detect();
+function formatSize(bytes) { return bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(bytes / 1024)) + " KB"; }
+function showOs(next) {
+  os = next;
+  for (const tab of $$("#os-tabs [role=tab]")) { const on = tab.dataset.os === os; tab.setAttribute("aria-selected", String(on)); tab.tabIndex = on ? 0 : -1; }
+  const tag = latest ? latest.tag_name : "vX.Y.Z";
+  $("#install-code").textContent = INSTALL[os](tag);
+  $("#install-caption").textContent = "Install on " + NAMES[os];
+  const asset = latest && latest.assets.find((item) => item.name.includes(TARGETS[os]) && !item.name.endsWith(".sha256"));
+  const button = $("#download-button");
+  button.href = asset ? asset.browser_download_url : RELEASES + "/latest";
+  $("#download-label").textContent = "Download for " + NAMES[os] + (asset ? " · " + formatSize(asset.size) : "");
+}
+$$("#os-tabs [role=tab]").forEach((tab, index, tabs) => {
+  tab.addEventListener("click", () => showOs(tab.dataset.os));
+  tab.addEventListener("keydown", (event) => {
+    const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+    if (!step) return;
+    const next = tabs[(index + step + tabs.length) % tabs.length];
+    showOs(next.dataset.os);
+    next.focus();
+  });
+});
+showOs(os);
+
+// ------------------------------------------------------------------ numbers
+const MILESTONES = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000];
+const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
+// Numbers count up once the band is on screen; data arriving later animates then
+let statsVisible = false;
+function setStat(name, value) {
+  const node = $(`[data-stat="${name}"]`);
+  if (!node || !Number.isFinite(value)) return;
+  node.dataset.value = String(value);
+  const milestone = $(`[data-milestone="${name}"]`);
+  const crossed = MILESTONES.filter((mark) => value >= mark).pop();
+  if (milestone && crossed) milestone.textContent = "Crossed " + compact.format(crossed) + (name === "downloads" ? " downloads" : " visits");
+  if (statsVisible) countUp(node);
+}
+function countUp(node) {
+  const target = Number(node.dataset.value);
+  if (!Number.isFinite(target)) return;
+  const show = (value) => (node.textContent = value >= 10000 ? compact.format(value) : Math.round(value).toLocaleString());
+  if (STILL) return show(target);
+  const start = performance.now();
+  const from = Number(node.dataset.shown || 0);
+  const step = (now) => {
+    const progress = Math.min(1, (now - start) / 1400);
+    const value = from + (target - from) * (1 - Math.pow(1 - progress, 3));
+    show(value);
+    node.dataset.shown = String(value);
+    if (progress < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+new IntersectionObserver((entries, observer) => {
+  if (!entries.some((entry) => entry.isIntersecting)) return;
+  statsVisible = true;
+  for (const node of $$("[data-stat]")) countUp(node);
+  observer.disconnect();
+}, { threshold: 0.3 }).observe($("#stats"));
+
+async function loadReleases() {
+  const cached = session.get("releases");
+  let releases = cached && Date.now() - cached.at < 10 * 60 * 1000 ? cached.releases : null;
+  if (!releases) {
+    try {
+      const response = await fetch("https://api.github.com/repos/" + REPO + "/releases?per_page=100", { headers: { Accept: "application/vnd.github+json" } });
+      if (!response.ok) throw new Error(String(response.status));
+      // Keep only what the page uses, so the cache stays small
+      releases = (await response.json()).map((release) => ({
+        tag_name: release.tag_name, html_url: release.html_url, published_at: release.published_at, draft: release.draft, prerelease: release.prerelease,
+        assets: release.assets.map((asset) => ({ name: asset.name, size: asset.size, download_count: asset.download_count, browser_download_url: asset.browser_download_url })),
+      }));
+      session.set("releases", { at: Date.now(), releases });
+    } catch {
+      releases = cached && cached.releases;
+    }
+  }
+  if (!releases || !releases.length) { $("#release-meta").textContent = "Binaries for Linux, Windows, and macOS."; return; }
+  latest = releases.find((release) => !release.draft && !release.prerelease) || releases[0];
+  const date = latest.published_at ? new Date(latest.published_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "";
+  $("#release-meta").textContent = "Crane " + latest.tag_name + (date ? " · released " + date : "");
+  $("#release-chip").textContent = "Crane " + latest.tag_name + " is out";
+  $("#release-page").href = latest.html_url;
+  showOs(os);
+  const published = releases.filter((release) => !release.draft);
+  setStat("releases", published.length);
+  setStat("downloads", published.reduce((sum, release) => sum + release.assets.filter((asset) => !asset.name.endsWith(".sha256")).reduce((total, asset) => total + asset.download_count, 0), 0));
+}
+async function loadVisits() {
+  // A visit counts once per browser session; later page views, and local previews, only read it
+  const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  const counted = local || session.get("visit-counted");
+  try {
+    const response = await fetch(VISITS + (counted ? "/get/" : "/hit/") + VISITS_KEY);
+    // The counter does not exist until the first visit is counted
+    const { value } = response.status === 404 ? { value: 0 } : response.ok ? await response.json() : Promise.reject(new Error(String(response.status)));
+    session.set("visit-counted", true);
+    setStat("visits", value);
+  } catch {
+    const node = $('[data-stat="visits"]');
+    node.textContent = "—";
+    $('[data-milestone="visits"]').textContent = "counter unavailable";
+  }
+}
+loadReleases();
+loadVisits();
+
+// ------------------------------------------------------------------ commands
+const tooltip = $("#tooltip");
+let tipOwner = null;
+function showTip(button, item) {
+  tooltip.replaceChildren(make("b", { class: "mb-1 block break-all font-mono text-xs font-normal text-ink" }, item.command), document.createTextNode(item.help));
+  tooltip.hidden = false;
+  const box = button.getBoundingClientRect();
+  const left = Math.min(window.innerWidth - tooltip.offsetWidth - 12, Math.max(12, box.right - tooltip.offsetWidth));
+  const top = box.top - tooltip.offsetHeight - 8 < 8 ? box.bottom + 8 : box.top - tooltip.offsetHeight - 8;
+  tooltip.style.left = left + "px";
+  tooltip.style.top = top + "px";
+  if (tipOwner && tipOwner !== button) tipOwner.setAttribute("aria-expanded", "false");
+  tipOwner = button;
+  button.setAttribute("aria-expanded", "true");
+}
+function hideTip() { tooltip.hidden = true; if (tipOwner) tipOwner.setAttribute("aria-expanded", "false"); tipOwner = null; }
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") hideTip(); });
+window.addEventListener("scroll", hideTip, { passive: true });
+
+const GROUPS = [...new Set(COMMANDS.map((item) => item.group))];
+let group = "Basics";
+function renderGroups() {
+  $("#command-groups").replaceChildren(...GROUPS.map((name) => make("button", {
+    type: "button",
+    "aria-pressed": String(name === group),
+    class: "shrink-0 rounded-full border px-3 py-1 text-xs transition " + (name === group ? "border-white/25 bg-white/10 text-ink" : "border-white/[0.08] text-ink-3 hover:text-ink"),
+    onclick: () => { group = name; $("#command-search").value = ""; renderGroups(); renderCommands(); },
+  }, name)));
+}
+function renderCommands() {
+  const query = $("#command-search").value.trim().toLowerCase();
+  // Searching looks through every area; otherwise one area is shown
+  const shown = COMMANDS.filter((item) => (query ? (item.command + " " + item.help).toLowerCase().includes(query) : item.group === group));
+  $("#command-groups").classList.toggle("opacity-40", Boolean(query));
+  $("#command-list").replaceChildren(...(shown.length ? shown.map((item) => {
+    const help = make("button", { type: "button", class: "icon-btn font-medium", "aria-label": "What " + item.command + " does", "aria-expanded": "false", "aria-describedby": "tooltip" }, "?");
+    help.addEventListener("mouseenter", () => showTip(help, item));
+    help.addEventListener("focus", () => showTip(help, item));
+    help.addEventListener("click", () => (tipOwner === help ? hideTip() : showTip(help, item)));
+    help.addEventListener("mouseleave", () => { if (document.activeElement !== help) hideTip(); });
+    help.addEventListener("blur", hideTip);
+    const button = make("button", { type: "button", class: "icon-btn", "aria-label": "Copy " + item.command });
+    button.innerHTML = COPY_ICON;
+    button.addEventListener("click", () => copy(item.command, button));
+    return make("li", { class: "flex items-center gap-1 rounded-lg px-2.5 py-1.5 transition hover:bg-white/[0.03]" },
+      make("code", { class: "min-w-0 flex-1 break-words text-[13px] text-ink" }, item.command), help, button);
+  }) : [make("li", { class: "px-3 py-6 text-center text-sm text-ink-3" }, "No command matches.")]));
+}
+$("#command-search").addEventListener("input", renderCommands);
+renderGroups();
+renderCommands();
+
+// ------------------------------------------------------------------ feedback
+// The form posts to FormSubmit, which emails it with the images attached, then returns here
+const MAX_IMAGES_BYTES = 5 * 1024 * 1024;
+const form = $("#feedback-form");
+$("#feedback-next").value = location.origin + location.pathname + "?sent=1#feedback";
+if (new URLSearchParams(location.search).get("sent") === "1") {
+  $("#feedback-sent").hidden = false;
+  history.replaceState(null, "", location.pathname + "#feedback");
+}
+form.addEventListener("submit", (event) => {
+  const error = $("#feedback-error");
+  const fail = (text) => { event.preventDefault(); error.textContent = text; error.hidden = false; };
+  error.hidden = true;
+  const images = [...$("#feedback-images").files];
+  if (images.some((file) => !file.type.startsWith("image/"))) return fail("Only images can be attached.");
+  if (images.reduce((sum, file) => sum + file.size, 0) > MAX_IMAGES_BYTES) return fail("The images are over 5 MB in total; attach fewer or smaller ones.");
+  const links = form.elements.links.value.split(/\s+/).filter(Boolean);
+  const bad = links.find((link) => { try { return !/^https?:$/.test(new URL(link).protocol); } catch { return true; } });
+  if (bad) return fail("This is not a web link: " + bad);
+  const button = $("button[type=submit]", form);
+  button.disabled = true;
+  button.textContent = "Sending…";
+});
+
+// ------------------------------------------------------------------ navigation
+const menu = $("#menu");
+const mobile = $("#mobile-links");
+const setMenu = (open) => { mobile.hidden = !open; menu.setAttribute("aria-expanded", String(open)); menu.setAttribute("aria-label", open ? "Close the menu" : "Open the menu"); };
+menu.addEventListener("click", () => setMenu(mobile.hidden));
+mobile.addEventListener("click", (event) => { if (event.target.closest("a")) setMenu(false); });
+document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !mobile.hidden) { setMenu(false); menu.focus(); } });
+$("#year").textContent = String(new Date().getFullYear());

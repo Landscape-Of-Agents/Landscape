@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Landscape</title>
+<meta name="description" content="Crane puts guardrails on AI coding agents: mark the code they must keep and the code they must change, and check every tool call before it runs.">
+<meta name="theme-color" content="#050506">
+<meta property="og:title" content="Agent Landscape">
+<meta property="og:description" content="Guardrails for AI coding agents. CLI, editor extension, and dashboard.">
+<link rel="icon" href="favicon.png" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body class="min-h-screen">
+<a href="#main" class="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-white focus:px-4 focus:py-2 focus:text-night">Skip to content</a>
+
+<!-- Backdrop: slow grey aurora, a fading grid, and film grain -->
+<div aria-hidden="true" class="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+  <div class="absolute -left-40 -top-40 h-[38rem] w-[38rem] animate-drift rounded-full bg-zinc-500/20 blur-[120px]"></div>
+  <div class="absolute -right-48 top-[28rem] h-[34rem] w-[34rem] animate-drift-slow rounded-full bg-zinc-400/10 blur-[120px]"></div>
+  <div class="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.03)_1px,transparent_1px)] bg-[size:64px_64px] [mask-image:radial-gradient(ellipse_at_50%_0%,#000,transparent_70%)]"></div>
+  <div class="grain absolute inset-0 opacity-[0.035] mix-blend-overlay"></div>
+</div>
+
+<header class="sticky top-0 z-40 px-4 pt-4">
+  <div class="glass mx-auto flex max-w-page items-center gap-3 rounded-2xl px-3 py-2 sm:px-4">
+    <a href="#top" class="flex items-center gap-2.5 font-medium tracking-tight">
+      <img src="logo.png" alt="" width="28" height="28" class="h-7 w-7">
+      <span>Agent Landscape</span>
+    </a>
+    <nav id="links" aria-label="Sections" class="ml-auto hidden items-center gap-1 text-sm text-ink-2 md:flex">
+      <a href="#products" class="rounded-lg px-3 py-1.5 transition hover:bg-white/5 hover:text-ink">Product</a>
+      <a href="#get" class="rounded-lg px-3 py-1.5 transition hover:bg-white/5 hover:text-ink">Install</a>
+      <a href="#commands" class="rounded-lg px-3 py-1.5 transition hover:bg-white/5 hover:text-ink">Commands</a>
+      <a href="#feedback" class="rounded-lg px-3 py-1.5 transition hover:bg-white/5 hover:text-ink">Feedback</a>
+      <a href="https://github.com/VishuKalier2003/Agentscript" rel="noopener" class="btn-ghost ml-2 !px-3.5 !py-1.5">
+        <svg viewBox="0 0 16 16" class="h-4 w-4" fill="currentColor" aria-hidden="true"><path d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.72 1.22 1.88.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.65-.89-3.65-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 8 0Z"/></svg>GitHub</a>
+    </nav>
+    <button id="menu" type="button" class="icon-btn ml-auto md:hidden" aria-expanded="false" aria-controls="mobile-links" aria-label="Open the menu">
+      <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 8h16M4 16h16"/></svg>
+    </button>
+  </div>
+  <nav id="mobile-links" aria-label="Sections" hidden class="glass mx-auto mt-2 grid max-w-page gap-1 p-2 text-sm md:hidden">
+    <a href="#products" class="rounded-lg px-3 py-2.5 hover:bg-white/5">Product</a>
+    <a href="#get" class="rounded-lg px-3 py-2.5 hover:bg-white/5">Install</a>
+    <a href="#commands" class="rounded-lg px-3 py-2.5 hover:bg-white/5">Commands</a>
+    <a href="#feedback" class="rounded-lg px-3 py-2.5 hover:bg-white/5">Feedback</a>
+    <a href="https://github.com/VishuKalier2003/Agentscript" rel="noopener" class="rounded-lg px-3 py-2.5 hover:bg-white/5">GitHub</a>
+  </nav>
+</header>
+
+<main id="main" class="mx-auto max-w-page px-4">
+  <!-- Hero -->
+  <section id="top" class="flex flex-col items-center pt-16 text-center sm:pt-24">
+    <img src="logo.png" alt="" width="88" height="88" class="h-20 w-20 animate-rise drop-shadow-[0_10px_40px_rgba(255,255,255,.12)] sm:h-[88px] sm:w-[88px]">
+    <a href="#get" class="chip mt-6 animate-rise [animation-delay:.08s] hover:border-white/20">
+      <span class="relative flex h-2 w-2"><span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-white/60"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-white"></span></span>
+      <span id="release-chip">Open source · Apache-2.0</span>
+    </a>
+    <h1 class="mt-6 max-w-3xl animate-rise text-balance text-[2.6rem] font-medium leading-[1.05] tracking-tight [animation-delay:.14s] sm:text-6xl md:text-7xl">
+      Guardrails for<br> <span class="accent-shine pr-1">AI coding agents.</span>
+    </h1>
+    <p class="mt-6 max-w-xl animate-rise text-base text-ink-2 [animation-delay:.2s] sm:text-lg">Mark the code an agent must keep and the code it must change. Crane checks every tool call before it runs.</p>
+    <div class="mt-8 flex animate-rise flex-wrap justify-center gap-3 [animation-delay:.26s]">
+      <a href="#get" class="btn-light">Download Crane</a>
+      <a href="#products" class="btn-ghost">How it works</a>
+    </div>
+
+    <!-- A terminal that types a short session -->
+    <div class="glass mt-14 w-full max-w-2xl animate-rise text-left [animation-delay:.34s]" aria-label="A terminal: Crane protects lines and denies an agent's edit of them" role="img">
+      <div class="flex items-center gap-2 border-b border-white/[0.06] px-4 py-3">
+        <span class="h-2.5 w-2.5 rounded-full bg-white/15"></span><span class="h-2.5 w-2.5 rounded-full bg-white/15"></span><span class="h-2.5 w-2.5 rounded-full bg-white/15"></span>
+        <span class="ml-2 font-mono text-xs text-ink-3">~/payments</span>
+      </div>
+      <pre id="terminal" class="min-h-[10.5rem] overflow-x-auto whitespace-pre-wrap break-words p-4 text-[12.5px] leading-7 text-ink-2 sm:p-5 sm:text-[13px]"></pre>
+    </div>
+  </section>
+
+  <!-- Agents -->
+  <section class="reveal mt-16 sm:mt-20" aria-label="Works with">
+    <p class="eyebrow text-center">Works with</p>
+    <div class="mask-fade-x mt-5 overflow-hidden">
+      <div class="flex w-max animate-marquee gap-12 pr-12 text-lg text-ink-3 hover:[animation-play-state:paused]">
+        <span>Claude Code</span><span>Codex</span><span>GitHub Copilot CLI</span><span>Gemini CLI</span><span>VS Code</span><span>GitHub Actions</span>
+        <span aria-hidden="true">Claude Code</span><span aria-hidden="true">Codex</span><span aria-hidden="true">GitHub Copilot CLI</span><span aria-hidden="true">Gemini CLI</span><span aria-hidden="true">VS Code</span><span aria-hidden="true">GitHub Actions</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- What is Crane -->
+  <section class="reveal pt-24 sm:pt-32" aria-labelledby="why-title">
+    <div class="mx-auto max-w-2xl text-center">
+      <p class="eyebrow">What is Crane</p>
+      <h2 id="why-title" class="title mt-3">A prompt is not a rule. <span class="accent">A contract is.</span></h2>
+      <p class="mt-4 text-ink-2">Agents edit faster than anyone can review. Crane turns what may change into signed contracts and enforces them where the agent acts.</p>
+    </div>
+    <div class="mt-12 grid gap-4 md:grid-cols-3">
+      <article class="spotlight p-6">
+        <span class="font-mono text-xs text-ink-3">01</span>
+        <h3 class="mt-6 text-lg font-medium">Preserve and target</h3>
+        <p class="mt-2 text-sm leading-relaxed text-ink-2">Lines an agent must not touch, and lines it must change. Markers move with the code.</p>
+      </article>
+      <article class="spotlight p-6">
+        <span class="font-mono text-xs text-ink-3">02</span>
+        <h3 class="mt-6 text-lg font-medium">Checked before it runs</h3>
+        <p class="mt-2 text-sm leading-relaxed text-ink-2">Every tool call is decided in the agent's hooks. Shell bypasses are caught after.</p>
+      </article>
+      <article class="spotlight p-6">
+        <span class="font-mono text-xs text-ink-3">03</span>
+        <h3 class="mt-6 text-lg font-medium">Signed evidence</h3>
+        <p class="mt-2 text-sm leading-relaxed text-ink-2">Hash-chained records show what each agent did, what was denied, and why.</p>
+      </article>
+    </div>
+  </section>
+
+  <!-- CLI, Extension, Dashboard -->
+  <section id="products" class="reveal pt-24 sm:pt-32" aria-labelledby="products-title">
+    <div class="mx-auto max-w-2xl text-center">
+      <p class="eyebrow">Product</p>
+      <h2 id="products-title" class="title mt-3">One rulebook, <span class="accent">three ways in.</span></h2>
+    </div>
+    <div class="mt-12 grid gap-4 md:grid-cols-6">
+      <article id="cli" class="spotlight flex flex-col p-6 md:col-span-3">
+        <p class="eyebrow">CLI</p>
+        <h3 class="mt-3 text-xl font-medium">The rules and the referee</h3>
+        <p class="mt-2 text-sm leading-relaxed text-ink-2">One binary creates signed contracts, tests them, and enforces them in the agent's hooks.</p>
+        <div class="mt-6 rounded-xl border border-white/[0.06] bg-black/40 p-4 font-mono text-xs leading-6 text-ink-2">
+          <div><span class="text-ink-3">policy</span> payments {</div>
+          <div class="pl-4"><span class="text-ink">preserve</span> K7M2P9RX;</div>
+          <div class="pl-4"><span class="text-ink">target</span> 4QZ8M2LD;</div>
+          <div>}</div>
+        </div>
+        <a href="#commands" class="mt-6 text-sm text-ink transition hover:text-white">See the commands →</a>
+      </article>
+      <article id="extension" class="spotlight flex flex-col p-6 md:col-span-3">
+        <p class="eyebrow">Extension</p>
+        <h3 class="mt-3 text-xl font-medium">Governance in the editor</h3>
+        <p class="mt-2 text-sm leading-relaxed text-ink-2">Select code and press <kbd class="rounded border border-white/15 px-1.5 text-xs">Ctrl Alt F</kbd>. Zones, flows, and selections as a live graph.</p>
+        <svg viewBox="0 0 320 96" class="mt-6 w-full" aria-hidden="true">
+          <g fill="none" stroke="rgba(255,255,255,.28)" stroke-width="1.2"><path d="M62 48 C100 48 100 22 138 22"/><path d="M62 48 C100 48 100 74 138 74"/><path d="M198 22 C226 22 226 48 254 48"/></g>
+          <g fill="rgba(255,255,255,.05)" stroke="rgba(255,255,255,.22)"><rect x="6" y="34" width="56" height="28" rx="8"/><rect x="138" y="8" width="60" height="28" rx="8"/><rect x="138" y="60" width="60" height="28" rx="8"/><rect x="254" y="34" width="60" height="28" rx="8"/></g>
+          <g fill="#a1a1a6" font-family="Geist Mono, monospace" font-size="10" text-anchor="middle"><text x="34" y="52">flow</text><text x="168" y="26">zone</text><text x="168" y="78">zone</text><text x="284" y="52">select</text></g>
+        </svg>
+        <a href="https://marketplace.visualstudio.com/items?itemName=agentscript.foxx" rel="noopener" class="mt-6 text-sm text-ink transition hover:text-white">Get it on the Marketplace →</a>
+      </article>
+      <article id="dashboard" class="spotlight flex flex-col gap-6 p-6 md:col-span-6 md:flex-row md:items-center">
+        <div class="md:w-1/2">
+          <p class="eyebrow">Dashboard</p>
+          <h3 class="mt-3 text-xl font-medium">Every teammate's agents, one view</h3>
+          <p class="mt-2 text-sm leading-relaxed text-ink-2">Sign in with GitHub to see decisions, denials, incidents, and tokens. Nothing to host.</p>
+          <a href="https://agentscript-service.onrender.com" rel="noopener" class="mt-6 inline-block text-sm text-ink transition hover:text-white">Open the dashboard →</a>
+        </div>
+        <div class="flex h-36 items-end gap-2 rounded-xl border border-white/[0.06] bg-black/40 p-4 md:w-1/2" aria-hidden="true" id="bars"></div>
+      </article>
+    </div>
+  </section>
+
+  <!-- Download and install -->
+  <section id="get" class="reveal pt-24 sm:pt-32" aria-labelledby="get-title">
+    <div class="mx-auto max-w-2xl text-center">
+      <p class="eyebrow">Get started</p>
+      <h2 id="get-title" class="title mt-3">Running in <span class="accent">a minute.</span></h2>
+      <p id="release-meta" class="mt-4 text-sm text-ink-3" aria-live="polite">Loading the latest release…</p>
+    </div>
+    <div class="glass mx-auto mt-10 max-w-3xl p-2">
+      <div class="flex flex-wrap items-center gap-2 p-2">
+        <div class="flex rounded-xl bg-black/40 p-1" role="tablist" aria-label="Operating system" id="os-tabs">
+          <button role="tab" data-os="linux" class="rounded-lg px-3.5 py-1.5 text-sm text-ink-3 transition aria-selected:bg-white/10 aria-selected:text-ink">Linux</button>
+          <button role="tab" data-os="macos" class="rounded-lg px-3.5 py-1.5 text-sm text-ink-3 transition aria-selected:bg-white/10 aria-selected:text-ink">macOS</button>
+          <button role="tab" data-os="windows" class="rounded-lg px-3.5 py-1.5 text-sm text-ink-3 transition aria-selected:bg-white/10 aria-selected:text-ink">Windows</button>
+        </div>
+        <a id="download-button" href="https://github.com/VishuKalier2003/Agentscript/releases/latest" class="btn-light ml-auto !py-2">
+          <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v12m0 0-5-5m5 5 5-5M5 20h14"/></svg>
+          <span id="download-label">Download</span>
+        </a>
+      </div>
+      <div class="rounded-xl border border-white/[0.06] bg-black/50">
+        <div class="flex items-center justify-between border-b border-white/[0.06] px-4 py-2">
+          <span class="font-mono text-xs text-ink-3" id="install-caption">Install</span>
+          <button type="button" class="icon-btn" data-copy="install-code" aria-label="Copy the install commands"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg></button>
+        </div>
+        <pre id="install-code" class="overflow-x-auto p-4 text-[12.5px] leading-6 text-ink-2"></pre>
+      </div>
+      <div class="mt-2 rounded-xl border border-white/[0.06] bg-black/50">
+        <div class="flex items-center justify-between border-b border-white/[0.06] px-4 py-2">
+          <span class="font-mono text-xs text-ink-3">Then, in your repository</span>
+          <button type="button" class="icon-btn" data-copy="setup-code" aria-label="Copy the setup commands"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg></button>
+        </div>
+        <pre id="setup-code" class="overflow-x-auto p-4 text-[12.5px] leading-6 text-ink-2">crane repo --https https://github.com/OWNER/REPO
+crane init
+crane checkpoint baseline
+crane agent install --profile claude</pre>
+      </div>
+    </div>
+    <p class="mt-4 text-center text-xs text-ink-3">Checksums and the extension's .vsix are on the <a id="release-page" class="underline decoration-white/20 underline-offset-4 hover:text-ink" href="https://github.com/VishuKalier2003/Agentscript/releases/latest">release page</a>.</p>
+  </section>
+
+  <!-- Commands -->
+  <section id="commands" class="reveal pt-24 sm:pt-32" aria-labelledby="commands-title">
+    <div class="mx-auto max-w-2xl text-center">
+      <p class="eyebrow">Reference</p>
+      <h2 id="commands-title" class="title mt-3">Every command, <span class="accent">one click away.</span></h2>
+    </div>
+    <div class="mx-auto mt-10 max-w-3xl">
+      <label class="relative block">
+        <span class="sr-only">Search commands</span>
+        <svg viewBox="0 0 24 24" class="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-3" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="command-search" type="search" placeholder="Search 44 commands" autocomplete="off" class="field !pl-10">
+      </label>
+      <div id="command-groups" class="mt-3 flex gap-1.5 overflow-x-auto pb-1" role="group" aria-label="Areas"></div>
+      <ul id="command-list" class="glass mt-3 divide-y divide-white/[0.06] p-1.5"></ul>
+    </div>
+  </section>
+
+  <!-- Feedback -->
+  <section id="feedback" class="reveal pt-24 sm:pt-32" aria-labelledby="feedback-title">
+    <div class="mx-auto max-w-2xl text-center">
+      <p class="eyebrow">Feedback</p>
+      <h2 id="feedback-title" class="title mt-3">Tell us <span class="accent">what to build next.</span></h2>
+    </div>
+    <div id="feedback-sent" hidden role="status" class="glass mx-auto mt-10 max-w-xl p-4 text-center text-sm">Thanks, your feedback was sent.</div>
+    <form id="feedback-form" action="https://formsubmit.co/vishukalier18082003@gmail.com" method="POST" enctype="multipart/form-data" class="glass mx-auto mt-10 grid max-w-xl gap-4 p-5 sm:p-6">
+      <input type="hidden" name="_subject" value="Agent Landscape feedback">
+      <input type="hidden" name="_template" value="table">
+      <input type="hidden" name="_captcha" value="false">
+      <input type="hidden" name="_next" id="feedback-next" value="https://github.com/VishuKalier2003/Agentscript">
+      <input type="text" name="_honey" class="hidden" tabindex="-1" autocomplete="off" aria-hidden="true">
+      <label class="grid gap-1.5 text-sm">Title<input type="text" name="title" required maxlength="120" placeholder="Short summary" class="field"></label>
+      <label class="grid gap-1.5 text-sm">Content<textarea name="content" required rows="5" maxlength="5000" placeholder="What happened, or what would help?" class="field resize-y"></textarea></label>
+      <label class="grid gap-1.5 text-sm">Links <span class="-mt-1 text-xs text-ink-3">Optional, one per line</span><textarea name="links" rows="2" placeholder="https://" class="field resize-y"></textarea></label>
+      <label class="grid gap-1.5 text-sm">Images <span class="-mt-1 text-xs text-ink-3">Optional, up to 5 MB in total</span>
+        <input type="file" name="attachment" id="feedback-images" accept="image/*" multiple class="text-sm text-ink-2 file:mr-3 file:cursor-pointer file:rounded-lg file:border file:border-white/10 file:bg-white/5 file:px-3 file:py-2 file:text-ink hover:file:bg-white/10">
+      </label>
+      <p id="feedback-error" role="alert" hidden class="text-sm text-red-300"></p>
+      <button type="submit" class="btn-light justify-self-start">Send feedback</button>
+    </form>
+  </section>
+
+  <!-- Numbers -->
+  <section id="stats" class="reveal pt-24 sm:pt-32" aria-labelledby="stats-title">
+    <h2 id="stats-title" class="sr-only">Crane in numbers</h2>
+    <div class="grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.06] md:grid-cols-4">
+      <div class="bg-night/90 p-6 backdrop-blur"><p class="eyebrow">Downloads</p><p class="mt-3 text-4xl font-light tabular-nums tracking-tight sm:text-5xl" data-stat="downloads">—</p><p class="mt-2 text-xs text-ink-3" data-milestone="downloads">across every release</p></div>
+      <div class="bg-night/90 p-6 backdrop-blur"><p class="eyebrow">Visits</p><p class="mt-3 text-4xl font-light tabular-nums tracking-tight sm:text-5xl" data-stat="visits">—</p><p class="mt-2 text-xs text-ink-3" data-milestone="visits">to this page</p></div>
+      <div class="bg-night/90 p-6 backdrop-blur"><p class="eyebrow">Releases</p><p class="mt-3 text-4xl font-light tabular-nums tracking-tight sm:text-5xl" data-stat="releases">—</p><p class="mt-2 text-xs text-ink-3">shipped so far</p></div>
+      <div class="bg-night/90 p-6 backdrop-blur"><p class="eyebrow">Agents</p><p class="mt-3 text-4xl font-light tabular-nums tracking-tight sm:text-5xl" data-stat="agents" data-value="4">—</p><p class="mt-2 text-xs text-ink-3">supported out of the box</p></div>
+    </div>
+  </section>
+</main>
+
+<footer class="mx-auto mt-24 max-w-page px-4 pb-10">
+  <div class="flex flex-col gap-4 border-t border-white/[0.06] pt-6 text-sm text-ink-3 sm:flex-row sm:items-center">
+    <span class="flex items-center gap-2"><img src="logo.png" alt="" width="18" height="18" class="h-[18px] w-[18px] opacity-80">© <span id="year">2026</span> Agent Landscape</span>
+    <nav aria-label="Footer" class="flex flex-wrap gap-x-5 gap-y-2 sm:ml-auto">
+      <a href="https://github.com/VishuKalier2003/Agentscript" rel="noopener" class="hover:text-ink">GitHub</a>
+      <a href="https://github.com/VishuKalier2003/Agentscript/releases" rel="noopener" class="hover:text-ink">Releases</a>
+      <a href="https://agentscript-service.onrender.com" rel="noopener" class="hover:text-ink">Dashboard</a>
+      <a href="https://github.com/VishuKalier2003/Agentscript/blob/main/LICENSE" rel="noopener" class="hover:text-ink">Apache-2.0</a>
+    </nav>
+  </div>
+</footer>
+
+<div id="tooltip" role="tooltip" hidden class="glass pointer-events-none fixed z-50 max-w-[min(20rem,calc(100vw-2rem))] !rounded-xl !bg-night-3/95 px-3.5 py-2.5 text-sm text-ink-2"></div>
+<div id="toast" role="status" aria-live="polite" class="glass pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 translate-y-4 !rounded-xl px-4 py-2 text-sm opacity-0 transition duration-300"></div>
+<script src="app.js" defer></script>
+</body>
+</html>

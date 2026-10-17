@@ -204,10 +204,18 @@ fn selection_context_is_shown_when_a_selection_is_touched() {
         context.contains("Use the payment API carefully."),
         "{context}"
     );
+    // The selection's own signed context reaches the agent and the person watching it
+    assert!(
+        context.contains("Context: Test selection context."),
+        "{context}"
+    );
     assert!(
         answer["systemMessage"]
             .as_str()
-            .is_some_and(|message| message.contains(&format!("Crane context · selection {keep}"))),
+            .is_some_and(
+                |message| message.contains(&format!("Crane context · selection {keep}"))
+                    && message.contains("▌ Context: Test selection context.")
+            ),
         "{answer}"
     );
 }

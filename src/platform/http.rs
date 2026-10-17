@@ -156,6 +156,8 @@ pub(crate) fn base64(bytes: &[u8]) -> String {
     output
 }
 
+// Only the ingestion service decodes request bodies
+#[cfg(any(test, feature = "server"))]
 /** Decode standard base64 (padding required, no whitespace)
  * Input
     - text: &[u8] - encoded data

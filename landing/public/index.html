@@ -22,6 +22,8 @@
 <div aria-hidden="true" class="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
   <div class="absolute -left-40 -top-40 h-[38rem] w-[38rem] animate-drift rounded-full bg-zinc-500/20 blur-[120px]"></div>
   <div class="absolute -right-48 top-[28rem] h-[34rem] w-[34rem] animate-drift-slow rounded-full bg-zinc-400/10 blur-[120px]"></div>
+  <!-- The signature: a revolving globe where agents' calls arc between nodes (drawn by app.js) -->
+  <canvas id="globe" class="absolute left-1/2 top-[52vh] h-[min(96vmin,940px)] w-[min(96vmin,940px)] -translate-x-1/2 -translate-y-1/2 transition-opacity duration-700"></canvas>
   <div class="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.03)_1px,transparent_1px)] bg-[size:64px_64px] [mask-image:radial-gradient(ellipse_at_50%_0%,#000,transparent_70%)]"></div>
   <div class="grain absolute inset-0 opacity-[0.035] mix-blend-overlay"></div>
 </div>
@@ -61,10 +63,10 @@
       <span class="relative flex h-2 w-2"><span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-white/60"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-white"></span></span>
       <span id="release-chip">Open source · Apache-2.0</span>
     </a>
-    <h1 class="mt-6 max-w-3xl animate-rise text-balance text-[2.6rem] font-medium leading-[1.05] tracking-tight [animation-delay:.14s] sm:text-6xl md:text-7xl">
+    <h1 class="mt-6 max-w-3xl animate-rise text-balance [text-shadow:0_4px_40px_rgba(5,5,6,.95)] text-[2.6rem] font-medium leading-[1.05] tracking-tight [animation-delay:.14s] sm:text-6xl md:text-7xl">
       Guardrails for<br> <span class="accent-shine pr-1">AI coding agents.</span>
     </h1>
-    <p class="mt-6 max-w-xl animate-rise text-base text-ink-2 [animation-delay:.2s] sm:text-lg">Mark the code an agent must keep and the code it must change. Crane checks every tool call before it runs.</p>
+    <p class="mt-6 max-w-xl animate-rise text-base text-ink-2 [text-shadow:0_1px_2px_rgba(5,5,6,1),0_0_18px_rgba(5,5,6,.95)] [animation-delay:.2s] sm:text-lg">Mark the code an agent must keep and the code it must change. Crane checks every tool call before it runs.</p>
     <div class="mt-8 flex animate-rise flex-wrap justify-center gap-3 [animation-delay:.26s]">
       <a href="#get" class="btn-light">Download Crane</a>
       <a href="#products" class="btn-ghost">How it works</a>
@@ -76,7 +78,7 @@
         <span class="h-2.5 w-2.5 rounded-full bg-white/15"></span><span class="h-2.5 w-2.5 rounded-full bg-white/15"></span><span class="h-2.5 w-2.5 rounded-full bg-white/15"></span>
         <span class="ml-2 font-mono text-xs text-ink-3">~/payments</span>
       </div>
-      <pre id="terminal" class="min-h-[10.5rem] overflow-x-auto whitespace-pre-wrap break-words p-4 text-[12.5px] leading-7 text-ink-2 sm:p-5 sm:text-[13px]"></pre>
+      <pre id="terminal" class="min-h-[10.5rem] whitespace-pre-wrap [overflow-wrap:anywhere] p-4 text-[12.5px] leading-7 text-ink-2 sm:p-5 sm:text-[13px]"></pre>
     </div>
   </section>
 
@@ -183,14 +185,14 @@
           <span class="font-mono text-xs text-ink-3" id="install-caption">Install</span>
           <button type="button" class="icon-btn" data-copy="install-code" aria-label="Copy the install commands"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg></button>
         </div>
-        <pre id="install-code" class="overflow-x-auto p-4 text-[12.5px] leading-6 text-ink-2"></pre>
+        <pre id="install-code" class="whitespace-pre-wrap p-4 text-[12.5px] leading-6 text-ink-2 [overflow-wrap:anywhere]"></pre>
       </div>
       <div class="mt-2 rounded-xl border border-white/[0.06] bg-black/50">
         <div class="flex items-center justify-between border-b border-white/[0.06] px-4 py-2">
           <span class="font-mono text-xs text-ink-3">Then, in your repository</span>
           <button type="button" class="icon-btn" data-copy="setup-code" aria-label="Copy the setup commands"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg></button>
         </div>
-        <pre id="setup-code" class="overflow-x-auto p-4 text-[12.5px] leading-6 text-ink-2">crane repo --https https://github.com/OWNER/REPO
+        <pre id="setup-code" class="whitespace-pre-wrap p-4 text-[12.5px] leading-6 text-ink-2 [overflow-wrap:anywhere]">crane repo --https https://github.com/OWNER/REPO
 crane init
 crane checkpoint baseline
 crane agent install --profile claude</pre>
@@ -266,6 +268,7 @@ crane agent install --profile claude</pre>
 
 <div id="tooltip" role="tooltip" hidden class="glass pointer-events-none fixed z-50 max-w-[min(20rem,calc(100vw-2rem))] !rounded-xl !bg-night-3/95 px-3.5 py-2.5 text-sm text-ink-2"></div>
 <div id="toast" role="status" aria-live="polite" class="glass pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 translate-y-4 !rounded-xl px-4 py-2 text-sm opacity-0 transition duration-300"></div>
+<script src="globe.js" defer></script>
 <script src="app.js" defer></script>
 </body>
 </html>

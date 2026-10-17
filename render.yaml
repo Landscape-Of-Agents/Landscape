@@ -24,9 +24,14 @@ services:
       - path: /*
         name: Referrer-Policy
         value: strict-origin-when-cross-origin
+      # styles.css and app.js keep their names across deploys, so browsers must check for a newer
+      # copy on every load (unchanged files are not downloaded again)
       - path: /*.css
         name: Cache-Control
-        value: public, max-age=3600
+        value: no-cache
       - path: /*.js
         name: Cache-Control
-        value: public, max-age=3600
+        value: no-cache
+      - path: /*.html
+        name: Cache-Control
+        value: no-cache

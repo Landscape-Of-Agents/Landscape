@@ -122,10 +122,9 @@ window.addEventListener("scroll", hideTip, { passive: true });
 // ------------------------------------------------------------------ the command list
 const COPY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>';
 const GROUPS = [...new Set(COMMANDS.map((item) => item.group))];
-let activeGroup = "All";
 function renderCommands() {
   const query = $("#command-search").value.trim().toLowerCase();
-  const shown = COMMANDS.filter((item) => (activeGroup === "All" || item.group === activeGroup) && (!query || (item.command + " " + item.help + " " + item.group).toLowerCase().includes(query)));
+  const shown = COMMANDS.filter((item) => !query || (item.command + " " + item.help + " " + item.group).toLowerCase().includes(query));
   const list = $("#command-list");
   list.replaceChildren(...GROUPS.map((group) => {
     const items = shown.filter((item) => item.group === group);
@@ -145,21 +144,12 @@ function renderCommands() {
         button.classList.add("done");
         setTimeout(() => button.classList.remove("done"), 1200);
       });
-      return make("li", { class: "command glass" }, make("code", {}, item.command), help, button);
+      return make("li", { class: "command" }, make("code", {}, item.command), help, button);
     })));
   }));
   $("#command-empty").hidden = shown.length > 0;
 }
-function renderFilters() {
-  const holder = $("#command-filters");
-  holder.replaceChildren(...["All", ...GROUPS].map((group) => make("button", {
-    type: "button",
-    "aria-pressed": String(group === activeGroup),
-    onclick: () => { activeGroup = group; renderFilters(); renderCommands(); },
-  }, group)));
-}
 $("#command-search").addEventListener("input", renderCommands);
-renderFilters();
 renderCommands();
 
 // ------------------------------------------------------------------ install tabs and code copy
@@ -213,29 +203,16 @@ function formatSize(bytes) { return bytes >= 1048576 ? (bytes / 1048576).toFixed
 function showRelease(release) {
   const tag = release.tag_name;
   const date = release.published_at ? new Date(release.published_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "";
-  $("#release-meta").textContent = "Crane " + tag + (date ? " · published " + date : "") + " · binaries for Linux, Windows, and macOS.";
+  $("#release-meta").textContent = "Crane " + tag + (date ? ", released " + date : "") + ".";
   $("#hero-version").textContent = "Crane " + tag + " · open source";
-  $("#hero-download").textContent = "Download " + tag;
   $("#all-assets").href = release.html_url || RELEASES + "/latest";
   fillTemplates(tag);
   const assets = release.assets || [];
-  for (const card of $$(".download")) {
-    const target = card.dataset.target;
-    const archive = assets.find((asset) => asset.name.includes(target) && !asset.name.endsWith(".sha256"));
-    const checksum = assets.find((asset) => asset.name.includes(target) && asset.name.endsWith(".sha256"));
-    const button = $(".button", card);
-    if (archive) {
-      $(".file", card).textContent = archive.name + " · " + formatSize(archive.size);
-      button.href = archive.browser_download_url;
-      button.setAttribute("download", "");
-      card.classList.remove("missing");
-    } else {
-      $(".file", card).textContent = "Not in this release";
-      button.href = release.html_url || RELEASES + "/latest";
-      card.classList.add("missing");
-    }
-    const sum = $(".checksum", card);
-    if (checksum) sum.href = checksum.browser_download_url; else sum.remove();
+  for (const link of $$(".download")) {
+    const archive = assets.find((asset) => asset.name.includes(link.dataset.target) && !asset.name.endsWith(".sha256"));
+    if (!archive) continue;
+    link.href = archive.browser_download_url;
+    link.title = archive.name + " · " + formatSize(archive.size);
   }
 }
 async function loadRelease() {
@@ -249,10 +226,35 @@ async function loadRelease() {
     showRelease(release);
   } catch (error) {
     if (cached) { showRelease(cached.release); return; }
-    $("#release-meta").textContent = "Could not reach GitHub just now. The buttons open the latest release page instead.";
+    $("#release-meta").textContent = "Binaries for Linux, Windows, and macOS. Each opens the latest release page.";
   }
 }
 loadRelease();
+
+// ------------------------------------------------------------------ feedback
+// The form posts to FormSubmit, which emails it with the images attached and sends the visitor
+// back here with ?sent=1
+const MAX_IMAGES_BYTES = 5 * 1024 * 1024;
+const form = $("#feedback-form");
+$("#feedback-next").value = location.origin + location.pathname + "?sent=1#feedback";
+if (new URLSearchParams(location.search).get("sent") === "1") {
+  $("#feedback-sent").hidden = false;
+  history.replaceState(null, "", location.pathname + "#feedback");
+}
+form.addEventListener("submit", (event) => {
+  const error = $("#feedback-error");
+  const fail = (text) => { event.preventDefault(); error.textContent = text; error.hidden = false; };
+  error.hidden = true;
+  const images = [...$("#feedback-images").files];
+  if (images.some((file) => !file.type.startsWith("image/"))) return fail("Only images can be attached.");
+  if (images.reduce((sum, file) => sum + file.size, 0) > MAX_IMAGES_BYTES) return fail("The images are over 5 MB in total; attach fewer or smaller ones.");
+  const links = form.elements.links.value.split(/\s+/).filter(Boolean);
+  const bad = links.find((link) => { try { return !/^https?:$/.test(new URL(link).protocol); } catch { return true; } });
+  if (bad) return fail("This is not a web link: " + bad);
+  const button = $("button[type=submit]", form);
+  button.disabled = true;
+  button.textContent = "Sending…";
+});
 
 // ------------------------------------------------------------------ the navigation
 const menu = $("#menu");

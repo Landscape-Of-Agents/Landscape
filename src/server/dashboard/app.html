@@ -66,7 +66,7 @@ button, select, input { font: inherit; color: inherit; }
 .rail { width: 248px; flex: none; background: var(--rail); color: var(--rail-ink); display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; overflow-y: auto; z-index: 5; transition: width .15s; border-right: 1px solid #000; scrollbar-width: thin; }
 .rail::before { content: ""; display: block; height: 3px; background: linear-gradient(90deg, #ff9a5c, #eb6834 40%, #b8380f); flex: none; }
 .rail .brand { display: flex; align-items: center; gap: 10px; padding: 12px 14px 10px; color: #fff; text-decoration: none; }
-.rail .brand img { width: 32px; height: 32px; filter: drop-shadow(0 2px 6px rgba(235, 104, 52, .45)); }
+.rail .brand img { width: 32px; height: 32px; filter: drop-shadow(0 2px 6px rgba(0, 0, 0, .6)); }
 .rail .brand b { font-size: 16px; letter-spacing: .3px; }
 .rail .brand small { display: block; color: var(--rail-muted); font-size: 10px; font-weight: 400; letter-spacing: .3px; }
 .rail .rail-search { margin: 2px 12px 8px; display: flex; align-items: center; gap: 6px; background: var(--rail-2); border: 1px solid var(--rail-3); border-radius: 7px; padding: 4px 8px; color: var(--rail-muted); }
@@ -541,7 +541,8 @@ pre.json { background: var(--panel-2); border: 1px solid var(--line); border-rad
 .notice.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
 .notice.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
 .signin { max-width: 540px; margin: 12vh auto; text-align: center; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 32px; box-shadow: var(--shadow); }
-.signin img { width: 120px; height: 120px; }
+/* The grey logo sits on a dark tile, so it reads on the light theme too */
+.signin img { width: 120px; height: 120px; padding: 14px; border-radius: 28px; background: radial-gradient(circle at 50% 30%, #1d1d20, #0a0a0b); box-shadow: 0 10px 30px -12px rgba(0, 0, 0, .6); }
 .signin h2 { font-size: 22px; margin: 12px 0 6px; }
 .signin .btn.primary { display: inline-block; margin-top: 16px; padding: 10px 22px; font-weight: 650; text-decoration: none; }
 .skeleton { color: var(--muted); padding: 24px; text-align: center; }

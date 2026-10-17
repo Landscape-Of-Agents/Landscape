@@ -6,6 +6,8 @@
 <title>Agent Landscape</title>
 <meta name="description" content="Guardrails for Intelligent Agents. Minimize token usage, incidents and AI psychosis by richer context, better guardrails and stronger observability for Agents.">
 <meta name="theme-color" content="#050506">
+<link rel="canonical" href="https://agentslandscape.cloud/">
+<meta property="og:url" content="https://agentslandscape.cloud/">
 <meta property="og:title" content="Agent Landscape">
 <meta property="og:description" content="Guardrails for Intelligent Agents. CLI, editor extension, and dashboard.">
 <link rel="icon" href="favicon.png" type="image/png">
@@ -39,7 +41,7 @@
       <a href="#get" class="rounded-lg px-3 py-1.5 transition hover:bg-white/5 hover:text-ink">Install</a>
       <a href="#commands" class="rounded-lg px-3 py-1.5 transition hover:bg-white/5 hover:text-ink">Commands</a>
       <a href="#feedback" class="rounded-lg px-3 py-1.5 transition hover:bg-white/5 hover:text-ink">Feedback</a>
-      <a href="https://github.com/VishuKalier2003/Agentscript" rel="noopener" class="btn-ghost ml-2 !px-3.5 !py-1.5">
+      <a href="https://github.com/Landscape-Of-Agents/Landscape" rel="noopener" class="btn-ghost ml-2 !px-3.5 !py-1.5">
         <svg viewBox="0 0 16 16" class="h-4 w-4" fill="currentColor" aria-hidden="true"><path d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.72 1.22 1.88.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.65-.89-3.65-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 8 0Z"/></svg>GitHub</a>
     </nav>
     <button id="menu" type="button" class="icon-btn ml-auto md:hidden" aria-expanded="false" aria-controls="mobile-links" aria-label="Open the menu">
@@ -51,14 +53,14 @@
     <a href="#get" class="rounded-lg px-3 py-2.5 hover:bg-white/5">Install</a>
     <a href="#commands" class="rounded-lg px-3 py-2.5 hover:bg-white/5">Commands</a>
     <a href="#feedback" class="rounded-lg px-3 py-2.5 hover:bg-white/5">Feedback</a>
-    <a href="https://github.com/VishuKalier2003/Agentscript" rel="noopener" class="rounded-lg px-3 py-2.5 hover:bg-white/5">GitHub</a>
+    <a href="https://github.com/Landscape-Of-Agents/Landscape" rel="noopener" class="rounded-lg px-3 py-2.5 hover:bg-white/5">GitHub</a>
   </nav>
 </header>
 
 <main id="main" class="mx-auto max-w-page px-4">
   <!-- Hero -->
   <section id="top" class="flex flex-col items-center pt-16 text-center sm:pt-24">
-    <img src="logo.png" alt="" width="88" height="88" class="h-20 w-20 animate-rise drop-shadow-[0_10px_40px_rgba(255,255,255,.12)] sm:h-[88px] sm:w-[88px]">
+    <img src="logo.png" alt="" width="88" height="88" class="h-20 w-20 animate-rise drop-shadow-[0_10px_40px_rgba(249,115,22,.35)] sm:h-[88px] sm:w-[88px]">
     <a href="#get" class="chip mt-6 animate-rise [animation-delay:.08s] hover:border-white/20">
       <span class="relative flex h-2 w-2"><span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-white/60"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-white"></span></span>
       <span id="release-chip">Open source · Apache-2.0</span>
@@ -164,44 +166,144 @@
     </div>
   </section>
 
-  <!-- CLI, Extension, Dashboard -->
+  <!-- Crane, Landscape, Data Sea -->
   <section id="products" class="reveal pt-24 sm:pt-32" aria-labelledby="products-title">
     <div class="mx-auto max-w-2xl text-center">
       <p class="eyebrow">Product</p>
       <h2 id="products-title" class="title mt-3">One rulebook, <span class="accent">three ways in.</span></h2>
     </div>
-    <div class="mt-12 grid gap-4 md:grid-cols-6">
-      <article id="cli" class="spotlight flex flex-col p-6 md:col-span-3">
-        <p class="eyebrow">CLI</p>
-        <h3 class="mt-3 text-xl font-medium">The rules and the referee</h3>
+    <div class="mt-12 grid gap-4 lg:grid-cols-2">
+
+      <!-- Crane: the CLI -->
+      <article id="cli" class="spotlight flex flex-col p-6">
+        <div class="flex items-center gap-3">
+          <span class="product-mark" aria-hidden="true"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m5 7 5 5-5 5M12 17h7"/></svg></span>
+          <p class="eyebrow">Crane · CLI</p>
+        </div>
+        <h3 class="mt-4 text-xl font-medium">The rules and the referee</h3>
         <p class="mt-2 text-sm leading-relaxed text-ink-2">One binary creates signed contracts, tests them, and enforces them in the agent's hooks.</p>
-        <div class="mt-6 rounded-xl border border-white/[0.06] bg-black/40 p-4 font-mono text-xs leading-6 text-ink-2">
-          <div><span class="text-ink-3">policy</span> payments {</div>
-          <div class="pl-4"><span class="text-ink">preserve</span> K7M2P9RX;</div>
-          <div class="pl-4"><span class="text-ink">target</span> 4QZ8M2LD;</div>
-          <div>}</div>
+        <div class="window mt-6" aria-hidden="true">
+          <div class="window-bar">
+            <span class="dots"><i></i><i></i><i></i></span>
+            <span class="truncate font-mono text-[11px] text-ink-3">~/acme/payments</span>
+            <span class="pill ml-auto">ed25519</span>
+          </div>
+          <div id="crane-term" class="h-[17rem] overflow-hidden px-4 py-3 font-mono text-[11.5px] leading-[1.8]"></div>
         </div>
-        <a href="#commands" class="mt-6 text-sm text-ink transition hover:text-white">See the commands →</a>
+        <dl class="mt-4 grid grid-cols-3 gap-2 text-center">
+          <div class="stat-mini"><dt>Rules</dt><dd>Signed</dd></div>
+          <div class="stat-mini"><dt>Selections</dt><dd>Sealed</dd></div>
+          <div class="stat-mini"><dt>Tool calls</dt><dd>Checked</dd></div>
+        </dl>
+        <a href="#commands" class="mt-auto pt-6 text-sm text-ink transition hover:text-white">See the commands →</a>
       </article>
-      <article id="extension" class="spotlight flex flex-col p-6 md:col-span-3">
-        <p class="eyebrow">Extension</p>
-        <h3 class="mt-3 text-xl font-medium">Governance in the editor</h3>
+
+      <!-- Landscape: the extension -->
+      <article id="extension" class="spotlight flex flex-col p-6">
+        <div class="flex items-center gap-3">
+          <span class="product-mark" aria-hidden="true"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="5" cy="12" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="19" cy="18" r="2.2"/><path d="M7.2 12c5 0 4-6 9.6-6M7.2 12c5 0 4 6 9.6 6"/></svg></span>
+          <p class="eyebrow">Landscape · Extension</p>
+        </div>
+        <h3 class="mt-4 text-xl font-medium">Governance in the editor</h3>
         <p class="mt-2 text-sm leading-relaxed text-ink-2">Select code and press <kbd class="rounded border border-white/15 px-1.5 text-xs">Ctrl Alt F</kbd>. Zones, flows, and selections as a live graph.</p>
-        <svg viewBox="0 0 320 96" class="mt-6 w-full" aria-hidden="true">
-          <g fill="none" stroke="rgba(255,255,255,.28)" stroke-width="1.2"><path d="M62 48 C100 48 100 22 138 22"/><path d="M62 48 C100 48 100 74 138 74"/><path d="M198 22 C226 22 226 48 254 48"/></g>
-          <g fill="rgba(255,255,255,.05)" stroke="rgba(255,255,255,.22)"><rect x="6" y="34" width="56" height="28" rx="8"/><rect x="138" y="8" width="60" height="28" rx="8"/><rect x="138" y="60" width="60" height="28" rx="8"/><rect x="254" y="34" width="60" height="28" rx="8"/></g>
-          <g fill="#a1a1a6" font-family="Geist Mono, monospace" font-size="10" text-anchor="middle"><text x="34" y="52">flow</text><text x="168" y="26">zone</text><text x="168" y="78">zone</text><text x="284" y="52">select</text></g>
-        </svg>
-        <a href="https://marketplace.visualstudio.com/items?itemName=agentscript.foxx" rel="noopener" class="mt-6 text-sm text-ink transition hover:text-white">Get it on the Marketplace →</a>
-      </article>
-      <article id="dashboard" class="spotlight flex flex-col gap-6 p-6 md:col-span-6 md:flex-row md:items-center">
-        <div class="md:w-1/2">
-          <p class="eyebrow">Dashboard</p>
-          <h3 class="mt-3 text-xl font-medium">Every teammate's agents, one view</h3>
-          <p class="mt-2 text-sm leading-relaxed text-ink-2">Sign in with GitHub to see decisions, denials, incidents, and tokens. Nothing to host.</p>
-          <a href="https://agentscript-service.onrender.com" rel="noopener" class="mt-6 inline-block text-sm text-ink transition hover:text-white">Open the dashboard →</a>
+        <div class="window mt-6" aria-hidden="true">
+          <div class="window-bar gap-1 py-0 pl-2">
+            <span class="tab tab-on">payments.py</span>
+            <span class="tab hidden sm:flex">Landscape graph</span>
+            <span id="land-agent" class="pill pill-live ml-auto"><b></b>claude-code · billing</span>
+          </div>
+          <div class="border-b border-white/[0.06] py-2 font-mono text-[11.5px] leading-[1.75]">
+            <div class="code-line"><i>1</i><span><span class="text-violet-300">def</span> <span class="text-ink">fee</span>(amount):</span></div>
+            <div class="lens lens-preserve"><b>◆</b> K7M2P9RX · preserved · signed by owner</div>
+            <div class="code-line band band-preserve"><i>2</i><span>    <span class="text-violet-300">return</span> amount * <span class="text-amber-200">0.03</span></span></div>
+            <div class="code-line"><i>3</i><span><span class="text-violet-300">def</span> <span class="text-ink">refund</span>(order):</span></div>
+            <div class="lens lens-target"><b>◆</b> 4QZ8M2LD · target · logical_bn</div>
+            <div class="code-line band band-target"><i>4</i><span>    <span class="text-violet-300">return</span> order.total - order.refunded</span></div>
+          </div>
+          <svg id="land-graph" viewBox="0 0 440 156" class="block w-full">
+            <g class="edges">
+              <path id="e-fb" data-zone="billing" d="M92 78 C122 78 120 34 150 34"/>
+              <path id="e-fl" data-zone="ledger" d="M92 78 C122 78 120 122 150 122"/>
+              <path id="e-bk" data-zone="billing" d="M234 34 C262 34 262 22 292 22"/>
+              <path id="e-bq" data-zone="billing" d="M234 34 C262 34 262 78 292 78"/>
+              <path id="e-lh" data-zone="ledger" d="M234 122 C262 122 262 134 292 134"/>
+            </g>
+            <g class="pulses">
+              <circle r="2.4"><animateMotion dur="2.4s" repeatCount="indefinite"><mpath href="#e-fb"/></animateMotion></circle>
+              <circle r="2.4"><animateMotion dur="2.4s" begin="1.2s" repeatCount="indefinite"><mpath href="#e-fl"/></animateMotion></circle>
+              <circle r="2.4"><animateMotion dur="1.8s" begin=".6s" repeatCount="indefinite"><mpath href="#e-bk"/></animateMotion></circle>
+              <circle r="2.4"><animateMotion dur="1.8s" begin="1.4s" repeatCount="indefinite"><mpath href="#e-bq"/></animateMotion></circle>
+              <circle r="2.4"><animateMotion dur="1.8s" begin=".2s" repeatCount="indefinite"><mpath href="#e-lh"/></animateMotion></circle>
+            </g>
+            <g class="node node-flow"><rect x="10" y="62" width="82" height="32" rx="9"/><text x="51" y="82">checkout</text><text class="kind" x="51" y="56">flow</text></g>
+            <g class="node node-zone" data-zone="billing"><rect x="150" y="18" width="84" height="32" rx="9"/><circle class="dot" cx="166" cy="34" r="3"/><circle class="halo" cx="166" cy="34" r="3"/><text x="198" y="38">billing</text></g>
+            <g class="node node-zone" data-zone="ledger"><rect x="150" y="106" width="84" height="32" rx="9"/><circle class="dot" cx="166" cy="122" r="3"/><circle class="halo" cx="166" cy="122" r="3"/><text x="198" y="126">ledger</text></g>
+            <g class="node node-preserve"><rect x="292" y="8" width="104" height="28" rx="8"/><text x="344" y="26">K7M2P9RX</text></g>
+            <g class="node node-target"><rect x="292" y="64" width="104" height="28" rx="8"/><text x="344" y="82">4QZ8M2LD</text></g>
+            <g class="node node-preserve"><rect x="292" y="120" width="104" height="28" rx="8"/><text x="344" y="138">9HX3QW1P</text></g>
+            <g class="acyclic"><rect x="10" y="126" width="64" height="20" rx="10"/><text x="42" y="140">✓ acyclic</text></g>
+          </svg>
         </div>
-        <div class="flex h-36 items-end gap-2 rounded-xl border border-white/[0.06] bg-black/40 p-4 md:w-1/2" aria-hidden="true" id="bars"></div>
+        <a href="https://marketplace.visualstudio.com/items?itemName=agentscript.foxx" rel="noopener" class="mt-auto pt-6 text-sm text-ink transition hover:text-white">Get it on the Marketplace →</a>
+      </article>
+
+      <!-- Data Sea: the dashboard -->
+      <article id="dashboard" class="spotlight flex flex-col gap-8 p-6 lg:col-span-2 lg:flex-row lg:items-center">
+        <div class="lg:w-[32%]">
+          <div class="flex items-center gap-3">
+            <span class="product-mark" aria-hidden="true"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 9c3 0 3-2 6-2s3 2 6 2 3-2 6-2M3 14c3 0 3-2 6-2s3 2 6 2 3-2 6-2M3 19c3 0 3-2 6-2s3 2 6 2 3-2 6-2"/></svg></span>
+            <p class="eyebrow">Data Sea · Dashboard</p>
+          </div>
+          <h3 class="mt-4 text-xl font-medium">Every teammate's agents, one view</h3>
+          <p class="mt-2 text-sm leading-relaxed text-ink-2">Sign in with GitHub to see decisions, denials, incidents, and tokens across every machine. Nothing to host.</p>
+          <ul class="mt-5 space-y-2 text-sm text-ink-2">
+            <li class="flex gap-2"><span class="text-green-300">✓</span>Sessions and the action graph of each</li>
+            <li class="flex gap-2"><span class="text-green-300">✓</span>Incidents with their evidence</li>
+            <li class="flex gap-2"><span class="text-green-300">✓</span>Scoped to your GitHub organizations</li>
+          </ul>
+          <a href="https://dashboard.agentslandscape.cloud" rel="noopener" class="mt-6 inline-block text-sm text-ink transition hover:text-white">Open the dashboard →</a>
+        </div>
+        <div class="window min-w-0 lg:flex-1" aria-hidden="true">
+          <div class="window-bar">
+            <img src="logo.png" alt="" width="16" height="16" class="h-4 w-4">
+            <span class="text-[12px] font-medium text-ink">Data Sea</span>
+            <span class="text-ink-3">/</span>
+            <span class="truncate font-mono text-[11px] text-ink-2">acme/payments</span>
+            <span class="pill pill-live ml-auto"><b></b>Live</span>
+          </div>
+          <div class="grid gap-3 p-3 sm:p-4">
+            <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <div class="kpi"><span>Decisions</span><strong id="kpi-decisions">1,284</strong><svg viewBox="0 0 80 22"><polyline id="spark-decisions" class="spark"/></svg></div>
+              <div class="kpi"><span>Denied</span><strong id="kpi-denied" class="text-red-300">37</strong><svg viewBox="0 0 80 22"><polyline id="spark-denied" class="spark spark-red"/></svg></div>
+              <div class="kpi"><span>Incidents</span><strong id="kpi-incidents">2</strong><svg viewBox="0 0 80 22"><polyline id="spark-incidents" class="spark spark-amber"/></svg></div>
+              <div class="kpi"><span>Tokens</span><strong id="kpi-tokens">412k</strong><svg viewBox="0 0 80 22"><polyline id="spark-tokens" class="spark spark-violet"/></svg></div>
+            </div>
+            <div class="grid gap-3 md:grid-cols-5">
+              <div class="panel flex flex-col md:col-span-3">
+                <div class="flex items-center gap-3 text-[11px] text-ink-3">
+                  <span class="text-ink-2">Decisions per hour</span>
+                  <span class="ml-auto flex items-center gap-1.5"><i class="h-1.5 w-3 rounded-full bg-white/60"></i>allowed</span>
+                  <span class="flex items-center gap-1.5"><i class="h-1.5 w-3 rounded-full bg-red-400"></i>denied</span>
+                </div>
+                <svg viewBox="0 0 400 130" preserveAspectRatio="none" class="mt-2 h-32 w-full flex-1">
+                  <defs>
+                    <linearGradient id="sea-allowed" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".22"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+                    <linearGradient id="sea-denied" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#f87171" stop-opacity=".35"/><stop offset="1" stop-color="#f87171" stop-opacity="0"/></linearGradient>
+                  </defs>
+                  <g stroke="rgba(255,255,255,.05)"><path d="M0 32.5H400M0 65H400M0 97.5H400"/></g>
+                  <path id="sea-allowed-area" fill="url(#sea-allowed)"/>
+                  <path id="sea-allowed-line" fill="none" stroke="rgba(255,255,255,.7)" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+                  <path id="sea-denied-area" fill="url(#sea-denied)"/>
+                  <path id="sea-denied-line" fill="none" stroke="#f87171" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+                </svg>
+              </div>
+              <div class="panel md:col-span-2">
+                <div class="text-[11px] text-ink-2">Agent activity</div>
+                <ul id="sea-feed" class="mt-2 space-y-1.5 overflow-hidden"></ul>
+              </div>
+            </div>
+          </div>
+        </div>
       </article>
     </div>
   </section>
@@ -220,7 +322,7 @@
           <button role="tab" data-os="macos" class="rounded-lg px-3.5 py-1.5 text-sm text-ink-3 transition aria-selected:bg-white/10 aria-selected:text-ink">macOS</button>
           <button role="tab" data-os="windows" class="rounded-lg px-3.5 py-1.5 text-sm text-ink-3 transition aria-selected:bg-white/10 aria-selected:text-ink">Windows</button>
         </div>
-        <a id="download-button" href="https://github.com/VishuKalier2003/Agentscript/releases/latest" class="btn-light ml-auto !py-2">
+        <a id="download-button" href="https://github.com/Landscape-Of-Agents/Landscape/releases/latest" class="btn-light ml-auto !py-2">
           <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v12m0 0-5-5m5 5 5-5M5 20h14"/></svg>
           <span id="download-label">Download</span>
         </a>
@@ -243,7 +345,7 @@ crane checkpoint baseline
 crane agent install --profile claude</pre>
       </div>
     </div>
-    <p class="mt-4 text-center text-xs text-ink-3">Checksums and the extension's .vsix are on the <a id="release-page" class="underline decoration-white/20 underline-offset-4 hover:text-ink" href="https://github.com/VishuKalier2003/Agentscript/releases/latest">release page</a>.</p>
+    <p class="mt-4 text-center text-xs text-ink-3">Checksums and the extension's .vsix are on the <a id="release-page" class="underline decoration-white/20 underline-offset-4 hover:text-ink" href="https://github.com/Landscape-Of-Agents/Landscape/releases/latest">release page</a>.</p>
   </section>
 
   <!-- Commands -->
@@ -274,7 +376,7 @@ crane agent install --profile claude</pre>
       <input type="hidden" name="_subject" value="Agent Landscape feedback">
       <input type="hidden" name="_template" value="table">
       <input type="hidden" name="_captcha" value="false">
-      <input type="hidden" name="_next" id="feedback-next" value="https://github.com/VishuKalier2003/Agentscript">
+      <input type="hidden" name="_next" id="feedback-next" value="https://github.com/Landscape-Of-Agents/Landscape">
       <input type="text" name="_honey" class="hidden" tabindex="-1" autocomplete="off" aria-hidden="true">
       <label class="grid gap-1.5 text-sm">Title<input type="text" name="title" required maxlength="120" placeholder="Short summary" class="field"></label>
       <label class="grid gap-1.5 text-sm">Content<textarea name="content" required rows="5" maxlength="5000" placeholder="What happened, or what would help?" class="field resize-y"></textarea></label>
@@ -301,12 +403,12 @@ crane agent install --profile claude</pre>
 
 <footer class="mx-auto mt-24 max-w-page px-4 pb-10">
   <div class="flex flex-col gap-4 border-t border-white/[0.06] pt-6 text-sm text-ink-3 sm:flex-row sm:items-center">
-    <span class="flex items-center gap-2"><img src="logo.png" alt="" width="18" height="18" class="h-[18px] w-[18px] opacity-80">© <span id="year">2026</span> Agent Landscape</span>
+    <span class="flex items-center gap-2"><img src="logo.png" alt="" width="18" height="18" class="h-[18px] w-[18px]">© <span id="year">2026</span> Agent Landscape</span>
     <nav aria-label="Footer" class="flex flex-wrap gap-x-5 gap-y-2 sm:ml-auto">
-      <a href="https://github.com/VishuKalier2003/Agentscript" rel="noopener" class="hover:text-ink">GitHub</a>
-      <a href="https://github.com/VishuKalier2003/Agentscript/releases" rel="noopener" class="hover:text-ink">Releases</a>
-      <a href="https://agentscript-service.onrender.com" rel="noopener" class="hover:text-ink">Dashboard</a>
-      <a href="https://github.com/VishuKalier2003/Agentscript/blob/main/LICENSE.md" rel="noopener" class="hover:text-ink">Apache-2.0</a>
+      <a href="https://github.com/Landscape-Of-Agents/Landscape" rel="noopener" class="hover:text-ink">GitHub</a>
+      <a href="https://github.com/Landscape-Of-Agents/Landscape/releases" rel="noopener" class="hover:text-ink">Releases</a>
+      <a href="https://dashboard.agentslandscape.cloud" rel="noopener" class="hover:text-ink">Dashboard</a>
+      <a href="https://github.com/Landscape-Of-Agents/Landscape/blob/main/LICENSE.md" rel="noopener" class="hover:text-ink">Apache-2.0</a>
     </nav>
   </div>
 </footer>

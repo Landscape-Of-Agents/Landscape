@@ -1,7 +1,7 @@
-// The Foxx panel: an agent-style workspace for the selected code. It shows what it acts on (the
+// The Landscape panel: an agent-style workspace for the selected code. It shows what it acts on (the
 // selection, with line numbers), lets the person ask for an action (search, a quick chip, or the
 // grouped action menu behind its toggle),
-// configures it with an explicit plan of every step Foxx will take, then runs it with a live
+// configures it with an explicit plan of every step Landscape will take, then runs it with a live
 // timeline of those steps and a result with follow-up buttons (undo, open the file, fix Crane).
 // The panel holds no state of its own beyond this session's activity: the extension sends the
 // selection, the repository's governance, and Crane's status, and runs what the person chose.
@@ -70,7 +70,7 @@ export interface PanelHost {
   command(id: string): Promise<void>;
 }
 
-/** The Foxx panel (one per window). */
+/** The Landscape panel (one per window). */
 export class FoxxPanel {
   private static current: FoxxPanel | undefined;
   private selection: SelectionInfo | undefined;
@@ -89,7 +89,7 @@ export class FoxxPanel {
       FoxxPanel.current.refresh(true);
       return;
     }
-    const panel = vscode.window.createWebviewPanel("foxx.panel", "Foxx", { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false }, {
+    const panel = vscode.window.createWebviewPanel("foxx.panel", "Landscape", { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false }, {
       enableScripts: true,
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(extensionUri, "images")],
@@ -161,7 +161,7 @@ export class FoxxPanel {
  * styles, and the extension's images), and the script that draws every view. The action search is
  * the extension's own (core/actions), so the panel and the tests agree.
  * @param cspSource the webview's source for images and styles
- * @param logo the Foxx logo URI
+ * @param logo the fox logo URI
  * @returns HTML
  */
 function html(cspSource: string, logo: string): string {
@@ -174,7 +174,7 @@ function html(cspSource: string, logo: string): string {
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource}; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Foxx</title>
+<title>Landscape</title>
 <style>
 :root {
   --fox: #ff7a1a; --fox-2: #ffb347; --fox-soft: color-mix(in srgb, var(--fox) 14%, transparent);
@@ -338,7 +338,7 @@ details.activity[open] summary::after { content: "▾"; }
 <div class="shell">
   <header class="top">
     <img src="${logo}" alt="">
-    <div class="title"><b>Foxx</b><span id="subtitle">Governance agent for Crane</span></div>
+    <div class="title"><b>Landscape</b><span id="subtitle">Governance agent for Crane</span></div>
     <div class="badges" id="badges"></div>
   </header>
   <div id="banner"></div>
@@ -408,7 +408,7 @@ function renderHeader() {
   $("subtitle").textContent = state.ready ? state.policies.length + " polic" + (state.policies.length === 1 ? "y" : "ies") + " · " + state.selections.length + " selection" + (state.selections.length === 1 ? "" : "s") + " · " + state.entities.length + " zone/flow" + (state.entities.length === 1 ? "" : "s") : "Governance agent for Crane";
   let banner = "";
   if (crane && crane.state !== "ok") {
-    banner = '<div class="banner" role="alert"><div class="icon">⛔</div><div><b>' + (crane.state === "missing" ? "Crane was not found" : "This Crane is too old for Foxx") + "</b>" + esc(crane.message) +
+    banner = '<div class="banner" role="alert"><div class="icon">⛔</div><div><b>' + (crane.state === "missing" ? "Crane was not found" : "This Crane is too old for Landscape") + "</b>" + esc(crane.message) +
       '<div class="row"><button class="btn primary" data-command="crane:download">Download latest Crane</button><button class="btn" data-command="crane:path">Set Crane path</button><button class="btn ghost" data-command="crane:recheck">Check again</button></div></div></div>';
   } else if (!state.ready) {
     banner = '<div class="banner info"><div class="icon">🦊</div><div><b>Crane is not set up in this repository</b>Set it up to protect code, create zones and flows, and check every agent tool call.<div class="row"><button class="btn primary" data-run="setup">Set up Crane</button></div></div></div>';
@@ -466,7 +466,7 @@ function renderCompose(focus) {
     '<div class="group" role="group" aria-label="' + esc(group.group) + '"><div class="group-head">' + esc(group.group) + " <span>" + group.actions.length + "</span></div>" + group.actions.map(item).join("") + "</div>").join("")
     : '<div class="empty-state"><b>No action matches</b>Try "zone", "protect", "context", or "graph".</div>') + "</div>";
   $("stage").innerHTML =
-    '<div class="composer"><textarea id="composer" rows="2" placeholder="' + (state.ready ? "What should Foxx do with this code? e.g. zone, protect, add context…" : "Type setup, or press Enter") + '" aria-label="Search actions" spellcheck="false">' + esc(query) + "</textarea>" +
+    '<div class="composer"><textarea id="composer" rows="2" placeholder="' + (state.ready ? "What should Landscape do with this code? e.g. zone, protect, add context…" : "Type setup, or press Enter") + '" aria-label="Search actions" spellcheck="false">' + esc(query) + "</textarea>" +
     '<div class="tools">' + chips + toggle + '<span class="kbd">' + (listing ? "↑↓ choose · Enter open" : "Type to search · ↓ all actions") + "</span></div></div>" + list;
   const menu = $("menu-toggle");
   if (menu) menu.addEventListener("click", () => { if (listing) { setMenu(false); query = ""; } else setMenu(true); active = 0; renderCompose(true); });
@@ -556,7 +556,7 @@ function formFor(action) {
   }
 }
 
-// What Foxx will do, in order, from the current values
+// What Landscape will do, in order, from the current values
 function plan(action) {
   const s = state.selection;
   const where = s ? "<code>" + esc(s.file) + "</code> lines " + s.start + "–" + s.end : "the selection";
@@ -593,7 +593,7 @@ function renderConfigure() {
   const action = current;
   $("stage").innerHTML = '<div class="steps"><span>Choose</span><span class="sep">›</span><span class="on">Configure</span><span class="sep">›</span><span>Run</span></div>' +
     '<form class="card" id="form" novalidate><div class="head"><span class="glyph" style="color:var(--fox);display:grid;width:22px;height:22px">' + glyph(action.id) + '</span><div class="grow"><b>' + esc(action.label) + '</b><div class="muted" style="font-size:12px">' + esc(action.detail) + "</div></div></div>" +
-    formFor(action) + '<div class="section"><h4>Foxx will</h4><ol class="plan" id="plan"></ol></div>' +
+    formFor(action) + '<div class="section"><h4>Landscape will</h4><ol class="plan" id="plan"></ol></div>' +
     '<div class="footer"><button type="button" class="btn ghost" id="back">← Back</button><span class="grow"></span><span class="kbd">Ctrl ↵</span><button type="submit" class="btn primary" id="go">' + esc(action.label) + "</button></div></form>";
   const form = $("form");
   const sync = () => { readDraft(); $("plan").innerHTML = plan(action).map((step) => "<li><span>" + step + "</span></li>").join(""); };

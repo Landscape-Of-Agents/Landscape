@@ -405,7 +405,7 @@ function ensureFlowContext(document: Document, flow: YAMLMap): void {
   const id = String(flow.get("id"));
   const order = stageMaps.map((stage) => String(stage.get("id")));
   const orderLine = order.length ? `Flow ${id} runs ${order.join(" → ")} in this order; a change in one stage must keep the stages after it working.` : `Flow ${id}: keep changes consistent along the whole call path.`;
-  // The order line Foxx wrote follows the flow as zones join or leave; other guidance is kept
+  // The order line Landscape wrote follows the flow as zones join or leave; other guidance is kept
   for (const pack of isSeq(packs) ? packs.items.filter(isMap) : []) {
     if (!named(flow).includes(String(pack.get("id")))) continue;
     const content = pack.get("content", true);

@@ -75,6 +75,67 @@
   .scene-struck { @apply text-red-300 line-through decoration-red-400/70; }
   @keyframes scene-shake { 0%, 100% { transform: translateX(0); } 20%, 60% { transform: translateX(-4px); } 40%, 80% { transform: translateX(4px); } }
 
+  /* Product mockups: Crane's terminal, Landscape's editor and graph, Data Sea's dashboard */
+  .product-mark { @apply grid h-8 w-8 place-items-center rounded-lg border border-white/10 bg-gradient-to-b from-white/[0.1] to-white/[0.02] text-ink shadow-[inset_0_1px_0_rgba(255,255,255,.08)]; }
+  .window { @apply overflow-hidden rounded-xl border border-white/[0.07] bg-black/50 shadow-[0_20px_50px_-25px_rgba(0,0,0,.9)]; }
+  .window-bar { @apply flex min-h-[2.25rem] items-center gap-2 border-b border-white/[0.06] bg-white/[0.02] px-3 py-1.5; }
+  .dots { @apply flex gap-1.5; }
+  .dots i { @apply h-2.5 w-2.5 rounded-full bg-white/[0.12]; }
+  .pill { @apply inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] text-ink-2; }
+  .pill-live b { @apply h-1.5 w-1.5 animate-pulse rounded-full bg-green-400; box-shadow: 0 0 8px rgba(74, 222, 128, 0.8); }
+  .stat-mini { @apply rounded-lg border border-white/[0.06] bg-white/[0.02] px-2 py-2; }
+  .stat-mini dt { @apply text-[10px] uppercase tracking-[0.14em] text-ink-3; }
+  .stat-mini dd { @apply mt-0.5 text-[13px] font-medium text-ink; }
+  .term-line { @apply flex min-w-0 items-baseline gap-2 whitespace-nowrap; animation: line-in 0.35s ease-out both; }
+  .term-line .label { @apply w-[7.75rem] shrink-0 text-ink-2 sm:w-[8.5rem]; }
+  .term-line .detail { @apply min-w-0 truncate text-ink-3; }
+  .term-badge { @apply shrink-0 rounded px-1.5 text-[10px] font-semibold; }
+  .tab { @apply flex h-9 items-center whitespace-nowrap border-b-2 border-transparent px-2.5 font-mono text-[11px] text-ink-3; }
+  .tab-on { @apply border-white/60 text-ink; }
+  .code-line { @apply relative flex whitespace-pre pr-3 text-ink-2; }
+  .code-line i { @apply w-9 shrink-0 select-none pr-3 text-right not-italic text-ink-3/60; }
+  .band { @apply border-l-2; }
+  .band-preserve { border-color: rgba(134, 239, 172, 0.55); background: rgba(134, 239, 172, 0.06); }
+  .band-target { border-color: rgba(196, 181, 253, 0.6); background: rgba(196, 181, 253, 0.06); }
+  .lens { @apply truncate pl-9 font-sans text-[10.5px] leading-[1.6]; }
+  .lens b { @apply font-normal; }
+  .lens-preserve { @apply text-green-300/80; }
+  .lens-target { @apply text-violet-300/80; }
+  #land-graph .edges path { fill: none; stroke: rgba(255, 255, 255, 0.16); stroke-width: 1.3; stroke-dasharray: 3 5; animation: edge-flow 1.4s linear infinite; transition: stroke 0.5s; }
+  #land-graph .edges path.hot { stroke: rgba(255, 255, 255, 0.5); }
+  #land-graph .pulses circle { fill: #fff; filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.9)); }
+  #land-graph .node rect { fill: rgba(255, 255, 255, 0.04); stroke: rgba(255, 255, 255, 0.2); transition: stroke 0.5s, fill 0.5s; }
+  #land-graph .node text { fill: #a1a1a6; font: 500 11px "Geist Mono", ui-monospace, monospace; text-anchor: middle; }
+  #land-graph .node text.kind { fill: #6b6b70; font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; }
+  #land-graph .node-preserve rect { stroke: rgba(134, 239, 172, 0.45); fill: rgba(134, 239, 172, 0.06); }
+  #land-graph .node-preserve text { fill: #86efac; }
+  #land-graph .node-target rect { stroke: rgba(196, 181, 253, 0.5); fill: rgba(196, 181, 253, 0.06); }
+  #land-graph .node-target text { fill: #c4b5fd; }
+  #land-graph .node-zone .dot { fill: rgba(255, 255, 255, 0.2); transition: fill 0.5s; }
+  #land-graph .node-zone .halo { fill: none; stroke: #4ade80; stroke-width: 1.2; opacity: 0; }
+  #land-graph .node-zone.hot .dot { fill: #4ade80; }
+  #land-graph .node-zone.hot rect { stroke: rgba(255, 255, 255, 0.7); fill: rgba(255, 255, 255, 0.09); }
+  #land-graph .node-zone.hot text { fill: #ededef; }
+  #land-graph .node-zone.hot .halo { animation: halo 1.6s ease-out infinite; transform-box: fill-box; transform-origin: center; }
+  #land-graph .acyclic rect { fill: rgba(134, 239, 172, 0.08); stroke: rgba(134, 239, 172, 0.3); }
+  #land-graph .acyclic text { fill: #86efac; font: 500 9.5px "Geist", ui-sans-serif, sans-serif; text-anchor: middle; }
+  .kpi { @apply flex flex-col rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5; }
+  .kpi span { @apply text-[10px] uppercase tracking-[0.14em] text-ink-3; }
+  .kpi strong { @apply mt-1 font-mono text-lg font-medium tabular-nums text-ink transition-colors; }
+  .kpi svg { @apply mt-1.5 h-5 w-full; }
+  .spark { fill: none; stroke: rgba(255, 255, 255, 0.55); stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+  .spark-red { stroke: #f87171; }
+  .spark-amber { stroke: #fcd34d; }
+  .spark-violet { stroke: #c4b5fd; }
+  .panel { @apply min-w-0 rounded-lg border border-white/[0.06] bg-white/[0.02] p-3; }
+  .feed-row { @apply grid min-w-0 grid-cols-[1fr_auto] items-center gap-x-2 gap-y-0.5 rounded-md bg-white/[0.02] px-2 py-1.5 font-mono text-[10.5px]; animation: line-in 0.45s ease-out both; }
+  .feed-row .who { @apply flex min-w-0 items-center gap-1.5 text-ink-2; }
+  .feed-row .who i { @apply h-1.5 w-1.5 shrink-0 rounded-full; }
+  .feed-row .what { @apply col-span-2 min-w-0 truncate pl-3 text-ink-3; }
+  @keyframes line-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  @keyframes edge-flow { to { stroke-dashoffset: -16; } }
+  @keyframes halo { 0% { transform: scale(1); opacity: 0.9; } 100% { transform: scale(3); opacity: 0; } }
+
   /* Sections fade up the first time they scroll into view (app.js adds .seen) */
   .reveal { opacity: 0; transform: translateY(18px); transition: opacity .8s cubic-bezier(.2, .7, .2, 1), transform .8s cubic-bezier(.2, .7, .2, 1); }
   .reveal.seen { opacity: 1; transform: none; }

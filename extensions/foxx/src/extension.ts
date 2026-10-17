@@ -1,4 +1,4 @@
-// Foxx for VS Code: set up Crane in a repository, create policies, checkpoints, and selection
+// Landscape for VS Code: set up Crane in a repository, create policies, checkpoints, and selection
 // contracts from the editor, see where selections are and whether they pass, manage zones, flows,
 // and context packs in .crane/governance.yaml, and see them as Crane's governance graph with the
 // agents working in them.
@@ -21,7 +21,7 @@ import { contextLabel, guidanceLines, LiveContext, liveFresh } from "./core/live
 import { FoxxGraph, GraphHost, Positions } from "./graphView";
 import { FoxxSidebar, SidebarHost, SidebarState } from "./sidebar";
 
-/** A registry record as stored in .crane/registry.json (only the fields Foxx shows). */
+/** A registry record as stored in .crane/registry.json (only the fields Landscape shows). */
 interface RegistryRecord {
   id: string;
   name: string | null;
@@ -82,7 +82,7 @@ let craneKnown: CraneStatus | undefined;
 let craneWarned = false;
 
 /**
- * Check that the configured Crane exists and is new enough for every command Foxx runs. An old
+ * Check that the configured Crane exists and is new enough for every command Landscape runs. An old
  * Crane (before 'crane governance sign') would make every zone, flow, and context change fail and
  * be reverted, so nothing runs until this passes.
  * @returns status
@@ -120,7 +120,7 @@ async function warnCrane(status: CraneStatus): Promise<void> {
   if (craneWarned || status.state === "ok") return;
   craneWarned = true;
   updateStatus(lastReport);
-  const choice = await vscode.window.showErrorMessage(`Foxx: ${status.message}`, "Download Crane", "Set Crane Path");
+  const choice = await vscode.window.showErrorMessage(`Landscape: ${status.message}`, "Download Crane", "Set Crane Path");
   if (choice) craneFix(choice === "Download Crane" ? "crane:download" : "crane:path");
 }
 
@@ -138,7 +138,7 @@ type OpenedFrom = "TITLE_BUTTON" | "KEYBINDING" | "EXPLORER" | "STATUS_BAR" | "S
 
 /**
  * Record an event of the editor side (DASHBOARD.md F31) with 'crane foxx event'. It runs in the
- * background, writes nothing to the Foxx output, and never changes or delays what the person did.
+ * background, writes nothing to the Landscape output, and never changes or delays what the person did.
  * @param name event name (FOXX_...)
  * @param fields attributes as key=value; empty values are left out
  */
@@ -213,7 +213,7 @@ async function describeFile(uri: vscode.Uri): Promise<SelectionInfo | undefined>
 }
 
 /**
- * Open the Foxx panel (the editor title button, Ctrl+Alt+F, and the menus). It works on a block of
+ * Open the Landscape panel (the editor title button, Ctrl+Alt+F, and the menus). It works on a block of
  * code: the active editor's selection, or a whole file chosen in the Explorer; with neither, it
  * asks for a selection instead.
  * @param file file chosen in the Explorer, if any
@@ -225,7 +225,7 @@ async function openPanel(file: vscode.Uri | undefined, from: OpenedFrom): Promis
     const whole = await describeFile(file);
     if (!whole) {
       refused("FILE_UNREADABLE", "File cannot be opened as text.");
-      void vscode.window.showErrorMessage("Foxx: this file cannot be opened as text.");
+      void vscode.window.showErrorMessage("Landscape: this file cannot be opened as text.");
       return;
     }
     lastSelection = whole;
@@ -240,7 +240,7 @@ async function openPanel(file: vscode.Uri | undefined, from: OpenedFrom): Promis
   }
   record("FOXX_PANEL_OPENED", {
     status: "OPENED",
-    statement: "Foxx panel opened for the selected code.",
+    statement: "Landscape panel opened for the selected code.",
     opened_from: from,
     selected_lines: lastSelection ? lastSelection.end - lastSelection.start + 1 : undefined,
     enclosing_function: lastSelection?.symbol,
@@ -293,7 +293,7 @@ let graphRunning: Promise<GraphData | undefined> | undefined;
 
 /**
  * Ask Crane for the governance graph ('crane governance graph --json') and update the views. It
- * runs quietly: nothing is written to the Foxx output unless it fails.
+ * runs quietly: nothing is written to the Landscape output unless it fails.
  * @returns the graph, or undefined (graphError says why)
  */
 function refreshGraph(): Promise<GraphData | undefined> {
@@ -338,7 +338,7 @@ const graphHost: GraphHost = {
     const absolute = path.resolve(directory, target.path);
     const inside = path.relative(directory, absolute);
     if (inside.startsWith("..") || path.isAbsolute(inside) || !fs.existsSync(absolute)) {
-      void vscode.window.showWarningMessage(`Foxx: ${target.path} is not a file of this repository.`);
+      void vscode.window.showWarningMessage(`Landscape: ${target.path} is not a file of this repository.`);
       return;
     }
     const line = Math.max(0, target.line - 1);
@@ -374,7 +374,7 @@ async function editGraph(label: string, edit: (text: string) => { text: string; 
   return told;
 }
 
-/** The extension side of the Foxx panel. */
+/** The extension side of the Landscape panel. */
 const panelHost: PanelHost = {
   state(): PanelState {
     const ready = Boolean(root());
@@ -430,7 +430,7 @@ const panelHost: PanelHost = {
   },
 };
 
-/** The extension side of the Foxx sidebar. */
+/** The extension side of the Landscape sidebar. */
 const sidebarHost: SidebarHost = {
   state(): SidebarState {
     const ready = Boolean(root());
@@ -491,14 +491,14 @@ const sidebarHost: SidebarHost = {
 };
 
 /**
- * Select a selection's lines in the editor, and optionally open the Foxx panel on them.
+ * Select a selection's lines in the editor, and optionally open the Landscape panel on them.
  * @param id selection id
  * @param open open the panel too
  */
 async function revealSelection(id: string, open = false): Promise<void> {
   const span = spans[id];
   if (!span) {
-    void vscode.window.showWarningMessage(`Foxx: Crane cannot find selection ${id} in the code (it is UNRESOLVED). Run 'Foxx: Validate Governance' for details.`);
+    void vscode.window.showWarningMessage(`Landscape: Crane cannot find selection ${id} in the code (it is UNRESOLVED). Run 'Landscape: Validate Governance' for details.`);
     return;
   }
   const editor = await vscode.window.showTextDocument(vscode.Uri.file(path.join(root() ?? "", span.path)), { preview: false, viewColumn: vscode.ViewColumn.One });
@@ -509,7 +509,7 @@ async function revealSelection(id: string, open = false): Promise<void> {
 }
 
 /**
- * Run an action chosen in the Foxx panel, step by step: check Crane, then the action's own steps.
+ * Run an action chosen in the Landscape panel, step by step: check Crane, then the action's own steps.
  * Nothing is written before Crane is known to support every step.
  * @param action action id (core/actions)
  * @param values the form's values
@@ -629,16 +629,16 @@ async function runAction(action: string, values: Record<string, string | boolean
       return outcome(["agent", "install", "--profile", value("profile") || "claude"], `Hooks installed for ${value("profile") === "codex" ? "Codex" : "Claude Code"}; Crane now checks every tool call.`);
     case "setup":
       await step("run", "Connect to GitHub and run crane init", () => setUp());
-      return root() ? { ok: true, message: "Crane is set up in this repository." } : { ok: false, message: "Setup did not finish; see the Foxx output.", actions: [{ id: "open:output", label: "Show Crane output", kind: "command" }] };
+      return root() ? { ok: true, message: "Crane is set up in this repository." } : { ok: false, message: "Setup did not finish; see the Landscape output.", actions: [{ id: "open:output", label: "Show Crane output", kind: "command" }] };
     case "validate": {
       const report = await step("run", "crane validate", () => validate(true), (report) => ({ ok: Boolean(report), detail: report ? `generation ${report.generation}` : undefined }));
-      if (!report) return { ok: false, message: "Validation did not run; see the Foxx output.", actions: [{ id: "open:output", label: "Show Crane output", kind: "command" }] };
+      if (!report) return { ok: false, message: "Validation did not run; see the Landscape output.", actions: [{ id: "open:output", label: "Show Crane output", kind: "command" }] };
       const errors = report.findings.filter((finding) => finding.severity === "HIGH" || finding.severity === "CRITICAL");
       return { ok: errors.length === 0, message: errors.length ? `${errors.length} validation error${errors.length === 1 ? "" : "s"}: ${errors.slice(0, 3).map((finding) => finding.message).join("; ")}` : `Governance is valid (generation ${report.generation}, ${report.findings.length} finding${report.findings.length === 1 ? "" : "s"}).`, actions: report.findings.length ? [{ id: "open:problems", label: "Open Problems", kind: "command" }] : undefined };
     }
     case "test": {
       const passed = await step("run", "crane test .", () => test());
-      return passed === undefined ? { ok: false, message: "crane test did not produce a report; see the Foxx output.", actions: [{ id: "open:output", label: "Show Crane output", kind: "command" }] }
+      return passed === undefined ? { ok: false, message: "crane test did not produce a report; see the Landscape output.", actions: [{ id: "open:output", label: "Show Crane output", kind: "command" }] }
         : { ok: passed, message: passed ? "Every policy passes." : "Some policies fail; failures are shown as problems.", actions: passed ? undefined : [{ id: "open:problems", label: "Open Problems", kind: "command" }] };
     }
     case "graph":
@@ -647,7 +647,7 @@ async function runAction(action: string, values: Record<string, string | boolean
       return { ok: true, message: action === "graph" ? "The governance graph is open beside the editor." : "Click zones in the graph, in execution order, then Create flow." };
     case "status":
       await step("run", "crane policy status", () => Promise.resolve(vscode.commands.executeCommand("foxx.policyStatus")));
-      return { ok: true, message: "Policy status is in the Foxx output.", actions: [{ id: "open:output", label: "Show Crane output", kind: "command" }] };
+      return { ok: true, message: "Policy status is in the Landscape output.", actions: [{ id: "open:output", label: "Show Crane output", kind: "command" }] };
     default:
       return { ok: false, message: `Unknown action ${action}.` };
   }
@@ -659,22 +659,22 @@ async function runAction(action: string, values: Record<string, string | boolean
  */
 function updateStatus(report?: ValidateReport): void {
   if (craneKnown && craneKnown.state !== "ok") {
-    status.text = craneKnown.state === "missing" ? "$(error) Foxx: Crane not found" : `$(error) Foxx: update Crane${craneKnown.version ? " (" + craneKnown.version + ")" : ""}`;
+    status.text = craneKnown.state === "missing" ? "$(error) Landscape: Crane not found" : `$(error) Landscape: update Crane${craneKnown.version ? " (" + craneKnown.version + ")" : ""}`;
     status.tooltip = craneKnown.message;
   } else if (!root()) {
-    status.text = "$(shield) Foxx: set up";
+    status.text = "$(shield) Landscape: set up";
     status.tooltip = "Crane is not set up in this repository. Click to set it up.";
   } else if (!report) {
-    status.text = "$(shield) Foxx";
-    status.tooltip = "Foxx actions";
+    status.text = "$(shield) Landscape";
+    status.tooltip = "Landscape actions";
   } else {
     const errors = report.findings.filter((finding) => finding.severity === "HIGH" || finding.severity === "CRITICAL").length;
     const ids = Object.keys(report.selections);
     const failing = ids.filter((id) => outcomeOf(id) === "FAIL" || outcomeOf(id) === "UNRESOLVED").length;
     const passing = ids.filter((id) => outcomeOf(id) === "PASS").length;
-    status.text = errors || failing ? `$(warning) Foxx${failing ? ` $(error) ${failing}` : ""}${errors ? ` $(warning) ${errors}` : ""}` : `$(shield) Foxx${passing ? ` $(pass) ${passing}` : ""}`;
+    status.text = errors || failing ? `$(warning) Landscape${failing ? ` $(error) ${failing}` : ""}${errors ? ` $(warning) ${errors}` : ""}` : `$(shield) Landscape${passing ? ` $(pass) ${passing}` : ""}`;
     const tooltip = new vscode.MarkdownString(
-      `**Foxx** · generation ${report.generation}\n\n` +
+      `**Landscape** · generation ${report.generation}\n\n` +
         `| | |\n|---|---|\n| Selections | ${ids.length} |\n| Passing | ${passing} |\n| Failing or unresolved | ${failing} |\n| Validation errors | ${errors} |\n\n` +
         "[Open the overview](command:foxx.openSidebar) · [Test policies](command:foxx.test) · [Validate](command:foxx.validate)",
     );
@@ -740,7 +740,7 @@ async function craneIn(directory: string, args: string[], input = "") {
 async function crane(args: string[]) {
   const directory = root();
   if (!directory) {
-    vscode.window.showErrorMessage("Foxx: Crane is not set up in this folder; run 'Foxx: Set Up Crane in This Repository'.");
+    vscode.window.showErrorMessage("Landscape: Crane is not set up in this folder; run 'Landscape: Set Up Crane in This Repository'.");
     return undefined;
   }
   const checked = await checkCrane();
@@ -763,11 +763,11 @@ async function change(args: string[], success: string): Promise<boolean> {
   if (result.code !== 0) {
     const message = (result.stderr || result.stdout).trim().replace(/^crane: /, "");
     remember(`crane ${args[0]}`, false, message);
-    vscode.window.showErrorMessage(`Foxx: ${message}`);
+    vscode.window.showErrorMessage(`Landscape: ${message}`);
     return false;
   }
   remember(`crane ${args[0]}`, true, success);
-  vscode.window.showInformationMessage(`Foxx: ${success}`);
+  vscode.window.showInformationMessage(`Landscape: ${success}`);
   await validate(true);
   return true;
 }
@@ -797,19 +797,19 @@ async function setUp(): Promise<void> {
   }
   const directory = root() ?? gitFolder();
   if (!directory) {
-    vscode.window.showErrorMessage("Foxx: open the folder of a Git repository (a clone of a GitHub repository) first.");
+    vscode.window.showErrorMessage("Landscape: open the folder of a Git repository (a clone of a GitHub repository) first.");
     return;
   }
   const connect = repoArgs((await originRemote(directory)) ?? "");
   if (!connect) {
     record("FOXX_SETUP", { status: "FAILED", failure_state: "NO_REMOTE", statement: "No GitHub origin remote." });
-    vscode.window.showErrorMessage("Foxx: this repository has no GitHub 'origin' remote (HTTPS or SSH). Add one with 'git remote add origin URL'.");
+    vscode.window.showErrorMessage("Landscape: this repository has no GitHub 'origin' remote (HTTPS or SSH). Add one with 'git remote add origin URL'.");
     return;
   }
   const fresh = !fs.existsSync(path.join(directory, ".crane", "registry.json"));
   const fail = (result: { code: number; stdout: string; stderr: string }) => {
     record("FOXX_SETUP", { status: "FAILED", failure_state: result.code === 127 ? "CRANE_MISSING" : "GIT", statement: "Crane setup failed.", role: fresh ? "OWNER" : "MEMBER" });
-    return vscode.window.showErrorMessage(`Foxx: ${(result.stderr || result.stdout).trim().replace(/^crane: /, "")}`);
+    return vscode.window.showErrorMessage(`Landscape: ${(result.stderr || result.stdout).trim().replace(/^crane: /, "")}`);
   };
   const connected = await craneIn(directory, connect);
   if (connected.code !== 0) return void fail(connected);
@@ -818,12 +818,12 @@ async function setUp(): Promise<void> {
   if (asked) {
     const message =
       asked === "trust_owner"
-        ? `This repository's rules are signed by the owner key\n\n${ownerKey(initialized.stdout) ?? "(see the Foxx output)"}\n\nTrust it only if it matches the key the owner sees with 'crane admin list'. Until it is trusted, agent changes stay blocked.`
+        ? `This repository's rules are signed by the owner key\n\n${ownerKey(initialized.stdout) ?? "(see the Landscape output)"}\n\nTrust it only if it matches the key the owner sees with 'crane admin list'. Until it is trusted, agent changes stay blocked.`
         : "The signed rules differ from the version this machine last signed. This is expected after merging another admin's change. Accept the current signed rules?";
     const answer = await vscode.window.showWarningMessage(message, { modal: true }, asked === "trust_owner" ? "Trust owner key" : "Accept rules");
     if (!answer) {
       record("FOXX_SETUP", { status: "CANCELLED", failure_state: "OWNER_DECLINED", statement: "Person declined the signed rules.", role: "MEMBER" });
-      vscode.window.showInformationMessage("Foxx: nothing changed.");
+      vscode.window.showInformationMessage("Landscape: nothing changed.");
       return;
     }
     initialized = await craneIn(directory, ["init"], "y\n");
@@ -838,7 +838,7 @@ async function setUp(): Promise<void> {
   await validate(true);
   tree.refresh();
   const hooks = await vscode.window.showInformationMessage(
-    fresh ? "Foxx: Crane is set up (owner key created, baseline checkpoint recorded). Commit the .crane folder, then install the agent hooks:" : "Foxx: this machine now verifies the repository's rules. Install the agent hooks:",
+    fresh ? "Landscape: Crane is set up (owner key created, baseline checkpoint recorded). Commit the .crane folder, then install the agent hooks:" : "Landscape: this machine now verifies the repository's rules. Install the agent hooks:",
     "Claude Code",
     "Codex",
     "Copilot CLI",
@@ -906,10 +906,10 @@ async function openGovernanceEntity(kind: "zone" | "flow", id: string): Promise<
     const governance = vscode.Uri.file(path.join(directory, ".crane", "governance.yaml"));
     if (fs.existsSync(governance.fsPath)) {
       await vscode.window.showTextDocument(governance, { preview: false, viewColumn: vscode.ViewColumn.One });
-      void vscode.window.showInformationMessage(`Foxx: ${kind} '${id}' has no resolvable source file; opened its governance definition.`);
+      void vscode.window.showInformationMessage(`Landscape: ${kind} '${id}' has no resolvable source file; opened its governance definition.`);
     }
   } catch (error) {
-    void vscode.window.showErrorMessage(`Foxx: could not open ${kind} '${id}': ${(error as Error).message}`);
+    void vscode.window.showErrorMessage(`Landscape: could not open ${kind} '${id}': ${(error as Error).message}`);
   }
 }
 
@@ -923,7 +923,7 @@ async function createPolicy(): Promise<void> {
   if (!name) return;
   const file = await vscode.window.showInputBox({ prompt: "Policy file in .crane/policies (without .crane)", value: name.toLowerCase(), validateInput: (value) => checkName(value) });
   if (!file) return;
-  await change(["create", "policy", name, file], `policy ${name} created in .crane/policies/${file}.crane. Add lines to it with 'Foxx: Create Selection Contract'.`);
+  await change(["create", "policy", name, file], `policy ${name} created in .crane/policies/${file}.crane. Add lines to it with 'Landscape: Create Selection Contract'.`);
 }
 
 /** Move a selection's statement to another policy. */
@@ -1013,7 +1013,7 @@ async function validate(quiet = false): Promise<ValidateReport | undefined> {
   if (result.code === 126) return undefined;
   const report = parseJson<ValidateReport>(result);
   if (!report) {
-    vscode.window.showErrorMessage(`Foxx: crane validate failed: ${result.stderr.trim() || "no JSON output"}`);
+    vscode.window.showErrorMessage(`Landscape: crane validate failed: ${result.stderr.trim() || "no JSON output"}`);
     return undefined;
   }
   lastReport = report;
@@ -1025,7 +1025,7 @@ async function validate(quiet = false): Promise<ValidateReport | undefined> {
   tree.refresh();
   void refreshGraph();
   if (!quiet) {
-    vscode.window.showInformationMessage(report.valid ? `Foxx: governance valid (generation ${report.generation})` : `Foxx: ${report.findings.filter((finding) => finding.severity === "HIGH" || finding.severity === "CRITICAL").length} validation errors`);
+    vscode.window.showInformationMessage(report.valid ? `Landscape: governance valid (generation ${report.generation})` : `Landscape: ${report.findings.filter((finding) => finding.severity === "HIGH" || finding.severity === "CRITICAL").length} validation errors`);
   }
   return report;
 }
@@ -1038,7 +1038,7 @@ async function test(): Promise<boolean | undefined> {
   if (result?.code === 126) return undefined;
   const report = result && parseJson<TestReport>(result);
   if (!report) {
-    vscode.window.showErrorMessage("Foxx: crane test did not produce a report; see the Foxx output.");
+    vscode.window.showErrorMessage("Landscape: crane test did not produce a report; see the Landscape output.");
     return undefined;
   }
   const commands = report.policies.flatMap((policy) => policy.commands);
@@ -1049,7 +1049,7 @@ async function test(): Promise<boolean | undefined> {
   tree.refresh();
   updateStatus(lastReport);
   remember("test policies", report.passed, report.passed ? "Every policy passes." : `${report.policies.filter((policy) => !policy.passed).length} policies fail.`);
-  vscode.window.showInformationMessage(`Foxx: ${report.passed ? "all policies pass" : `${report.policies.filter((policy) => !policy.passed).length} policies fail`}`);
+  vscode.window.showInformationMessage(`Landscape: ${report.passed ? "all policies pass" : `${report.policies.filter((policy) => !policy.passed).length} policies fail`}`);
   return report.passed;
 }
 
@@ -1101,7 +1101,7 @@ class SelectionLenses implements vscode.CodeLensProvider {
         const glyph = outcome === "PASS" ? "$(pass-filled)" : outcome === "FAIL" || outcome === "UNRESOLVED" ? "$(error)" : record.operation === "preserve" ? "$(shield)" : "$(target)";
         return [
           new vscode.CodeLens(at, { title: `${glyph} ${record.operation}${record.name ? ` "${record.name}"` : ""} · ${record.id} · ${record.policy}${outcome ? ` · ${outcome}` : " · not tested"}`, command: "foxx.test", tooltip: "Run every policy's tests" }),
-          new vscode.CodeLens(at, { title: "Open in Foxx", command: "foxx.revealSelection", arguments: [record.id, true], tooltip: "Select these lines and open the Foxx panel" }),
+          new vscode.CodeLens(at, { title: "Open in Landscape", command: "foxx.revealSelection", arguments: [record.id, true], tooltip: "Select these lines and open the Landscape panel" }),
         ];
       })
       .flat();
@@ -1135,10 +1135,10 @@ class SelectionHovers implements vscode.HoverProvider {
       const outcome = outcomeOf(record.id);
       const argument = encodeURIComponent(JSON.stringify([record.id, true]));
       const nesting = covering.length > 1 ? (index === 0 ? " · innermost" : index === covering.length - 1 ? " · outermost" : " · nested") : "";
-      return `$(${record.operation === "preserve" ? "shield" : "target"}) **Foxx · ${record.operation === "preserve" ? "Preserved" : "Targeted"} code**${record.name ? ` — ${record.name}` : ""}${nesting}\n\n` +
+      return `$(${record.operation === "preserve" ? "shield" : "target"}) **Landscape · ${record.operation === "preserve" ? "Preserved" : "Targeted"} code**${record.name ? ` — ${record.name}` : ""}${nesting}\n\n` +
         `| | |\n|---|---|\n| Selection | \`${record.id}\` |\n| Policy | ${record.policy} |\n| Lines | ${span.start_line}–${span.end_line} |\n${record.change_type ? `| Change type | ${record.change_type} |\n` : ""}| Last outcome | ${outcome} |\n\n` +
         (record.operation === "preserve" ? "Agents may not change these lines; Crane denies the tool call and records it.\n\n" : "Agents are expected to change these lines as the policy describes.\n\n") +
-        `[Open in Foxx](command:foxx.revealSelection?${argument})`;
+        `[Open in Landscape](command:foxx.revealSelection?${argument})`;
     });
     const text = new vscode.MarkdownString(`${sections.join("\n\n---\n\n")} · [Test policies](command:foxx.test) · [Graph](command:foxx.openGraph) · [Overview](command:foxx.openSidebar)`, true);
     text.isTrusted = { enabledCommands: ["foxx.revealSelection", "foxx.test", "foxx.openGraph", "foxx.openSidebar"] };
@@ -1168,7 +1168,7 @@ function stateIcon(name: string, state: string | undefined): vscode.ThemeIcon {
   return new vscode.ThemeIcon(name, color ? new vscode.ThemeColor(color) : undefined);
 }
 
-/** The Foxx Governance view: policies with their commands, zones, flows, and context packs. */
+/** The Landscape Governance view: policies with their commands, zones, flows, and context packs. */
 class GovernanceTree implements vscode.TreeDataProvider<Node> {
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.changed.event;
@@ -1232,10 +1232,10 @@ function readGovernance(): string {
 }
 
 /**
- * Write a governance change made in the Foxx panel (the person already filled in every value),
+ * Write a governance change made in the Landscape panel (the person already filled in every value),
  * validate it with Crane, and sign it with 'crane governance sign' (only admins can; an unsigned
  * edit stops agents, since Crane cannot tell it from tampering). The previous file is restored
- * when validation or signing fails; a kept change can be undone with "Foxx: Undo Last Governance
+ * when validation or signing fails; a kept change can be undone with "Landscape: Undo Last Governance
  * Change".
  * @param change edit of the current text
  * @param summary what changed, for the person
@@ -1407,7 +1407,7 @@ async function revealContext(file: string, line: number): Promise<void> {
  * @param context extension context
  */
 export function activate(context: vscode.ExtensionContext): void {
-  output = vscode.window.createOutputChannel("Foxx");
+  output = vscode.window.createOutputChannel("Landscape");
   diagnostics = vscode.languages.createDiagnosticCollection("crane");
   const register = (command: string, callback: (...args: unknown[]) => unknown) => context.subscriptions.push(vscode.commands.registerCommand(command, callback));
   // The title button passes the editor's file, so only the Explorer entry opens a whole file
@@ -1441,7 +1441,7 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   register("foxx.undoGovernanceChange", async () => {
     const result = await runAction("undo", {}, undefined);
-    (result.ok ? vscode.window.showInformationMessage : vscode.window.showErrorMessage)(`Foxx: ${result.message}`);
+    (result.ok ? vscode.window.showInformationMessage : vscode.window.showErrorMessage)(`Landscape: ${result.message}`);
   });
   context.subscriptions.push(
     output,
@@ -1488,7 +1488,7 @@ export function activate(context: vscode.ExtensionContext): void {
   }, 30_000);
   context.subscriptions.push({ dispose: () => clearInterval(activityTimer) });
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
-  status.command = { command: "foxx.menu", title: "Foxx", arguments: ["STATUS_BAR"] };
+  status.command = { command: "foxx.menu", title: "Landscape", arguments: ["STATUS_BAR"] };
   context.subscriptions.push(status);
   updateStatus();
   void vscode.commands.executeCommand("setContext", "foxx.ready", Boolean(root()));

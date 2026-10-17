@@ -1,4 +1,4 @@
-// The Foxx graph: the repository's zones, flows, and selections as Crane reports them ('crane
+// The Landscape graph: the repository's zones, flows, and selections as Crane reports them ('crane
 // governance graph'), on a canvas beside the editor. Zones can be dragged anywhere (positions are
 // remembered per workspace), and linked by dragging from one zone's connector onto another: the
 // link becomes a flow's next stage in .crane/governance.yaml, signed by Crane. Every link is
@@ -49,7 +49,7 @@ export class FoxxGraph {
       if (connect) void FoxxGraph.current.panel.webview.postMessage({ type: "hint" });
       return;
     }
-    const panel = vscode.window.createWebviewPanel("foxx.graph", "Foxx Graph", { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false }, {
+    const panel = vscode.window.createWebviewPanel("foxx.graph", "Landscape Graph", { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false }, {
       enableScripts: true,
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(extensionUri, "images")],
@@ -115,7 +115,7 @@ function html(cspSource: string): string {
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Foxx Graph</title>
+<title>Landscape Graph</title>
 <style>
 :root {
   --fox: #ff7a1a; --fox-soft: color-mix(in srgb, var(--fox) 16%, transparent);

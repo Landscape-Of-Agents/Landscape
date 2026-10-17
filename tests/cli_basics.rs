@@ -208,10 +208,12 @@ fn agents_cannot_run_governance_commands() {
             text(&output)
         );
     }
+    // Read-only commands are refused too: only a human runs Crane
     let read_only = fixture.as_agent(&["validate"]);
     assert!(
-        read_only.status.success(),
-        "agents may validate: {}",
+        !read_only.status.success()
+            && text(&read_only).contains("cannot be executed by an AI agent"),
+        "agents may not even validate: {}",
         text(&read_only)
     );
 }
@@ -348,5 +350,44 @@ fn signing_keys_are_sealed() {
         write.status.success() && write.stdout.is_empty(),
         "{}",
         text(&write)
+    );
+}
+
+/** No Crane command runs inside an agent session, read-only ones included; only the hook entry
+ * points the agent's own hooks start still run
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn agents_run_no_crane_command_at_all() {
+    let fixture = Fixture::ready();
+    for args in [
+        vec!["--version"],
+        vec!["help"],
+        vec!["validate"],
+        vec!["test", "."],
+        vec!["admin", "list"],
+        vec!["repo", "status"],
+        vec!["foxx", "live", "--json"],
+    ] {
+        let output = fixture.as_agent(&args);
+        assert!(
+            !output.status.success(),
+            "{args:?} must be refused for agents"
+        );
+        assert!(
+            text(&output).contains("cannot be executed by an AI agent"),
+            "{args:?}: {}",
+            text(&output)
+        );
+    }
+    // The hooks' upload is not refused as an agent command (here it stops because uploads are off)
+    let sync = fixture.as_agent(&["agent", "sync"]);
+    assert!(
+        !text(&sync).contains("cannot be executed by an AI agent"),
+        "{}",
+        text(&sync)
     );
 }

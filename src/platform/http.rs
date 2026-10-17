@@ -156,9 +156,46 @@ pub(crate) fn base64(bytes: &[u8]) -> String {
     output
 }
 
+/** Decode standard base64 (padding required, no whitespace)
+ * Input
+    - text: &[u8] - encoded data
+ * Output
+    - Result<Vec<u8>, String> the decoded bytes
+    - Error if the text is not valid base64
+*/
+pub(crate) fn unbase64(text: &[u8]) -> Result<Vec<u8>, String> {
+    let invalid = || "invalid base64".to_string();
+    if !text.len().is_multiple_of(4) {
+        return Err(invalid());
+    }
+    let value = |byte: u8| match byte {
+        b'A'..=b'Z' => Some(u32::from(byte - b'A')),
+        b'a'..=b'z' => Some(u32::from(byte - b'a') + 26),
+        b'0'..=b'9' => Some(u32::from(byte - b'0') + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let mut output = Vec::with_capacity(text.len() / 4 * 3);
+    let chunks = text.len() / 4;
+    for (number, chunk) in text.chunks(4).enumerate() {
+        // Padding may only end the last chunk: "xx==" or "xxx="
+        let padding = chunk.iter().rev().take_while(|byte| **byte == b'=').count();
+        if padding > 2 || (padding > 0 && number + 1 != chunks) {
+            return Err(invalid());
+        }
+        let mut bits = 0u32;
+        for (index, byte) in chunk[..4 - padding].iter().enumerate() {
+            bits |= value(*byte).ok_or_else(invalid)? << (18 - 6 * index);
+        }
+        output.extend_from_slice(&bits.to_be_bytes()[1..4 - padding]);
+    }
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{base64, config};
+    use super::{base64, config, unbase64};
 
     /** Check base64 against known vectors
      * Input
@@ -173,6 +210,30 @@ mod tests {
         assert_eq!(base64(b"fo"), "Zm8=");
         assert_eq!(base64(b"foo"), "Zm9v");
         assert_eq!(base64(b"user@x.com:token"), "dXNlckB4LmNvbTp0b2tlbg==");
+    }
+
+    /** Check that decoding inverts encoding and rejects malformed text
+     * Input
+        - None
+     * Output
+        - None (panics on failure)
+    */
+    #[test]
+    fn decodes_base64() {
+        for text in [
+            &b""[..],
+            b"f",
+            b"fo",
+            b"foo",
+            b"@('a') | python -m x; if ($?) { y }",
+        ] {
+            assert_eq!(unbase64(base64(text).as_bytes()).unwrap(), text);
+        }
+        let all = (0..=255u8).collect::<Vec<_>>();
+        assert_eq!(unbase64(base64(&all).as_bytes()).unwrap(), all);
+        for bad in ["Zg=", "Z===", "Zg==Zm8=", "Zm9v!A==", "Zm 9v"] {
+            assert!(unbase64(bad.as_bytes()).is_err(), "{bad}");
+        }
     }
 
     /** Check that configuration values are quoted so they cannot inject curl options

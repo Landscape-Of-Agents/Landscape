@@ -1,12 +1,12 @@
 // Crane: AgentScript security contracts (signed selections, preserve and target policies),
-// runtime enforcement at the agent hook boundary, and Foxx security telemetry.
+// runtime enforcement at the agent hook boundary, and Data Sea security telemetry.
 //
 // Layers, from the bottom: platform (Git, files, time) -> trust (keys, digests, signatures,
 // rollback anchors) -> selection (anchors, signed registry, location tracker) -> governance
 // (checkpoints, policies, configuration, verification) -> hooks (agent adapters and runtime
 // enforcement) -> telemetry (identity, events, metrics, autonomy ledger, compliance) -> foxx
 // (read-only dashboard) and integrations; cli dispatches the commands. The server feature adds the
-// Foxx ingestion service, which stores every installation's uploads in MongoDB.
+// Data Sea ingestion service, which stores every installation's uploads in MongoDB.
 
 mod cli;
 mod foxx;

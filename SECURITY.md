@@ -7,7 +7,7 @@ privately.
 ## Supported versions
 
 Only the latest release receives security fixes. Upgrade to the newest
-[release](https://github.com/VishuKalier2003/Agentscript/releases/latest) (Crane CLI and the Foxx
+[release](https://github.com/Landscape-Of-Agents/Landscape/releases/latest) (Crane CLI and the Landscape
 extension together) before reporting.
 
 | Version | Supported |
@@ -20,11 +20,11 @@ extension together) before reporting.
 **Do not open a public issue for a vulnerability.**
 
 Report it privately through GitHub:
-[Security → Report a vulnerability](https://github.com/VishuKalier2003/Agentscript/security/advisories/new).
+[Security → Report a vulnerability](https://github.com/Landscape-Of-Agents/Landscape/security/advisories/new).
 Include:
 
 - what an attacker (or an agent) can do, and what it should not be able to do;
-- the Crane and Foxx versions, the operating system, and the agent (Claude Code, Codex, Copilot
+- the Crane and Landscape versions, the operating system, and the agent (Claude Code, Codex, Copilot
   CLI, Gemini CLI) involved;
 - the smallest steps, repository layout, or hook payload that reproduces it.
 
@@ -55,8 +55,8 @@ automated scanners without a working attack.
   `governance.yaml`, and the zone and flow markers it names are covered by a manifest signed with
   Ed25519 over SHA-512 digests. Anything changed outside Crane fails `crane validate`, and agent
   changes stop until a human signs again.
-- **Only people change the rules.** Governance commands refuse to run inside an agent session, and
-  the hooks deny them. Only the owner and the admins they sign can sign rules; teammates trust the
+- **Only people change the rules.** No `crane` command runs inside an agent session, and the hooks
+  deny any agent command or script that invokes `crane`. Only the owner and the admins they sign can sign rules; teammates trust the
   owner key after comparing its fingerprint, and a GitHub admin can confirm it on the dashboard.
 - **Keys stay out of the repository.** Signing keys and runtime evidence live in `CRANE_HOME`
   (default `~/.crane-trust`). On Windows signing keys are sealed with the Data Protection API;

@@ -122,7 +122,7 @@ impl Hook {
     ) -> Result<(String, Vec<SuppliedContext>), String> {
         let policies = PolicySet::load(&self.workspace)?;
         let mut text = String::from(
-            "Crane governs this repository. Agent changes to .crane (including .crane/map), Crane's hook settings, and Crane's trust directory are denied, even with approval; governance commands (crane protect, target, checkpoint, init, policy changes) are for humans. Do not add, move, or alter '@crane:selection' marker comments.\n",
+            "Crane governs this repository. Agent changes to .crane (including .crane/map), Crane's hook settings, and Crane's trust directory are denied, even with approval; Crane commands are for humans only: do not run crane (any command, including validate and test); Crane checks your work itself. Do not add, move, or alter '@crane:selection' marker comments.\n",
         );
         let mut supplied = Vec::new();
         for (_, block) in policies.blocks() {

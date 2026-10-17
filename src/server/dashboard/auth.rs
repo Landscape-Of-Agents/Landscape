@@ -183,6 +183,33 @@ impl Auth {
         format!("{proto}://{host}")
     }
 
+    /** Return the same address on the public host when a request reached the service under
+     * another host (such as the Render address behind a custom domain); sign-in must start on
+     * the host GitHub returns to, or its state cookie is missing at the callback. Ports are
+     * ignored, as browsers share cookies across the ports of one host
+     * Input
+        - request: &Request - request
+     * Output
+        - Option<String>, None when the request already uses the public host
+    */
+    pub(crate) fn elsewhere(request: &Request) -> Option<String> {
+        let public = Self::public_url(request);
+        let name = |authority: &str| {
+            let authority = authority.split('/').next().unwrap_or_default();
+            authority
+                .rsplit_once(':')
+                .map_or(authority, |(name, _)| name)
+                .to_ascii_lowercase()
+        };
+        let public_host = name(
+            public
+                .split_once("://")
+                .map_or(public.as_str(), |(_, rest)| rest),
+        );
+        let host = name(&header(request, "Host")?);
+        (host != public_host).then(|| format!("{public}{}", request.url()))
+    }
+
     /** Build a cookie header value
      * Input
         - request: &Request - request (decides the Secure flag)

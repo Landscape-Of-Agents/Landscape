@@ -38,6 +38,9 @@ use crate::trust::crypto::{hex, random_bytes, sha512_hex, SigningIdentity};
 /** Signature domain of ingestion requests */
 pub(crate) const REQUEST_DOMAIN: &str = "foxx/ingest/request/v1";
 
+/** Header naming the encoding of a request body ("base64"; absent for plain JSON) */
+pub(crate) const BODY_ENCODING: &str = "X-Crane-Body-Encoding";
+
 /** Most records of one stream sent in one batch */
 pub(crate) const BATCH: usize = 500;
 
@@ -429,6 +432,11 @@ impl Client {
         // can be found in the service's logs
         let request_id = random_bytes(8).map(|bytes| hex(&bytes)).unwrap_or_default();
         let timestamp = now_millis();
+        // POST bodies travel base64-encoded: the hosting edge firewall reads raw shell commands in
+        // telemetry (pipes, quotes, '$?') as injection and blocks the request before the service
+        // sees it. The signature covers the bytes as sent
+        let encoded = (method == "POST").then(|| crate::platform::http::base64(body));
+        let body = encoded.as_deref().map_or(body, str::as_bytes);
         let signature = self.key.sign(
             REQUEST_DOMAIN,
             &request_message(method, &path, timestamp, body),
@@ -447,7 +455,8 @@ impl Client {
             .set("User-Agent", concat!("crane/", env!("CARGO_PKG_VERSION")));
         let response = if method == "POST" {
             request
-                .set("Content-Type", "application/json")
+                .set("Content-Type", "text/plain")
+                .set(BODY_ENCODING, "base64")
                 .send_bytes(body)
         } else {
             request.call()

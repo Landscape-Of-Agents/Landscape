@@ -91,7 +91,7 @@ pub(crate) fn record(words: &[String], result: &Result<(), String>, started: u64
     sync::trigger(&workspace, "COMMAND");
 }
 
-/** Names the Foxx extension may record (DASHBOARD.md F31) */
+/** Names the Landscape extension may record (DASHBOARD.md F31) */
 const FOXX_EVENTS: &[&str] = &[
     "FOXX_SETUP",
     "FOXX_PANEL_OPENED",
@@ -102,7 +102,7 @@ const FOXX_EVENTS: &[&str] = &[
     "FOXX_VALIDATED_ON_SAVE",
 ];
 
-/** crane foxx event NAME [key=value ...]: record an event of the Foxx editor extension (refused to
+/** crane foxx event NAME [key=value ...]: record an event of the Landscape editor extension (refused to
  * agents; only the F31 names are accepted, and values are short text)
  * Input
     - args: &[String] - NAME and key=value pairs
@@ -115,7 +115,7 @@ pub(crate) fn foxx_event(args: &[String]) -> Result<(), String> {
         .split_first()
         .ok_or("usage: crane foxx event NAME [key=value ...]")?;
     if !FOXX_EVENTS.contains(&name.as_str()) {
-        return Err(format!("unknown Foxx event '{name}'"));
+        return Err(format!("unknown Landscape event '{name}'"));
     }
     let workspace = Workspace::locate()?;
     let trust = workspace.trust()?;

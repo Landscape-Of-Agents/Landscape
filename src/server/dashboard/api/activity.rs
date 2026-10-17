@@ -35,7 +35,7 @@ pub(super) fn health(context: &Context) -> Value {
         "members": context.members.len(),
         "selected_members": context.selected.len(),
         "truncated": context.truncated,
-        "storage": {"service": "Foxx service (MongoDB, read-only for the dashboard)"},
+        "storage": {"service": "Data Sea service (MongoDB, read-only for the dashboard)"},
         "mode": "hosted read-only",
         "now": iso_time(now_millis()),
     })

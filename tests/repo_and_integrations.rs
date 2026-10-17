@@ -187,3 +187,79 @@ fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     }
     files
 }
+
+/** A repository that moved (transferred to an organization, or renamed) is rebound: the move
+ * blocks agents until the owner proves it with the old remote, after which every record, the
+ * manifest, and this machine's trust data belong to the new remote; a wrong old remote and an
+ * agent are refused
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn moved_repository_is_rebound_by_its_owner() {
+    let fixture = Fixture::ready();
+    let selection = fixture.protect(&["app/payments.py", "start-line", "1", "end-line", "2"]);
+    // An owner-signed admin list is bound to the repository too
+    let teammate = "c".repeat(64);
+    assert!(fixture
+        .ok(&["admin", "add", &teammate, "name", "teammate"])
+        .contains("Added admin"));
+    let old_remote = fixture.remote_url();
+    let new_remote = fixture.root.path().join("moved.git");
+    common::git(
+        fixture.root.path(),
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            &old_remote,
+            new_remote.to_str().unwrap(),
+        ],
+    );
+    common::git(
+        &fixture.work,
+        &["remote", "set-url", "origin", new_remote.to_str().unwrap()],
+    );
+    let moved = fixture.fails(&["validate"]);
+    assert!(moved.contains("registry_wrong_repository"), "{moved}");
+    // An agent cannot rebind, and a remote the state was not signed for is refused
+    let agent = fixture.as_agent(&["repo", "rebind", &old_remote]);
+    assert!(!agent.status.success(), "{}", text(&agent));
+    let wrong = fixture.fails(&["repo", "rebind", "https://github.com/someone/else"]);
+    assert!(wrong.contains("was not signed for"), "{wrong}");
+    // The owner proves the move with the old remote and signs again
+    let rebound = fixture.ok(&["repo", "rebind", &old_remote]);
+    assert!(
+        rebound.contains("1 selection(s), the admin list, and the manifest signed again"),
+        "{rebound}"
+    );
+    assert!(
+        fixture.ok(&["validate"]).contains("PASS"),
+        "the rebound state verifies"
+    );
+    assert!(
+        fixture.ok(&["test", "."]).contains("PASS"),
+        "the selection still resolves"
+    );
+    let registry = fixture.crane_json("registry.json");
+    let record = registry["selections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["id"] == selection.as_str())
+        .unwrap();
+    assert_eq!(
+        record["repository_id"],
+        registry["manifest"]["repository_id"]
+    );
+    assert!(
+        fixture.ok(&["admin", "list"]).contains("teammate"),
+        "the re-signed admin list verifies"
+    );
+    // Running it again (as a teammate would) only carries trust data over
+    let again = fixture.ok(&["repo", "rebind", &old_remote]);
+    assert!(again.contains("already belongs to"), "{again}");
+    assert!(fixture.ok(&["validate"]).contains("PASS"));
+}

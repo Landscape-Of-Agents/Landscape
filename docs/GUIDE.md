@@ -1,13 +1,13 @@
 # Crane guide
 
-How to install and use Crane, the Foxx extension, and the hosted dashboard. For the vision, see the
+How to install and use Crane, the Landscape extension, and the hosted dashboard. For the vision, see the
 [README](../README.md); to work on Crane, see [CONTRIBUTING](../CONTRIBUTING.md); to report a
 vulnerability, see [SECURITY](../SECURITY.md).
 
 ## Install
 
 Download Crane for Linux, Windows, or macOS from the
-[latest release](https://github.com/VishuKalier2003/Agentscript/releases/latest), unpack it, and put
+[latest release](https://github.com/Landscape-Of-Agents/Landscape/releases/latest), unpack it, and put
 `crane` on your `PATH`. Or build it from source:
 
 ```bash
@@ -17,7 +17,7 @@ crane --version
 
 `gh` is needed for `crane github`; `curl` for Slack, Jira, and WhatsApp delivery.
 
-The **Foxx** VS Code extension sets up Crane, creates policies, and marks selections from the
+The **Landscape** VS Code extension sets up Crane, creates policies, and marks selections from the
 editor: install it from the
 [Marketplace](https://marketplace.visualstudio.com/items?itemName=agentscript.foxx)
 (`code --install-extension agentscript.foxx`), or from the `.vsix` on each release.
@@ -37,7 +37,7 @@ crane test .            # run every preserve/target command
 crane agent install --profile claude
 ```
 
-Then open the dashboard at <https://agentscript-service.onrender.com> and sign in with GitHub.
+Then open the dashboard at <https://dashboard.agentslandscape.cloud> and sign in with GitHub.
 
 Commit `.crane/` with your code. Policies live in `.crane/policies/*.crane`:
 
@@ -57,7 +57,7 @@ comments); whitespace-only changes never satisfy a target.
 | Area | Commands |
 | --- | --- |
 | Basic | `--version`, `init`, `checkpoint [NAME]`, `protect FILE ...`, `target FILE ...`, `--set default policy\|checkpoint NAME`, `parse file FILE`, `validate`, `test .`, `add policy-context file FILE [policy NAME]`, `policy-context NAME --view` |
-| Repository | `repo --ssh\|--https\|--gh-cli REMOTE [privileges]`, `repo status`, `repo --view`, `repo del`, `github`, `github days DAYS` |
+| Repository | `repo --ssh\|--https\|--gh-cli REMOTE [privileges]`, `repo status`, `repo --view`, `repo del`, `repo rebind OLD_REMOTE`, `github`, `github days DAYS` |
 | Policies | `create policy NAME FILENAME`, `add policy NAME marker MARKER`, `policy NAME status` |
 | Runtime | `task current [ID]`, `task .`, `session current [ID]`, `session .` |
 | Agents | `agent install\|uninstall\|hooks --profile claude\|codex\|copilot\|gemini`, `agent link` |
@@ -67,8 +67,18 @@ comments); whitespace-only changes never satisfy a target.
 
 `protect` and `target` require `context TEXT` (guidance agents receive whenever they touch the
 selection; it is signed into the record). Options: `policy NAME`, `checkpoint NAME`,
-`start-line N`, `end-line N`, `name LABEL`. Run `crane help` for details. Governance commands refuse to run inside an AI agent
-session, and the hooks deny them.
+`start-line N`, `end-line N`, `name LABEL`. Run `crane help` for details.
+
+**Only people run Crane.** Every `crane` command refuses to run inside an AI agent session (the
+hooks themselves excepted), and the hooks deny any agent shell command or script that invokes
+`crane`, including `crane validate` and `crane --version`.
+
+**Moving the repository.** After a transfer or rename (for example to another organization), the
+repository identity changes with the remote, so `crane validate` reports the registry as belonging
+to another repository. Update the remote (`git remote set-url origin NEW_URL`), then the owner runs
+`crane repo rebind OLD_REMOTE` once: Crane proves the rules were signed for the old remote, carries
+the trust over, and signs the selections, admin list and manifest again for the new identity.
+Commit the result; teammates run the same command after pulling, then `crane repo --https NEW_URL`.
 
 ## Teams
 
@@ -122,7 +132,7 @@ context_packs:
     content: ["Payment processing must be idempotent."]
 ```
 
-After editing the file, an admin runs `crane governance sign` (Foxx does this for you). The file is
+After editing the file, an admin runs `crane governance sign` (Landscape does this for you). The file is
 covered by the signed manifest, so an edit nobody signed fails `crane validate` and stops agent
 changes until it is signed or restored. Criticality adds credit cost per edit (sensitive +1,
 critical +3, restricted +5), and restricted code always needs human approval.
@@ -172,7 +182,7 @@ policy context files; zone and flow notices include their context packs.
 
 ## Dashboard
 
-One dashboard for individuals and teams: <https://agentscript-service.onrender.com>. Sign in with
+One dashboard for individuals and teams: <https://dashboard.agentslandscape.cloud>. Sign in with
 GitHub, then choose an account, a repository, and optionally one team member.
 
 - **Personal account:** the repositories your GitHub account owns.
@@ -277,9 +287,9 @@ RFC 4180 CSV. These endpoints return filtered data only; they do not provide acc
 the selected repository/member scope. Dashboard component “AI” controls open the corresponding
 filtered context and API URL for copying or download.
 
-## Telemetry upload (Foxx service)
+## Telemetry upload (Data Sea service)
 
-Crane uploads events, metrics, sessions, tool calls, alerts, and governance history to the Foxx
+Crane uploads events, metrics, sessions, tool calls, alerts, and governance history to the Landscape
 ingestion service (`https://agentscript-service.onrender.com`), which stores them in MongoDB.
 Nothing needs to be set up: uploads happen when a tool call ends, when a session ends, after every
 command, and every 60 seconds. Hooks never wait for the network, and the local evidence stays
@@ -342,7 +352,7 @@ Slack, Jira, WhatsApp, and GitHub are set with `crane integrate NAME` instead.
 | `CRANE_SESSION_ID` | Session id when the agent reports none | generated |
 | `CRANE_ENVIRONMENT` | Environment label on events | `local` (`ci` when `CI` is set) |
 | `CRANE_ALERTS_DRY_RUN` | `1` records alerts without delivering them | `0` |
-| `CRANE_INGEST_URL` | Foxx ingestion service; `off` keeps telemetry local | the release's service |
+| `CRANE_INGEST_URL` | Data Sea ingestion service; `off` keeps telemetry local | the release's service |
 | `CRANE_SYNC_SECONDS` | Periodic upload interval | `60` |
 | `CRANE_KEY_PROTECTION` | Signing keys at rest: `prompt` (a passphrase typed on the console for every signing command), `plain` | Windows Data Protection on Windows, plain (owner-only file) elsewhere |
 | `CRANE_STALE_SESSION_MINUTES` | `crane server`: minutes without hook activity before an unfinished session is stale | `120` |

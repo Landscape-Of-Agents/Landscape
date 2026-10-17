@@ -1,4 +1,4 @@
-# The Foxx ingestion service. Run it behind an HTTPS endpoint (any container host that terminates
+# The Data Sea ingestion service. Run it behind an HTTPS endpoint (any container host that terminates
 # TLS) with CRANE_MONGODB_URI set as a secret; Crane installations upload to it with no setup.
 # bookworm in both stages, so the binary links against the glibc it runs with
 FROM rust:1.90-slim-bookworm AS build

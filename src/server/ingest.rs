@@ -16,11 +16,11 @@ use crate::platform::now_millis;
 use crate::telemetry::ingest::{
     is_approval_code, owner_message, ApprovalRequest, CODE_DOMAIN, OWNER_DOMAIN,
 };
-use crate::telemetry::ingest::{request_message, Batch, REQUEST_DOMAIN};
+use crate::telemetry::ingest::{request_message, Batch, BODY_ENCODING, REQUEST_DOMAIN};
 use crate::trust::crypto::{digest, is_digest, verify_signature};
 
-/** Largest accepted request body */
-const MAX_BODY: usize = 8 * 1024 * 1024;
+/** Largest accepted request body (as sent: base64 adds a third to the JSON) */
+const MAX_BODY: usize = 12 * 1024 * 1024;
 
 /** Largest accepted difference between a request timestamp and the service clock */
 const WINDOW_MILLIS: u64 = 5 * 60 * 1000;
@@ -237,6 +237,12 @@ pub(super) fn handle(
         return Err((413, "the request body is too large".into()));
     }
     let installation = authenticate(request, &method, &path, &body)?;
+    // Current clients send base64 bodies (signed as sent) so the hosting edge firewall cannot
+    // mistake shell commands in telemetry for an attack; older clients send plain JSON
+    if header(request, BODY_ENCODING).is_some_and(|value| value.eq_ignore_ascii_case("base64")) {
+        body = crate::platform::http::unbase64(&body)
+            .map_err(|error| (400, format!("the request body is not {error}")))?;
+    }
     let allowed = if operation == "agent-policy" {
         service.agent_policies.allow(&installation)
     } else {

@@ -1,4 +1,4 @@
-// Specification events (DASHBOARD.md) of Crane commands (command.executed), of the Foxx editor
+// Specification events (DASHBOARD.md) of Crane commands (command.executed), of the Landscape editor
 // extension (foxx.event), and of the notes attached to any stored event. Commands map to the flows
 // they belong to: setup and rule changes (F01), joining, registering, linking, and admins (F02),
 // hooks (F15), tests (F19), context (F20), the GitHub connection (F21), integrations (F22), merge
@@ -713,7 +713,7 @@ pub(super) fn command(event: &Event) -> Vec<Spec> {
     specs
 }
 
-/** Specification events the Foxx extension asked Crane to record (F31)
+/** Specification events the Landscape extension asked Crane to record (F31)
  * Input
     - event: &Event - foxx.event event (payload: name, and the event's facts)
  * Output
@@ -752,7 +752,7 @@ pub(super) fn foxx(event: &Event) -> Vec<Spec> {
             payload
                 .get("statement")
                 .and_then(Value::as_str)
-                .unwrap_or("Foxx editor action."),
+                .unwrap_or("Landscape editor action."),
         )
         .severity(if ok { "LOW" } else { "MEDIUM" }, "FAILURE_STREAK", "NONE")
         .set("bindings", "third_party", ["VSCODE"])

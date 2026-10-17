@@ -3,7 +3,7 @@
 // selection shown under its parent instead of beside it. Edges point from a container to what it
 // contains and from a stage to the next one, and the graph is kept acyclic: an edge that would close
 // a cycle is left out and reported. It also tells which agents recently acted in each zone and
-// flow, from this machine's event log. The Foxx extension draws it.
+// flow, from this machine's event log. The Landscape extension draws it.
 
 use serde_json::{json, Value};
 use std::cmp::Reverse;

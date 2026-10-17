@@ -1,4 +1,4 @@
-// The Foxx ingestion service ('crane server', cargo feature "server"): the only component that
+// The Data Sea ingestion service ('crane server', cargo feature "server"): the only component that
 // holds MongoDB credentials. Crane installations upload their evidence here and never see the
 // database. TLS is terminated by the hosting platform in front of the service.
 //
@@ -142,7 +142,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         }),
     );
     println!(
-        "Foxx ingestion service listening on {address} (database {}; dashboard sign-in {})",
+        "Data Sea ingestion service listening on {address} (database {}; dashboard sign-in {})",
         service.settings.database,
         if service.dashboard.configured() {
             "on"

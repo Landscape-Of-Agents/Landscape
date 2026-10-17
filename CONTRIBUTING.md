@@ -6,8 +6,8 @@ are all welcome. For a vulnerability, follow [SECURITY.md](SECURITY.md) instead 
 ## Ways to help
 
 - **Report a bug or propose a feature** in
-  [Issues](https://github.com/VishuKalier2003/Agentscript/issues): what you did, what you expected,
-  what happened, and the Crane, Foxx, OS, and agent versions.
+  [Issues](https://github.com/Landscape-Of-Agents/Landscape/issues): what you did, what you expected,
+  what happened, and the Crane, Landscape, OS, and agent versions.
 - **Improve the docs**: the [guide](docs/GUIDE.md), the extension's README, or the landing page in
   [landing/](landing/).
 - **Send a pull request**: for anything larger than a small fix, open an issue first so we can agree
@@ -18,12 +18,12 @@ are all welcome. For a vulnerability, follow [SECURITY.md](SECURITY.md) instead 
 | Part | Needs | Lives in |
 | --- | --- | --- |
 | Crane CLI and the hosted service | Rust 1.89+ and Git | `src/`, `tests/` |
-| Foxx extension | Node.js 22 | `extensions/foxx/` |
+| Landscape extension | Node.js 22 | `extensions/foxx/` |
 | Landing page | Node.js 22 (Tailwind CSS build) | `landing/` |
 | Service tests | A local MongoDB 7 | `tests/ingestion.rs`, `tests/dashboard.rs` |
 
 ```bash
-git clone https://github.com/VishuKalier2003/Agentscript && cd Agentscript
+git clone https://github.com/Landscape-Of-Agents/Landscape && cd Agentscript
 cargo build
 cd extensions/foxx && npm install && cd ../..
 cd landing && npm install && npm run dev   # rebuilds landing/public/styles.css on change
@@ -93,7 +93,7 @@ flowchart LR
     Tel -->|"signed uploads, X-Request-Id"| Up["telemetry::ingest"]
   end
   Up -->|HTTPS| Ingest
-  subgraph Service["Foxx service (crane server)"]
+  subgraph Service["Data Sea service (crane server)"]
     Ingest["server::ingest: auth, limits"] --> Store["server::store (writes)"]
     Dash["server::dashboard (authenticated views + narrow writes)"] --> Read["dashboard::data (ReadOnly)"]
     Dash --> Approval["dashboard::approve (approvals + Dashboard Agent records)"]
@@ -112,7 +112,7 @@ flowchart LR
 | Enforcement | `hooks` | `adapter/` (one module per agent), `enforce` (the guard), `shell` (command analysis), `runtime/` (session and tool-call phases), `outcome` (the blocking exit-code convention) |
 | Telemetry | `telemetry` | Events, ledger, metrics, compliance, redaction, alerts, upload (`ingest`, `sync`) |
 | Integrations | `integrations` | One `Provider` per service (`jira`, `slack`, `whatsapp`, `github`): prompts, verification, alert delivery |
-| Foxx (local) | `foxx` | The repository status for the dashboard, the live agent context for the editor |
+| Landscape (local) | `foxx` | The repository status for the dashboard, the live agent context for the editor |
 | CLI | `cli` | Dispatch and command audit; `governance/` has one file per command group |
 | Service | `server` | `http` (replies, correlation ids), `ingest` (signed upload API), `limits`, `store`, `log` (JSON lines), `dashboard/` (`auth`, read-only evidence `data`, narrow `approve` writes, `api/` by view) |
 
@@ -137,7 +137,7 @@ By contributing you agree that your contribution is licensed under the
 ## Releasing (maintainers)
 
 Bump `version` in `Cargo.toml`, commit, then tag and push (`git tag vX.Y.Z && git push origin
-vX.Y.Z`). The release workflow builds Crane for Linux, Windows, and macOS, packages Foxx with the
-tag's version, and publishes Foxx to the VS Code Marketplace (secret `VSCE_PAT`) and Open VSX
+vX.Y.Z`). The release workflow builds Crane for Linux, Windows, and macOS, packages Landscape with the
+tag's version, and publishes Landscape to the VS Code Marketplace (secret `VSCE_PAT`) and Open VSX
 (optional secret `OVSX_PAT`) when `extensions/foxx` changed since the previous release. The landing
 page reads releases from GitHub, so it shows the new downloads without redeploying.

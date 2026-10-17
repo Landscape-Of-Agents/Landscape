@@ -1,4 +1,4 @@
-// The hosted Foxx dashboard: one dashboard for individuals and teams, served by the ingestion
+// The hosted Data Sea dashboard: one dashboard for individuals and teams, served by the ingestion
 // service at its root. People sign in with GitHub; a personal account sees the repositories it
 // owns, and an organization member sees the organization's repositories, with every teammate's
 // activity and a filter by member. Telemetry reads use a read-only database handle (data.rs);
@@ -55,7 +55,7 @@ const PAGES: &str = include_str!("pages.js");
 /** The pages that operate and govern, and the page's start */
 const GOVERN: &str = include_str!("govern.js");
 
-/** The Foxx logo (256 px, transparent background) */
+/** The fox logo (256 px, transparent background) */
 const LOGO: &[u8] = include_bytes!("logo.png");
 
 /** The browser tab icon (64 px) */
@@ -407,6 +407,14 @@ impl Dashboard {
                 405,
                 json!({"error": "this dashboard route does not accept writes"}),
             );
+        }
+        if matches!(
+            path.as_str(),
+            "/auth/login" | "/auth/approve" | "/auth/agent-action" | "/auth/grant"
+        ) {
+            if let Some(location) = Auth::elsewhere(request) {
+                return Reply::redirect(&location);
+            }
         }
         match path.as_str() {
             "/" | "/index.html" => Reply::page(PAGE),

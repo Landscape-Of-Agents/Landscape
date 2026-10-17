@@ -120,6 +120,10 @@ pub(crate) struct State {
  * .crane/governance.yaml */
 pub(crate) const GOVERNANCE_SIGNED: &str = "governance.signed";
 
+/** Audit action of 'crane repo rebind': the state is checked against the identity it was signed
+ * for (the old remote) and signed again for the new one */
+pub(crate) const REPOSITORY_REBOUND: &str = "repository.rebound";
+
 /** Finding code of a .crane/governance.yaml that differs from the signed manifest */
 pub(crate) const GOVERNANCE_CHANGED: &str = "governance_yaml_changed";
 
@@ -567,7 +571,21 @@ pub(crate) fn commit(
         ));
     }
     if !first {
-        let blocking = integrity(workspace, &state, &trust)
+        // A rebind is checked against the identity the state was signed for, not the new one
+        let (checked, checked_trust) = if action == REPOSITORY_REBOUND {
+            let old = state
+                .registry
+                .manifest
+                .as_ref()
+                .map(|manifest| manifest.repository_id.clone())
+                .unwrap_or_default();
+            let mut view = workspace.clone();
+            view.repository_id = old.clone();
+            (view, TrustStore::open(&old)?)
+        } else {
+            (workspace.clone(), trust.clone())
+        };
+        let blocking = integrity(&checked, &state, &checked_trust)
             .into_iter()
             .filter(|finding| finding.severity >= Severity::High)
             .filter(|finding| !(action == GOVERNANCE_SIGNED && finding.code == GOVERNANCE_CHANGED))

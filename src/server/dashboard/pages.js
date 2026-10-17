@@ -1,5 +1,5 @@
 "use strict";
-// The Foxx dashboard: the pages that watch agents. Monitor (overview, event explorer, timeline),
+// The Data Sea dashboard: the pages that watch agents. Monitor (overview, event explorer, timeline),
 // AI agents (agents, tool calls, sessions, with a profile for each agent, tool, and session), and
 // Investigate (logs, traces, topology, distributions, texts). Every panel uses the core of app.js:
 // the global filter, the funnel that says how it is filtered, the lens, and the details sidebar.

@@ -1,5 +1,5 @@
 "use strict";
-// The Foxx dashboard: the core. Sign in with GitHub, choose an account, a repository, and optionally
+// The Data Sea dashboard: the core. Sign in with GitHub, choose an account, a repository, and optionally
 // one machine, then browse pages grouped in the left rail; each page is split into zones (listed
 // under it in the rail), and each zone into panels focused on one thing. A time range and a global
 // filter (any attribute of DASHBOARD.md, any operator, AND, OR groups, and NOT, saved as views and
@@ -1195,7 +1195,7 @@ function signIn(message) {
   for (const id of ["scope", "viewer", "nav", "time", "filterbar", "crumbs"]) document.getElementById(id).replaceChildren();
   document.getElementById("filterbar").hidden = true;
   put(document.getElementById("main"), h("div", { class: "signin" },
-    h("img", { src: "/logo.png", alt: "Foxx", width: "120", height: "120" }),
+    h("img", { src: "/logo.png", alt: "Data Sea", width: "120", height: "120" }),
     h("h2", {}, "Observability for your AI agents"),
     h("p", { class: "muted" }, "Sign in with GitHub to see every tool call your agents make: Crane's decisions, the tokens each call burnt, sessions, risks, and the rules they follow. Personal accounts see their own repositories; organization members see the organization's repositories with a filter for each teammate."),
     message ? h("p", { class: "notice error" }, message) : null,

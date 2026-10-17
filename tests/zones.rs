@@ -676,7 +676,7 @@ flows:
 }
 
 /** While an agent works in a zone with context, the context is shown in the agent's window with a
- * bar on every line, and published for Foxx ('crane foxx live') with where it applies
+ * bar on every line, and published for Landscape ('crane foxx live') with where it applies
  * Input
     - None
  * Output

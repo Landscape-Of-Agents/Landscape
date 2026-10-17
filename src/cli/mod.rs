@@ -39,6 +39,15 @@ pub(crate) fn run() -> Result<(), String> {
 fn dispatch(arguments: &[String]) -> Result<(), String> {
     let words = arguments.iter().map(String::as_str).collect::<Vec<_>>();
     let rest = |count: usize| arguments[count.min(arguments.len())..].to_vec();
+    // Only a human runs Crane. Inside an agent session only the entry points the agent's own hooks
+    // start are allowed (the hooks deny typing them from the agent's shell)
+    if let Some(marker) = crate::trust::agent_environment() {
+        if !matches!(words.as_slice(), ["agent", "hook", ..] | ["agent", "sync"]) {
+            return Err(format!(
+                "crane cannot be executed by an AI agent ({marker} is set); only a human runs Crane"
+            ));
+        }
+    }
     match words.as_slice() {
         [] | ["help" | "--help" | "-h", ..] => {
             print!("{HELP}");
@@ -112,6 +121,7 @@ Repository
   crane repo status
   crane repo --view
   crane repo del
+  crane repo rebind OLD_REMOTE  (after a transfer or rename: proves the move, then re-signs)
 
 Hosted data
   crane data clear           (CODEOWNERS only; permanently clears this repository's hosted data)

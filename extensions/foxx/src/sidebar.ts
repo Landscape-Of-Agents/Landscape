@@ -1,7 +1,7 @@
-// The Foxx sidebar (activity bar → Foxx → Overview): the repository's state at a glance. It shows
+// The Landscape sidebar (activity bar → Landscape → Overview): the repository's state at a glance. It shows
 // Crane's status (with how to fix an unusable Crane), health counts, one-click actions, every
 // selection with where it is and whether it passes (searchable, filterable, click to reveal, open in
-// the Foxx panel), zones and flows, the governance graph (opened in its own panel), which agents are
+// the Landscape panel), zones and flows, the governance graph (opened in its own panel), which agents are
 // working in which flows and zones, the most serious findings, and this window's activity. It holds
 // no state: the extension sends a snapshot whenever something changes.
 
@@ -55,7 +55,7 @@ export interface SidebarHost {
   command(id: string, argument?: string): Promise<void>;
 }
 
-/** The Overview view of the Foxx activity bar container. */
+/** The Overview view of the Landscape activity bar container. */
 export class FoxxSidebar implements vscode.WebviewViewProvider {
   static readonly id = "foxx.sidebar";
   private static current: FoxxSidebar | undefined;
@@ -108,7 +108,7 @@ export class FoxxSidebar implements vscode.WebviewViewProvider {
  * Build the sidebar's page: a strict content security policy (only this page's script, inline
  * styles, and the extension's images).
  * @param cspSource the webview's source for images and styles
- * @param logo the Foxx logo URI
+ * @param logo the fox logo URI
  * @returns HTML
  */
 function html(cspSource: string, logo: string): string {
@@ -200,7 +200,7 @@ h3 .count { margin-left: auto; font-weight: 400; text-transform: none; letter-sp
 </style>
 </head>
 <body>
-<div class="top"><img src="${logo}" alt=""><div style="min-width:0"><b>Foxx</b><span class="repo" id="repo"></span></div><span class="pill" id="pill"><i></i>…</span></div>
+<div class="top"><img src="${logo}" alt=""><div style="min-width:0"><b>Landscape</b><span class="repo" id="repo"></span></div><span class="pill" id="pill"><i></i>…</span></div>
 <div id="banner"></div>
 <div id="body"></div>
 <script nonce="${nonce}">

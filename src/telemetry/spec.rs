@@ -1,4 +1,4 @@
-// The Foxx event specification (DASHBOARD.md). Every event the dashboard shows has the same 13
+// The Data Sea event specification (DASHBOARD.md). Every event the dashboard shows has the same 13
 // attribute groups (action, repository, session, agent, resource, response, assessment, decision,
 // eval, severity, bindings, telemetry, other), each with compulsory sub-attributes and flow-specific
 // ones. Three producers feed them:

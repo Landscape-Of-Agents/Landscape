@@ -1,7 +1,7 @@
-// The live agent context Foxx shows while an agent works: when a tool call touches a selection,
+// The live agent context Landscape shows while an agent works: when a tool call touches a selection,
 // zone, or flow that has context, the hook writes that context (with the agent, the tool, and where
 // in the code it applies) to one small file in the repository's runtime directory, replacing the
-// previous one. Foxx asks 'crane foxx live --json' where the file is, then watches it, so the
+// previous one. Landscape asks 'crane foxx live --json' where the file is, then watches it, so the
 // editor can highlight the context next to the code the agent is changing. The file holds only
 // guidance that the agent already receives; nothing secret.
 

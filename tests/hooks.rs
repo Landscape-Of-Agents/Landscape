@@ -324,7 +324,6 @@ fn pre_tool_decisions() {
     for (call, tool, input) in [
         ("c11", "Bash", json!({"command": "cargo test"})),
         ("c12", "Read", json!({"file_path": file})),
-        ("c13", "Bash", json!({"command": "crane test ."})),
         (
             "c14",
             "Write",
@@ -333,6 +332,29 @@ fn pre_tool_decisions() {
     ] {
         let output = decide(call, tool, input);
         assert!(output.status.success(), "{tool}: {}", text(&output));
+    }
+    // Agents run no Crane command at all, read-only ones and the hook entry point included
+    for (call, command) in [
+        ("c13", "crane test ."),
+        ("c15", "crane validate --json"),
+        ("c16", r"C:\tools\crane.exe --version"),
+        (
+            "c17",
+            "crane agent hook --event pre-tool-use --profile claude",
+        ),
+    ] {
+        let output = decide(call, "Bash", json!({"command": command}));
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{command}: {}",
+            text(&output)
+        );
+        assert!(
+            text(&output).contains("cannot be executed by an AI agent"),
+            "{command}: {}",
+            text(&output)
+        );
     }
     let delete = fixture.hook("generic", "pre-tool-use", &json!({"session_id": "g1", "tool_call_id": "g", "operation": "write", "path": file, "delete": true}));
     assert_eq!(delete.status.code(), Some(2), "{}", text(&delete));

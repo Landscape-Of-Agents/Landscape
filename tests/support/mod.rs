@@ -88,6 +88,13 @@ pub fn service(uri: &str, database: &str, variables: &[(&str, &str)]) -> Service
         "CRANE_GITHUB_CLIENT_SECRET",
         "CRANE_PUBLIC_URL",
         "RENDER_EXTERNAL_URL",
+        // The service is run by a person (or a host), never inside an agent session
+        "CLAUDECODE",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CODEX_SANDBOX",
+        "CODEX_SANDBOX_NETWORK_DISABLED",
+        "GEMINI_SESSION_ID",
+        "CRANE_AGENT",
     ] {
         command.env_remove(name);
     }

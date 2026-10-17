@@ -147,7 +147,7 @@ fn ask(
     )?;
     settings.insert("min_severity".into(), json!(severities[severity]));
     let dashboard = prompter.text(
-        "Foxx dashboard URL for alert links (optional)",
+        "Data Sea dashboard URL for alert links (optional)",
         Some(""),
         &|value| {
             if value.is_empty() {

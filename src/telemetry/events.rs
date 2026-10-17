@@ -1,5 +1,5 @@
 // The unified, versioned event envelope and its append-only store. Every event carries identity
-// (canonical Foxx identifiers plus provider identifiers with their provenance), authority
+// (canonical Crane identifiers plus provider identifiers with their provenance), authority
 // (decision, policy and registry bindings), effect (execution outcome, resources), assessment,
 // enforcement outcome, telemetry status, measurements, and evidence references. Events are
 // hash-chained in the trust directory's runtime folder (outside the repository), deduplicated by
@@ -35,8 +35,8 @@ const REMEMBERED_KEYS: usize = 2048;
  * Variants
     - Crane - the Crane CLI or runtime
     - ProviderAdapter - a hook translated from an agent provider
-    - FoxxExtension - the Foxx editor extension
-    - Dashboard - the Foxx dashboard
+    - FoxxExtension - the Landscape editor extension
+    - Dashboard - the Data Sea dashboard
     - Ingestion - the ingestion backend
     - Integration - an external integration
 */
@@ -51,7 +51,7 @@ pub(crate) enum Source {
     Integration,
 }
 
-/** Identity and correlation of an event; canonical Foxx identifiers are always set by Crane,
+/** Identity and correlation of an event; canonical Crane identifiers are always set by Crane,
  * provider identifiers are kept exactly as reported (never invented) with their provenance
  * Fields
     - foxx_session_id: Option<String> - canonical session

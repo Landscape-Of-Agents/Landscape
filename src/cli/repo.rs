@@ -12,11 +12,12 @@ use crate::platform::render::iso_time;
     - Result<(), String>
 */
 pub(crate) fn repo(args: &[String]) -> Result<(), String> {
-    let usage = "usage: crane repo --ssh|--https|--gh-cli REMOTE [PRIVILEGES...] | crane repo status | crane repo --view | crane repo del";
+    let usage = "usage: crane repo --ssh|--https|--gh-cli REMOTE [PRIVILEGES...] | crane repo status | crane repo --view | crane repo del | crane repo rebind OLD_REMOTE";
     match args.first().map(String::as_str) {
         Some("status") if args.len() == 1 => status(),
         Some("--view") if args.len() == 1 => view(),
         Some("del") if args.len() == 1 => delete(),
+        Some("rebind") if args.len() == 2 => rebind(&args[1]),
         Some(flag @ ("--ssh" | "--https" | "--gh-cli")) => {
             let method = match flag {
                 "--ssh" => Method::Ssh,
@@ -28,6 +29,37 @@ pub(crate) fn repo(args: &[String]) -> Result<(), String> {
         }
         _ => Err(usage.into()),
     }
+}
+
+/** Rebind the repository to its new origin remote after a move (transfer or rename)
+ * Input
+    - old_remote: &str - the remote the governance state was signed for
+ * Output
+    - Result<(), String>
+    - Error if the move cannot be proven or this machine cannot sign the change it needs
+*/
+fn rebind(old_remote: &str) -> Result<(), String> {
+    let workspace = Workspace::locate()?;
+    let rebound = crate::governance::rebind::rebind(&workspace, old_remote)?;
+    match (rebound.resigned, rebound.generation) {
+        (Some(count), Some(generation)) => {
+            println!(
+                "Rebound {} -> {} at generation {generation}: {count} selection(s), the admin list, and the manifest signed again",
+                rebound.from, rebound.to
+            );
+            println!("  carried {} trust file(s) of this machine over", rebound.copied);
+            println!("Commit .crane and push; each teammate then runs 'crane repo rebind {}' once.", rebound.from);
+        }
+        _ => println!(
+            "{} -> {}: carried {} trust file(s) of this machine over; the signed state already belongs to {}",
+            rebound.from, rebound.to, rebound.copied, rebound.to
+        ),
+    }
+    println!(
+        "Update the connection too: crane repo --https https://{}",
+        rebound.to
+    );
+    Ok(())
 }
 
 /** Connect the repository with a method and privileges

@@ -1,6 +1,6 @@
 # Preserve or target code
 
-Select lines in the editor and press **Ctrl+Alt+F** (or use the Foxx button in the editor title).
+Select lines in the editor and press **Ctrl+Alt+F** (or use the Landscape button in the editor title).
 
 | Action | What it means |
 |---|---|

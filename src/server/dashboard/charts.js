@@ -5,7 +5,7 @@
 // its threshold, heatmaps (two attributes, or day by hour), a gauge, stacked bars, the waterfall
 // of tool calls (time and tokens), a scatter plot, and a layered graph (flow call graphs). Every
 // chart has a tooltip, a click that drills into what it shows, and redraws when its box changes.
-// Colors: a categorical order led by the Foxx orange and validated for color-blind separation in
+// Colors: a categorical order led by the brand orange and validated for color-blind separation in
 // both themes; status colors (good, warning, serious, critical) are reserved for states. Every
 // time is written as YYYY:MM:DD:HH:MM:SS:MMM (local time).
 
@@ -103,7 +103,7 @@
     return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
   };
   // Categorical slots, in a fixed order (validated: adjacent color-blind separation ≥ 8 ΔE, normal
-  // vision ≥ 15, both themes): Foxx orange, aqua, yellow, magenta, green, violet, red, blue
+  // vision ≥ 15, both themes): brand orange, aqua, yellow, magenta, green, violet, red, blue
   const CATEGORICAL = {
     light: ["#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948", "#2a78d6"],
     dark: ["#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767", "#3987e5"],
@@ -129,7 +129,7 @@
     for (const character of String(text)) hash = (hash * 31 + character.charCodeAt(0)) | 0;
     return Foxx.PALETTE[Math.abs(hash) % 8];
   };
-  /** A sequential color (one hue, the Foxx orange, light to dark) for a share 0..1 */
+  /** A sequential color (one hue, the brand orange, light to dark) for a share 0..1 */
   Foxx.ramp = function ramp(share) {
     const steps = Foxx.isDark() ? ["#3a2418", "#5c2f17", "#7f3a16", "#a54515", "#cc5418", "#ee6a2a", "#ff8a4c"] : ["#fdeee4", "#fbd5bd", "#f7b48d", "#f28f5c", "#e76a31", "#c94f1c", "#9a3a12"];
     if (!share || share <= 0) return "transparent";

@@ -1,5 +1,5 @@
 "use strict";
-// The Foxx dashboard: the pages that operate and govern. Operate (alerting, credits), Govern (audit
+// The Data Sea dashboard: the pages that operate and govern. Operate (alerting, credits), Govern (audit
 // trail, governance with zones, flows, and call graphs, compliance with posture, frameworks, and
 // evidence), and Organization (repositories, settings with data retention); then the page starts.
 
@@ -253,7 +253,7 @@ function codeTopology(gov) {
       { label: "Files", get: (row) => (row.files || []).length, num: true, bar: true },
       { label: "Graph", get: (row) => (row.graph ? row.graph.status + " · " + row.graph.nodes.length + " functions" : ""), render: (row) => (row.graph ? h("span", {}, chip(row.graph.status), " " + row.graph.nodes.length + " functions") : h("span", { class: "muted" }, "—")) },
       { label: "Description", get: (row) => described(row).description || "", render: (row) => h("span", { class: "muted clip" }, described(row).description || "") },
-    ], entities, { sort: 1, dir: 1, onRow: openEntity, name: "foxx-zones-flows", empty: "No zones or flows: add them in .crane/governance.yaml or from Foxx in the editor." })); }),
+    ], entities, { sort: 1, dir: 1, onRow: openEntity, name: "foxx-zones-flows", empty: "No zones or flows: add them in .crane/governance.yaml or from Landscape in the editor." })); }),
     panel("Criticality and ceilings", { span: 4, scope: report, info: { title: "Criticality and ceilings", text: "How the zones and flows divide by criticality (routine, sensitive, critical, restricted) and autonomy ceiling (observe, assisted, delegated, autonomous)." } }, async (body, big, ctx) => {
       const criticality = counts("criticality"), ceiling = counts("ceiling");
       ctx.record("items", criticality, { unit: "zones and flows" });
@@ -419,7 +419,7 @@ async function settings(main) {
   const input = h("input", { type: "text", placeholder: "12-character code", "aria-label": "approval code", maxlength: "12" });
   const approve = (action) => () => { const code = input.value.trim().toUpperCase(); if (code) location.href = "/auth/approve?action=" + action + "&code=" + encodeURIComponent(code); };
   main.append(zone("approvals", "Approvals", "",
-    panel("Approvals", { span: 6, noExpand: true, scope: { kind: "custom", text: "An action: nothing is shown or filtered." }, info: { title: "Approvals", text: "'crane agent link' prints a code that links a machine's upload key to your GitHub account (you need access to the repository); 'crane admin register' prints one that confirms the owner key (you must administer the repository). GitHub checks your role once; Foxx keeps no GitHub token." } }, async (body) => put(body, h("div", { class: "table-tools plain" }, input, h("button", { class: "btn primary", type: "button", onclick: approve("link") }, "Link machine"), h("button", { class: "btn", type: "button", onclick: approve("owner") }, "Confirm owner key")))),
+    panel("Approvals", { span: 6, noExpand: true, scope: { kind: "custom", text: "An action: nothing is shown or filtered." }, info: { title: "Approvals", text: "'crane agent link' prints a code that links a machine's upload key to your GitHub account (you need access to the repository); 'crane admin register' prints one that confirms the owner key (you must administer the repository). GitHub checks your role once; Data Sea keeps no GitHub token." } }, async (body) => put(body, h("div", { class: "table-tools plain" }, input, h("button", { class: "btn primary", type: "button", onclick: approve("link") }, "Link machine"), h("button", { class: "btn", type: "button", onclick: approve("owner") }, "Confirm owner key")))),
     panel("Repository connection", { span: 6, info: "flow:F21", noExpand: true, scope: { kind: "report", what: "The repository connection" } }, async (body) => put(body, repo.connection ? h("p", {}, repo.connection.repository + " via " + repo.connection.method, h("br"), h("span", { class: "muted" }, "privileges: " + fmt(repo.connection.privileges))) : h("p", { class: "muted" }, repo.remote + " (connection not reported yet)"),
       repo.owner && repo.owner.owner_key ? h("p", {}, "Owner key ", h("code", {}, repo.owner.owner_key.slice(0, 16) + "…"), " confirmed by @" + repo.owner.confirmed_by + " (GitHub admin) at " + dt(repo.owner.confirmed_at)) : h("p", { class: "muted" }, "No GitHub-confirmed owner key yet: the owner runs 'crane admin register' and confirms it here.")))));
   const hidden = memberData.members.filter((row) => !row.selected && !row.linked_by).length;

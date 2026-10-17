@@ -523,6 +523,14 @@ pub(super) fn code_risks(
             reason: format!("{what} names protected Crane metadata (.crane, the trust directory, or hook settings)"),
         });
     }
+    if let Some(invocation) = super::shell::crane_invocation(code) {
+        risks.push(Risk {
+            deny: true,
+            bypass: true,
+            code: "SCRIPT_RUNS_CRANE",
+            reason: format!("{what} runs '{invocation}'; only a human runs Crane"),
+        });
+    }
     let writes = any(&text, WRITE_PRIMITIVES);
     for path in preserved {
         let lowered = path.to_ascii_lowercase();

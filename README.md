@@ -11,10 +11,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/VishuKalier2003/Agentscript/releases/latest">Download</a> ·
+  <a href="https://github.com/Landscape-Of-Agents/Landscape/releases/latest">Download</a> ·
   <a href="docs/GUIDE.md">Guide</a> ·
-  <a href="https://marketplace.visualstudio.com/items?itemName=agentscript.foxx">Foxx for VS Code</a> ·
-  <a href="https://agentscript-service.onrender.com">Dashboard</a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=agentscript.foxx">Landscape for VS Code</a> ·
+  <a href="https://dashboard.agentslandscape.cloud">Dashboard</a>
 </p>
 
 ---
@@ -56,7 +56,7 @@ enforces the policy in Claude Code, Codex, GitHub Copilot CLI, and Gemini CLI.
 | | |
 | --- | --- |
 | **CLI** | The rules and the referee: signed contracts, tests, and enforcement in the agent's hooks. |
-| **Foxx** | The VS Code extension: protect code, draw zones and flows on a graph, and watch the context agents receive. |
+| **Landscape** | The VS Code extension: protect code, draw zones and flows on a graph, and watch the context agents receive. |
 | **Dashboard** | Every teammate's agents in one place: decisions, denials, incidents, and tokens. |
 
 ## Get involved

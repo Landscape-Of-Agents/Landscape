@@ -1,4 +1,4 @@
-// Unit tests of the editor-independent parts of Foxx (node --test).
+// Unit tests of the editor-independent parts of Landscape (node --test).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -206,7 +206,7 @@ test("links zones by dragging: new flows, appends, prepends, merges, and refusal
   assert.throws(() => linkZones(edit.text, "cart", "audit"), /one ordered path/, "no branching from the middle");
   assert.throws(() => linkZones(edit.text, "audit", "pay"), /link to its first zone/);
   assert.throws(() => linkZones(edit.text, "audit", "audit"), /cannot follow itself/);
-  // Every flow carries context, as Crane requires; Foxx's order line follows the flow
+  // Every flow carries context, as Crane requires; Landscape's order line follows the flow
   const packs = parse(edit.text).context_packs as { id: string; content: string[] }[];
   const own = packs.find((pack) => pack.id === "cart-to-pay-context");
   assert.ok(own, "a flow made by linking gets its own context pack");

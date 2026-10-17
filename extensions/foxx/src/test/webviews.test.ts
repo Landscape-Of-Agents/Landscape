@@ -1,4 +1,4 @@
-// Every webview page of Foxx must carry a script that parses: the scripts are written inside
+// Every webview page of Landscape must carry a script that parses: the scripts are written inside
 // template literals, where one wrong escape (\" or \n) silently breaks the whole view. The pages
 // are rendered with a stub of the vscode module (node --test).
 

@@ -51,7 +51,7 @@ jobs:
 
       - name: Build release binary
         env:
-          # The Foxx ingestion service compiled into the release, so uploads need no setup
+          # The Data Sea ingestion service compiled into the release, so uploads need no setup
           CRANE_DEFAULT_INGEST_URL: ${{ vars.CRANE_INGEST_URL }}
         run: cargo build --locked --release --target ${{ matrix.target }}
 
@@ -141,7 +141,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Package the Foxx extension
+      - name: Package the Landscape extension
         id: extension
         shell: bash
         working-directory: extensions/foxx
@@ -163,7 +163,7 @@ jobs:
             echo "The extension did not change since ${previous}; the Marketplace keeps its current version."
           fi
 
-      - name: Publish the Foxx extension to the VS Code Marketplace
+      - name: Publish the Landscape extension to the VS Code Marketplace
         id: marketplace
         if: steps.extension.outputs.changed == 'true'
         shell: bash
@@ -179,7 +179,7 @@ jobs:
           cd extensions/foxx
           npx vsce publish --packagePath "../../dist/foxx-${RELEASE_TAG}.vsix" --pat "${VSCE_PAT}"
 
-      - name: Publish the Foxx extension to Open VSX
+      - name: Publish the Landscape extension to Open VSX
         id: openvsx
         if: steps.extension.outputs.changed == 'true'
         shell: bash

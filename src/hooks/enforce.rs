@@ -16,7 +16,7 @@ use super::action::{apply, AgentAction, FileChange, Operation, Proposed};
 use super::adapter::Verdict;
 use super::scripts;
 use super::shell::{
-    mutating_crane, names_crane_directory, network_destinations, normal, words, MUTATING_GIT,
+    crane_invocation, names_crane_directory, network_destinations, normal, words, MUTATING_GIT,
     MUTATING_WORDS, NETWORK_WORDS,
 };
 use crate::governance::config::Costs;
@@ -743,8 +743,15 @@ impl Guard<'_> {
         if self.names_protected(command) {
             deny(decided, "SHELL_NAMES_METADATA", "the command names protected Crane metadata (.crane, the trust directory, or hook settings); agents cannot read or change it through the shell".into(), true);
         }
-        if let Some(invocation) = mutating_crane(command) {
-            deny(decided, "GOVERNANCE_COMMAND", format!("'{invocation}' cannot be executed by an AI agent; a human runs governance commands"), true);
+        if let Some(invocation) = crane_invocation(command) {
+            deny(
+                decided,
+                "CRANE_COMMAND",
+                format!(
+                    "'{invocation}' cannot be executed by an AI agent; only a human runs Crane"
+                ),
+                true,
+            );
         }
         let tokens = words(command);
         let mutating = command.contains('>')

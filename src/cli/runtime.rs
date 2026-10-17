@@ -1,5 +1,5 @@
 // Runtime views: the current or a given task or session of the AI agent, every task of the current
-// session, and every session. The Foxx dashboard is hosted by the ingestion service.
+// session, and every session. The Data Sea dashboard is hosted by the ingestion service.
 
 use serde_json::{json, Value};
 

@@ -106,7 +106,7 @@ jobs:
             "eval.duration_ms=$(( ($(date +%s) - STARTED_AT) * 1000 ))" other.job=CORE
 
   extension:
-    name: Foxx extension
+    name: Landscape extension
     runs-on: ubuntu-latest
     defaults:
       run:

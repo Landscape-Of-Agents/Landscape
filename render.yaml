@@ -10,6 +10,10 @@ services:
     rootDir: landing
     buildCommand: npm ci && npm run build
     staticPublishPath: public
+    # Custom domains: point agentslandscape.cloud (and www) at this site in your DNS
+    domains:
+      - agentslandscape.cloud
+      - www.agentslandscape.cloud
     autoDeploy: true
     buildFilter:
       paths:

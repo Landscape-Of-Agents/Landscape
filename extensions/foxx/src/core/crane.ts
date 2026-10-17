@@ -120,14 +120,14 @@ export function selectionIdFrom(output: string): string | undefined {
   return /as selection ([A-Z0-9]{8})/.exec(output)?.[1];
 }
 
-/** The oldest Crane that has every command Foxx runs ('crane governance sign' arrived in 0.4.8). */
+/** The oldest Crane that has every command Landscape runs ('crane governance sign' arrived in 0.4.8). */
 export const MIN_CRANE = "0.4.8";
 
 /** The oldest Crane that records the editor's own events ('crane foxx event'). */
 export const EVENTS_SINCE = "0.4.10";
 
 /** Where Crane releases are published. */
-export const RELEASES_URL = "https://github.com/VishuKalier2003/Agentscript/releases/latest";
+export const RELEASES_URL = "https://github.com/Landscape-Of-Agents/Landscape/releases/latest";
 
 /** Whether the configured Crane can be used. */
 export interface CraneStatus {
@@ -187,7 +187,7 @@ export function craneStatus(executable: string, result: CraneResult, location?: 
       executable,
       location,
       events: false,
-      message: `Foxx needs Crane ${MIN_CRANE} or newer, but ${where} is ${version ? "Crane " + version : "an unknown version"}. It cannot sign governance changes ('crane governance sign'), so zones, flows, and context would be reverted. Install the latest Crane, or set "foxx.cranePath" to a newer one.`,
+      message: `Landscape needs Crane ${MIN_CRANE} or newer, but ${where} is ${version ? "Crane " + version : "an unknown version"}. It cannot sign governance changes ('crane governance sign'), so zones, flows, and context would be reverted. Install the latest Crane, or set "foxx.cranePath" to a newer one.`,
     };
   }
   return { state: "ok", version, executable, location, events: atLeast(version, EVENTS_SINCE) };

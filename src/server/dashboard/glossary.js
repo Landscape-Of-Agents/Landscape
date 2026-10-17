@@ -130,8 +130,8 @@ window.FOXX_GLOSSARY = {
    "A signed-in person moves between tabs, filters the event timeline, pages through it, opens session pages, and downloads a session report or evidence bundle."
   ],
   "F31": [
-   "The Foxx editor extension",
-   "Inside VS Code, Foxx sets up Crane, opens a panel for the selected code (or a whole file from the Explorer), and runs actions from it: protect, target, zone, flow, context, policy, checkpoint, move, hooks."
+   "The Landscape editor extension",
+   "Inside VS Code, Landscape sets up Crane, opens a panel for the selected code (or a whole file from the Explorer), and runs actions from it: protect, target, zone, flow, context, policy, checkpoint, move, hooks."
   ],
   "F32": [
    "Pull request notifications",
@@ -282,7 +282,7 @@ window.FOXX_GLOSSARY = {
   "BYPASS_CONFIRMED": "Protected code changed outside the checks; the session was quarantined.",
   "COVERAGE_GAP": "An action happened without a decision or an observation.",
   "NOT_APPLICABLE": "Nothing for the control to apply to yet (for example, no preserve rules are defined).",
-  "MACHINE": "Recorded by Crane on a member's machine (hooks, commands, the Foxx extension), hash-chained and signed.",
+  "MACHINE": "Recorded by Crane on a member's machine (hooks, commands, the Landscape extension), hash-chained and signed.",
   "SERVICE": "Recorded by the ingestion service (uploads, status reports, sign-ins, dashboard views).",
   "DERIVED": "Computed by the dashboard from other records (credits, alerts, the audit trail, stale sessions).",
   "WORKFLOW": "Printed by a GitHub workflow (pull requests, CI, releases); not uploaded.",

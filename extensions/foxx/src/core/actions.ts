@@ -1,4 +1,4 @@
-// The actions the Foxx panel offers, grouped under menu headings, and how the search box finds them.
+// The actions the Landscape panel offers, grouped under menu headings, and how the search box finds them.
 // Typing filters actions whose words start with what was typed (prefix search, every typed word must
 // match), ranked by how early the match is; the matches stay under their headings. Editor-independent,
 // so it is unit-tested.

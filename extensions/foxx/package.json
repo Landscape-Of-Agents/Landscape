@@ -1,6 +1,6 @@
 {
   "name": "foxx",
-  "displayName": "Foxx",
+  "displayName": "Landscape",
   "description": "Set up Crane, create policies and selection contracts, and see whether AI agents respect them, from the editor.",
   "version": "0.4.4",
   "publisher": "agentscript",
@@ -12,12 +12,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/VishuKalier2003/Agentscript.git",
+    "url": "https://github.com/Landscape-Of-Agents/Landscape.git",
     "directory": "extensions/foxx"
   },
-  "homepage": "https://github.com/VishuKalier2003/Agentscript#readme",
+  "homepage": "https://agentslandscape.cloud",
   "bugs": {
-    "url": "https://github.com/VishuKalier2003/Agentscript/issues"
+    "url": "https://github.com/Landscape-Of-Agents/Landscape/issues"
   },
   "keywords": [
     "crane",
@@ -43,7 +43,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
-      "description": "Foxx runs the Crane CLI and edits repository governance files, so it is disabled in untrusted workspaces."
+      "description": "Landscape runs the Crane CLI and edits repository governance files, so it is disabled in untrusted workspaces."
     },
     "virtualWorkspaces": false
   },
@@ -51,8 +51,8 @@
     "commands": [
       {
         "command": "foxx.menu",
-        "title": "Open Foxx",
-        "category": "Foxx",
+        "title": "Open Landscape",
+        "category": "Landscape",
         "icon": {
           "light": "images/title.png",
           "dark": "images/title.png"
@@ -60,8 +60,8 @@
       },
       {
         "command": "foxx.openFile",
-        "title": "Open in Foxx",
-        "category": "Foxx",
+        "title": "Open in Landscape",
+        "category": "Landscape",
         "icon": {
           "light": "images/title.png",
           "dark": "images/title.png"
@@ -70,82 +70,82 @@
       {
         "command": "foxx.setup",
         "title": "Set Up Crane in This Repository",
-        "category": "Foxx"
+        "category": "Landscape"
       },
       {
         "command": "foxx.createPolicy",
         "title": "Create Policy",
-        "category": "Foxx"
+        "category": "Landscape"
       },
       {
         "command": "foxx.connectZonesFlow",
         "title": "Connect Zones in the Graph",
-        "category": "Foxx"
+        "category": "Landscape"
       },
       {
         "command": "foxx.openGraph",
         "title": "Show Governance Graph",
-        "category": "Foxx",
+        "category": "Landscape",
         "icon": "$(type-hierarchy)"
       },
       {
         "command": "foxx.createCheckpoint",
         "title": "Create Checkpoint",
-        "category": "Foxx"
+        "category": "Landscape"
       },
       {
         "command": "foxx.moveToPolicy",
         "title": "Move Selection to Policy",
-        "category": "Foxx"
+        "category": "Landscape"
       },
       {
         "command": "foxx.installHooks",
         "title": "Install Agent Hooks",
-        "category": "Foxx"
+        "category": "Landscape"
       },
       {
         "command": "foxx.undoGovernanceChange",
         "title": "Undo Last Governance Change",
-        "category": "Foxx"
+        "category": "Landscape"
       },
       {
         "command": "foxx.validate",
         "title": "Validate Governance",
-        "category": "Foxx",
+        "category": "Landscape",
         "icon": "$(check-all)"
       },
       {
         "command": "foxx.test",
         "title": "Test Policies",
-        "category": "Foxx",
+        "category": "Landscape",
         "icon": "$(beaker)"
       },
       {
         "command": "foxx.policyStatus",
         "title": "Policy Status",
-        "category": "Foxx"
+        "category": "Landscape"
       },
       {
         "command": "foxx.refresh",
         "title": "Refresh",
-        "category": "Foxx",
+        "category": "Landscape",
         "icon": "$(refresh)"
       },
       {
         "command": "foxx.revealSelection",
         "title": "Reveal Selection",
-        "category": "Foxx"
+        "category": "Landscape"
       },
       {
         "command": "foxx.openSidebar",
         "title": "Show Overview",
-        "category": "Foxx",
+        "category": "Landscape",
         "icon": "$(dashboard)"
       },
       {
         "command": "foxx.revealContext",
         "title": "Open Code of Agent Context",
-        "category": "Foxx"
+        "category": "Landscape"
       }
     ],
     "menus": {
@@ -266,7 +266,7 @@
       ]
     },
     "configuration": {
-      "title": "Foxx",
+      "title": "Landscape",
       "properties": {
         "foxx.cranePath": {
           "type": "string",
@@ -293,7 +293,7 @@
     "submenus": [
       {
         "id": "foxx.editor",
-        "label": "Foxx"
+        "label": "Landscape"
       }
     ],
     "keybindings": [
@@ -308,7 +308,7 @@
       "activitybar": [
         {
           "id": "foxx",
-          "title": "Foxx",
+          "title": "Landscape",
           "icon": "images/activity.svg"
         }
       ]
@@ -316,13 +316,13 @@
     "walkthroughs": [
       {
         "id": "foxx.start",
-        "title": "Get started with Foxx",
+        "title": "Get started with Landscape",
         "description": "Protect code from AI agents, describe the risky parts of your repository, and watch every tool call.",
         "steps": [
           {
             "id": "crane",
             "title": "Install Crane 0.4.10 or newer",
-            "description": "Foxx runs the Crane CLI. Download it, put it on PATH or set its path.\n[Download Crane](https://github.com/VishuKalier2003/Agentscript/releases)\n[Set Crane path](command:workbench.action.openSettings?%22foxx.cranePath%22)",
+            "description": "Landscape runs the Crane CLI. Download it, put it on PATH or set its path.\n[Download Crane](https://github.com/Landscape-Of-Agents/Landscape/releases)\n[Set Crane path](command:workbench.action.openSettings?%22foxx.cranePath%22)",
             "media": {
               "markdown": "media/walkthrough/crane.md"
             }
@@ -341,7 +341,7 @@
           {
             "id": "select",
             "title": "Preserve or target code",
-            "description": "Select lines and press Ctrl+Alt+F. Preserved lines may not be changed by agents; targeted lines are the ones they should change.\n[Open Foxx](command:foxx.menu)",
+            "description": "Select lines and press Ctrl+Alt+F. Preserved lines may not be changed by agents; targeted lines are the ones they should change.\n[Open Landscape](command:foxx.menu)",
             "media": {
               "markdown": "media/walkthrough/select.md"
             },
@@ -363,7 +363,7 @@
           {
             "id": "overview",
             "title": "Watch the overview",
-            "description": "The Foxx overview shows every selection, whether it passes, zones and flows, the governance graph, which agents are working in which flows, findings and what you did.\n[Show Overview](command:foxx.openSidebar)\n[Show Governance Graph](command:foxx.openGraph)",
+            "description": "The Landscape overview shows every selection, whether it passes, zones and flows, the governance graph, which agents are working in which flows, findings and what you did.\n[Show Overview](command:foxx.openSidebar)\n[Show Governance Graph](command:foxx.openGraph)",
             "media": {
               "markdown": "media/walkthrough/overview.md"
             },

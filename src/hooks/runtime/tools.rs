@@ -132,7 +132,7 @@ impl Hook {
             .filter(|text| !text.is_empty());
         let mut selection_guidance = Vec::new();
         let mut context_candidates = Vec::new();
-        // What Foxx highlights in the editor while the agent works (see foxx::live)
+        // What Landscape highlights in the editor while the agent works (see foxx::live)
         let mut live_contexts = Vec::new();
         for record in self.state.registry.selections.iter().filter(|record| {
             record.status == Status::Active

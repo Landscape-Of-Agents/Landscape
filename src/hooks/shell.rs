@@ -1,26 +1,43 @@
 // Shell command analysis used by the guard and the telemetry: splitting a command into words,
-// recognizing Crane invocations that change governance (everything but a read-only allow-list),
+// recognizing Crane invocations (agents may run none),
 // the shell words and Git subcommands that change files, network tools, references to the .crane
 // directory, and network destinations named in commands or arguments. Analysis is lexical and
 // conservative: it reports what a command names, never what it would do once run.
 
 use std::collections::BTreeSet;
 
-/** Crane subcommands an agent may run because they only read */
-pub(super) const READ_ONLY_COMMANDS: &[&[&str]] = &[
-    &["--version"],
-    &["-V"],
-    &["help"],
-    &["--help"],
-    &["parse"],
-    &["validate"],
-    &["test"],
-    &["task"],
-    &["session"],
-    &["repo", "status"],
-    &["repo", "--view"],
-    &["agent", "hooks"],
-    &["admin", "list"],
+/** The words that follow 'crane' when it is run: every command and the options that print help or
+ * the version (an agent may run none of them) */
+pub(super) const CRANE_COMMANDS: &[&str] = &[
+    "init",
+    "checkpoint",
+    "protect",
+    "target",
+    "--set",
+    "parse",
+    "validate",
+    "test",
+    "add",
+    "policy-context",
+    "create",
+    "policy",
+    "repo",
+    "data",
+    "github",
+    "task",
+    "session",
+    "agent",
+    "integrate",
+    "alert",
+    "admin",
+    "governance",
+    "foxx",
+    "server",
+    "help",
+    "--help",
+    "-h",
+    "--version",
+    "-v",
 ];
 
 /** Shell words that change files */
@@ -147,38 +164,47 @@ pub(super) fn words(command: &str) -> Vec<String> {
         .collect()
 }
 
-/** Find Crane invocations in a shell command that are not read-only: every Crane command that
- * changes governance, trust, connections, integrations, hooks, or starts the dashboard
+/** Find a Crane invocation anywhere in a shell command, a script, or inline code: a program named
+ * crane or crane.exe (bare, by a Unix or Windows path, after env assignments, wrappers such as
+ * sudo, env, npx, xargs, cmd /c, or PowerShell's call operator, inside quotes passed to bash -c,
+ * or as an argument list such as ["crane", "init"]) followed by one of Crane's commands. Agents
+ * may run none of them, read-only ones included, and not the hook entry points either (typing
+ * 'crane agent hook' would forge hook events). Mentions such as 'cargo build -p crane' or a
+ * directory named crane are not invocations
  * Input
-    - command: &str - command text
+    - text: &str - command, script, or code text
  * Output
-    - Option<String> the offending invocation, None when every invocation only reads
+    - Option<String> the invocation, None when Crane is not run
 */
-pub(crate) fn mutating_crane(command: &str) -> Option<String> {
-    let tokens = words(command);
+pub(crate) fn crane_invocation(text: &str) -> Option<String> {
+    let tokens = text
+        .split(|character: char| {
+            character.is_whitespace() || ";|&()`\"'{}[],<>=+".contains(character)
+        })
+        .filter(|token| !token.is_empty())
+        .map(|token| token.to_ascii_lowercase())
+        .collect::<Vec<_>>();
     for (index, token) in tokens.iter().enumerate() {
-        let program = token.rsplit('/').next().unwrap_or_default();
+        let program = token.rsplit(['/', '\\']).next().unwrap_or_default();
         if program != "crane" && program != "crane.exe" {
             continue;
         }
-        let rest = &tokens[index + 1..];
-        // A Crane invocation inside a path (".../crane/src") is followed by nothing meaningful
-        if rest.is_empty() {
-            continue;
-        }
-        let read_only = READ_ONLY_COMMANDS.iter().any(|pattern| {
-            pattern
-                .iter()
-                .enumerate()
-                .all(|(offset, word)| rest.get(offset).map(String::as_str) == Some(*word))
-        }) || (rest.first().map(String::as_str) == Some("policy")
-            && rest.get(2).map(String::as_str) == Some("status"))
-            || (rest.first().map(String::as_str) == Some("policy-context")
-                && rest.iter().any(|word| word == "--view"));
-        if !read_only {
+        // 'cargo run -p crane -- init' runs Crane too
+        let rest = tokens[index + 1..]
+            .iter()
+            .skip_while(|word| word.as_str() == "--")
+            .collect::<Vec<_>>();
+        if rest
+            .first()
+            .is_some_and(|word| CRANE_COMMANDS.contains(&word.as_str()))
+        {
             return Some(format!(
                 "crane {}",
-                rest.iter().take(3).cloned().collect::<Vec<_>>().join(" ")
+                rest.iter()
+                    .take(3)
+                    .map(|word| word.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
             ));
         }
     }
@@ -268,14 +294,39 @@ mod tests {
     */
     #[test]
     fn detects_commands_and_destinations() {
-        assert!(mutating_crane("crane protect a.py").is_some());
-        assert!(mutating_crane("cd x && ./target/debug/crane.exe checkpoint v2").is_some());
-        assert!(mutating_crane("crane --set default policy x").is_some());
-        assert!(mutating_crane("crane agent uninstall --profile claude").is_some());
-        assert!(mutating_crane("crane test . && crane validate --json").is_none());
-        assert!(mutating_crane("crane policy payments status").is_none());
-        assert!(mutating_crane("crane policy-context payments --view").is_none());
-        assert!(mutating_crane("cargo build -p crane").is_none());
+        // Every Crane command is an invocation, read-only ones and the hook entry points included
+        for command in [
+            "crane protect a.py",
+            "cd x && ./target/debug/crane.exe checkpoint v2",
+            "crane --set default policy x",
+            "crane agent uninstall --profile claude",
+            "crane test . && crane validate --json",
+            "crane policy payments status",
+            "crane --version",
+            "crane agent hook --event pre-tool-use --profile claude",
+            "& \"C:\\tools\\crane.exe\" init",
+            "C:\\tools\\crane_v0_4_22\\crane.exe validate",
+            "env CLAUDECODE= crane init",
+            "sudo -E crane governance sign",
+            "npx crane checkpoint x",
+            "echo y | xargs crane admin add KEY",
+            "bash -c \"crane repo rebind github.com/a/b\"",
+            "cmd /c crane checkpoint x",
+            "cargo run -p crane -- init",
+            "subprocess.run([\"crane\", \"protect\", \"a.py\"])",
+        ] {
+            assert!(crane_invocation(command).is_some(), "{command}");
+        }
+        // Mentions are not invocations
+        for command in [
+            "cargo build -p crane",
+            "cd crane && make",
+            "ls crane/src",
+            "git commit -m \"crane: faster hooks\"",
+            "cat crane-mvp/README.md",
+        ] {
+            assert!(crane_invocation(command).is_none(), "{command}");
+        }
         assert!(names_crane_directory("cat ./.crane/map"));
         assert!(names_crane_directory(
             "type c:/users/me/.crane-trust/keys/x.key"

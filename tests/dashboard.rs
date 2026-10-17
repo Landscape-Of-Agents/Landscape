@@ -1,4 +1,4 @@
-// The hosted Foxx dashboard (built with --features server; needs CRANE_TEST_MONGODB_URI, skipped
+// The hosted Data Sea dashboard (built with --features server; needs CRANE_TEST_MONGODB_URI, skipped
 // otherwise). A team repository owned by the Acme organization has two members (alice's and bob's
 // machines); carol has a personal repository. Viewers sign in through a stand-in for GitHub.
 
@@ -265,6 +265,18 @@ fn sign_in_scopes_personal_and_organization_accounts() {
         Some(&oauth),
     );
     assert_eq!(mismatch.status, 400);
+    // Sign-in started under another host (the Render address behind a custom domain) moves to
+    // the public host first, so the state cookie is there when GitHub returns
+    let moved = get(
+        &format!("{}/auth/login?x=1", base.replace("127.0.0.1", "localhost")),
+        None,
+    );
+    assert_eq!(moved.status, 302, "{}", moved.body);
+    assert_eq!(
+        moved.location.as_deref(),
+        Some("http://127.0.0.1/auth/login?x=1")
+    );
+    assert!(moved.cookies.is_empty(), "{:?}", moved.cookies);
     let alice = sign_in(&base, &world.github, "alice");
     let me = get(&format!("{base}/api/me"), Some(&alice)).json();
     assert_eq!(me["login"], "alice");

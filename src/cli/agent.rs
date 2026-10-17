@@ -154,7 +154,7 @@ fn hook(args: &[String]) -> Result<(), String> {
     runtime::run(kind, event)
 }
 
-/** Upload the local evidence to the Foxx ingestion service now (internal: started detached by
+/** Upload the local evidence to the Data Sea ingestion service now (internal: started detached by
  * hooks, commands, and the periodic sync)
  * Input
     - None

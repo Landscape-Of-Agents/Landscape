@@ -1,7 +1,7 @@
 "use strict";
 // The product showcase: Crane (the CLI), Landscape (the editor extension), and DataSea (the
 // dashboard), one row each, each drawn as a 3D object (a stack of glass layers at different depths
-// that sways and leans with the pointer). Every scene is a 5-second timeline: a pure function of
+// that sways and leans with the pointer). Every scene is a 10-second timeline: a pure function of
 // its time, so it can play at any speed and in either direction. It plays at 1x while its row is on
 // screen, at 1.15x while the page scrolls down, and backwards while it scrolls up; at the end it
 // holds, then starts again. Under reduced motion each row shows its finished state.
@@ -9,7 +9,9 @@
   const rowsInPage = [...document.querySelectorAll(".show-row")];
   if (!rowsInPage.length) return;
   const STILL = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const DURATION = 5;
+  // The scenes are written in 5-second time and played over 10 seconds
+  const AUTHORED = 5;
+  const DURATION = 10;
   const HOLD = 1.6;
   const LOGO = "logo.png?v=3";
   const SVG = "http://www.w3.org/2000/svg";
@@ -437,7 +439,7 @@
     const barsNode = root.querySelector(".show-bars");
     barsNode.style.setProperty("--steps", String(scene.steps.length));
     const bars = scene.steps.map(() => barsNode.appendChild(make("i")).appendChild(make("b")));
-    const entry = { root, scene, line, bars, after: scene.build(line), rig: screen.querySelector(".obj-rig"), time: -1, hold: 0, visible: false, step: -1, stepNode: root.querySelector(".show-step"), sayNode: root.querySelector(".show-say"), speedNode: root.querySelector(".show-speed") };
+    const entry = { root, scene, line, bars, after: scene.build(line), rig: screen.querySelector(".obj-rig"), time: -1, hold: 0, visible: false, step: -1, stepNode: root.querySelector(".show-step"), sayNode: root.querySelector(".show-say") };
     new IntersectionObserver((entries) => {
       entry.visible = entries.some((item) => item.isIntersecting);
       if (entry.visible) root.classList.add("seen");
@@ -458,11 +460,12 @@
 
   const draw = (entry, time) => {
     entry.time = time;
-    entry.line.draw(time);
+    const moment = (time * AUTHORED) / DURATION;
+    entry.line.draw(moment);
     if (entry.line.dirty) { if (entry.after) entry.after(); entry.line.dirty = false; }
     const steps = entry.scene.steps;
     let step = 0;
-    while (step + 1 < steps.length && time >= steps[step + 1][0]) step += 1;
+    while (step + 1 < steps.length && moment >= steps[step + 1][0]) step += 1;
     if (step !== entry.step) {
       entry.step = step;
       entry.stepNode.textContent = "Step " + (step + 1) + " of " + steps.length;
@@ -472,13 +475,13 @@
       entry.sayNode.classList.add("show-say");
     }
     entry.bars.forEach((bar, index) => {
-      const from = steps[index][0], to = index + 1 < steps.length ? steps[index + 1][0] : DURATION;
-      bar.style.width = clamp((time - from) / (to - from)) * 100 + "%";
+      const from = steps[index][0], to = index + 1 < steps.length ? steps[index + 1][0] : AUTHORED;
+      bar.style.width = clamp((moment - from) / (to - from)) * 100 + "%";
     });
   };
 
   if (STILL) {
-    for (const entry of rows) { draw(entry, DURATION); entry.speedNode.hidden = true; }
+    for (const entry of rows) draw(entry, DURATION);
     return;
   }
 
@@ -495,7 +498,6 @@
     settle = setTimeout(() => { rate = 1; }, 220);
   }, { passive: true });
 
-  let shownRate = null;
   let previous = performance.now();
   for (const entry of rows) draw(entry, 0);
   const frame = (now) => {
@@ -518,14 +520,6 @@
           time = Math.max(0, time + elapsed * rate);
         }
         if (time !== entry.time) draw(entry, time);
-      }
-    }
-    if (rate !== shownRate) {
-      shownRate = rate;
-      for (const entry of rows) {
-        entry.speedNode.textContent = rate < 0 ? "◀ reverse" : rate > 1 ? "1.15×" : "1×";
-        entry.speedNode.classList.toggle("fast", rate > 1);
-        entry.speedNode.classList.toggle("back", rate < 0);
       }
     }
     requestAnimationFrame(frame);

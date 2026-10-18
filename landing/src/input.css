@@ -79,7 +79,7 @@
   .product-mark { @apply grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/10 bg-gradient-to-b from-white/[0.1] to-white/[0.02] text-ink shadow-[inset_0_1px_0_rgba(255,255,255,.08)]; }
   /* Each row: the text on the left (the heading, the live step as its subheading, the step bars),
      the 3D object on the right; every row shares the same columns, so they line up */
-  .show-row { @apply grid min-w-0 items-center gap-8 lg:grid-cols-[minmax(0,19rem)_minmax(0,1fr)] lg:gap-12; }
+  .show-row { @apply grid min-w-0 items-center gap-8 lg:grid-cols-[minmax(0,17rem)_minmax(0,1fr)] lg:gap-14; }
   .show-head { @apply flex min-w-0 flex-col; }
   .show-title { @apply mt-4 text-balance text-2xl font-medium tracking-tight text-ink sm:text-3xl; }
   .show-say { @apply mt-3 min-h-[3.4em] text-pretty text-base leading-snug text-ink-2 sm:text-[17px]; animation: line-in 0.4s ease-out both; }
@@ -88,17 +88,15 @@
   .show-bars b { @apply absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-white/40 to-white; box-shadow: 0 0 8px rgba(255, 255, 255, 0.5); }
   .show-meta { @apply mt-3 flex items-center gap-2 font-mono text-[11px] text-ink-3; }
   .show-step { @apply tabular-nums; }
-  .show-speed { @apply ml-auto shrink-0 rounded-md border border-white/10 px-1.5 py-px tabular-nums text-ink-3 transition-colors; }
-  .show-speed.fast, .show-speed.back { @apply border-white/30 bg-white/[0.08] text-ink; }
   .show-link { @apply mt-7 inline-flex items-center gap-2 self-start rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-ink-2 transition hover:border-white/20 hover:text-ink; }
   .show-stage { @apply min-w-0 overflow-hidden !rounded-2xl; }
-  .show-screen { @apply relative h-[30rem] overflow-hidden md:h-[34rem]; background: radial-gradient(70% 55% at 50% 0%, rgba(255, 255, 255, 0.09), transparent 70%), radial-gradient(40% 40% at 85% 100%, rgba(255, 255, 255, 0.04), transparent 70%); }
+  .show-screen { @apply relative h-[36rem] overflow-hidden md:h-[42rem] lg:h-[46rem]; background: radial-gradient(70% 55% at 50% 0%, rgba(255, 255, 255, 0.09), transparent 70%), radial-gradient(40% 40% at 85% 100%, rgba(255, 255, 255, 0.04), transparent 70%); }
   .show-screen::before { content: ""; @apply pointer-events-none absolute inset-0; background-image: radial-gradient(rgba(255, 255, 255, 0.09) 1px, transparent 1px); background-size: 22px 22px; mask-image: radial-gradient(ellipse 80% 70% at 50% 30%, #000, transparent 75%); }
   /* The 3D objects: each product is a stack of layers floating at depth (--z), tilted toward the
      viewer, swaying slowly, and leaning with the pointer (showcase.js sets --rx and --ry) */
   .obj { @apply absolute inset-0; perspective: 1900px; perspective-origin: 50% 15%; }
   .obj-sway { @apply absolute inset-0; transform-style: preserve-3d; animation: sway 18s ease-in-out infinite; }
-  .obj-rig { @apply absolute inset-x-3 bottom-9 top-5 sm:inset-x-8 sm:bottom-12 sm:top-9 lg:inset-x-7 lg:bottom-10 lg:top-16; transform-style: preserve-3d; transform: rotateX(var(--rx, 17deg)) rotateY(var(--ry, -15deg)) rotateZ(var(--rz, 2deg)); transition: transform 1s cubic-bezier(0.2, 0.7, 0.2, 1); }
+  .obj-rig { @apply absolute inset-x-4 bottom-10 top-14 sm:inset-x-12 sm:bottom-14 sm:top-14 lg:inset-x-16 lg:bottom-16 lg:top-24; transform-style: preserve-3d; transform: rotateX(var(--rx, 17deg)) rotateY(var(--ry, -15deg)) rotateZ(var(--rz, 2deg)); transition: transform 1s cubic-bezier(0.2, 0.7, 0.2, 1); }
   .obj-floor { @apply pointer-events-none absolute inset-x-[10%] bottom-0 h-24; background: radial-gradient(50% 50% at 50% 50%, rgba(255, 255, 255, 0.11), transparent 70%); filter: blur(14px); }
   .ly { @apply absolute flex flex-col overflow-hidden rounded-xl text-ink-2; transform: translateZ(var(--z, 0px)); opacity: var(--o, 1); border: 1px solid transparent; background: linear-gradient(#0b0b0e, #08080a) padding-box, linear-gradient(155deg, rgba(255, 255, 255, 0.32), rgba(255, 255, 255, 0.07) 28%, rgba(255, 255, 255, 0.03) 70%, rgba(255, 255, 255, 0.14)) border-box; box-shadow: 0 50px 80px -30px rgba(0, 0, 0, 0.95), 0 0 0 1px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08); transition: box-shadow 0.5s, --z 0.9s cubic-bezier(0.2, 0.7, 0.2, 1), opacity 0.6s; }
   .show-row.seen .ly { animation: layer-in 1.2s cubic-bezier(0.2, 0.7, 0.2, 1) backwards; animation-delay: var(--d, 0s); }

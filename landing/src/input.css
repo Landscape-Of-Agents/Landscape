@@ -75,66 +75,254 @@
   .scene-struck { @apply text-red-300 line-through decoration-red-400/70; }
   @keyframes scene-shake { 0%, 100% { transform: translateX(0); } 20%, 60% { transform: translateX(-4px); } 40%, 80% { transform: translateX(4px); } }
 
-  /* Product mockups: Crane's terminal, Landscape's editor and graph, DataSea's dashboard */
-  .product-mark { @apply grid h-8 w-8 place-items-center rounded-lg border border-white/10 bg-gradient-to-b from-white/[0.1] to-white/[0.02] text-ink shadow-[inset_0_1px_0_rgba(255,255,255,.08)]; }
-  .window { @apply overflow-hidden rounded-xl border border-white/[0.07] bg-black/50 shadow-[0_20px_50px_-25px_rgba(0,0,0,.9)]; }
-  .window-bar { @apply flex min-h-[2.25rem] items-center gap-2 border-b border-white/[0.06] bg-white/[0.02] px-3 py-1.5; }
-  .dots { @apply flex gap-1.5; }
-  .dots i { @apply h-2.5 w-2.5 rounded-full bg-white/[0.12]; }
-  .pill { @apply inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] text-ink-2; }
-  .pill-live b { @apply h-1.5 w-1.5 animate-pulse rounded-full bg-green-400; box-shadow: 0 0 8px rgba(74, 222, 128, 0.8); }
-  .stat-mini { @apply rounded-lg border border-white/[0.06] bg-white/[0.02] px-2 py-2; }
-  .stat-mini dt { @apply text-[10px] uppercase tracking-[0.14em] text-ink-3; }
-  .stat-mini dd { @apply mt-0.5 text-[13px] font-medium text-ink; }
-  .term-line { @apply flex min-w-0 items-baseline gap-2 whitespace-nowrap; animation: line-in 0.35s ease-out both; }
-  .term-line .label { @apply w-[7.75rem] shrink-0 text-ink-2 sm:w-[8.5rem]; }
-  .term-line .detail { @apply min-w-0 truncate text-ink-3; }
-  .term-badge { @apply shrink-0 rounded px-1.5 text-[10px] font-semibold; }
-  .tab { @apply flex h-9 items-center whitespace-nowrap border-b-2 border-transparent px-2.5 font-mono text-[11px] text-ink-3; }
-  .tab-on { @apply border-white/60 text-ink; }
-  .code-line { @apply relative flex whitespace-pre pr-3 text-ink-2; }
-  .code-line i { @apply w-9 shrink-0 select-none pr-3 text-right not-italic text-ink-3/60; }
-  .band { @apply border-l-2; }
-  .band-preserve { border-color: rgba(134, 239, 172, 0.55); background: rgba(134, 239, 172, 0.06); }
-  .band-target { border-color: rgba(196, 181, 253, 0.6); background: rgba(196, 181, 253, 0.06); }
-  .lens { @apply truncate pl-9 font-sans text-[10.5px] leading-[1.6]; }
-  .lens b { @apply font-normal; }
-  .lens-preserve { @apply text-green-300/80; }
-  .lens-target { @apply text-violet-300/80; }
-  #land-graph .edges path { fill: none; stroke: rgba(255, 255, 255, 0.16); stroke-width: 1.3; stroke-dasharray: 3 5; animation: edge-flow 1.4s linear infinite; transition: stroke 0.5s; }
-  #land-graph .edges path.hot { stroke: rgba(255, 255, 255, 0.5); }
-  #land-graph .pulses circle { fill: #fff; filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.9)); }
-  #land-graph .node rect { fill: rgba(255, 255, 255, 0.04); stroke: rgba(255, 255, 255, 0.2); transition: stroke 0.5s, fill 0.5s; }
-  #land-graph .node text { fill: #a1a1a6; font: 500 11px "Geist Mono", ui-monospace, monospace; text-anchor: middle; }
-  #land-graph .node text.kind { fill: #6b6b70; font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; }
-  #land-graph .node-preserve rect { stroke: rgba(134, 239, 172, 0.45); fill: rgba(134, 239, 172, 0.06); }
-  #land-graph .node-preserve text { fill: #86efac; }
-  #land-graph .node-target rect { stroke: rgba(196, 181, 253, 0.5); fill: rgba(196, 181, 253, 0.06); }
-  #land-graph .node-target text { fill: #c4b5fd; }
-  #land-graph .node-zone .dot { fill: rgba(255, 255, 255, 0.2); transition: fill 0.5s; }
-  #land-graph .node-zone .halo { fill: none; stroke: #4ade80; stroke-width: 1.2; opacity: 0; }
-  #land-graph .node-zone.hot .dot { fill: #4ade80; }
-  #land-graph .node-zone.hot rect { stroke: rgba(255, 255, 255, 0.7); fill: rgba(255, 255, 255, 0.09); }
-  #land-graph .node-zone.hot text { fill: #ededef; }
-  #land-graph .node-zone.hot .halo { animation: halo 1.6s ease-out infinite; transform-box: fill-box; transform-origin: center; }
-  #land-graph .acyclic rect { fill: rgba(134, 239, 172, 0.08); stroke: rgba(134, 239, 172, 0.3); }
-  #land-graph .acyclic text { fill: #86efac; font: 500 9.5px "Geist", ui-sans-serif, sans-serif; text-anchor: middle; }
-  .kpi { @apply flex flex-col rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5; }
-  .kpi span { @apply text-[10px] uppercase tracking-[0.14em] text-ink-3; }
-  .kpi strong { @apply mt-1 font-mono text-lg font-medium tabular-nums text-ink transition-colors; }
-  .kpi svg { @apply mt-1.5 h-5 w-full; }
-  .spark { fill: none; stroke: rgba(255, 255, 255, 0.55); stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
-  .spark-red { stroke: #f87171; }
-  .spark-amber { stroke: #fcd34d; }
-  .spark-violet { stroke: #c4b5fd; }
-  .panel { @apply min-w-0 rounded-lg border border-white/[0.06] bg-white/[0.02] p-3; }
-  .feed-row { @apply grid min-w-0 grid-cols-[1fr_auto] items-center gap-x-2 gap-y-0.5 rounded-md bg-white/[0.02] px-2 py-1.5 font-mono text-[10.5px]; animation: line-in 0.45s ease-out both; }
-  .feed-row .who { @apply flex min-w-0 items-center gap-1.5 text-ink-2; }
-  .feed-row .who i { @apply h-1.5 w-1.5 shrink-0 rounded-full; }
-  .feed-row .what { @apply col-span-2 min-w-0 truncate pl-3 text-ink-3; }
+  /* The product showcase: three tabs, one stage, and the scenes showcase.js plays on it */
+  .product-mark { @apply grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/10 bg-gradient-to-b from-white/[0.1] to-white/[0.02] text-ink shadow-[inset_0_1px_0_rgba(255,255,255,.08)]; }
+  .show-tabs { @apply grid grid-cols-3 gap-2; }
+  .show-tab { @apply relative flex items-center justify-center gap-3 overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.02] px-2 py-2.5 text-left text-sm text-ink-2 sm:justify-start sm:px-3.5 sm:py-3 transition duration-300 hover:border-white/15 hover:bg-white/[0.04]; }
+  .show-tab[aria-selected="true"] { @apply border-white/20 bg-white/[0.06]; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 20px 40px -24px rgba(255, 255, 255, 0.18); }
+  .show-tab .product-mark { @apply hidden sm:grid; }
+  .show-tab-short { @apply sm:hidden; }
+  .show-tab[aria-selected="true"] .show-tab-short { @apply text-ink; }
+  .show-tab-title { @apply mt-1 block truncate text-sm text-ink-2 transition-colors; }
+  .show-tab[aria-selected="true"] .show-tab-title { @apply text-ink; }
+  .show-progress { @apply absolute inset-x-0 bottom-0 h-[2px] bg-white/[0.05]; }
+  .show-progress b { @apply block h-full w-0 bg-gradient-to-r from-white/30 to-white; box-shadow: 0 0 10px rgba(255, 255, 255, 0.6); transition: width 0.1s linear; }
+  .show-stage { @apply mt-3 overflow-hidden !rounded-2xl; }
+  .show-screen { @apply relative h-[35rem] overflow-hidden md:h-[36rem]; }
+  .show-caption { @apply flex min-h-[2.75rem] items-center gap-3 border-t border-white/[0.06] px-4 py-1.5 font-mono text-[11.5px] text-ink-2; }
+  .show-step { @apply shrink-0 rounded-md border border-white/10 bg-white/[0.05] px-1.5 py-px tabular-nums text-ink-3; }
+  .show-say { animation: line-in 0.4s ease-out both; }
+  .show-link { @apply flex items-center justify-between rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3 text-ink-2 transition hover:border-white/15 hover:text-ink; }
+  .show-pointer { @apply pointer-events-none absolute left-0 top-0 z-40 opacity-0; transition: transform 0.85s cubic-bezier(0.45, 0.05, 0.2, 1), opacity 0.35s; filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.7)); }
+  .show-pointer.on { @apply opacity-100; }
+  .show-pointer svg { transition: transform 0.12s; transform-origin: 2px 2px; }
+  .show-pointer.down svg { transform: scale(0.86); }
+  .show-pointer i { @apply absolute -left-[13px] -top-[13px] h-7 w-7 rounded-full border border-white/80 opacity-0; }
+  .show-pointer.tap i { animation: ripple 0.55s ease-out; }
+
+  /* Pieces every scene shares */
+  .sh-scene { @apply absolute inset-0 p-3 sm:p-4; animation: scene-in 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  .sh-win { @apply flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-white/[0.07] bg-black/55 shadow-[0_20px_50px_-25px_rgba(0,0,0,.9)]; }
+  .sh-bar { @apply flex min-h-[2.1rem] shrink-0 items-center gap-2 border-b border-white/[0.06] bg-white/[0.02] px-3; }
+  .sh-bar .dots { @apply flex gap-1.5; }
+  .sh-bar .dots i { @apply h-2.5 w-2.5 rounded-full bg-white/[0.12]; }
+  .sh-bar-title { @apply truncate font-mono text-[11px] text-ink-3; }
+  .sh-tag { @apply inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-white/10 bg-white/[0.04] px-2 py-px font-mono text-[10px] text-ink-2; }
+  .sh-tag.live::before { content: ""; @apply h-1.5 w-1.5 animate-pulse rounded-full bg-green-400; box-shadow: 0 0 8px rgba(74, 222, 128, 0.8); }
+  .sh-label { @apply font-mono text-[10px] uppercase tracking-[0.18em] text-ink-3; }
+  .sh-badge { @apply inline-block shrink-0 rounded px-1.5 font-mono text-[9.5px] font-semibold leading-[1.6]; }
+  .sh-badge.ok { @apply bg-green-400/15 text-green-300; }
+  .sh-badge.bad { @apply bg-red-400/15 text-red-300; }
+  .sh-badge.ask { @apply bg-amber-300/15 text-amber-200; }
+  .sh-badge.info { @apply bg-white/[0.08] text-ink-2; }
+  .sh-caret { @apply ml-px inline-block h-[1.05em] w-[7px] translate-y-[2px] animate-caret bg-white/80; }
+
+  /* Crane: the human's shell, the agent's session, and what Crane holds */
+  .sh-cli { @apply grid gap-3 md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]; }
+  .sh-col { @apply grid min-h-0 gap-3; grid-template-rows: minmax(0, 1.12fr) minmax(0, 1fr); }
+  .sh-term { @apply min-h-0 flex-1 overflow-hidden px-3.5 py-2.5 font-mono text-[11px] leading-[1.7] text-ink-2 sm:text-[11.5px]; }
+  .sh-term > div { @apply whitespace-pre-wrap break-words; animation: line-in 0.3s ease-out both; }
+  .sh-term .cmd { @apply text-ink; }
+  .sh-term .cmd::before { content: "$ "; @apply text-ink-3; }
+  .sh-term .ask { @apply mb-1 rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-ink; }
+  .sh-term .ask::before { content: "> "; @apply text-ink-3; }
+  .sh-term .act::before { content: "\23FA  "; @apply text-ink; }
+  .sh-term .act.bad::before { @apply text-red-400; }
+  .sh-term .act.ok::before { @apply text-green-400; }
+  .sh-term .out { @apply pl-6 -indent-6 text-ink-3; }
+  .sh-term .out::before { content: "\23BF  "; @apply pl-2; }
+  .sh-cards { @apply hidden min-h-0 flex-col gap-2.5 md:flex; }
+  .sh-card { @apply rounded-xl border border-dashed border-white/[0.09] bg-white/[0.015] p-3 font-mono text-[10.5px] leading-[1.65] text-ink-3 transition duration-500; }
+  .sh-card > div:first-child { @apply mb-1.5 flex items-center gap-2 font-sans text-[12px] text-ink-3; }
+  .sh-card > div:first-child b { @apply truncate font-medium; }
+  .sh-card .sh-state { @apply ml-auto shrink-0 rounded-full border border-white/10 px-2 font-mono text-[9.5px] text-ink-3 transition; }
+  .sh-card pre { @apply whitespace-pre-wrap text-ink-3; }
+  .sh-card.on { @apply border-solid border-white/[0.14] bg-white/[0.04] text-ink-2; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05); }
+  .sh-card.on > div:first-child { @apply text-ink; }
+  .sh-card.on .sh-state { @apply border-green-400/30 bg-green-400/10 text-green-300; }
+  .sh-card.flash { animation: card-flash 0.9s ease-out; }
+  .sh-card.deny { @apply border-red-400/40 bg-red-400/[0.06]; animation: scene-shake 0.45s ease-in-out; }
+  .sh-decisions { @apply grid gap-1; }
+  .sh-decisions > div { @apply flex min-w-0 items-center gap-2 text-ink-2; animation: line-in 0.35s ease-out both; }
+  .sh-decisions span:last-child { @apply truncate; }
+
+  /* Landscape: the editor, the Landscape sidebar, and the panel */
+  .sh-vs { @apply flex h-full flex-col overflow-hidden rounded-xl border border-white/[0.07] bg-[#09090b] shadow-[0_20px_50px_-25px_rgba(0,0,0,.9)]; }
+  .sh-vs-title { @apply relative flex h-8 shrink-0 items-center justify-center border-b border-white/[0.06] bg-white/[0.02] font-sans text-[11px] text-ink-3; }
+  .sh-vs-title .dots { @apply absolute left-3 flex gap-1.5; }
+  .sh-vs-title .dots i { @apply h-2.5 w-2.5 rounded-full bg-white/[0.12]; }
+  .sh-vs-body { @apply relative flex min-h-0 flex-1; }
+  .sh-activity { @apply hidden w-11 shrink-0 flex-col items-center gap-1 border-r border-white/[0.06] bg-black/30 py-2 text-ink-3 md:flex; }
+  .sh-activity span { @apply relative grid h-9 w-9 place-items-center; }
+  .sh-activity span.on { @apply text-ink; }
+  .sh-activity span.on::before { content: ""; @apply absolute -left-1 bottom-2 top-2 w-[2px] rounded-full bg-white; }
+  .sh-activity svg { @apply h-[18px] w-[18px]; }
+  .sh-activity img { @apply h-5 w-5; }
+  .sh-side { @apply hidden w-[15.5rem] shrink-0 flex-col overflow-hidden border-r border-white/[0.06] bg-white/[0.015] font-sans text-[11px] lg:flex; }
+  .sh-side-head { @apply flex h-8 shrink-0 items-center px-3 text-[10px] uppercase tracking-[0.14em] text-ink-3; }
+  .sh-side-body { @apply flex min-h-0 flex-1 flex-col gap-2.5 overflow-hidden px-3 pb-3; }
+  .sh-side h5 { @apply flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.12em] text-ink-3; }
+  .sh-side h5 span { @apply ml-auto font-mono normal-case tracking-normal; }
+  .sh-stats { @apply grid grid-cols-3 gap-1; }
+  .sh-stats div { @apply rounded-md border border-white/[0.06] bg-white/[0.02] px-2 py-1.5; }
+  .sh-stats b { @apply block font-mono text-[15px] font-medium leading-tight text-ink transition-colors; }
+  .sh-stats b.ok { @apply text-green-300; }
+  .sh-stats b.bad { @apply text-red-300; }
+  .sh-stats small { @apply text-[9.5px] text-ink-3; }
+  .sh-item { @apply flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1; }
+  .sh-item > i { @apply w-4 shrink-0 text-center not-italic text-ink-2; }
+  .sh-item > span:not(.sh-badge) { @apply min-w-0 flex-1; }
+  .sh-item b { @apply block truncate font-normal text-ink; }
+  .sh-item small { @apply block truncate font-mono text-[9.5px] text-ink-3; }
+  .sh-item.new { animation: item-in 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  .sh-log { @apply grid gap-1 font-mono text-[9.5px] text-ink-3; }
+  .sh-log li { @apply flex min-w-0 gap-1.5; }
+  .sh-log li span:last-child { @apply truncate text-ink-2; }
+  .sh-log li.new { animation: item-in 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  .sh-live { @apply hidden rounded-lg border border-white/15 bg-white/[0.05] p-2; }
+  .sh-live.on { @apply block; animation: item-in 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  .sh-live mark { @apply mt-1.5 block rounded border-l-2 border-green-300/60 bg-green-300/[0.06] px-1.5 py-1 font-mono text-[9.5px] leading-relaxed text-ink-2; }
+  .sh-editor { @apply relative flex min-w-0 flex-1 flex-col overflow-hidden; }
+  .sh-tabs { @apply flex h-8 shrink-0 items-end border-b border-white/[0.06] bg-black/20; }
+  .sh-tabs span { @apply flex h-full items-center gap-1.5 whitespace-nowrap border-r border-white/[0.05] px-3 font-mono text-[10.5px] text-ink-3; }
+  .sh-tabs span.on { @apply bg-[#09090b] text-ink shadow-[inset_0_1px_0_rgba(255,255,255,.5)]; }
+  .sh-crumbs { @apply flex h-6 shrink-0 items-center gap-1.5 px-4 font-mono text-[10px] text-ink-3; }
+  .sh-code { @apply relative min-h-0 flex-1 overflow-hidden py-1 font-mono text-[11px] leading-[1.85] sm:text-[11.5px]; }
+  .sh-line { @apply relative flex whitespace-pre border-l-2 border-transparent pr-3 text-ink-2 transition-colors duration-300; }
+  .sh-line > i { @apply w-10 shrink-0 select-none pr-4 text-right not-italic text-ink-3/60; }
+  .sh-line.sel { background: rgba(255, 255, 255, 0.1); }
+  .sh-line.anchor { @apply text-ink-3; }
+  .sh-line.grow { animation: line-grow 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  .sh-line.preserve { border-color: rgba(134, 239, 172, 0.55); background: rgba(134, 239, 172, 0.06); }
+  .sh-line.target { border-color: rgba(196, 181, 253, 0.55); background: rgba(196, 181, 253, 0.05); }
+  .sh-line.deny { border-color: #f87171; background: rgba(248, 113, 113, 0.12); }
+  .sh-lens { @apply truncate pl-10 font-sans text-[10px] leading-[1.7] text-ink-3; }
+  .sh-lens.grow { animation: line-grow 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  .sh-lens.preserve { @apply text-green-300/80; }
+  .sh-lens.target { @apply text-violet-300/80; }
+  .sh-ghost { @apply ml-3 rounded bg-red-400/15 px-1 text-red-300 line-through decoration-red-400/70; animation: line-in 0.3s ease-out both; }
+  .sh-keys { @apply pointer-events-none absolute bottom-6 left-1/2 z-20 flex -translate-x-1/2 translate-y-2 items-center gap-1.5 rounded-xl border border-white/15 bg-night-3/95 px-3 py-2 opacity-0 shadow-2xl backdrop-blur transition duration-300; }
+  .sh-keys.on { @apply translate-y-0 opacity-100; }
+  .sh-keys kbd { @apply rounded-md border border-b-2 border-white/20 bg-white/[0.06] px-2 py-0.5 font-mono text-[11px] text-ink; }
+  .sh-notify { @apply pointer-events-none absolute bottom-3 right-3 z-20 w-[min(19rem,calc(100%-1.5rem))] translate-y-3 rounded-lg border border-white/10 bg-night-3/95 p-2.5 font-sans text-[11px] leading-snug text-ink-2 opacity-0 shadow-2xl backdrop-blur transition duration-500; }
+  .sh-notify.on { @apply translate-y-0 opacity-100; }
+  .sh-notify b { @apply text-red-300; }
+  .sh-panel { @apply absolute inset-y-0 right-0 z-10 flex w-full translate-x-[102%] flex-col border-l border-white/10 bg-night-2/[0.97] font-sans sm:w-[min(19.5rem,88%)] text-[11px] shadow-[-30px_0_60px_-30px_rgba(0,0,0,.9)] backdrop-blur-xl transition-transform duration-500; transition-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1); }
+  .sh-panel.on { @apply translate-x-0; }
+  .sh-panel-head { @apply flex shrink-0 items-center gap-2 border-b border-white/[0.06] px-3 py-2; }
+  .sh-panel-head img { @apply h-6 w-6; }
+  .sh-panel-head b { @apply block text-[12.5px] font-medium text-ink; }
+  .sh-panel-head small { @apply block text-[10px] text-ink-3; }
+  .sh-panel-body { @apply flex min-h-0 flex-1 flex-col gap-2 overflow-hidden p-3; }
+  .sh-ctx { @apply rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-2; }
+  .sh-ctx code { @apply font-mono text-[10.5px] text-ink; }
+  .sh-chips { @apply flex flex-wrap gap-1; }
+  .sh-chips span { @apply rounded-full border border-white/10 px-1.5 py-px text-[10.5px] text-ink-2 transition duration-200; }
+  .sh-chips span.on { @apply border-white bg-white text-night; }
+  .sh-form { @apply hidden flex-col gap-1.5; }
+  .sh-form.on { @apply flex; animation: line-in 0.4s ease-out both; }
+  .sh-form h6 { @apply text-[9.5px] font-medium uppercase tracking-[0.14em] text-ink-3; }
+  .sh-field { @apply min-h-[1.75rem] rounded-md border border-white/10 bg-black/40 px-2 py-1 font-mono text-[10.5px] text-ink transition; }
+  .sh-field.focus { @apply border-white/35 ring-4 ring-white/5; }
+  .sh-field.area { @apply min-h-[2.9rem] whitespace-pre-wrap leading-relaxed; }
+  .sh-field-label { @apply -mb-1 text-[10px] text-ink-2; }
+  .sh-plan { @apply grid gap-1 text-[10.5px] text-ink-3; }
+  .sh-plan li { @apply flex gap-2 transition-colors duration-300; }
+  .sh-plan li::before { content: "\25CB"; @apply w-3 shrink-0 text-center text-ink-3; }
+  .sh-plan li.done { @apply text-ink-2; }
+  .sh-plan li.done::before { content: "\2713"; @apply text-green-300; }
+  .sh-panel-foot { @apply mt-auto flex shrink-0 items-center gap-2 border-t border-white/[0.06] px-3 py-2; }
+  .sh-panel-foot kbd { @apply ml-auto font-mono text-[9.5px] text-ink-3; }
+  .sh-btn { @apply inline-flex items-center rounded-md border border-white/10 px-2.5 py-1 text-[10.5px] text-ink-2 transition; }
+  .sh-btn.primary { @apply border-transparent bg-gradient-to-b from-white to-zinc-300 font-medium text-night; }
+  .sh-btn.down { @apply scale-95; }
+  .sh-btn.busy::after { content: ""; @apply ml-1.5 inline-block h-2.5 w-2.5 animate-spin rounded-full border-2 border-night/30 border-t-night; }
+
+  /* DataSea: the rail, the top bar, the overview, and the details of one event */
+  .sh-sea { @apply flex h-full overflow-hidden rounded-xl border border-white/[0.07] bg-[#08080a] font-sans text-[11px] shadow-[0_20px_50px_-25px_rgba(0,0,0,.9)]; }
+  .sh-rail { @apply hidden w-[11.5rem] shrink-0 flex-col border-r border-white/[0.06] bg-black/50 md:flex; }
+  .sh-rail::before { content: ""; @apply block h-[2px] shrink-0 bg-gradient-to-r from-white/70 via-white/30 to-transparent; }
+  .sh-brand { @apply flex items-center gap-2 px-3 py-2.5; }
+  .sh-brand img { @apply h-6 w-6; }
+  .sh-brand b { @apply block text-[12.5px] font-medium text-ink; }
+  .sh-brand small { @apply block text-[9px] text-ink-3; }
+  .sh-rail-search { @apply mx-2.5 mb-1 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 py-1 text-[10px] text-ink-3; }
+  .sh-rail h6 { @apply mt-2.5 px-3.5 text-[8.5px] font-medium uppercase tracking-[0.16em] text-ink-3/80; }
+  .sh-rail a { @apply relative mx-1.5 flex items-center gap-2 rounded-md px-2 py-[5px] text-[11px] text-ink-2; }
+  .sh-rail a svg { @apply h-3.5 w-3.5 shrink-0 opacity-80; }
+  .sh-rail a.on { @apply bg-gradient-to-r from-white/[0.12] to-white/[0.02] font-medium text-ink; }
+  .sh-rail a.on::before { content: ""; @apply absolute -left-1.5 bottom-1.5 top-1.5 w-[2px] rounded-r bg-white; }
+  .sh-rail a em { @apply ml-auto rounded-full bg-white/[0.08] px-1.5 font-mono text-[9px] not-italic text-ink-2; }
+  .sh-rail a em.hot { @apply bg-red-400/20 text-red-300; }
+  .sh-rail-foot { @apply mt-auto flex items-center gap-2 border-t border-white/[0.06] px-3 py-2 text-[10.5px] text-ink-2; }
+  .sh-avatar { @apply grid h-5 w-5 shrink-0 place-items-center rounded-full bg-gradient-to-br from-zinc-200 to-zinc-500 text-[9px] font-semibold text-night; }
+  .sh-main { @apply relative flex min-w-0 flex-1 flex-col overflow-hidden; }
+  .sh-top { @apply flex h-9 shrink-0 items-center gap-2 border-b border-white/[0.06] bg-white/[0.015] px-3; }
+  .sh-top .crumbs { @apply flex min-w-0 shrink-0 items-center gap-1.5 text-[10.5px] text-ink-3; }
+  .sh-top .crumbs b { @apply font-medium text-ink; }
+  .sh-search { @apply ml-2 hidden min-w-0 flex-1 items-center gap-2 rounded-md border border-white/[0.07] bg-white/[0.02] px-2 py-1 text-[10px] text-ink-3 xl:flex; }
+  .sh-search span { @apply truncate; }
+  .sh-search kbd { @apply ml-auto rounded border border-white/10 px-1 font-mono text-[9px]; }
+  .sh-time { @apply ml-auto hidden overflow-hidden rounded-md border border-white/[0.08] font-mono text-[9.5px] sm:flex; }
+  .sh-time span { @apply border-r border-white/[0.06] px-1.5 py-0.5 text-ink-3 last:border-r-0; }
+  .sh-time span.on { @apply bg-white text-night; }
+  .sh-body { @apply grid min-h-0 flex-1 content-start gap-2.5 overflow-hidden p-3; }
+  .sh-hero { @apply flex items-end gap-3; }
+  .sh-hero b { @apply block text-[15px] font-medium tracking-tight text-ink; }
+  .sh-hero small { @apply block text-[10px] text-ink-3; }
+  .sh-kpis { @apply grid grid-cols-3 gap-2 sm:grid-cols-5; }
+  .sh-kpi { @apply rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-2 transition duration-500; }
+  .sh-kpi small { @apply block truncate text-[9px] uppercase tracking-[0.12em] text-ink-3; }
+  .sh-kpi b { @apply mt-0.5 block font-mono text-[15px] font-medium tabular-nums text-ink transition-colors; }
+  .sh-kpi.bad b { @apply text-red-300; }
+  .sh-kpi.good b { @apply text-green-300; }
+  .sh-kpi.flash { animation: card-flash 0.9s ease-out; }
+  .sh-kpi:nth-child(n+4) { @apply hidden sm:block; }
+  .sh-panels { @apply grid min-h-0 gap-2.5 md:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)]; }
+  .sh-pnl { @apply min-w-0 rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5; }
+  .sh-pnl.side { @apply hidden md:block; }
+  .sh-pnl-head { @apply mb-1.5 flex items-center gap-2 text-[10.5px] text-ink-2; }
+  .sh-pnl-head span { @apply flex items-center gap-1 text-[9.5px] text-ink-3; }
+  .sh-pnl-head span:first-of-type { @apply ml-auto; }
+  .sh-pnl-head i { @apply h-1.5 w-2.5 rounded-full; }
+  .sh-chart { @apply block h-[6.5rem] w-full; }
+  .sh-chart rect { transition: y 0.6s cubic-bezier(0.2, 0.7, 0.2, 1), height 0.6s cubic-bezier(0.2, 0.7, 0.2, 1); }
+  .sh-agents { @apply grid gap-2 pt-1; }
+  .sh-agents div { @apply grid grid-cols-[4.6rem_minmax(0,1fr)_2.4rem] items-center gap-2 font-mono text-[9.5px] text-ink-2; }
+  .sh-agents s { @apply relative flex h-1.5 overflow-hidden rounded-full bg-white/[0.05] no-underline; }
+  .sh-agents s u { @apply block h-full no-underline; transition: width 0.8s cubic-bezier(0.2, 0.7, 0.2, 1); }
+  .sh-agents s u + u { @apply bg-red-400/80; }
+  .sh-agents em { @apply text-right not-italic tabular-nums text-ink-3; }
+  .sh-stream { @apply min-w-0 overflow-hidden rounded-lg border border-white/[0.06] bg-white/[0.02]; }
+  .sh-row { @apply grid grid-cols-[3px_3.6rem_minmax(0,1fr)_4.2rem] items-center gap-2 border-b border-white/[0.04] px-2.5 py-[5px] font-mono text-[10px] text-ink-2 sm:grid-cols-[3px_3.6rem_minmax(0,1fr)_4.2rem_5.4rem_5.4rem]; }
+  .sh-row:last-child { @apply border-b-0; }
+  .sh-row > i { @apply h-3.5 rounded-full bg-white/20; }
+  .sh-row > i.bad { @apply bg-red-400; }
+  .sh-row > i.ask { @apply bg-amber-300; }
+  .sh-row > span { @apply truncate; }
+  .sh-row > span:nth-child(n+5) { @apply hidden sm:block; }
+  .sh-row.head { @apply bg-white/[0.02] font-sans text-[8.5px] uppercase tracking-[0.12em] text-ink-3; }
+  .sh-row.new { animation: row-in 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  .sh-row.hot { background: rgba(248, 113, 113, 0.07); }
+  .sh-row.pick { @apply bg-white/[0.08]; }
+  .sh-drawer { @apply absolute inset-y-0 right-0 z-10 flex w-[min(19rem,92%)] translate-x-[102%] flex-col overflow-hidden border-l border-white/10 bg-night-2/[0.97] shadow-[-30px_0_60px_-30px_rgba(0,0,0,.9)] backdrop-blur-xl transition-transform duration-500; transition-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1); }
+  .sh-drawer.on { @apply translate-x-0; }
+  .sh-drawer header { @apply flex items-start gap-2 border-b border-white/[0.06] px-3 py-2.5; }
+  .sh-drawer header small { @apply block text-[9px] uppercase tracking-[0.14em] text-ink-3; }
+  .sh-drawer header b { @apply mt-0.5 block font-mono text-[12px] font-medium text-ink; }
+  .sh-drawer section { @apply border-b border-white/[0.04] px-3 py-2; animation: line-in 0.4s ease-out both; }
+  .sh-drawer h6 { @apply mb-1 text-[9px] font-medium uppercase tracking-[0.14em] text-ink-3; }
+  .sh-kv { @apply grid grid-cols-[6.4rem_minmax(0,1fr)] gap-x-2 gap-y-0.5 font-mono text-[9.5px]; }
+  .sh-kv dt { @apply truncate text-ink-3; }
+  .sh-kv dd { @apply min-w-0 break-words text-ink-2; }
+
+  @keyframes scene-in { from { opacity: 0; transform: translateY(10px) scale(0.99); } to { opacity: 1; transform: none; } }
   @keyframes line-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-  @keyframes edge-flow { to { stroke-dashoffset: -16; } }
-  @keyframes halo { 0% { transform: scale(1); opacity: 0.9; } 100% { transform: scale(3); opacity: 0; } }
+  @keyframes line-grow { from { opacity: 0; max-height: 0; } to { opacity: 1; max-height: 2.2em; } }
+  @keyframes item-in { from { opacity: 0; transform: translateX(-8px); background: rgba(255, 255, 255, 0.12); } to { opacity: 1; transform: none; } }
+  @keyframes row-in { from { opacity: 0; transform: translateY(-6px); background: rgba(255, 255, 255, 0.1); } to { opacity: 1; transform: none; } }
+  @keyframes card-flash { 0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.35); } 100% { box-shadow: 0 0 0 10px rgba(255, 255, 255, 0); } }
+  @keyframes ripple { 0% { transform: scale(0.4); opacity: 0.9; } 100% { transform: scale(1.6); opacity: 0; } }
 
   /* Sections fade up the first time they scroll into view (app.js adds .seen) */
   .reveal { opacity: 0; transform: translateY(18px); transition: opacity .8s cubic-bezier(.2, .7, .2, 1), transform .8s cubic-bezier(.2, .7, .2, 1); }

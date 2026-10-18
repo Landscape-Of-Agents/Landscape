@@ -1,7 +1,7 @@
 "use strict";
 // The product showcase: Crane (the CLI), Landscape (the editor extension), and DataSea (the
 // dashboard), one row each, each drawn as a 3D object (a stack of glass layers at different depths
-// that sways and leans with the pointer). Every scene is a 10-second timeline: a pure function of
+// that sways and leans with the pointer). Every scene is a 15-second timeline: a pure function of
 // its time, so it can play at any speed and in either direction. It plays at 1x while its row is on
 // screen, at 1.15x while the page scrolls down, and backwards while it scrolls up; at the end it
 // holds, then starts again. Under reduced motion each row shows its finished state.
@@ -9,9 +9,9 @@
   const rowsInPage = [...document.querySelectorAll(".show-row")];
   if (!rowsInPage.length) return;
   const STILL = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  // The scenes are written in 5-second time and played over 10 seconds
+  // The scenes are written in 5-second time and played over 15 seconds
   const AUTHORED = 5;
-  const DURATION = 10;
+  const DURATION = 15;
   const HOLD = 1.6;
   const LOGO = "logo.png?v=3";
   const SVG = "http://www.w3.org/2000/svg";
@@ -435,11 +435,7 @@
     const screen = root.querySelector(".show-screen");
     screen.innerHTML = '<div class="obj"><div class="obj-floor"></div><div class="obj-sway"><div class="obj-rig">' + scene.html() + "</div></div></div>";
     const line = timeline(screen);
-    // One bar per step in the text column; each fills while its step plays
-    const barsNode = root.querySelector(".show-bars");
-    barsNode.style.setProperty("--steps", String(scene.steps.length));
-    const bars = scene.steps.map(() => barsNode.appendChild(make("i")).appendChild(make("b")));
-    const entry = { root, scene, line, bars, after: scene.build(line), rig: screen.querySelector(".obj-rig"), time: -1, hold: 0, visible: false, step: -1, stepNode: root.querySelector(".show-step"), sayNode: root.querySelector(".show-say") };
+    const entry = { root, scene, line, after: scene.build(line), rig: screen.querySelector(".obj-rig"), time: -1, hold: 0, visible: false, step: -1, sayNode: root.querySelector(".show-say") };
     new IntersectionObserver((entries) => {
       entry.visible = entries.some((item) => item.isIntersecting);
       if (entry.visible) root.classList.add("seen");
@@ -468,16 +464,11 @@
     while (step + 1 < steps.length && moment >= steps[step + 1][0]) step += 1;
     if (step !== entry.step) {
       entry.step = step;
-      entry.stepNode.textContent = "Step " + (step + 1) + " of " + steps.length;
       entry.sayNode.textContent = steps[step][1];
       entry.sayNode.classList.remove("show-say");
       void entry.sayNode.offsetWidth;
       entry.sayNode.classList.add("show-say");
     }
-    entry.bars.forEach((bar, index) => {
-      const from = steps[index][0], to = index + 1 < steps.length ? steps[index + 1][0] : AUTHORED;
-      bar.style.width = clamp((moment - from) / (to - from)) * 100 + "%";
-    });
   };
 
   if (STILL) {

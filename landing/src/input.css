@@ -88,7 +88,8 @@
   .show-progress { @apply absolute inset-x-0 bottom-0 h-[2px] bg-white/[0.05]; }
   .show-progress b { @apply block h-full w-0 bg-gradient-to-r from-white/30 to-white; box-shadow: 0 0 10px rgba(255, 255, 255, 0.6); transition: width 0.1s linear; }
   .show-stage { @apply mt-3 overflow-hidden !rounded-2xl; }
-  .show-screen { @apply relative h-[35rem] overflow-hidden md:h-[36rem]; }
+  .show-screen { @apply relative h-[35rem] overflow-hidden md:h-[38rem]; background: radial-gradient(70% 55% at 50% 0%, rgba(255, 255, 255, 0.09), transparent 70%), radial-gradient(40% 40% at 85% 100%, rgba(255, 255, 255, 0.04), transparent 70%); }
+  .show-screen::before { content: ""; @apply pointer-events-none absolute inset-0; background-image: radial-gradient(rgba(255, 255, 255, 0.09) 1px, transparent 1px); background-size: 22px 22px; mask-image: radial-gradient(ellipse 80% 70% at 50% 30%, #000, transparent 75%); }
   .show-caption { @apply flex min-h-[2.75rem] items-center gap-3 border-t border-white/[0.06] px-4 py-1.5 font-mono text-[11.5px] text-ink-2; }
   .show-step { @apply shrink-0 rounded-md border border-white/10 bg-white/[0.05] px-1.5 py-px tabular-nums text-ink-3; }
   .show-say { animation: line-in 0.4s ease-out both; }
@@ -101,7 +102,15 @@
   .show-pointer.tap i { animation: ripple 0.55s ease-out; }
 
   /* Pieces every scene shares */
-  .sh-scene { @apply absolute inset-0 p-3 sm:p-4; animation: scene-in 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  .sh-camera { @apply absolute inset-0; transform-origin: 0 0; transition: transform 1.1s cubic-bezier(0.65, 0, 0.25, 1); will-change: transform; }
+  .sh-scene { @apply absolute inset-0 p-3 sm:p-6 lg:px-9 lg:pt-8; perspective: 1600px; }
+  .sh-scene > * { animation: scene-in 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) backwards; }
+  .sh-note { @apply pointer-events-none absolute z-30 flex max-w-[16rem] items-center gap-2 whitespace-nowrap rounded-full border border-white/20 bg-night-3/90 px-3 py-1.5 font-sans text-[11.5px] font-medium text-ink backdrop-blur-xl; box-shadow: 0 12px 30px -8px rgba(0, 0, 0, 0.9), 0 0 0 4px rgba(255, 255, 255, 0.03), inset 0 1px 0 rgba(255, 255, 255, 0.1); animation: note-in 0.5s cubic-bezier(0.2, 0.9, 0.3, 1.2) both; }
+  .sh-note::before { content: ""; @apply h-1.5 w-1.5 shrink-0 rounded-full bg-white; box-shadow: 0 0 10px rgba(255, 255, 255, 0.9); }
+  .sh-note.ok::before { @apply bg-green-400; box-shadow: 0 0 10px rgba(74, 222, 128, 0.9); }
+  .sh-note.bad { @apply border-red-400/40; }
+  .sh-note.bad::before { @apply bg-red-400; box-shadow: 0 0 10px rgba(248, 113, 113, 0.9); }
+  .sh-note.out { animation: note-out 0.35s ease-in both; }
   .sh-win { @apply flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-white/[0.07] bg-black/55 shadow-[0_20px_50px_-25px_rgba(0,0,0,.9)]; }
   .sh-bar { @apply flex min-h-[2.1rem] shrink-0 items-center gap-2 border-b border-white/[0.06] bg-white/[0.02] px-3; }
   .sh-bar .dots { @apply flex gap-1.5; }
@@ -118,33 +127,34 @@
   .sh-caret { @apply ml-px inline-block h-[1.05em] w-[7px] translate-y-[2px] animate-caret bg-white/80; }
 
   /* Crane: the human's shell, the agent's session, and what Crane holds */
-  .sh-cli { @apply grid gap-3 md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]; }
-  .sh-col { @apply grid min-h-0 gap-3; grid-template-rows: minmax(0, 1.12fr) minmax(0, 1fr); }
-  .sh-term { @apply min-h-0 flex-1 overflow-hidden px-3.5 py-2.5 font-mono text-[11px] leading-[1.7] text-ink-2 sm:text-[11.5px]; }
+  .sh-term { @apply min-h-0 flex-1 overflow-hidden px-4 py-3 font-mono text-[11.5px] leading-[1.7] text-ink-2 sm:text-[12.5px]; }
   .sh-term > div { @apply whitespace-pre-wrap break-words; animation: line-in 0.3s ease-out both; }
   .sh-term .cmd { @apply text-ink; }
   .sh-term .cmd::before { content: "$ "; @apply text-ink-3; }
-  .sh-term .ask { @apply mb-1 rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-ink; }
+  .sh-term .ask { @apply mb-1.5 rounded-lg border border-white/15 bg-white/[0.04] px-2.5 py-1.5 text-ink; }
   .sh-term .ask::before { content: "> "; @apply text-ink-3; }
+  .sh-term .act { @apply mt-1; }
   .sh-term .act::before { content: "\23FA  "; @apply text-ink; }
   .sh-term .act.bad::before { @apply text-red-400; }
   .sh-term .act.ok::before { @apply text-green-400; }
   .sh-term .out { @apply pl-6 -indent-6 text-ink-3; }
+  .sh-term .out.err { @apply text-red-300; }
   .sh-term .out::before { content: "\23BF  "; @apply pl-2; }
-  .sh-cards { @apply hidden min-h-0 flex-col gap-2.5 md:flex; }
-  .sh-card { @apply rounded-xl border border-dashed border-white/[0.09] bg-white/[0.015] p-3 font-mono text-[10.5px] leading-[1.65] text-ink-3 transition duration-500; }
-  .sh-card > div:first-child { @apply mb-1.5 flex items-center gap-2 font-sans text-[12px] text-ink-3; }
-  .sh-card > div:first-child b { @apply truncate font-medium; }
-  .sh-card .sh-state { @apply ml-auto shrink-0 rounded-full border border-white/10 px-2 font-mono text-[9.5px] text-ink-3 transition; }
-  .sh-card pre { @apply whitespace-pre-wrap text-ink-3; }
-  .sh-card.on { @apply border-solid border-white/[0.14] bg-white/[0.04] text-ink-2; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05); }
-  .sh-card.on > div:first-child { @apply text-ink; }
-  .sh-card.on .sh-state { @apply border-green-400/30 bg-green-400/10 text-green-300; }
-  .sh-card.flash { animation: card-flash 0.9s ease-out; }
-  .sh-card.deny { @apply border-red-400/40 bg-red-400/[0.06]; animation: scene-shake 0.45s ease-in-out; }
-  .sh-decisions { @apply grid gap-1; }
-  .sh-decisions > div { @apply flex min-w-0 items-center gap-2 text-ink-2; animation: line-in 0.35s ease-out both; }
-  .sh-decisions span:last-child { @apply truncate; }
+  .sh-cli > .sh-win { @apply absolute; transition: transform 0.7s cubic-bezier(0.2, 0.7, 0.2, 1), filter 0.7s, opacity 0.7s; }
+  .sh-you { @apply inset-x-3 top-3 h-[62%] sm:inset-x-6 sm:top-6 md:right-auto md:w-[66%] lg:left-9 lg:top-8 md:h-[66%]; }
+  .sh-agent { @apply bottom-3 right-3 h-[50%] w-[calc(100%-2.5rem)] sm:bottom-6 sm:right-6 md:h-[56%] md:w-[57%] lg:right-9; }
+  .sh-cli > .front { @apply z-20; }
+  .sh-cli > .back { @apply z-10; filter: brightness(0.55) saturate(0.8); transform: scale(0.985); }
+  .sh-win.deny { animation: scene-shake 0.45s ease-in-out, deny-glow 1.6s ease-out; }
+  .sh-receipts { @apply absolute bottom-6 left-6 z-30 hidden w-[calc(40%-3rem)] flex-col justify-end gap-2 overflow-hidden md:flex lg:left-9; top: calc(66% + 3rem); mask-image: linear-gradient(180deg, transparent, #000 16%); }
+  .sh-receipt { @apply grid shrink-0 grid-cols-[1.6rem_minmax(0,1fr)] items-center gap-x-2 rounded-xl border border-white/10 bg-white/[0.04] px-2.5 py-2 backdrop-blur; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06); animation: receipt-in 0.6s cubic-bezier(0.2, 0.9, 0.3, 1.15) both; }
+  .sh-receipt i { @apply row-span-2 grid h-6 w-6 place-items-center rounded-lg bg-white/[0.08] text-[12px] not-italic text-ink; }
+  .sh-receipt b { @apply truncate text-[12px] font-medium text-ink; }
+  .sh-receipt span { @apply truncate font-mono text-[10px] text-ink-3; }
+  .sh-receipt.bad { @apply border-red-400/30 bg-red-400/[0.06]; }
+  .sh-receipt.bad i { @apply bg-red-400/15 text-red-300; }
+  .sh-receipt.ok { @apply border-green-400/25 bg-green-400/[0.05]; }
+  .sh-receipt.ok i { @apply bg-green-400/15 text-green-300; }
 
   /* Landscape: the editor, the Landscape sidebar, and the panel */
   .sh-vs { @apply flex h-full flex-col overflow-hidden rounded-xl border border-white/[0.07] bg-[#09090b] shadow-[0_20px_50px_-25px_rgba(0,0,0,.9)]; }
@@ -187,7 +197,10 @@
   .sh-tabs span { @apply flex h-full items-center gap-1.5 whitespace-nowrap border-r border-white/[0.05] px-3 font-mono text-[10.5px] text-ink-3; }
   .sh-tabs span.on { @apply bg-[#09090b] text-ink shadow-[inset_0_1px_0_rgba(255,255,255,.5)]; }
   .sh-crumbs { @apply flex h-6 shrink-0 items-center gap-1.5 px-4 font-mono text-[10px] text-ink-3; }
-  .sh-code { @apply relative min-h-0 flex-1 overflow-hidden py-1 font-mono text-[11px] leading-[1.85] sm:text-[11.5px]; }
+  .sh-code { @apply relative min-h-0 flex-1 overflow-hidden py-1 font-mono text-[11.5px] leading-[1.9] sm:text-[12.5px]; }
+  .sh-k { color: #8b8b93; }
+  .sh-f { @apply font-medium text-white; }
+  .sh-s { color: #d4d4d8; }
   .sh-line { @apply relative flex whitespace-pre border-l-2 border-transparent pr-3 text-ink-2 transition-colors duration-300; }
   .sh-line > i { @apply w-10 shrink-0 select-none pr-4 text-right not-italic text-ink-3/60; }
   .sh-line.sel { background: rgba(255, 255, 255, 0.1); }
@@ -316,7 +329,14 @@
   .sh-kv dt { @apply truncate text-ink-3; }
   .sh-kv dd { @apply min-w-0 break-words text-ink-2; }
 
-  @keyframes scene-in { from { opacity: 0; transform: translateY(10px) scale(0.99); } to { opacity: 1; transform: none; } }
+  .sh-win, .sh-vs, .sh-sea { border: 1px solid transparent; background: linear-gradient(#0a0a0c, #0a0a0c) padding-box, linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.06) 22%, rgba(255, 255, 255, 0.03) 70%, rgba(255, 255, 255, 0.1)) border-box; box-shadow: 0 50px 100px -30px rgba(0, 0, 0, 0.95), 0 30px 60px -40px rgba(255, 255, 255, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.07); }
+  .sh-bar, .sh-vs-title { background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015)); }
+
+  @keyframes scene-in { from { opacity: 0; transform: rotateX(14deg) translateY(36px) scale(0.96); filter: blur(6px); } to { opacity: 1; transform: none; filter: none; } }
+  @keyframes note-in { from { opacity: 0; transform: translateY(6px) scale(0.9); } to { opacity: 1; transform: none; } }
+  @keyframes note-out { to { opacity: 0; transform: translateY(-4px) scale(0.96); } }
+  @keyframes receipt-in { from { opacity: 0; transform: translateX(-14px) scale(0.96); } to { opacity: 1; transform: none; } }
+  @keyframes deny-glow { 0% { box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.7), 0 0 60px -10px rgba(248, 113, 113, 0.55); } 100% { box-shadow: 0 50px 100px -30px rgba(0, 0, 0, 0.95); } }
   @keyframes line-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   @keyframes line-grow { from { opacity: 0; max-height: 0; } to { opacity: 1; max-height: 2.2em; } }
   @keyframes item-in { from { opacity: 0; transform: translateX(-8px); background: rgba(255, 255, 255, 0.12); } to { opacity: 1; transform: none; } }

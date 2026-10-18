@@ -1,9 +1,10 @@
 "use strict";
 // The product showcase: one rule followed through Crane (the CLI), Landscape (the editor extension),
 // and DataSea (the dashboard). Each scene is a script of beats played by a virtual pointer and
-// keyboard, with the products' real output and layout in the page's grey palette. Scenes advance on
-// their own; they wait while the stage is off screen, the tab is hidden, or the viewer paused them,
-// and under reduced motion each one shows its finished state.
+// keyboard, with the products' real output and layout in the page's grey palette. A camera zooms in
+// on the action and back out, and callouts name what just happened. Scenes advance on their own;
+// they wait while the stage is off screen, the tab is hidden, or the viewer paused them, and under
+// reduced motion each one shows its finished state without moving.
 (() => {
   const stage = document.getElementById("show-stage");
   if (!stage) return;
@@ -25,6 +26,7 @@
 
   class Stopped extends Error {}
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
   const make = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -32,12 +34,14 @@
     return node;
   };
 
-  // A player for one run of one scene: waits that hold while nobody watches, the progress bar,
-  // the pointer, typing, and the caption. Every call throws Stopped once another run has started.
-  function player(token, bar, total, steps) {
+  // A player for one run of one scene: waits that hold while nobody watches, the progress bar, the
+  // camera, the pointer, callouts, typing, and the caption. Every call throws Stopped once another
+  // run has started.
+  function player(token, camera, bar, total, steps) {
     let elapsed = 0;
     const live = () => { if (token !== run) throw new Stopped(); };
-    const q = (selector) => screen.querySelector(selector);
+    const q = (selector) => camera.querySelector(selector);
+    const resolve = (target) => (typeof target === "string" ? q(target) : target);
     const wait = async (ms) => {
       live();
       if (STILL) return;
@@ -52,15 +56,42 @@
         bar.style.width = Math.min(97, (elapsed / total) * 100) + "%";
       }
     };
+    // A point of a node in the camera's own (unzoomed) coordinates, read even mid-zoom
+    const local = (node, fx, fy) => {
+      const matrix = getComputedStyle(camera).transform;
+      const zoom = matrix && matrix !== "none" ? new DOMMatrix(matrix).a : 1;
+      const frame = camera.getBoundingClientRect();
+      const box = node.getBoundingClientRect();
+      return { x: (box.left - frame.left + box.width * fx) / zoom, y: (box.top - frame.top + box.height * fy) / zoom, shown: box.width > 0 };
+    };
+    // Zoom the camera on a node (narrow stages zoom half as much); wide() pulls back out
+    const focus = async (target, zoom = 1.25, ms = 1100) => {
+      live();
+      if (STILL) return;
+      const node = resolve(target);
+      const at = node && local(node, 0.5, 0.5);
+      if (!at || !at.shown) return;
+      const width = camera.offsetWidth, height = camera.offsetHeight;
+      const scale = width < 640 ? 1 + (zoom - 1) / 2 : zoom;
+      const x = clamp(width / 2 - at.x * scale, width - width * scale, 0);
+      const y = clamp(height / 2 - at.y * scale, height - height * scale, 0);
+      camera.style.transform = "translate(" + x + "px," + y + "px) scale(" + scale + ")";
+      await wait(ms);
+    };
+    const wide = async (ms = 1000) => {
+      live();
+      if (STILL) return;
+      camera.style.transform = "";
+      await wait(ms);
+    };
     // Move the pointer to a point of a node (fractions of its box); hidden nodes hide the pointer
     const point = async (target, fx = 0.5, fy = 0.5, ms = 850) => {
       live();
       if (STILL) return;
-      const node = typeof target === "string" ? q(target) : target;
-      const box = node && node.getBoundingClientRect();
-      if (!box || !box.width) { pointer.classList.remove("on"); return; }
-      const host = stage.getBoundingClientRect();
-      pointer.style.transform = "translate(" + (box.left - host.left + box.width * fx) + "px," + (box.top - host.top + box.height * fy) + "px)";
+      const node = resolve(target);
+      const at = node && local(node, fx, fy);
+      if (!at || !at.shown) { pointer.classList.remove("on"); return; }
+      pointer.style.transform = "translate(" + at.x + "px," + at.y + "px)";
       pointer.classList.add("on");
       await wait(ms);
     };
@@ -75,6 +106,24 @@
       await wait(120);
     };
     const hide = () => pointer.classList.remove("on");
+    // A callout beside a node: a glass label naming what just happened
+    const note = (target, text, side = "right", tone = "") => {
+      live();
+      const node = resolve(target);
+      const at = node && local(node, { right: 1, left: 0, above: 0.5, below: 0.5 }[side], { right: 0.5, left: 0.5, above: 0, below: 1 }[side]);
+      if (!at || !at.shown) return null;
+      const label = camera.appendChild(make("div", "sh-note " + tone, text));
+      const width = label.offsetWidth, height = label.offsetHeight;
+      const gap = 12;
+      let x = side === "right" ? at.x + gap : side === "left" ? at.x - width - gap : at.x - width / 2;
+      let y = side === "above" ? at.y - height - gap : side === "below" ? at.y + gap : at.y - height / 2;
+      x = clamp(x, 8, camera.offsetWidth - width - 8);
+      y = clamp(y, 8, camera.offsetHeight - height - 8);
+      label.style.left = x + "px";
+      label.style.top = y + "px";
+      return label;
+    };
+    const unnote = (label) => { if (label) { label.classList.add("out"); setTimeout(() => label.remove(), 400); } };
     const type = async (node, text, speed = 34) => {
       if (STILL) { node.textContent += text; return; }
       for (const character of text) {
@@ -113,71 +162,65 @@
       await type(typed, text, speed);
       await wait(320);
       caret.remove();
+      return node;
     };
     const flash = (node, className = "flash") => {
       node.classList.remove(className);
       void node.offsetWidth;
       node.classList.add(className);
     };
-    return { q, wait, point, click, hide, type, say, line, lines, command, flash };
+    return { q, wait, focus, wide, point, click, hide, note, unnote, type, say, line, lines, command, flash };
   }
 
   // ---------------------------------------------------------------- Crane: the CLI
   const CLI = {
     id: "cli",
     steps: 5,
-    duration: 36000,
+    duration: 40000,
     describe: "Crane in a terminal: a human protects the fee lines of app/payments.py with crane protect, crane validate passes, and crane agent install puts Crane's hooks into Claude Code. When the agent tries to change the fee, the hook denies the edit with the rule's context; the agent changes the targeted refund instead, and crane test passes.",
     html: () => `
 <div class="sh-scene sh-cli">
-  <div class="sh-col">
-    <div class="sh-win">
-      <div class="sh-bar"><span class="dots"><i></i><i></i><i></i></span><span class="sh-bar-title">~/acme/payments</span><span class="sh-tag ml-auto">you</span></div>
-      <div class="sh-term" data-term="you"></div>
-    </div>
-    <div class="sh-win">
-      <div class="sh-bar"><span class="font-mono text-[12px] text-ink">✻</span><span class="sh-bar-title">claude-code · ~/acme/payments</span><span class="sh-tag ml-auto" data-agent>idle</span></div>
-      <div class="sh-term" data-term="agent"></div>
-    </div>
+  <div class="sh-win sh-you front" data-win="you">
+    <div class="sh-bar"><span class="dots"><i></i><i></i><i></i></span><span class="sh-bar-title">~/acme/payments · zsh</span><span class="sh-tag ml-auto">you</span></div>
+    <div class="sh-term" data-term="you"></div>
   </div>
-  <div class="sh-cards">
-    <p class="sh-label">What Crane holds</p>
-    <div class="sh-card" data-card="selection"><div><span>⛨</span><b>Selection K7M2P9RX</b><span class="sh-state">not yet</span></div>preserve · app/payments.py lines 4-5<br>context "${CONTEXT}"<br>sha-512 9f2c41d7…e1a7</div>
-    <div class="sh-card" data-card="policy"><div><span>§</span><b>Policy payments</b><span class="sh-state">unsigned</span></div><pre>preserve K7M2P9RX;
-target   4QZ8M2LD change_type logical_bn;</pre>ed25519 · owner 7f3a…c21e · generation 5</div>
-    <div class="sh-card" data-card="hooks"><div><span>⚓</span><b>Hooks · Claude Code</b><span class="sh-state">off</span></div>PreToolUse · PostToolUse · Stop</div>
-    <div class="sh-card min-h-0 flex-1 overflow-hidden" data-card="decisions"><div><span>◆</span><b>Decisions</b><span class="sh-state">0</span></div><div class="sh-decisions" data-decisions></div></div>
+  <div class="sh-receipts" data-receipts></div>
+  <div class="sh-win sh-agent back" data-win="agent">
+    <div class="sh-bar"><span class="dots"><i></i><i></i><i></i></span><span class="font-mono text-[12px] text-ink">✻</span><span class="sh-bar-title">Claude Code · ~/acme/payments</span><span class="sh-tag ml-auto" data-agent>idle</span></div>
+    <div class="sh-term" data-term="agent"></div>
   </div>
 </div>`,
     async play(p) {
       const you = p.q('[data-term="you"]');
       const agent = p.q('[data-term="agent"]');
-      const card = (name, state, className = "on") => {
-        const node = p.q(`[data-card="${name}"]`);
-        node.classList.add(className);
-        node.querySelector(".sh-state").textContent = state;
-        p.flash(node);
-        return node;
+      const front = (name) => {
+        for (const node of [p.q('[data-win="you"]'), p.q('[data-win="agent"]')]) {
+          const on = node.dataset.win === name;
+          node.classList.toggle("front", on);
+          node.classList.toggle("back", !on);
+        }
       };
-      let decisions = 0;
-      const decide = (badge, tone, text) => {
-        const row = p.q("[data-decisions]").appendChild(make("div"));
-        row.append(make("span", "sh-badge " + tone, badge), make("span", "", text));
-        decisions += 1;
-        return card("decisions", String(decisions));
+      // What Crane now holds, stacked beside the terminals
+      const receipt = (glyph, title, detail, tone = "") => {
+        const node = make("div", "sh-receipt " + tone);
+        node.append(make("i", "", glyph), make("b", "", title), make("span", "", detail));
+        p.q("[data-receipts]").append(node);
+        return node;
       };
       const status = (text, live) => { const tag = p.q("[data-agent]"); tag.textContent = text; tag.classList.toggle("live", Boolean(live)); };
 
       p.say(1, "A human protects the fee rule from the terminal");
+      await p.focus('[data-win="you"]', 1.18, 900);
       await p.command(you, `crane protect app/payments.py context "${CONTEXT}" start-line 3 end-line 4 policy payments`, 22);
       await p.lines(you, [
-        "Protected app/payments.py lines 3-4 as selection K7M2P9RX (policy payments, checkpoint baseline)",
+        ["text-ink", "Protected app/payments.py lines 3-4 as selection K7M2P9RX (policy payments, checkpoint baseline)"],
         "  marker:         @crane:selection:K7M2P9RX:start / :end (in python comment syntax)",
         "  origin digest:  9f2c41d7…e1a7 (SHA-512)",
         "  added to policy payments: preserve K7M2P9RX;",
-      ], 150);
-      card("selection", "sealed");
-      await p.wait(1000);
+      ], 160);
+      await p.wide(700);
+      receipt("⛨", "Selection sealed", "K7M2P9RX · sha-512 9f2c…e1a7");
+      await p.wait(900);
 
       p.say(2, "Crane verifies integrity, signatures, and markers");
       await p.command(you, "crane validate");
@@ -185,8 +228,8 @@ target   4QZ8M2LD change_type logical_bn;</pre>ed25519 · owner 7f3a…c21e · g
         "Crane validate: 1 policies, 2 commands, 2 selections, 1 checkpoints, registry generation 5 (38 files scanned)",
         ["text-green-300", "Crane validate: PASS"],
       ], 240);
-      card("policy", "signed");
-      await p.wait(1000);
+      receipt("§", "Policy signed", "payments · ed25519 · generation 5");
+      await p.wait(900);
 
       p.say(3, "Crane's hooks go into the agent");
       await p.command(you, "crane agent install --profile claude");
@@ -194,30 +237,35 @@ target   4QZ8M2LD change_type logical_bn;</pre>ed25519 · owner 7f3a…c21e · g
         "Installed Crane Claude Code hooks for PreToolUse, PostToolUse, Stop",
         "Every pre- and post-tool hook now passes through Crane; check them with 'crane agent hooks --profile claude'.",
       ], 220);
-      card("hooks", "installed");
-      await p.wait(1100);
+      receipt("⚓", "Hooks installed", "Claude Code · every tool call checked");
+      await p.wait(1000);
 
       p.say(4, "The agent goes for the fee, and the hook denies it with the rule's context");
+      front("agent");
       status("working", true);
+      await p.focus('[data-win="agent"]', 1.22, 1000);
       const ask = p.line(agent, "ask", "");
       await p.type(ask, "make the checkout fee 2.5%", 40);
       await p.wait(700);
       const update = p.line(agent, "act", "Update(app/payments.py)");
       await p.wait(1000);
       update.classList.add("bad");
-      p.line(agent, "out text-red-300/90", "PreToolUse:Edit hook error: Crane denied this tool call: the edit would change preserved selection K7M2P9RX (app/payments.py lines 4-5, policy payments); preserved code must stay as it was at checkpoint baseline");
-      decide("DENIED", "bad", "Edit app/payments.py · PRESERVED_SELECTION").classList.add("deny");
-      await p.wait(2000);
+      p.line(agent, "out err", "PreToolUse:Edit hook error: Crane denied this tool call: the edit would change preserved selection K7M2P9RX (app/payments.py lines 4-5, policy payments); preserved code must stay as it was at checkpoint baseline");
+      p.flash(p.q('[data-win="agent"]'), "deny");
+      await p.wait(2200);
       p.line(agent, "act", `The fee rate is preserved: "${CONTEXT}" I'll leave fee() as it is. The refund fix is this task's target, so I'll make that change instead.`);
-      await p.wait(1500);
+      await p.wait(1600);
       p.line(agent, "act ok", "Update(app/payments.py)");
       await p.wait(500);
       p.line(agent, "out", "Updated app/payments.py with 1 addition and 1 removal");
-      decide("ALLOWED", "ok", "Edit app/payments.py · target 4QZ8M2LD").classList.remove("deny");
       status("done");
-      await p.wait(1100);
+      await p.wide(800);
+      receipt("✕", "Edit denied before it ran", "PRESERVED_SELECTION · context sent", "bad");
+      await p.wait(1000);
 
       p.say(5, "crane test agrees: the preserve held and the target changed");
+      front("you");
+      await p.focus('[data-win="you"]', 1.12, 900);
       await p.command(you, "crane test .");
       await p.lines(you, [
         "PASS policy payments (.crane/policies/payments.crane, 2 commands)",
@@ -225,19 +273,21 @@ target   4QZ8M2LD change_type logical_bn;</pre>ed25519 · owner 7f3a…c21e · g
         "  PASS target 4QZ8M2LD change_type logical_bn: target changed as required (app/payments.py lines 9-10)",
         ["text-green-300", "Crane test: PASS"],
       ], 260);
+      await p.wide(800);
+      receipt("✓", "crane test passed", "payments · 2 of 2 rules", "ok");
     },
   };
 
   // ---------------------------------------------------------------- Landscape: the extension
-  const k = (text) => `<span class="text-ink-3">${text}</span>`;
-  const f = (text) => `<span class="text-ink">${text}</span>`;
-  const s = (text) => `<span class="text-zinc-300">${text}</span>`;
+  const k = (text) => `<span class="sh-k">${text}</span>`;
+  const f = (text) => `<span class="sh-f">${text}</span>`;
+  const s = (text) => `<span class="sh-s">${text}</span>`;
   const row = (html, className = "") => `<div class="sh-line ${className}"><i></i><span>${html}</span></div>`;
   const ICON = (path) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
   const EXT = {
     id: "ext",
     steps: 5,
-    duration: 26000,
+    duration: 30000,
     describe: "Landscape in VS Code: the fee lines are selected and Ctrl Alt F opens the Landscape panel beside the code. Preserve is chosen, a name and context are typed, and Landscape has Crane insert anchor comments and seal the selection; the sidebar counts it. When an agent then tries to edit the fee, the lines turn red and Crane's denial appears with the context.",
     html: () => `
 <div class="sh-scene">
@@ -251,7 +301,7 @@ target   4QZ8M2LD change_type logical_bn;</pre>ed25519 · owner 7f3a…c21e · g
         <span class="on"><img src="${LOGO}" alt=""></span>
         <span>${ICON('<rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><path d="M16.5 4v6M13.5 7h6"/>')}</span>
       </div>
-      <div class="sh-side">
+      <div class="sh-side" data-side>
         <div class="sh-side-head">Landscape: Overview</div>
         <div class="sh-side-body">
           <div class="sh-live" data-live><div class="flex items-center gap-1.5"><span class="text-ink">✦</span><span class="truncate"><b class="font-medium text-ink">claude-code</b> is working · Edit</span><span class="ml-auto font-mono text-[9px] text-ink-3">now</span></div><mark>preserve fee rate<br>${CONTEXT}</mark></div>
@@ -299,9 +349,9 @@ target   4QZ8M2LD change_type logical_bn;</pre>ed25519 · owner 7f3a…c21e · g
             <div class="sh-chips"><span data-chip>Preserve</span><span>Target</span><span>Zone</span><span>Flow</span><span>Context</span><span>Checkpoint</span></div>
             <div class="sh-form" data-form>
               <h6>Rule</h6>
-              <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] gap-1.5"><span class="grid gap-1"><span class="sh-field-label !mb-0">Policy</span><span class="sh-field flex justify-between"><span>payments</span><span class="text-ink-3">▾</span></span></span><span class="grid gap-1"><span class="sh-field-label !mb-0">Name</span><span class="sh-field" data-name></span></span></div>
+              <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] gap-1.5"><span class="grid gap-1"><span class="sh-field-label">Policy</span><span class="sh-field flex justify-between"><span>payments</span><span class="text-ink-3">▾</span></span></span><span class="grid gap-1"><span class="sh-field-label">Name</span><span class="sh-field" data-name></span></span></div>
               <h6 class="mt-1">Agent guidance</h6>
-              <div class="sh-field-label">Context (required)</div><div class="sh-field area" data-context></div>
+              <span class="sh-field-label">Context (required)</span><div class="sh-field area" data-context></div>
               <h6 class="mt-1">Landscape will</h6>
               <ol class="sh-plan" data-plan><li>Save the file if it has unsaved changes</li><li>Protect app/payments.py:3-4 in policy payments</li><li>Crane inserts anchor comments around the lines</li><li>Agents are then denied any edit that changes them</li></ol>
             </div>
@@ -334,7 +384,8 @@ target   4QZ8M2LD change_type logical_bn;</pre>ed25519 · owner 7f3a…c21e · g
       };
 
       p.say(1, "Select the fee lines in the editor");
-      await p.point(feeHead, 0.06, 0.5, 900);
+      await p.focus(feeBody, 1.3, 1000);
+      await p.point(feeHead, 0.06, 0.5, 800);
       await p.click();
       feeHead.classList.add("sel");
       await p.point(feeBody, 0.62, 0.5, 600);
@@ -347,7 +398,7 @@ target   4QZ8M2LD change_type logical_bn;</pre>ed25519 · owner 7f3a…c21e · g
       await p.wait(1100);
       p.q("[data-keys]").classList.remove("on");
       p.q("[data-panel]").classList.add("on");
-      await p.wait(800);
+      await p.focus("[data-panel]", 1.22, 1000);
 
       p.say(3, "Choose Preserve, then tell agents why these lines matter");
       await p.point("[data-chip]", 0.5, 0.55, 800);
@@ -370,30 +421,38 @@ target   4QZ8M2LD change_type logical_bn;</pre>ed25519 · owner 7f3a…c21e · g
       p.hide();
       feeHead.classList.remove("sel");
       feeBody.classList.remove("sel");
-      await p.wait(450);
-      feeHead.insertAdjacentHTML("beforebegin", '<div class="sh-lens preserve grow">◆ K7M2P9RX · preserved · fee rate · signed by owner</div>' + row("# @crane:selection:K7M2P9RX:start", "anchor preserve grow"));
+      await p.wide(800);
+      feeHead.insertAdjacentHTML("beforebegin", '<div class="sh-lens preserve grow" data-lens>◆ K7M2P9RX · preserved · fee rate · signed by owner</div>' + row("# @crane:selection:K7M2P9RX:start", "anchor preserve grow"));
       feeBody.insertAdjacentHTML("afterend", row("# @crane:selection:K7M2P9RX:end", "anchor preserve grow"));
       feeHead.classList.add("preserve");
       feeBody.classList.add("preserve");
       renumber();
-      const selections = p.q("[data-selections]");
-      selections.insertAdjacentHTML("afterbegin", '<div class="sh-item new"><i>⛨</i><span><b>fee rate</b><small>app/payments.py:4-5 · payments</small></span><span class="sh-badge ok">PASS</span></div>');
+      p.q("[data-selections]").insertAdjacentHTML("afterbegin", '<div class="sh-item new" data-new><i>⛨</i><span><b>fee rate</b><small>app/payments.py:4-5 · payments</small></span><span class="sh-badge ok">PASS</span></div>');
       p.q("[data-count]").textContent = "2 of 2";
       p.q('[data-stat="pass"]').textContent = "2";
       log("09:42", "text-green-300", "Preserve · selection K7M2P9RX in payments");
-      await p.wait(1800);
+      await p.wait(500);
+      const anchors = p.note(feeBody, "Anchor comments move with the code", "right");
+      const counted = p.note("[data-new]", "Sealed and counted", "right", "ok");
+      await p.wait(2200);
+      p.unnote(anchors);
+      p.unnote(counted);
 
       p.say(5, "An agent edits the fee: Crane denies it, and the agent sees why");
       p.q("[data-live]").classList.add("on");
-      await p.wait(900);
+      await p.focus(feeBody, 1.22, 1000);
       const ghost = p.q("[data-ghost]");
       ghost.className = "sh-ghost";
       ghost.textContent = 'Decimal("0.025")';
       await p.wait(900);
       for (const node of code.querySelectorAll(".preserve.sh-line")) node.classList.add("deny");
-      p.q("[data-notify]").classList.add("on");
+      const denied = p.note(feeBody, "Denied before it ran", "below", "bad");
       log("09:43", "text-red-300", "Denied · claude-code Edit app/payments.py:5");
-      await p.wait(2400);
+      await p.wait(1800);
+      p.unnote(denied);
+      await p.wide(700);
+      p.q("[data-notify]").classList.add("on");
+      await p.wait(1600);
       ghost.className = "";
       ghost.textContent = "";
       for (const node of code.querySelectorAll(".deny")) node.classList.remove("deny");
@@ -422,7 +481,7 @@ target   4QZ8M2LD change_type logical_bn;</pre>ed25519 · owner 7f3a…c21e · g
   const SEA = {
     id: "sea",
     steps: 4,
-    duration: 21000,
+    duration: 24000,
     describe: "DataSea, the dashboard: the overview of acme/payments shows tool calls, denials, bypasses, and tokens, decisions per hour, and each agent's share, while an event stream fills from every machine. A denied edit by claude-code arrives; opening it shows its attribute groups, the rule PRESERVED_SELECTION, and its place in the verified hash chain.",
     html: () => `
 <div class="sh-scene">
@@ -442,7 +501,7 @@ target   4QZ8M2LD change_type logical_bn;</pre>ed25519 · owner 7f3a…c21e · g
         <span class="sh-tag live ml-auto sm:ml-0">Live</span>
       </div>
       <div class="sh-body">
-        <div class="sh-hero"><span><b>acme/payments</b><small>All 4 members · last 24 hours · no filter</small></span><span class="sh-tag ml-auto" data-active>3 agents active</span></div>
+        <div class="sh-hero"><span><b>acme/payments</b><small>All 4 members · last 24 hours · no filter</small></span><span class="sh-tag ml-auto">3 agents active</span></div>
         <div class="sh-kpis">
           <div class="sh-kpi"><small>Tool calls</small><b data-kpi="calls">1,284</b></div>
           <div class="sh-kpi bad"><small>Denied</small><b data-kpi="denied">37</b></div>
@@ -451,7 +510,7 @@ target   4QZ8M2LD change_type logical_bn;</pre>ed25519 · owner 7f3a…c21e · g
           <div class="sh-kpi"><small>Tokens</small><b data-kpi="tokens">412k</b></div>
         </div>
         <div class="sh-panels">
-          <div class="sh-pnl"><div class="sh-pnl-head">Decisions per hour<span><i class="bg-white/60"></i>allowed</span><span><i class="bg-red-400"></i>denied</span></div><svg class="sh-chart" viewBox="0 0 480 104" preserveAspectRatio="none" data-chart><g stroke="rgba(255,255,255,.05)"><path d="M0 26H480M0 52H480M0 78H480"/></g></svg></div>
+          <div class="sh-pnl"><div class="sh-pnl-head">Decisions per hour<span><i class="bg-white/60"></i>allowed</span><span><i class="bg-red-400"></i>denied</span></div><svg class="sh-chart" viewBox="0 0 480 104" preserveAspectRatio="none" data-chart><defs><linearGradient id="sh-bar" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".42"/><stop offset="1" stop-color="#fff" stop-opacity=".1"/></linearGradient></defs><g stroke="rgba(255,255,255,.05)"><path d="M0 26H480M0 52H480M0 78H480"/></g></svg></div>
           <div class="sh-pnl side"><div class="sh-pnl-head">By agent<span>calls · denied</span></div><div class="sh-agents" data-agents>${AGENTS.map(([name, color]) => `<div><span class="truncate">${name}</span><s><u style="background:${color};width:0"></u><u style="width:0"></u></s><em>0</em></div>`).join("")}</div></div>
         </div>
         <div class="sh-stream" data-stream><div class="sh-row head"><i class="!bg-transparent"></i><span>Time</span><span>Event</span><span>Decision</span><span>Tool</span><span>Agent</span></div></div>
@@ -476,7 +535,7 @@ target   4QZ8M2LD change_type logical_bn;</pre>ed25519 · owner 7f3a…c21e · g
         const allowed = chart.appendChild(document.createElementNS(SVG, "rect"));
         const denied = chart.appendChild(document.createElementNS(SVG, "rect"));
         for (const bar of [allowed, denied]) { bar.setAttribute("x", String(index * 20 + 3)); bar.setAttribute("width", "14"); bar.setAttribute("rx", "2"); bar.setAttribute("y", "104"); bar.setAttribute("height", "0"); }
-        allowed.setAttribute("fill", index === 23 ? "rgba(255,255,255,.75)" : "rgba(255,255,255,.28)");
+        allowed.setAttribute("fill", index === 23 ? "rgba(255,255,255,.85)" : "url(#sh-bar)");
         denied.setAttribute("fill", "#f87171");
         return [allowed, denied];
       });
@@ -534,32 +593,40 @@ target   4QZ8M2LD change_type logical_bn;</pre>ed25519 · owner 7f3a…c21e · g
 
       p.say(1, "Tool calls from every teammate's agents stream in");
       for (const entry of STREAM.slice(0, 4)) { await p.wait(850); tick(entry); }
-      await p.wait(700);
+      await p.wait(600);
 
       p.say(2, "A denial arrives with its rule and severity");
+      await p.focus("[data-stream]", 1.2, 900);
       const denied = tick(DENIED);
       totals.denied += 1;
       counts["claude-code"][1] += 1;
       hours[23].denied += 3;
       draw(); drawAgents(); drawTotals();
       p.flash(p.q('[data-kpi="denied"]').parentElement);
-      p.flash(p.q("[data-alerts]"));
-      await p.wait(1500);
+      await p.wait(500);
+      const label = p.note(denied, "Denied before it ran · claude-code", "above", "bad");
+      await p.wait(1700);
 
       p.say(3, "Open it: the decision, its reason, and what it was bound to");
-      await p.point(denied, 0.45, 0.5, 900);
+      await p.point(denied, 0.4, 0.5, 900);
       await p.click();
+      p.unnote(label);
       denied.classList.add("pick");
       p.q("[data-drawer]").classList.add("on");
-      await p.wait(2600);
+      p.hide();
+      await p.wait(400);
+      await p.focus("[data-drawer]", 1.3, 1100);
+      await p.wait(1600);
 
       p.say(4, "Hash-chained evidence of what each agent did, what was denied, and why");
-      await p.point("[data-verified]", 0.5, 0.5, 900);
+      await p.focus("[data-chain]", 1.35, 900);
       p.flash(p.q("[data-verified]"));
-      await p.wait(600);
-      p.hide();
-      for (const entry of STREAM.slice(4)) { await p.wait(1100); tick(entry); }
-      await p.wait(1200);
+      const chain = p.note("[data-chain]", "Hash-chained · ed25519-signed", "above", "ok");
+      await p.wait(2000);
+      p.unnote(chain);
+      await p.wide(900);
+      for (const entry of STREAM.slice(4)) { await p.wait(1000); tick(entry); }
+      await p.wait(1000);
     },
   };
 
@@ -575,10 +642,14 @@ target   4QZ8M2LD change_type logical_bn;</pre>ed25519 · owner 7f3a…c21e · g
     });
     stage.setAttribute("aria-labelledby", tabs[index].id);
     describe.textContent = scene.describe;
+    // The pointer lives inside the camera so it zooms with it; keep it while the scene is replaced
+    stage.append(pointer);
     pointer.classList.remove("on", "tap", "down");
-    screen.innerHTML = scene.html();
+    screen.innerHTML = '<div class="sh-camera">' + scene.html() + "</div>";
+    const camera = screen.firstElementChild;
+    camera.append(pointer);
     const bar = tabs[index].querySelector(".show-progress b");
-    const play = player(token, bar, scene.duration, scene.steps);
+    const play = player(token, camera, bar, scene.duration, scene.steps);
     try {
       await play.wait(500);
       await scene.play(play);

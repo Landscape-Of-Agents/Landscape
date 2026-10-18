@@ -419,7 +419,7 @@ function renderHeader() {
 function renderContext() {
   const s = state.selection;
   if (!s) {
-    $("selection-card").innerHTML = '<div class="empty-state"><b>No code selected</b>Select lines in an editor, or right-click a file in the Explorer and choose Foxx.</div>';
+    $("selection-card").innerHTML = '<div class="empty-state"><b>No code selected</b>Select lines in an editor, or right-click a file in the Explorer and choose Open in Landscape.</div>';
     return;
   }
   const count = s.end - s.start + 1;

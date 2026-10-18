@@ -153,9 +153,28 @@ jobs:
           npm test
           npm run package
           mv foxx.vsix "../../dist/foxx-${RELEASE_TAG}.vsix"
-          # Publish only when the extension changed since the previous release (or there is none)
-          previous="$(git describe --tags --abbrev=0 --match 'v*' "${RELEASE_TAG}^" 2>/dev/null || true)"
-          if [ -z "${previous}" ] || ! git diff --quiet "${previous}" "${RELEASE_TAG}" -- .; then
+          # Publish only when the extension changed since the version the Marketplace has. Comparing
+          # with the previous tag instead would skip a change whose own release failed to publish
+          extension_id="$(node -p 'const p = require("./package.json"); p.publisher + "." + p.name')"
+          published=""
+          for attempt in 1 2 3; do
+            published="$(npx vsce show "${extension_id}" --json 2>/dev/null \
+              | node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => { try { console.log(JSON.parse(s).versions[0].version); } catch {} })' || true)"
+            [ -n "${published}" ] && break
+            sleep 5
+          done
+          if [ -n "${published}" ]; then
+            echo "The Marketplace has ${extension_id} ${published}."
+            previous="v${published}"
+            git rev-parse -q --verify "refs/tags/${previous}" >/dev/null || previous=""
+          else
+            echo "::warning::Could not read ${extension_id} from the Marketplace; comparing with the previous tag."
+            previous="$(git describe --tags --abbrev=0 --match 'v*' "${RELEASE_TAG}^" 2>/dev/null || true)"
+          fi
+          if [ "${previous}" = "${RELEASE_TAG}" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "${RELEASE_TAG} is already on the Marketplace."
+          elif [ -z "${previous}" ] || ! git diff --quiet "${previous}" "${RELEASE_TAG}" -- .; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "The extension changed since ${previous:-the beginning}; it will be published."
           else

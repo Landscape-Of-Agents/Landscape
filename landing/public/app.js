@@ -453,7 +453,9 @@ new IntersectionObserver((entries, observer) => {
 }, { threshold: 0.3 }).observe($("#stats"));
 
 async function loadReleases() {
-  const cached = session.get("releases");
+  // The cache is per repository, so a move to another repository never shows the old releases
+  const CACHE_KEY = "releases:" + REPO;
+  const cached = session.get(CACHE_KEY);
   let releases = cached && Date.now() - cached.at < 10 * 60 * 1000 ? cached.releases : null;
   if (!releases) {
     try {
@@ -464,13 +466,15 @@ async function loadReleases() {
         tag_name: release.tag_name, html_url: release.html_url, published_at: release.published_at, draft: release.draft, prerelease: release.prerelease,
         assets: release.assets.map((asset) => ({ name: asset.name, size: asset.size, download_count: asset.download_count, browser_download_url: asset.browser_download_url })),
       }));
-      session.set("releases", { at: Date.now(), releases });
+      session.set(CACHE_KEY, { at: Date.now(), releases });
     } catch {
       releases = cached && cached.releases;
     }
   }
   if (!releases || !releases.length) { $("#release-meta").textContent = "Binaries for Linux, Windows, and macOS."; return; }
-  latest = releases.find((release) => !release.draft && !release.prerelease) || releases[0];
+  // The newest stable release that carries binaries (a release whose build failed has none)
+  const stable = releases.filter((release) => !release.draft && !release.prerelease);
+  latest = stable.find((release) => release.assets.some((asset) => !asset.name.endsWith(".sha256"))) || stable[0] || releases[0];
   const date = latest.published_at ? new Date(latest.published_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "";
   $("#release-meta").textContent = "Crane " + latest.tag_name + (date ? " · released " + date : "");
   $("#release-chip").textContent = "Crane " + latest.tag_name + " is out";

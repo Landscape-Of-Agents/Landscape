@@ -174,35 +174,48 @@
       <p class="mt-4 text-ink-2">Write a rule once in the terminal or the editor. Every agent meets it in its hooks, and every decision lands on the dashboard.</p>
     </div>
 
-    <!-- The showcase: Crane, Landscape, and DataSea at work on one rule (showcase.js plays it) -->
-    <div id="show" class="mt-12">
-      <div class="show-tabs" role="tablist" aria-label="Products">
-        <button id="cli" class="show-tab" role="tab" type="button" data-scene="cli" aria-controls="show-stage" aria-selected="true">
-          <span class="product-mark" aria-hidden="true"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m5 7 5 5-5 5M12 17h7"/></svg></span>
-          <span class="show-tab-short">Crane</span><span class="hidden min-w-0 sm:block"><span class="eyebrow block">Crane · CLI</span><span class="show-tab-title">The rules and the referee</span></span>
-          <i class="show-progress" aria-hidden="true"><b></b></i>
-        </button>
-        <button id="extension" class="show-tab" role="tab" type="button" data-scene="ext" aria-controls="show-stage" aria-selected="false">
-          <span class="product-mark" aria-hidden="true"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="5" cy="12" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="19" cy="18" r="2.2"/><path d="M7.2 12c5 0 4-6 9.6-6M7.2 12c5 0 4 6 9.6 6"/></svg></span>
-          <span class="show-tab-short">Landscape</span><span class="hidden min-w-0 sm:block"><span class="eyebrow block">Landscape · Extension</span><span class="show-tab-title">Governance in the editor</span></span>
-          <i class="show-progress" aria-hidden="true"><b></b></i>
-        </button>
-        <button id="dashboard" class="show-tab" role="tab" type="button" data-scene="sea" aria-controls="show-stage" aria-selected="false">
-          <span class="product-mark" aria-hidden="true"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 9c3 0 3-2 6-2s3 2 6 2 3-2 6-2M3 14c3 0 3-2 6-2s3 2 6 2 3-2 6-2M3 19c3 0 3-2 6-2s3 2 6 2 3-2 6-2"/></svg></span>
-          <span class="show-tab-short">DataSea</span><span class="hidden min-w-0 sm:block"><span class="eyebrow block">DataSea · Dashboard</span><span class="show-tab-title">Every agent, one view</span></span>
-          <i class="show-progress" aria-hidden="true"><b></b></i>
-        </button>
-      </div>
-      <div id="show-stage" class="show-stage glass" role="tabpanel" aria-labelledby="cli" aria-live="off">
-        <div id="show-screen" class="show-screen" aria-hidden="true"></div>
-        <div class="show-caption"><span id="show-step" class="show-step">1/5</span><span id="show-say" class="truncate">A human protects the fee rule</span><button id="show-pause" type="button" class="icon-btn ml-auto !h-7 !w-7" aria-label="Pause the showcase" aria-pressed="false"><svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="currentColor" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg></button></div>
-        <p id="show-describe" class="sr-only"></p>
-      </div>
-      <div class="mt-4 grid gap-2 text-sm sm:grid-cols-3">
-        <a href="#commands" class="show-link">See the commands <span aria-hidden="true">→</span></a>
-        <a href="https://marketplace.visualstudio.com/items?itemName=agentscript.foxx" rel="noopener" class="show-link">Get it on the Marketplace <span aria-hidden="true">→</span></a>
-        <a href="https://dashboard.agentslandscape.cloud" rel="noopener" class="show-link">Open the dashboard <span aria-hidden="true">→</span></a>
-      </div>
+    <!-- The showcase: Crane, Landscape, and DataSea as 3D objects, one row each. showcase.js plays
+         each in 5 seconds; scrolling down plays it at 1.15x, scrolling up plays it backwards -->
+    <div id="show" class="mt-14 grid gap-16 sm:gap-24">
+      <article id="cli" class="show-row" data-scene="cli" aria-labelledby="cli-title">
+        <header class="show-head">
+          <div class="flex items-center gap-3"><span class="product-mark" aria-hidden="true"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m5 7 5 5-5 5M12 17h7"/></svg></span><p class="eyebrow">Crane · CLI</p></div>
+          <h3 id="cli-title" class="show-title">The rules and the referee</h3>
+          <p class="show-say"></p>
+          <div class="show-bars" aria-hidden="true"></div>
+          <div class="show-meta" aria-hidden="true"><span class="show-step"></span><span class="show-speed">1×</span></div>
+          <a href="#commands" class="show-link">See the commands <span aria-hidden="true">→</span></a>
+        </header>
+        <div class="show-stage glass" role="img" aria-label="Crane: three terminals over one shared payments.py. You protect the fee lines and a preserve zone appears; a teammate targets the refund lines and a target zone appears; CI validates and tests. An agent's edit of the fee is denied, its refund change lands, and crane test passes.">
+          <div class="show-screen" aria-hidden="true"></div>
+        </div>
+      </article>
+      <article id="extension" class="show-row" data-scene="ext" aria-labelledby="extension-title">
+        <header class="show-head">
+          <div class="flex items-center gap-3"><span class="product-mark" aria-hidden="true"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="5" cy="12" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="19" cy="18" r="2.2"/><path d="M7.2 12c5 0 4-6 9.6-6M7.2 12c5 0 4 6 9.6 6"/></svg></span><p class="eyebrow">Landscape · Extension</p></div>
+          <h3 id="extension-title" class="show-title">Governance in the editor</h3>
+          <p class="show-say"></p>
+          <div class="show-bars" aria-hidden="true"></div>
+          <div class="show-meta" aria-hidden="true"><span class="show-step"></span><span class="show-speed">1×</span></div>
+          <a href="https://marketplace.visualstudio.com/items?itemName=agentscript.foxx" rel="noopener" class="show-link">Get it on the Marketplace <span aria-hidden="true">→</span></a>
+        </header>
+        <div class="show-stage glass" role="img" aria-label="Landscape: zones and selections appear as a graph; billing, ledger, and refunds are connected into the flow checkout; a connection back to billing would form a cycle and is rejected and removed; context is signed for the flow, and agents light up the zones they work in.">
+          <div class="show-screen" aria-hidden="true"></div>
+        </div>
+      </article>
+      <article id="dashboard" class="show-row" data-scene="sea" aria-labelledby="dashboard-title">
+        <header class="show-head">
+          <div class="flex items-center gap-3"><span class="product-mark" aria-hidden="true"><svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 9c3 0 3-2 6-2s3 2 6 2 3-2 6-2M3 14c3 0 3-2 6-2s3 2 6 2 3-2 6-2M3 19c3 0 3-2 6-2s3 2 6 2 3-2 6-2"/></svg></span><p class="eyebrow">DataSea · Dashboard</p></div>
+          <h3 id="dashboard-title" class="show-title">Every agent, one view</h3>
+          <p class="show-say"></p>
+          <div class="show-bars" aria-hidden="true"></div>
+          <div class="show-meta" aria-hidden="true"><span class="show-step"></span><span class="show-speed">1×</span></div>
+          <a href="https://dashboard.agentslandscape.cloud" rel="noopener" class="show-link">Open the dashboard <span aria-hidden="true">→</span></a>
+        </header>
+        <div class="show-stage glass" role="img" aria-label="DataSea: metrics and a decisions chart, with a live log, a trace waterfall, and a hook latency tile in front. Logs stream in, traces draw span by span, and a denied edit is logged, traced, and counted.">
+          <div class="show-screen" aria-hidden="true"></div>
+        </div>
+      </article>
     </div>
   </section>
 

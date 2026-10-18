@@ -3,7 +3,8 @@
 // dashboard), one row each, each drawn as a 3D object (a stack of glass layers at different depths
 // that sways and leans with the pointer). Every scene is a 15-second timeline: a pure function of
 // its time, so it can play at any speed and in either direction. It plays at 1x while its row is on
-// screen, at 1.15x while the page scrolls down, and backwards while it scrolls up; at the end it
+// screen, at 1.15x while the page scrolls down, and backwards while it scrolls up; reaching a row
+// pins the page until its animation has played (see Pinning below). At the end it
 // holds, then starts again. Under reduced motion each row shows its finished state.
 (() => {
   const rowsInPage = [...document.querySelectorAll(".show-row")];
@@ -435,10 +436,12 @@
     const screen = root.querySelector(".show-screen");
     screen.innerHTML = '<div class="obj"><div class="obj-floor"></div><div class="obj-sway"><div class="obj-rig">' + scene.html() + "</div></div></div>";
     const line = timeline(screen);
-    const entry = { root, scene, line, after: scene.build(line), rig: screen.querySelector(".obj-rig"), time: -1, hold: 0, visible: false, step: -1, sayNode: root.querySelector(".show-say") };
+    const entry = { root, scene, line, after: scene.build(line), rig: screen.querySelector(".obj-rig"), stage: root.querySelector(".show-stage"), time: -1, hold: 0, visible: false, armed: true, step: -1, sayNode: root.querySelector(".show-say") };
     new IntersectionObserver((entries) => {
       entry.visible = entries.some((item) => item.isIntersecting);
       if (entry.visible) root.classList.add("seen");
+      // A row that has left the screen pins again the next time it is reached
+      else entry.armed = true;
     }, { threshold: 0.15 }).observe(root);
     // The object leans toward a mouse pointer over its stage
     if (!STILL) {
@@ -478,16 +481,79 @@
 
   // Scrolling down plays faster, scrolling up plays backwards; a still page plays at 1x
   let rate = 1;
-  let lastY = window.scrollY;
   let settle = 0;
-  window.addEventListener("scroll", () => {
-    const y = window.scrollY;
-    if (y === lastY) return;
-    rate = y > lastY ? 1.15 : -1;
-    lastY = y;
+  const nudge = (direction) => {
+    rate = direction > 0 ? 1.15 : -1;
     clearTimeout(settle);
     settle = setTimeout(() => { rate = 1; }, 220);
+  };
+
+  // Pinning: scrolling down into a row holds the page there, its stage centred, while its
+  // animation plays from the start; meanwhile scrolling drives the animation instead of the page
+  // (down plays it faster, up plays it back). The page lets go when the animation ends, when it is
+  // played back to its start, on Esc, or when the scrollbar is dragged. A row pins once per pass,
+  // never while scrolling up, and never during a jump to a link on the page.
+  let pinned = null;
+  let pinY = 0;
+  let jumpingUntil = 0;
+  const DOWN_KEYS = new Set([" ", "PageDown", "ArrowDown", "End"]);
+  const UP_KEYS = new Set(["PageUp", "ArrowUp", "Home"]);
+  const release = () => { if (pinned) { pinned.armed = false; pinned = null; } };
+  const pin = (entry) => {
+    const box = entry.stage.getBoundingClientRect();
+    pinY = Math.round(window.scrollY + box.top - Math.max(0, (window.innerHeight - box.height) / 2));
+    pinned = entry;
+    entry.hold = 0;
+    draw(entry, 0);
+    window.scrollTo({ top: pinY, behavior: "instant" });
+  };
+  document.addEventListener("click", (event) => { if (event.target.closest('a[href^="#"]')) jumpingUntil = performance.now() + 1500; });
+  window.addEventListener("hashchange", () => { jumpingUntil = performance.now() + 1500; });
+
+  let lastY = window.scrollY;
+  window.addEventListener("scroll", () => {
+    const y = window.scrollY;
+    if (pinned) {
+      // Wheel, touch, and keys cannot move a pinned page, so this is the scrollbar: let go
+      if (Math.abs(y - pinY) <= 4) { lastY = y; return; }
+      release();
+    }
+    if (y === lastY) return;
+    const down = y > lastY;
+    lastY = y;
+    nudge(down ? 1 : -1);
+    if (!down || performance.now() < jumpingUntil) return;
+    for (const entry of rows) {
+      if (!entry.armed) continue;
+      const box = entry.stage.getBoundingClientRect();
+      if (box.top <= Math.max(0, (window.innerHeight - box.height) / 2) && box.bottom > window.innerHeight / 2) {
+        pin(entry);
+        lastY = window.scrollY;
+        break;
+      }
+    }
   }, { passive: true });
+  window.addEventListener("wheel", (event) => {
+    if (!pinned) return;
+    event.preventDefault();
+    if (event.deltaY) nudge(event.deltaY);
+  }, { passive: false });
+  let touchY = null;
+  window.addEventListener("touchstart", (event) => { touchY = event.touches[0].clientY; }, { passive: true });
+  window.addEventListener("touchmove", (event) => {
+    if (!pinned) return;
+    event.preventDefault();
+    const y = event.touches[0].clientY;
+    if (touchY != null && Math.abs(y - touchY) > 2) nudge(touchY - y);
+    touchY = y;
+  }, { passive: false });
+  window.addEventListener("keydown", (event) => {
+    if (!pinned || event.target.closest("input, textarea, select, [contenteditable]")) return;
+    if (event.key === "Escape") release();
+    else if (event.key === " " && event.shiftKey) { event.preventDefault(); nudge(-1); }
+    else if (DOWN_KEYS.has(event.key)) { event.preventDefault(); nudge(1); }
+    else if (UP_KEYS.has(event.key)) { event.preventDefault(); nudge(-1); }
+  });
 
   let previous = performance.now();
   for (const entry of rows) draw(entry, 0);
@@ -497,6 +563,13 @@
     previous = now;
     if (!document.hidden) {
       for (const entry of rows) {
+        if (entry === pinned) {
+          // The pinned row plays once, then lets the page go at either end
+          const time = Math.min(DURATION, Math.max(0, entry.time + elapsed * rate));
+          if (time !== entry.time) draw(entry, time);
+          if (time >= DURATION || (time <= 0 && rate < 0)) release();
+          continue;
+        }
         if (!entry.visible) continue;
         let time = entry.time;
         if (rate > 0) {

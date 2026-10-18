@@ -51,7 +51,7 @@ jobs:
 
       - name: Build release binary
         env:
-          # The Data Sea ingestion service compiled into the release, so uploads need no setup
+          # The DataSea ingestion service compiled into the release, so uploads need no setup
           CRANE_DEFAULT_INGEST_URL: ${{ vars.CRANE_INGEST_URL }}
         run: cargo build --locked --release --target ${{ matrix.target }}
 

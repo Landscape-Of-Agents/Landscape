@@ -1,6 +1,6 @@
 [package]
 name = "crane"
-version = "0.4.26"
+version = "0.4.27"
 edition = "2021"
 rust-version = "1.89"
 description = "Crane: signed selection contracts, runtime enforcement, and security evidence for AI coding agents."
@@ -11,7 +11,7 @@ homepage = "https://agentslandscape.cloud"
 
 [features]
 default = []
-# The Data Sea ingestion service ('crane server'), the only component that holds MongoDB credentials
+# The DataSea ingestion service ('crane server'), the only component that holds MongoDB credentials
 server = ["dep:mongodb", "dep:tiny_http"]
 
 [dependencies]
@@ -26,7 +26,7 @@ rpassword = "7"
 # Passphrase protection of signing keys (CRANE_KEY_PROTECTION=prompt)
 argon2 = "0.5"
 chacha20poly1305 = "0.10"
-# HTTPS client of the Data Sea ingestion service
+# HTTPS client of the DataSea ingestion service
 ureq = { version = "2.12", default-features = false, features = ["tls", "json"] }
 tiny_http = { version = "0.12", optional = true }
 mongodb = { version = "3", optional = true, default-features = false, features = ["compat-3-0-0", "rustls-tls", "dns-resolver", "sync"] }

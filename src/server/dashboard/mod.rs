@@ -1,4 +1,4 @@
-// The hosted Data Sea dashboard: one dashboard for individuals and teams, served by the ingestion
+// The hosted DataSea dashboard: one dashboard for individuals and teams, served by the ingestion
 // service at its root. People sign in with GitHub; a personal account sees the repositories it
 // owns, and an organization member sees the organization's repositories, with every teammate's
 // activity and a filter by member. Telemetry reads use a read-only database handle (data.rs);

@@ -1,4 +1,4 @@
-// The repository status a machine reports to the Data Sea dashboard. Most of the dashboard is built from
+// The repository status a machine reports to the DataSea dashboard. Most of the dashboard is built from
 // uploaded events, but some views describe this machine's working tree and configuration, which
 // the service cannot see: policy results against the current files, governance integrity, the
 // compliance inputs that come from local verification, the GitHub connection, and the configured

@@ -1,4 +1,4 @@
-// The hosted Data Sea dashboard (built with --features server; needs CRANE_TEST_MONGODB_URI, skipped
+// The hosted DataSea dashboard (built with --features server; needs CRANE_TEST_MONGODB_URI, skipped
 // otherwise). A team repository owned by the Acme organization has two members (alice's and bob's
 // machines); carol has a personal repository. Viewers sign in through a stand-in for GitHub.
 

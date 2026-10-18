@@ -1,4 +1,4 @@
-// Read models shared by the task and session commands and the hosted Data Sea dashboard: sessions,
+// Read models shared by the task and session commands and the hosted DataSea dashboard: sessions,
 // tasks, agents, and tool calls with their evals (DASHBOARD.md), built from the specification
 // events of the local runtime stores or, on the service, of the uploaded records.
 

@@ -93,7 +93,7 @@ flowchart LR
     Tel -->|"signed uploads, X-Request-Id"| Up["telemetry::ingest"]
   end
   Up -->|HTTPS| Ingest
-  subgraph Service["Data Sea service (crane server)"]
+  subgraph Service["DataSea service (crane server)"]
     Ingest["server::ingest: auth, limits"] --> Store["server::store (writes)"]
     Dash["server::dashboard (authenticated views + narrow writes)"] --> Read["dashboard::data (ReadOnly)"]
     Dash --> Approval["dashboard::approve (approvals + Dashboard Agent records)"]

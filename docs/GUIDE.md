@@ -287,7 +287,7 @@ RFC 4180 CSV. These endpoints return filtered data only; they do not provide acc
 the selected repository/member scope. Dashboard component “AI” controls open the corresponding
 filtered context and API URL for copying or download.
 
-## Telemetry upload (Data Sea service)
+## Telemetry upload (DataSea service)
 
 Crane uploads events, metrics, sessions, tool calls, alerts, and governance history to the Landscape
 ingestion service (`https://agentscript-service.onrender.com`), which stores them in MongoDB.
@@ -352,7 +352,7 @@ Slack, Jira, WhatsApp, and GitHub are set with `crane integrate NAME` instead.
 | `CRANE_SESSION_ID` | Session id when the agent reports none | generated |
 | `CRANE_ENVIRONMENT` | Environment label on events | `local` (`ci` when `CI` is set) |
 | `CRANE_ALERTS_DRY_RUN` | `1` records alerts without delivering them | `0` |
-| `CRANE_INGEST_URL` | Data Sea ingestion service; `off` keeps telemetry local | the release's service |
+| `CRANE_INGEST_URL` | DataSea ingestion service; `off` keeps telemetry local | the release's service |
 | `CRANE_SYNC_SECONDS` | Periodic upload interval | `60` |
 | `CRANE_KEY_PROTECTION` | Signing keys at rest: `prompt` (a passphrase typed on the console for every signing command), `plain` | Windows Data Protection on Windows, plain (owner-only file) elsewhere |
 | `CRANE_STALE_SESSION_MINUTES` | `crane server`: minutes without hook activity before an unfinished session is stale | `120` |

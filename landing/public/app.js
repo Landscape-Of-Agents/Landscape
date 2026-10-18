@@ -288,7 +288,7 @@ function playLandscape() {
 }
 playLandscape();
 
-// Data Sea: KPIs, sparklines, the decisions chart, and an activity feed that ticks like live data
+// DataSea: KPIs, sparklines, the decisions chart, and an activity feed that ticks like live data
 function playSea() {
   const root = $("#dashboard");
   const random = (low, high) => low + Math.random() * (high - low);

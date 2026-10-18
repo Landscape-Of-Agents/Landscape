@@ -75,7 +75,7 @@
   .scene-struck { @apply text-red-300 line-through decoration-red-400/70; }
   @keyframes scene-shake { 0%, 100% { transform: translateX(0); } 20%, 60% { transform: translateX(-4px); } 40%, 80% { transform: translateX(4px); } }
 
-  /* Product mockups: Crane's terminal, Landscape's editor and graph, Data Sea's dashboard */
+  /* Product mockups: Crane's terminal, Landscape's editor and graph, DataSea's dashboard */
   .product-mark { @apply grid h-8 w-8 place-items-center rounded-lg border border-white/10 bg-gradient-to-b from-white/[0.1] to-white/[0.02] text-ink shadow-[inset_0_1px_0_rgba(255,255,255,.08)]; }
   .window { @apply overflow-hidden rounded-xl border border-white/[0.07] bg-black/50 shadow-[0_20px_50px_-25px_rgba(0,0,0,.9)]; }
   .window-bar { @apply flex min-h-[2.25rem] items-center gap-2 border-b border-white/[0.06] bg-white/[0.02] px-3 py-1.5; }

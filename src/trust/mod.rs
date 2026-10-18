@@ -86,7 +86,7 @@ pub(crate) fn crane_home() -> Result<PathBuf, String> {
 const INSTALLATION_KEY: &str = "installation.key";
 
 /** Load this machine's upload key, creating it (owner-only) on first use. The key identifies the
- * machine to the Data Sea ingestion service and grants no authority over any repository, so unlike a
+ * machine to the DataSea ingestion service and grants no authority over any repository, so unlike a
  * repository signing key it is created for agents' hooks as well, and every teammate's machine
  * uploads without running crane init
  * Input

@@ -2,7 +2,7 @@
   <img src="landing/public/logo.png" alt="Crane" width="96" height="96">
 </p>
 
-<h1 align="center">Crane</h1>
+<h1 align="center">Landscape</h1>
 
 <p align="center">
   <b>Guardrails for intelligent agents.</b><br>

@@ -36,7 +36,7 @@ const REMEMBERED_KEYS: usize = 2048;
     - Crane - the Crane CLI or runtime
     - ProviderAdapter - a hook translated from an agent provider
     - FoxxExtension - the Landscape editor extension
-    - Dashboard - the Data Sea dashboard
+    - Dashboard - the DataSea dashboard
     - Ingestion - the ingestion backend
     - Integration - an external integration
 */

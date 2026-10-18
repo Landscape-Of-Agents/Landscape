@@ -1,4 +1,4 @@
-// When to upload evidence to the Data Sea ingestion service. Data leaves the machine at the moment it is
+// When to upload evidence to the DataSea ingestion service. Data leaves the machine at the moment it is
 // complete: a tool call when it ends (post-tool hook), a session when it ends (stop and session-end
 // hooks), a governance or other Crane command when it finishes, and everything else periodically
 // (any Crane run or hook starts a sync when the last attempt is older than CRANE_SYNC_SECONDS). A sync runs as a detached 'crane agent sync' process with its

@@ -1,0 +1,77 @@
+{
+  "capability_id": "deployment-failure-diagnostics",
+  "version": 1,
+  "schema_version": 1,
+  "name": "Collect failed-deployment diagnostics",
+  "description": "Read-only collection of a failed deployment's outcome, verification checks, and logs for triage.",
+  "owner_ref": "team:platform-reliability",
+  "previous_version_ref": null,
+  "provenance": {
+    "creation_method": "fixture",
+    "created_by": {"id": "oncall@acme.example", "kind": "human"},
+    "created_at": 1760000100000,
+    "source_intake_refs": ["@intake"],
+    "source_episode_refs": ["@episode"],
+    "source_evidence_pack_refs": [{"pack_id": "@pack", "manifest_digest": "@digest"}]
+  },
+  "applicability": {
+    "purpose": "Gather the evidence an engineer needs to triage a failed production deployment",
+    "task_classes": ["deployment-failure-triage"],
+    "environments": ["production"],
+    "business_domain": null,
+    "preconditions": [
+      {"id": "deployment-known", "description": "The deployment id is known", "check": null, "status": "declared"},
+      {"id": "read-access", "description": "The caller may read deployment records and logs", "check": null, "status": "declared"}
+    ],
+    "required_state": [],
+    "exclusions": [
+      {"kind": "task_class", "value": "deployment-rollback", "reason": "Diagnostics only; it never changes a deployment"}
+    ],
+    "limitations": ["Runtime metrics were unavailable when this capability was established", "No test report existed for the observed change"],
+    "inputs": [{"name": "deployment_id", "kind": "identifier", "required": true, "description": "Deployment to diagnose"}],
+    "outputs": [{"name": "diagnostic_bundle", "kind": "json", "required": true, "description": "Outcome, checks, and log excerpts"}],
+    "assumptions": [],
+    "risk": "low",
+    "review_level": "peer"
+  },
+  "dependencies": [
+    {"kind": "zone", "target_id": "refunds", "required": true, "constraint": {"constraint": "exact", "value": "v3"}, "reason": "Established on deployments of code in this zone"},
+    {"kind": "flow", "target_id": "refund-flow", "required": false, "constraint": {"constraint": "exact", "value": "v2"}, "reason": "The failure was observed in this flow"},
+    {"kind": "policy", "target_id": "refund_safety", "required": true, "constraint": {"constraint": "exact", "value": "c41d0e9a3b2f7781"}, "reason": "The governing AgentScript policy when established"},
+    {"kind": "evidence_pack", "target_id": "@pack", "required": true, "constraint": {"constraint": "exact", "value": "@digest"}, "reason": "The investigation it was derived from"}
+  ],
+  "execution": {
+    "procedure_version": 1,
+    "inputs": [{"name": "deployment_id", "kind": "identifier", "required": true, "description": "Deployment to diagnose"}],
+    "preconditions": ["deployment-known", "read-access"],
+    "steps": [
+      {"step_id": "fetch-deployment", "kind": "query", "description": "Fetch the deployment record and its outcome", "inputs": ["deployment_id"], "outputs": ["deployment_record"], "preconditions": ["deployment-known"], "verifies": ["outcome-recorded"]},
+      {"step_id": "fetch-checks", "kind": "query", "description": "Fetch post-deployment verification checks", "inputs": ["deployment_id"], "outputs": ["checks"], "preconditions": ["read-access"], "verifies": []},
+      {"step_id": "fetch-logs", "kind": "diagnostic", "description": "Fetch error logs emitted during the deployment window", "inputs": ["deployment_id"], "outputs": ["log_excerpts"], "preconditions": ["read-access"], "verifies": ["logs-retrieved"]},
+      {"step_id": "bundle", "kind": "verify", "description": "Assemble the diagnostic bundle with references to each source record", "inputs": ["deployment_record", "checks", "log_excerpts"], "outputs": ["diagnostic_bundle"], "preconditions": [], "verifies": []}
+    ],
+    "effects": ["none; read-only"],
+    "state_transitions": [],
+    "postconditions": ["A diagnostic bundle referencing every source record exists"],
+    "outputs": [{"name": "diagnostic_bundle", "kind": "json", "required": true, "description": "Outcome, checks, and log excerpts"}],
+    "failure_conditions": ["The deployment record is unavailable", "Logs are unauthorized or missing"],
+    "checkpoints": ["outcome-recorded", "logs-retrieved"],
+    "recovery": ["Nothing to roll back; the procedure is read-only"],
+    "side_effects": []
+  },
+  "verification": {
+    "method": "evidence-review",
+    "method_version": "1",
+    "scope_environments": ["production"],
+    "claims": [
+      {"claim_id": "outcome-recorded", "kind": "technical", "statement": "The deployment outcome can be retrieved and was recorded as failed", "expected_result": "A deployment record with a failed status and a failed smoke check", "required": true, "status": "verified", "evidence_refs": ["@evidence:deployment", "@evidence:verification"], "assertion_refs": ["@assertion:deployment_succeeded"], "method": "evidence-review", "environment": "production", "verified_at": 1760000100500},
+      {"claim_id": "logs-retrieved", "kind": "technical", "statement": "Error logs of the deployment window can be retrieved", "expected_result": "At least one error log line referencing the deployment", "required": true, "status": "verified", "evidence_refs": ["@evidence:runtime_log"], "assertion_refs": [], "method": "evidence-review", "environment": "production", "verified_at": 1760000100500}
+    ],
+    "invariants": [],
+    "negative_cases": ["A deployment that never started yields no logs; the bundle says so instead of being empty"],
+    "limitations": ["Metrics are not part of the bundle until a metrics source is available"],
+    "unresolved_assumptions": []
+  },
+  "known_failure_cases": [],
+  "proposed_improvements": []
+}

@@ -63,6 +63,8 @@ comments); whitespace-only changes never satisfy a target.
 | Agents | `agent install\|uninstall\|hooks --profile claude\|codex\|copilot\|gemini`, `agent link` |
 | Admins | `admin list`, `admin register`, `admin add PUBLIC_KEY [name NAME]`, `admin del PUBLIC_KEY` |
 | Zones and flows | `governance sign`, `governance graph [--json]` (zones, flows, and selections as an acyclic graph, with the agents active in each) |
+| Work Capture | `capture demo [--json]`, `capture sources [--json]`, `capture investigate [commit SHA] [task TASK_ID] [--json]` |
+| Capabilities | `capability demo`, `capability intake ...`, `capability create\|propose FILE`, `capability validate (ID [--dry-run] \| file FILE)`, `capability inspect\|versions\|list`, `capability publish ID version N reason TEXT`, `capability deprecate\|revoke\|reject ...`, `capability stale` |
 | Integrations | `integrate jira\|slack\|whatsapp\|github` |
 
 `protect` and `target` require `context TEXT` (guidance agents receive whenever they touch the
@@ -170,6 +172,167 @@ file-level behavior. Marker edits themselves are always denied to agents.
 On every tool call that reaches an active zone, flow, or selection, Crane sends its attached
 guidance to the agent and displays it in the agent window. Selection notices include the relevant
 policy context files; zone and flow notices include their context packs.
+
+## Work Capture and Evidence Packs
+
+Work Capture is the first part of the Capability Compiler: it collects evidence about a work
+episode (a task and the change, CI, deployment, and agent activity around it) and packages it as a
+bounded, traceable **Evidence Pack**. It reads Landscape, DataSea, and Crane as sources and never
+writes to them.
+
+```bash
+crane capture demo                 # failed-deployment investigation from fixtures (no credentials)
+crane capture sources              # this repository's live sources and their health
+crane capture investigate task tsk_... commit HEAD --json
+```
+
+`investigate` uses the live connectors (the local Git repository, DataSea's local event store,
+`.crane/governance.yaml`, and the AgentScript policies with the current validation report). It
+keeps everything under the trust directory's `runtime/capture` folder. GitHub pull requests, CI,
+deployments, logs, and metrics have no live connector yet. The demo covers them with deterministic
+fixture connectors.
+
+The code lives in `src/capture`, split into four categories plus the broker:
+
+| Module | Responsibility |
+| --- | --- |
+| `resources` | Resource registry (only compiled-in connector types; credentials as `env:NAME` references; explicit scopes with no wildcards), the connector contract (`discover`, `fetch`, `query`, `get_metadata`, `health_check`, with structured `ok`/`partial`/`unavailable`/`unauthorized`/`rate_limited`/`invalid_query`/`timeout`/`failed` outcomes), scope resolution, and connectors |
+| `format` | Raw artifacts (content hash, redaction, `blob:` storage reference), the versioned Evidence Record (`observed_at` separate from `ingested_at`), and five typed parsers that report `parsed`/`partially_parsed`/`failed` |
+| `correlate` | Entities, the controlled relation vocabulary (`CONTAINS` ... `SUPERSEDES`, each `observed`/`declared`/`inferred`/`reviewed`), bounded traversal and Context Views, and assertions with lineage |
+| `ingest` | Eligibility-first evidence selection, context contributions, work episodes, questions, feedback, outcomes, and the Evidence Pack |
+| `broker` | Versioned Evidence Recipes and the Evidence Query Broker |
+
+**Recipes.** A recipe is a versioned, immutable list of steps. Each step names a resource kind, an
+operation, an evidence type, and parameters that are literals or exactly one `{variable}` from the
+resolved scope. A step runs only when its branch predicate (`exists`, `missing`, `field_equals`,
+`scope_known`, `all`, `any`, `not`) holds for the evidence retrieved so far. A recipe also declares
+required evidence (optionally conditional), stopping rules, and limits. The built-in
+`failed-deployment` v1 retrieves the deployment's logs and metrics only if the deployment failed,
+and schema evidence only if a migration ran. If a step needs a scope value that is unknown, it
+reports *not queried* and never widens the query. A proposed plan (for example from a model) is
+validated as a recipe before anything runs.
+
+**The broker** resolves scope and authorization before any query. A request that explicitly names
+a repository, environment, or resource the actor may not access is rejected without contacting any
+source. The broker validates each query against the resource, enforces step, record, payload, and
+time budgets, then ingests, normalizes, and correlates the results and derives assertions
+(`ci_passed`, `tests_passed`, `deployment_succeeded`, and `change_verified` derived from those
+three). The audit record (`audit.jsonl`) holds the exact recipe and digest, policy decisions,
+branch decisions, every query with its parameters, source snapshot, records, errors, and timing,
+the budget used, and the metrics. A replay re-runs the recorded recipe against the current sources
+and reports `exact`, `diverged`, or `unverifiable` (when a source cannot identify its snapshot).
+
+**Evidence Pack** fields: `pack_id`, `episode_id`, `investigation`, `status`
+(`sufficient`/`incomplete`/`budget_exhausted`/`rejected`), `scope` (with zone and flow versions and
+facts learned from evidence), `evidence` (bounded excerpts plus artifact references), `entities`,
+`context_view`, `assertions` (supporting and contradicting evidence, derivation, lineage),
+`contributions` (`task_local` kept apart from `reusable`), `missing_evidence` (each with a state:
+`empty`, `unavailable`, `denied`, `not_queried`, `parse_failed`), `sources`, `retrieval`,
+`warnings` (access, freshness, completeness, uncertainty, conflict, budget, truncation), `limits`,
+`manifest` (a digest of every included item), `size_bytes`, and `created_at`.
+
+**Trust boundaries.** Missing evidence stays unknown: a missing test report never means
+"tests failed", and a missing metric is never zero. When evidence disagrees, the assertion is left
+unresolved and both sides are kept. Copies of one artifact count as one piece of support. Agents
+may only *propose* context (namespace `agent-proposed`). Accepting a contribution takes a
+different human with review permission, so nobody can approve their own. Hypotheses never become
+observations. A constraint proposal that relaxes or removes a policy is refused, and an accepted
+one still has to go through Crane's signed policy workflow. Source content is treated as data and
+is redacted before storage. A record marked secret keeps only its reference.
+
+## Capability Registry
+
+The Capability Registry is the second part of the Capability Compiler. It defines what a reusable
+capability is, accepts a traceable handoff from Work Capture, validates and stores immutable
+versions, and governs their lifecycle. It does not execute procedures or compile capabilities from
+evidence. Drafts are created explicitly (`manual` or `fixture`); `compiler` is reserved for the
+future compiler. The code lives in `src/capability` (`model`, `intake`, `validate`, `lifecycle`,
+`registry`, `query`, `refs`).
+
+```bash
+crane capability demo                                     # deterministic, from fixtures
+crane capture investigate --json                          # produces a pack, digest, episode
+crane capability intake episode EPI pack PCK digest D intent intent.json risk low profile low-risk-technical
+crane capability create capability.json profile low-risk-technical
+crane capability validate change-summary --dry-run        # reports only
+crane capability validate change-summary                  # records the run, moves the state
+crane capability publish change-summary version 1 reason "..." [acknowledge CODE,CODE]
+```
+
+**Capability schema (v1).** `capability_id` names the concept. `version` (1, 2, ...) names one
+immutable definition. `schema_version` names the representation, and the three are never
+interchangeable. A definition has these sections:
+
+| Section | Contents |
+| --- | --- |
+| Provenance | creation method, author, and the source intakes, episodes, and Evidence Pack digests |
+| Applicability | purpose, task classes, environments, preconditions, required state, exclusions, inputs and outputs, assumptions, risk, review level |
+| Dependencies | typed references with a required or optional flag and a version constraint (`exact`, `at_least`, `unpinned`) |
+| Execution contract | typed steps with ids, kinds, inputs, outputs, preconditions, and claims verified; effects, state transitions, side effects, recovery |
+| Verification contract | claims with a status (`declared`, `observed`, `derived`, `verified`, `unresolved`), evidence and assertion references, method, environment; business invariants with their authority |
+
+An empty environment list means *no known environment*, never "everywhere". Wildcards are
+rejected. Dependencies are references, so the registry never copies Landscape, DataSea, or Crane
+data and never substitutes another version.
+
+**Intake.** The caller supplies only the episode, the pack, the digest it expects, and the
+enterprise intent: the objective, acceptance criteria, invariants, and measures, each marked
+`explicitly_mapped`, `human_confirmed`, `inferred_unverified`, or `unmapped`. Crane then:
+- recomputes the pack's manifest
+- resolves every evidence record and assertion for the submitter's own access
+- compares zone, flow, and policy versions with the current ones
+- records completeness and uncertainty as separate lists: missing evidence and why, unavailable and
+  unauthorized sources, parse failures, conflicts, stale revisions, unresolved mappings, and
+  unresolved assumptions
+
+A claimed explicit mapping without an authority is treated as inferred. The same request
+submitted twice returns the same intake, and reusing a key for different content is a conflict.
+An `incomplete` intake is stored for review, but storage is not readiness. There are two
+validation profiles:
+- `conservative` (default, any risk): requires an authoritative objective and invariants and
+  complete evidence.
+- `low-risk-technical` (low risk only): requires technical acceptance criteria, and missing
+  evidence must be a declared limitation.
+
+**Validation gates.** Gates 1 to 5 run in a validation run; gate 6 runs at publication.
+
+| Gate | Checks |
+| --- | --- |
+| 1 Structural | schema, ids, lineage, and procedure and reference consistency |
+| 2 Provenance | intake readiness under the same profile, pack digests, episodes; claims may cite only evidence from their packs |
+| 3 Applicability | explicit scope, environments within the verified scope, assessed risk, pinned and resolvable dependencies, no cycles among required capability dependencies |
+| 4 Verification | each claim's status is *recomputed*: a hypothesis, an unknown or conflicted assertion, missing evidence, or an unknown environment leaves it `unresolved`, and technical evidence (CI, tests, code, tool calls) never verifies a business invariant |
+| 5 Governance | review level for the risk, no policy changes (those go through Crane's signed workflow), low-risk capabilities must not change state |
+| 6 Publication | every gate passed, every warning acknowledged explicitly, validation current (not stale), a human publisher holding the Publisher role who is not the author |
+
+**Lifecycle.**
+
+| From | To |
+| --- | --- |
+| `candidate` | `needs_evidence`, `validating`, `rejected` |
+| `needs_evidence` | `validating`, `rejected` |
+| `validating` | `validated`, `needs_evidence`, `candidate`, `rejected` |
+| `validated` | `published`, `validating`, `needs_evidence`, `deprecated`, `revoked`, `rejected` |
+| `published` | `deprecated`, `revoked` |
+| `deprecated` | `revoked` |
+
+Changes are new versions linked to their predecessor. A new version starts as a candidate and
+inherits no validation. Deprecated and revoked versions stay in history but are never eligible
+for new use. `capability stale` compares each validation's recorded basis (pack digests, zone,
+flow, and policy versions, dependency versions) with the current state and marks it stale without
+rewriting it, which removes a published version from eligibility until it is revalidated.
+Invocation outcomes are recorded beside a version and never change it.
+
+**Roles.** Roles are decided by Crane, not by the caller:
+- Anyone running Crane may submit intakes, store candidates, and validate.
+- Publishing, rejecting, deprecating, and revoking need this machine's signing key to be the
+  repository owner's or a signed admin's.
+- Agents can only contribute.
+
+Every refused privileged operation is recorded. The registry is one versioned document
+(`runtime/capability/registry.json`). Each change is a locked, reloaded, atomically replaced
+transaction, so concurrent writers lose nothing and an interrupted write leaves the previous
+document intact.
 
 ## Integrations and alerts
 

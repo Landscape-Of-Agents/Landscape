@@ -1,0 +1,79 @@
+{
+  "capability_id": "refund-worker-recovery",
+  "version": 1,
+  "schema_version": 1,
+  "name": "Recover the refund worker after an idempotency-key migration",
+  "description": "Backfill idempotency keys for queued refund jobs, redeploy, and verify no refund is issued twice.",
+  "owner_ref": "team:payments",
+  "previous_version_ref": null,
+  "provenance": {
+    "creation_method": "fixture",
+    "created_by": {"id": "oncall@acme.example", "kind": "human"},
+    "created_at": 1760000100000,
+    "source_intake_refs": ["@intake"],
+    "source_episode_refs": ["@episode"],
+    "source_evidence_pack_refs": [{"pack_id": "@pack", "manifest_digest": "@digest"}]
+  },
+  "applicability": {
+    "purpose": "Restore refund processing after a deploy that made idempotency keys mandatory",
+    "task_classes": ["deployment-failure-remediation"],
+    "environments": ["production"],
+    "business_domain": "payments/refunds",
+    "preconditions": [
+      {"id": "jobs-without-keys", "description": "Queued refund jobs exist without an idempotency key", "check": null, "status": "declared"}
+    ],
+    "required_state": [
+      {"id": "migration-applied", "description": "Migration 0042 is applied", "check": null, "status": "declared"}
+    ],
+    "exclusions": [],
+    "limitations": [],
+    "inputs": [{"name": "deployment_id", "kind": "identifier", "required": true, "description": "Failed deployment"}],
+    "outputs": [{"name": "recovered", "kind": "boolean", "required": true, "description": "Whether processing recovered"}],
+    "assumptions": [{"id": "keys-derivable", "description": "Keys can be derived from the original request ids", "check": null, "status": "declared"}],
+    "risk": "high",
+    "review_level": "admin"
+  },
+  "dependencies": [
+    {"kind": "zone", "target_id": "refunds", "required": true, "constraint": {"constraint": "exact", "value": "v3"}, "reason": "Changes code in this zone"},
+    {"kind": "flow", "target_id": "refund-flow", "required": true, "constraint": {"constraint": "exact", "value": "v2"}, "reason": "Changes this flow"},
+    {"kind": "policy", "target_id": "refund_safety", "required": true, "constraint": {"constraint": "exact", "value": "c41d0e9a3b2f7781"}, "reason": "Governing policy"},
+    {"kind": "database", "target_id": "refunds-db", "required": true, "constraint": {"constraint": "unpinned"}, "reason": "Backfills queued jobs"}
+  ],
+  "execution": {
+    "procedure_version": 1,
+    "inputs": [{"name": "deployment_id", "kind": "identifier", "required": true, "description": "Failed deployment"}],
+    "preconditions": ["jobs-without-keys", "migration-applied"],
+    "steps": [
+      {"step_id": "count-jobs", "kind": "diagnostic", "description": "Count queued refund jobs without an idempotency key", "inputs": ["deployment_id"], "outputs": ["job_count"], "preconditions": ["jobs-without-keys"], "verifies": []},
+      {"step_id": "backfill", "kind": "change", "description": "Derive and store idempotency keys for the queued jobs", "inputs": ["job_count"], "outputs": ["backfilled"], "preconditions": ["migration-applied"], "verifies": []},
+      {"step_id": "redeploy", "kind": "deploy", "description": "Redeploy the refund worker", "inputs": ["backfilled"], "outputs": ["new_deployment"], "preconditions": [], "verifies": ["ci-passed"]},
+      {"step_id": "verify-no-double-refund", "kind": "verify", "description": "Reconcile refunds against requests to confirm none was issued twice", "inputs": ["new_deployment"], "outputs": ["recovered"], "preconditions": [], "verifies": ["no-double-refund", "tests-passed"]}
+    ],
+    "effects": ["Queued refund jobs gain idempotency keys", "The refund worker is redeployed"],
+    "state_transitions": [{"entity": "refund-worker", "from": "crashing", "to": "processing"}],
+    "postconditions": ["Refund processing resumes", "No refund is issued twice"],
+    "outputs": [{"name": "recovered", "kind": "boolean", "required": true, "description": "Whether processing recovered"}],
+    "failure_conditions": ["Keys cannot be derived for some jobs"],
+    "checkpoints": ["ci-passed", "tests-passed", "no-double-refund"],
+    "recovery": ["Restore the job queue snapshot taken before the backfill"],
+    "side_effects": [{"system": "refunds-db", "description": "Updates queued job rows", "reversible": true, "risk": "high"}]
+  },
+  "verification": {
+    "method": "evidence-review",
+    "method_version": "1",
+    "scope_environments": ["production"],
+    "claims": [
+      {"claim_id": "ci-passed", "kind": "technical", "statement": "CI passes for the change", "expected_result": "CI status success", "required": true, "status": "verified", "evidence_refs": ["@evidence:ci_run"], "assertion_refs": ["@assertion:ci_passed"], "method": "evidence-review", "environment": "production", "verified_at": 1760000100500},
+      {"claim_id": "tests-passed", "kind": "technical", "statement": "The refund test suite passes", "expected_result": "Zero failed tests", "required": true, "status": "verified", "evidence_refs": [], "assertion_refs": ["@assertion:tests_passed"], "method": "evidence-review", "environment": "production", "verified_at": 1760000100500},
+      {"claim_id": "no-double-refund", "kind": "business_invariant", "statement": "No refund was issued twice after recovery", "expected_result": "Reconciliation finds zero duplicate refunds", "required": true, "status": "verified", "evidence_refs": ["@evidence:ci_run"], "assertion_refs": [], "invariant_ref": "inv-no-double-refund", "method": "evidence-review", "environment": "production", "verified_at": 1760000100500}
+    ],
+    "invariants": [
+      {"invariant_id": "inv-no-double-refund", "statement": "A retried refund request never refunds twice", "authority": "payments-spec#INV-7", "mapping": "explicitly_mapped", "required": true}
+    ],
+    "negative_cases": ["A job whose key cannot be derived must be left queued, not refunded"],
+    "limitations": [],
+    "unresolved_assumptions": ["keys-derivable has not been checked against production data"]
+  },
+  "known_failure_cases": [],
+  "proposed_improvements": []
+}

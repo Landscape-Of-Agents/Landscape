@@ -6,6 +6,8 @@ mod agent;
 mod alert;
 mod args;
 mod audit;
+mod capability;
+mod capture;
 mod data;
 mod governance;
 mod link;
@@ -86,6 +88,8 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["alert", ..] => alert::alert(&rest(1)),
         ["admin", ..] => governance::admin(&rest(1)),
         ["governance", ..] => governance::governance(&rest(1)),
+        ["capture", ..] => capture::capture(&rest(1)),
+        ["capability", ..] => capability::capability(&rest(1)),
         ["foxx", "event", ..] => audit::foxx_event(&rest(2)),
         ["foxx", "live", ..] => audit::foxx_live(&rest(2)),
         #[cfg(feature = "server")]
@@ -141,6 +145,21 @@ Tasks and sessions
 Zones and flows (.crane/governance.yaml)
   crane governance sign
   crane governance graph [--json]   (zones, flows, and selections as an acyclic graph)
+
+Work Capture (evidence about a work episode, packaged as a bounded Evidence Pack)
+  crane capture demo [--json]        (deterministic failed-deployment investigation from fixtures)
+  crane capture sources [--json]     (this repository's evidence sources and their health)
+  crane capture investigate [commit SHA] [task TASK_ID] [--json]
+
+Capabilities (versioned, validated reusable procedures; publication needs an admin key)
+  crane capability demo [--json]
+  crane capability intake episode EPISODE pack PACK digest DIGEST [intent FILE] [risk RISK] [profile NAME]
+  crane capability create|propose FILE [profile NAME]
+  crane capability validate (ID [version N] [--dry-run] | file FILE)
+  crane capability inspect ID [version N] | versions ID | list [state STATE] [--all]
+  crane capability publish ID version N reason TEXT [acknowledge CODE,CODE]
+  crane capability deprecate|revoke ID [version N] reason TEXT | reject ID version N reason TEXT
+  crane capability stale
 
 Admins
   crane admin register          (owner: a GitHub admin confirms the owner key on the dashboard)

@@ -1,0 +1,240 @@
+{
+  "repository": "acme/payments",
+  "environments": ["production", "staging"],
+  "task": "PAY-142",
+  "pull_request": "418",
+  "deployment": "dep-7731",
+  "zones": ["refunds"],
+  "flows": ["refund-flow"],
+  "resources": [
+    {
+      "resource_id": "tracker",
+      "resource_type": "tracker",
+      "evidence_types": ["task"],
+      "filters": ["task"],
+      "records": [
+        {
+          "record_id": "PAY-142",
+          "evidence_type": "task",
+          "media_type": "application/json",
+          "content": {
+            "task": "PAY-142",
+            "title": "Make refunds idempotent",
+            "acceptance_criteria": ["A retried refund request never refunds twice", "Existing refunds keep working after the migration"],
+            "pull_request": "418",
+            "approved_by": "lead@acme.example"
+          },
+          "source_timestamp": 1759990000000,
+          "source_revision": "rev-3",
+          "metadata": {"task": "PAY-142"}
+        }
+      ]
+    },
+    {
+      "resource_id": "github",
+      "resource_type": "github",
+      "evidence_types": ["pull_request", "code_change"],
+      "filters": ["commit", "pull_request"],
+      "records": [
+        {
+          "record_id": "418",
+          "evidence_type": "pull_request",
+          "media_type": "application/vnd.github.pull+json",
+          "content": {
+            "number": "418",
+            "title": "PAY-142: idempotency keys for refunds",
+            "branch": "feature/pay-142-idempotent-refunds",
+            "head_sha": "9f1c2ab7d4",
+            "commits": ["9f1c2ab7d4"],
+            "task": "PAY-142",
+            "repository": "acme/payments",
+            "review_state": "approved"
+          },
+          "source_timestamp": 1759993600000,
+          "source_revision": "etag-77",
+          "metadata": {"pull_request": "418", "commit": "9f1c2ab7d4"}
+        },
+        {
+          "record_id": "9f1c2ab7d4",
+          "evidence_type": "code_change",
+          "media_type": "application/vnd.git.commit+json",
+          "content": {
+            "commit": "9f1c2ab7d4",
+            "repository": "acme/payments",
+            "subject": "Require an idempotency key on refunds",
+            "files": [
+              {"path": "app/refunds.py", "additions": 42, "deletions": 7},
+              {"path": "app/refund_worker.py", "additions": 5, "deletions": 1},
+              {"path": "migrations/0042_refund_keys.sql", "additions": 6, "deletions": 0}
+            ],
+            "diff": "--- a/app/refund_worker.py\n+++ b/app/refund_worker.py\n-    key = job.get('idempotency_key')\n+    key = job['idempotency_key']\n"
+          },
+          "source_timestamp": 1759993000000,
+          "source_revision": "9f1c2ab7d4",
+          "metadata": {"commit": "9f1c2ab7d4"}
+        }
+      ]
+    },
+    {
+      "resource_id": "ci",
+      "resource_type": "ci",
+      "evidence_types": ["ci_run", "test_report"],
+      "filters": ["commit", "status"],
+      "records": [
+        {
+          "record_id": "run-5521",
+          "evidence_type": "ci_run",
+          "media_type": "application/vnd.github.check-run+json",
+          "content": {"ci_run": "run-5521", "name": "build", "commit": "9f1c2ab7d4", "status": "success", "repository": "acme/payments"},
+          "source_timestamp": 1759994000000,
+          "source_revision": "attempt-1",
+          "metadata": {"commit": "9f1c2ab7d4", "status": "success"}
+        }
+      ]
+    },
+    {
+      "resource_id": "datasea",
+      "resource_type": "agent_execution",
+      "evidence_types": ["tool_call", "agent_session"],
+      "filters": ["task", "session"],
+      "records": [
+        {
+          "record_id": "evt-901",
+          "evidence_type": "tool_call",
+          "media_type": "application/vnd.datasea.event+json",
+          "content": {"event_type": "tool_call.decided", "session": "ses_demo01", "task": "PAY-142", "tool": "Edit", "decision": "ALLOW", "resource": "app/refund_worker.py", "agent": "claude"},
+          "source_timestamp": 1759992000000,
+          "source_revision": "d-901",
+          "metadata": {"task": "PAY-142", "session": "ses_demo01"}
+        },
+        {
+          "record_id": "evt-902",
+          "evidence_type": "tool_call",
+          "media_type": "application/vnd.datasea.event+json",
+          "content": {"event_type": "tool_call.decided", "session": "ses_demo01", "task": "PAY-142", "tool": "Bash", "decision": "ALLOW", "command": "pytest tests/test_refunds.py", "agent": "claude"},
+          "source_timestamp": 1759992100000,
+          "source_revision": "d-902",
+          "metadata": {"task": "PAY-142", "session": "ses_demo01"}
+        }
+      ]
+    },
+    {
+      "resource_id": "deploy",
+      "resource_type": "deployment",
+      "evidence_types": ["deployment", "verification"],
+      "filters": ["deployment", "environment"],
+      "records": [
+        {
+          "record_id": "dep-7731",
+          "evidence_type": "deployment",
+          "media_type": "application/vnd.deploy+json",
+          "content": {"deployment": "dep-7731", "commit": "9f1c2ab7d4", "environment": "production", "status": "failed", "migration": "false", "started_at": 1759995000000, "repository": "acme/payments"},
+          "source_timestamp": 1759995000000,
+          "source_revision": "dep-7731-v2",
+          "metadata": {"deployment": "dep-7731", "environment": "production"}
+        },
+        {
+          "record_id": "check-smoke-7731",
+          "evidence_type": "verification",
+          "media_type": "application/json",
+          "content": {"deployment": "dep-7731", "check": "smoke", "healthy": false, "environment": "production"},
+          "source_timestamp": 1759995300000,
+          "source_revision": "1",
+          "metadata": {"deployment": "dep-7731", "environment": "production"}
+        }
+      ]
+    },
+    {
+      "resource_id": "logs",
+      "resource_type": "logs",
+      "evidence_types": ["runtime_log"],
+      "filters": ["deployment"],
+      "records": [
+        {
+          "record_id": "log-7731-1",
+          "evidence_type": "runtime_log",
+          "media_type": "text/plain",
+          "content": {"message": "ERROR refund_worker: KeyError 'idempotency_key' while processing job 88213 (queued before the deploy); retrying with password=Sup3rS3cretValue", "deployment": "dep-7731", "environment": "production"},
+          "source_timestamp": 1759995120000,
+          "source_revision": "1",
+          "metadata": {"deployment": "dep-7731"}
+        }
+      ]
+    },
+    {
+      "resource_id": "metrics",
+      "resource_type": "metrics",
+      "evidence_types": ["metric"],
+      "filters": ["deployment"],
+      "unavailable": true,
+      "records": [
+        {
+          "record_id": "m-1",
+          "evidence_type": "metric",
+          "media_type": "application/json",
+          "content": {"points": [{"name": "refund_errors", "value": 412, "unit": "count", "at": 1759995200000}], "deployment": "dep-7731"},
+          "source_timestamp": 1759995200000,
+          "source_revision": "1",
+          "metadata": {"deployment": "dep-7731"}
+        }
+      ]
+    },
+    {
+      "resource_id": "schema-api",
+      "resource_type": "internal_api",
+      "evidence_types": ["configuration"],
+      "filters": ["deployment"],
+      "records": [
+        {
+          "record_id": "schema-0042",
+          "evidence_type": "configuration",
+          "media_type": "application/json",
+          "content": {"deployment": "dep-7731", "migration": "0042_refund_keys", "applied": true},
+          "source_timestamp": 1759995010000,
+          "source_revision": "1",
+          "metadata": {"deployment": "dep-7731"}
+        }
+      ]
+    },
+    {
+      "resource_id": "landscape",
+      "resource_type": "landscape",
+      "evidence_types": ["graph_state"],
+      "filters": ["kind"],
+      "records": [
+        {
+          "record_id": "zone:refunds",
+          "evidence_type": "graph_state",
+          "media_type": "application/vnd.landscape.entity+json",
+          "content": {"kind": "zone", "id": "refunds", "version": 3, "criticality": "critical", "selectors": {"paths": ["app/refund*.py"], "directories": ["migrations"]}, "policies": ["refund_safety"]},
+          "source_revision": "v3",
+          "metadata": {"kind": "zone"}
+        },
+        {
+          "record_id": "flow:refund-flow",
+          "evidence_type": "graph_state",
+          "media_type": "application/vnd.landscape.entity+json",
+          "content": {"kind": "flow", "id": "refund-flow", "version": 2, "entry_points": ["refund"], "include": ["app/refund_worker.py"], "policies": ["refund_safety"]},
+          "source_revision": "v2",
+          "metadata": {"kind": "flow"}
+        }
+      ]
+    },
+    {
+      "resource_id": "crane",
+      "resource_type": "crane",
+      "evidence_types": ["policy"],
+      "filters": ["kind"],
+      "records": [
+        {
+          "record_id": "policy:refund_safety",
+          "evidence_type": "policy",
+          "media_type": "application/vnd.agentscript.policy+json",
+          "content": {"name": "refund_safety", "file": ".crane/policies/refunds.crane", "statements": ["preserve K7Q2M9XA;"]},
+          "source_revision": "c41d0e9a3b2f7781",
+          "metadata": {"kind": "policy"}
+        }
+      ]
+    }
+  ]
+}

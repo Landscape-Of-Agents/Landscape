@@ -1,7 +1,7 @@
 {
   "name": "agent-landscape",
   "private": true,
-  "description": "The Agent Landscape landing page: static HTML with Tailwind CSS compiled at build time.",
+  "description": "The Landscape of Agents landing page: static HTML with Tailwind CSS compiled at build time.",
   "scripts": {
     "build": "tailwindcss -i src/input.css -o public/styles.css --minify",
     "dev": "tailwindcss -i src/input.css -o public/styles.css --watch"

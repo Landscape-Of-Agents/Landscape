@@ -1,4 +1,4 @@
-/** Agent Landscape: black and grey glass, Geist for text, Instrument Serif for accents. */
+/** Landscape of Agents: black and grey glass, Geist for text, Instrument Serif for accents. */
 /** @type {import('tailwindcss').Config} */
 module.exports = {
   content: ["./public/**/*.{html,js}"],

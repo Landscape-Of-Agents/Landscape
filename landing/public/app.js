@@ -1,5 +1,5 @@
 "use strict";
-// Agent Landscape: the latest Crane release and download totals (read from GitHub on every visit,
+// Landscape of Agents: the latest Crane release and download totals (read from GitHub on every visit,
 // so new releases appear without redeploying), a visit counter, install snippets, the CLI
 // reference, the feedback form, and the page's motion (all of it off under reduced motion).
 

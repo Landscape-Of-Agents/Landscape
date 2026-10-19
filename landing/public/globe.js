@@ -1,5 +1,5 @@
 "use strict";
-// The Agent Landscape signature: a revolving dotted globe. Agent nodes on its surface send calls
+// The Landscape of Agents signature: a revolving dotted globe. Agent nodes on its surface send calls
 // to one another along arcs; most arrive and ring white (allowed), some stop short and ring red
 // (denied, as Crane does). Satellites run along two orbit rings. Scrolling spins the globe faster,
 // the pointer tilts it, and it dims below the hero. Under reduced motion it is one still frame.

@@ -127,10 +127,10 @@ test("checks the Crane version before running anything", () => {
   assert.match(old.message ?? "", /0\.4\.3/);
   assert.match(old.message ?? "", /\/opt\/tools\/crane/, "says which executable is too old");
   assert.equal(craneStatus("crane", { code: 127, stdout: "", stderr: "" }).state, "missing");
-  const current = craneStatus("crane", { code: 0, stdout: "crane 0.4.10", stderr: "" });
+  assert.equal(craneStatus("crane", { code: 0, stdout: "crane 0.4.23", stderr: "" }).state, "outdated", "protect and target take context from 0.4.24");
+  const current = craneStatus("crane", { code: 0, stdout: "crane 0.4.24", stderr: "" });
   assert.equal(current.state, "ok");
   assert.equal(current.events, true);
-  assert.equal(craneStatus("crane", { code: 0, stdout: "crane 0.4.8", stderr: "" }).events, false, "editor events need 0.4.10");
 });
 
 test("groups actions under menu headings, keeping search rank", () => {

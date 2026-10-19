@@ -11,6 +11,7 @@ mod capture;
 mod compile;
 mod data;
 mod discover;
+mod evolution;
 mod governance;
 mod invoke;
 mod lab;
@@ -96,6 +97,7 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["capability", ..] => capability::capability(&rest(1)),
         ["compile", ..] => compile::compile(&rest(1)),
         ["lab", ..] => lab::lab(&rest(1)),
+        ["evolution", ..] => evolution::evolution(&rest(1)),
         ["foxx", "event", ..] => audit::foxx_event(&rest(2)),
         ["foxx", "live", ..] => audit::foxx_live(&rest(2)),
         #[cfg(feature = "server")]
@@ -192,6 +194,16 @@ Capability invocation (exact published versions, registered operations only, ver
   crane capability invoke run|inspect|reconcile INVOCATION_ID
   crane capability invoke abandon INVOCATION_ID reason TEXT
   crane capability invoke list
+
+Capability evolution (evidence-backed revision proposals and regression checks; never publishes)
+  crane evolution demo [--json]
+  crane evolution analyze|drift ID [version N] [--json]
+  crane evolution signals|proposals [capability ID] [status STATUS] [--json]
+  crane evolution signal inspect SIGNAL_ID | signal dismiss SIGNAL_ID reason TEXT
+  crane evolution propose SIGNAL_ID [changes FILE] [--json]
+  crane evolution proposal inspect PROPOSAL_ID | proposal abandon PROPOSAL_ID reason TEXT
+  crane evolution regression plan|run|history PROPOSAL_ID | regression inspect RUN_ID
+  crane evolution prepare-review PROPOSAL_ID   (a review packet; nothing is delivered)
 
 Admins
   crane admin register          (owner: a GitHub admin confirms the owner key on the dashboard)

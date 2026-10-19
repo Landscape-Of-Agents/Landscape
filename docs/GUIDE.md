@@ -69,6 +69,7 @@ comments); whitespace-only changes never satisfy a target.
 | Validation Lab | `lab demo [--json]`, `lab run ID [version N] [digest DIGEST] plan FILE [compilation REPORT_ID] [--json]`, `lab reports ID [version N] [--json]` |
 | Discovery | `capability discover demo [--json]`, `capability discover task-class CLASS [environment ENV] [repository REPO] [preconditions ID,ID] [entities ID,ID] [pack PACK digest DIGEST] [--json]`, `capability discover reports [--json]` |
 | Invocation | `capability invoke demo`, `capability invoke plan ID version N digest DIGEST bindings FILE key KEY ...`, `capability invoke approve\|run\|inspect\|reconcile\|abandon INVOCATION_ID ...`, `capability invoke list` |
+| Evolution | `evolution demo`, `evolution analyze\|drift ID [version N]`, `evolution signals\|proposals`, `evolution signal inspect\|dismiss ...`, `evolution propose SIGNAL_ID [changes FILE]`, `evolution proposal inspect\|abandon ...`, `evolution regression plan\|run\|inspect\|history ID`, `evolution prepare-review PROPOSAL_ID` |
 | Integrations | `integrate jira\|slack\|whatsapp\|github` |
 
 `protect` and `target` require `context TEXT` (guidance agents receive whenever they touch the
@@ -534,6 +535,306 @@ invocation history.
 deterministic fixture systems. Durable transactions, compensation, and recovery belong to an
 external transaction runtime that this repository does not contain. Operations that require one
 are blocked until it is integrated behind the `TransactionRuntime` interface.
+
+## Capability evolution
+
+The evolution engine (`src/evolution`) closes the capability lifecycle. It reads invocation
+outcomes, detects evidence-backed signals and dependency drift, proposes minimal revisions, and
+checks them for regressions against their parent. It **proposes and reports only**: it never
+publishes, validates, approves, deprecates, revokes, or rejects a capability, never edits policy,
+and never executes what a capability describes.
+
+```bash
+crane evolution demo                                  # 15 deterministic, synthetic cases
+crane evolution analyze ID [version N]                # never creates a candidate
+crane evolution drift ID [version N]
+crane evolution signals|proposals [capability ID] [status STATUS]
+crane evolution signal inspect SIGNAL_ID | signal dismiss SIGNAL_ID reason TEXT
+crane evolution propose SIGNAL_ID [changes FILE]
+crane evolution proposal inspect PROPOSAL_ID | proposal abandon PROPOSAL_ID reason TEXT
+crane evolution regression plan|run|history PROPOSAL_ID | regression inspect RUN_ID
+crane evolution prepare-review PROPOSAL_ID            # a review packet; nothing is delivered
+```
+
+```mermaid
+flowchart LR
+  C[Work Capture] --> D[Define / Compile] --> V[Validate and Lab] --> S[Discover] --> I[Invoke]
+  I --> O[Observe outcomes] --> G[Signals and drift] --> P[Propose revision]
+  P --> R[Regression checks] --> K[Review packet]
+  K -. people run the existing commands .-> V
+  V -. authorized publisher only .-> PUB[Published version]
+```
+
+**Modules.**
+- `outcomes` reads Component 6's ledger read-only and normalizes each record into an observation.
+- `patterns` detects and qualifies signals with deterministic rules.
+- `drift` checks pinned dependencies.
+- `proposals` builds change sets, runs the gate, and assembles the candidate.
+- `regression` plans and runs regression checks.
+- `reports` is the evolution store.
+- `workflow` holds the operations.
+- `demo` is the synthetic demonstration.
+
+### Outcomes and independent observations
+
+Each invocation record is classified without changing it:
+
+| Class | When |
+| --- | --- |
+| `verified_success` | succeeded, and every required bound claim has a verified result |
+| `declared_success_unverified` | recorded as succeeded without full verification |
+| `failed_verification` | an independent postcondition check failed |
+| `verified_failure` | an operation failed definitively per its system of record |
+| `partially_verified` / `contradicted` | as named |
+| `unknown` / `reconciliation_unresolved` / `abandoned` | as named |
+| `blocked_before_execution` / `in_progress` | not trials |
+
+Only failures and successes that the evidence establishes are counted.
+
+Several things never add independent observations:
+- Retries are attempts inside one record.
+- A resubmission of the same trial (same exact version, task, environment, repository, and inputs
+  under a new idempotency key) collapses into one observation.
+- DataSea lifecycle events are counted for correlation only.
+
+Evidence is read through the actor's own Work Capture access. Restricted and missing references are
+counted and never retrieved.
+
+### Signals and qualification
+
+Trials of the exact digest are partitioned by comparable context: environment, repository, and the
+governance versions current when they ran. Incomparable contexts are never pooled.
+
+Within one context:
+
+| Observations | Signal |
+| --- | --- |
+| Two or more established failures | `repeated_failure` |
+| One established failure | `diagnostic_failure` (never a pattern) |
+| Gaps | `verification_gap` |
+| Contradictions without failures | `contradictory_outcomes` |
+| Only verified successes | `verified_success_pattern` (no change) |
+
+Across the capability as a whole:
+- `dependency_drift`: an observed changed or missing pin.
+- `context_unavailable`: current versions cannot be read.
+- `no_longer_eligible`: the version is withdrawn.
+
+Qualification rules are deterministic decision rules, not statistical confidence:
+- **Independent count.** The defaults are 3, or 5 for high, critical, or unknown risk. The
+  thresholds are configurable.
+- **Verified outcomes only.**
+- **Comparable context.**
+- **No contradictions.**
+- **Failure share.** At least 75% by default.
+- **Context does not explain the failures.** This fails when a failure names unavailable
+  infrastructure, or when the trials ran under changed dependency versions.
+- **Evidence readable.**
+
+Any rule that is not met leaves the signal `insufficient_evidence`. A hypothesis never claims
+causality.
+
+```mermaid
+stateDiagram-v2
+  [*] --> signal_detected
+  signal_detected --> qualifying
+  qualifying --> insufficient_evidence
+  qualifying --> qualified
+  qualified --> investigating
+  investigating --> proposal_created
+  investigating --> no_change_recommended
+  signal_detected --> dismissed
+  qualifying --> dismissed
+  insufficient_evidence --> dismissed
+  qualified --> dismissed
+  investigating --> dismissed
+  no_change_recommended --> dismissed
+  signal_detected --> superseded
+  insufficient_evidence --> superseded
+  qualified --> superseded
+  investigating --> superseded
+  proposal_created --> superseded
+  no_change_recommended --> superseded
+```
+
+Analyses are idempotent. Identical inputs return the stored report and signals; the report identity
+covers:
+- version and digest
+- detector version
+- thresholds
+- the observation set
+- governance versions
+- lifecycle state
+
+A different evidence set produces new signals and supersedes the open ones of the same kind and
+context. Their history is kept. Dismissing a signal needs the Validator role, so agents cannot
+dismiss.
+
+### Proposals and the candidate
+
+A qualified signal yields a minimal, typed change set:
+
+| Signal | Change |
+| --- | --- |
+| `repeated_failure` | a known failure case and negative case |
+| `verification_gap` | an evidence requirement (unresolved assumption) |
+| zone or flow drift | a re-pin to the observed current version |
+| policy drift | `change_policy`, which is always refused |
+
+Suggestions in `changes FILE` use the same typed changes. They are hypotheses, and the gate checks
+them like any other change.
+
+**The gate.** Every change must cite the signal's own evidence.
+
+These changes are allowed:
+- documenting text (failure cases, limitations, open questions)
+- tightening exclusions by `task_class`, `environment`, or `entity`
+- a verification requirement whose method was observed verifying, added as unresolved
+- re-pinning a zone or flow to its current version
+- rewording a step, with its kind unchanged
+- raising risk
+
+These changes are always refused:
+- editing or re-pinning a policy
+- lowering risk or review level
+- removing a claim
+- authoring a claim's status as verified
+- broadening environments or task classes
+- adding steps
+
+**The candidate.** The parent must be the latest version and must not be withdrawn. The candidate is
+the parent's content with the allowed changes, as version `latest + 1` with predecessor `parent`. It
+keeps the parent's provenance references, its change reason names the proposal, and its creation
+method is `manual`. Component 2's `propose_version` stores it as a `candidate`. The parent is never
+modified.
+
+**Crash recovery.** The exact candidate definition is saved in the draft before it is stored. After
+a crash, a retry finds that exact digest instead of creating a duplicate. Proposing the same signal
+and change set again returns the same proposal.
+
+```mermaid
+stateDiagram-v2
+  [*] --> draft
+  draft --> candidate_created
+  draft --> blocked
+  candidate_created --> regression_pending
+  regression_pending --> regression_passed
+  regression_pending --> regression_failed
+  regression_pending --> inconclusive
+  regression_pending --> blocked
+  regression_failed --> regression_pending: new run
+  inconclusive --> regression_pending: new run
+  blocked --> regression_pending: new run
+  regression_passed --> regression_pending: new run
+  regression_passed --> submitted_for_review: reserved, no mechanism
+  candidate_created --> rejected: Component 2 rejected the candidate
+  regression_passed --> rejected
+  draft --> abandoned
+  candidate_created --> abandoned
+  regression_pending --> abandoned
+  draft --> superseded
+  candidate_created --> superseded: newer version or withdrawn parent
+```
+
+`submitted_for_review` is reserved. Crane has no review-request mechanism, so `prepare-review` only
+writes a review packet, which lists the existing commands an authorized person runs. It requires the
+latest run to have passed and to still match the current candidate digest and governance versions.
+The candidate keeps its registry state, and nobody is notified.
+
+### Regression
+
+```mermaid
+flowchart TD
+  A[run requested] --> B[created]
+  B --> C[preflight: digests, created via this proposal, states, context observable and pins current, evidence readable, plan supported]
+  C -- any failure --> X[blocked: no check ran]
+  C --> D[running]
+  D --> E[Lab on parent and candidate, same plan]
+  D --> F[structural, claims, coverage, governance, behavioral checks]
+  E --> G{aggregate}
+  F --> G
+  G -- a required check failed --> H[failed]
+  G -- a required check not passed --> I[inconclusive]
+  G -- every required check passed --> J[passed: not publication approval]
+```
+
+The plan is a Lab test plan that uses only supported scenario kinds and is parsed by the Lab's own
+parser:
+
+| Scenario | Checks |
+| --- | --- |
+| `verified-context-N` | contexts where the parent verifiably succeeded must still apply |
+| `unknown-environment` | an unknown environment never matches |
+| `environment-N` | each environment decides as the change set intends |
+| `pin-N` | every required pin resolves now |
+| `evidence-N` | withholding a verified claim's evidence type leaves it unresolved (kept only when this holds for the parent) |
+| `negative-N`, `failure-N` | the parent's negative cases and the recorded failures are declared |
+
+The engine adds these checks:
+- **Structural:** identity and linkage, provenance, only the declared changes, and Component 2's
+  dry-run gates (which record nothing) compared to the parent.
+- **Claims:** claims are preserved and recomputed from evidence. Nothing becomes verified through
+  authorship.
+- **Coverage:** required claims and the verification method are kept.
+- **Governance:** nothing is weakened, and the publication boundary is held.
+- **Behavioral:** this passes only when the execution contract is identical to the parent's. A
+  changed procedure is `inconclusive`, because the Lab cannot execute either version.
+
+Lab check comparisons work as follows:
+- A comparison establishes non-regression relative to the parent, not the tested property.
+- A Lab check that is not passed for both versions keeps its status and does not decide the
+  aggregate.
+- A blocked preflight is reported as such; it never claims that tests ran.
+
+Every run is a new immutable record linked to the previous one, with `inputs_changed`. Its two Lab
+reports are appended to the Lab's report store.
+
+### Storage, authority, and boundaries
+
+```mermaid
+flowchart LR
+  L[(Invocation ledger, Component 6)] -- read only --> E[Evolution engine]
+  W[(Work Capture)] -- actor's access --> E
+  DS[(DataSea events)] -- counted only --> E
+  LS[Landscape and Crane versions] -- read --> E
+  E -- propose_version only --> REG[(Capability registry, Component 2)]
+  E -- run_lab and dry-run validation --> LAB[Validation Lab]
+  E --> ST[(runtime/evolution/state.json)]
+  PEOPLE[Authorized people] -- validate, publish, reject --> REG
+```
+
+The store is `runtime/evolution/state.json`. It is one locked, atomically replaced document holding
+analyses, signals, proposals, plans, and runs:
+- Every record has a digest that is verified on load. A mismatch fails with `integrity_mismatch`,
+  and nothing is repaired.
+- Analyses, plans, and runs are immutable.
+- Signals and proposals only move forward.
+- The store is separate from the registry and the ledger, and is never authoritative capability
+  state.
+
+**Roles.**
+- Any registry role may analyze, propose, and run regressions. That includes agents, as
+  contributors.
+- Analysis is authorized before anything is read.
+- An actor sees only the invocations Component 6 shows it: its own, or all of them for validators.
+
+**Exit codes.** These exit non-zero after printing the record:
+- a non-passed regression
+- a blocked proposal
+- a demo mismatch
+
+**Limitations.**
+- Locally, only the read-only Git adapter produces invocations, so live outcome history is thin.
+  The demo is fully synthetic and labelled as such.
+- Nothing executes procedures, so behavioral equivalence of a changed procedure stays
+  `inconclusive`.
+- The compiler builds candidates only from work episodes and cannot express a revision. Revisions
+  therefore use Component 2's `propose_version` directly, with creation method `manual`, and Lab
+  step conformance (which needs compiler output) does not apply to them.
+- There is no review-request mechanism.
+- A future verification or transaction adapter plugs in behind Component 6's existing adapter and
+  `TransactionRuntime` interfaces. The evolution engine only reads their results, so the authority
+  model does not change.
 
 ## Integrations and alerts
 

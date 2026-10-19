@@ -226,16 +226,7 @@ impl Local {
         };
         let lab = LabStore::open(&context.runtime).load()?;
         let discovery = DiscoveryStore::open(&context.runtime).load()?;
-        let compilation = read_lines(&context.runtime.join("compiler").join("reports.jsonl"))?
-            .into_iter()
-            .map(|value| {
-                serde_json::from_value::<CompilationReport>(value)
-                    .map_err(|error| format!("a compilation report is malformed: {error}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .filter(CompilationReport::verify_digest)
-            .collect();
+        let compilation = compilation_reports(&context.runtime)?;
         Ok(Self {
             context,
             ledger,
@@ -246,6 +237,28 @@ impl Local {
             compilation,
         })
     }
+}
+
+/** Load the stored compilation reports that match their digests
+ * Input
+    - runtime: &std::path::Path - the repository's runtime folder
+ * Output
+    - Result<Vec<CompilationReport>, String>
+    - Error when a stored report is malformed
+*/
+pub(super) fn compilation_reports(
+    runtime: &std::path::Path,
+) -> Result<Vec<CompilationReport>, String> {
+    Ok(read_lines(&runtime.join("compiler").join("reports.jsonl"))?
+        .into_iter()
+        .map(|value| {
+            serde_json::from_value::<CompilationReport>(value)
+                .map_err(|error| format!("a compilation report is malformed: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(CompilationReport::verify_digest)
+        .collect())
 }
 
 /** Run a closure with an engine over the local context

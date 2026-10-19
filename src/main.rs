@@ -15,6 +15,7 @@ mod capture;
 mod cli;
 mod compiler;
 mod discovery;
+mod evolution;
 mod foxx;
 mod github;
 mod governance;

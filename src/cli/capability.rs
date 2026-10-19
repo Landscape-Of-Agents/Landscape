@@ -7,7 +7,7 @@
 // commands that always require a reason.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
@@ -113,13 +113,15 @@ fn print_json(value: &impl serde::Serialize) -> Result<(), String> {
     - current: CurrentVersions - current Landscape and Crane versions
     - actor: Actor - the person running Crane
     - reader: AccessPolicy - their Work Capture access
+    - runtime: PathBuf - the repository's runtime folder in the trust directory
 */
-struct Context {
-    registry: CapabilityRegistry,
-    capture: CaptureStore,
-    current: CurrentVersions,
-    actor: Actor,
-    reader: AccessPolicy,
+pub(super) struct Context {
+    pub(super) registry: CapabilityRegistry,
+    pub(super) capture: CaptureStore,
+    pub(super) current: CurrentVersions,
+    pub(super) actor: Actor,
+    pub(super) reader: AccessPolicy,
+    pub(super) runtime: PathBuf,
 }
 
 impl Context {
@@ -129,7 +131,7 @@ impl Context {
      * Output
         - Result<Context, String>
     */
-    fn open() -> Result<Self, String> {
+    pub(super) fn open() -> Result<Self, String> {
         let workspace = Workspace::locate()?;
         let trust = workspace.trust()?;
         let runtime = trust.runtime();
@@ -161,6 +163,7 @@ impl Context {
             current: CurrentVersions::from_workspace(&workspace),
             actor,
             reader,
+            runtime,
         })
     }
 
@@ -199,7 +202,7 @@ fn is_admin(workspace: &Workspace, key: Option<String>) -> bool {
  * Output
     - Result<Value, String>
 */
-fn read_json(path: &str) -> Result<Value, String> {
+pub(super) fn read_json(path: &str) -> Result<Value, String> {
     let text = std::fs::read_to_string(Path::new(path))
         .map_err(|error| format!("could not read {path}: {error}"))?;
     serde_json::from_str(&text).map_err(|error| format!("{path} is not valid JSON: {error}"))

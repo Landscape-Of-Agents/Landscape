@@ -12,6 +12,7 @@
 mod capability;
 mod capture;
 mod cli;
+mod compiler;
 mod foxx;
 mod github;
 mod governance;

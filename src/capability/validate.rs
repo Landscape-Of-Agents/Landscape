@@ -1319,7 +1319,7 @@ fn verification(
  * Output
     - bool
 */
-fn touches_policy(text: &str) -> bool {
+pub(crate) fn touches_policy(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     lower.contains(".crane/")
         || lower.contains("crane policy")

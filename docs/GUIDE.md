@@ -65,6 +65,7 @@ comments); whitespace-only changes never satisfy a target.
 | Zones and flows | `governance sign`, `governance graph [--json]` (zones, flows, and selections as an acyclic graph, with the agents active in each) |
 | Work Capture | `capture demo [--json]`, `capture sources [--json]`, `capture investigate [commit SHA] [task TASK_ID] [--json]` |
 | Capabilities | `capability demo`, `capability intake ...`, `capability create\|propose FILE`, `capability validate (ID [--dry-run] \| file FILE)`, `capability inspect\|versions\|list`, `capability publish ID version N reason TEXT`, `capability deprecate\|revoke\|reject ...`, `capability stale` |
+| Compiler | `compile demo [--json]`, `compile episode EPI pack PCK digest D capability ID name TEXT purpose TEXT task-class CLASS [intent FILE] [risk RISK] [profile NAME] [--json]` |
 | Integrations | `integrate jira\|slack\|whatsapp\|github` |
 
 `protect` and `target` require `context TEXT` (guidance agents receive whenever they touch the
@@ -333,6 +334,52 @@ Every refused privileged operation is recorded. The registry is one versioned do
 (`runtime/capability/registry.json`). Each change is a locked, reloaded, atomically replaced
 transaction, so concurrent writers lose nothing and an interrupted write leaves the previous
 document intact.
+
+## Capability Compiler
+
+The compiler (`src/compiler`) turns the evidence of one completed work episode into a capability
+candidate in the Capability Registry's schema, plus a separate compilation report. It owns no
+store. It submits the intake through the registry (integrity, authorization, references,
+idempotency), checks the candidate with the registry's gates as a dry run, and stores it only as a
+`candidate`. Compiling never validates for the record, publishes, executes, or changes policy.
+
+```bash
+crane compile demo
+crane compile episode EPI pack PCK digest D capability ID name TEXT purpose TEXT task-class CLASS       [intent FILE] [risk RISK] [profile NAME] [--json]
+```
+
+| Outcome | Meaning |
+| --- | --- |
+| `candidate_generated` | stored; every required claim maps to evidence |
+| `needs_more_evidence` | stored, with blocking gaps (missing, contradicted, untested, unknown outcome) |
+| `insufficient_reusable_signal` | the episode failed or shows no observed action; nothing stored |
+| `compilation_failed` | invalid request, or the candidate fails the structural gate; nothing stored |
+| `compilation_blocked` | authorization, integrity, references, or an observed policy change; nothing stored |
+
+**Where the parts of a candidate come from:**
+- **Steps:** each comes from one observed record (a tool call, commit, approval, CI run, test report,
+  deployment, or check). Its kind is inferred by fixed rules; an unrecognized command counts as a
+  change.
+- **Technical claims:** come only from supported Work Capture assertions.
+- **Business invariants:** verified only by a check record that names the invariant and reports
+  that it held, under an authoritative mapping.
+- **Acceptance criteria:** stay declared.
+- **Environments:** exactly the observed ones. Generalizing beyond the one episode is an
+  unresolved assumption.
+- **Risk:** raised when the procedure changes state, never lowered.
+- **Model-proposed steps:** accepted only if they cite readable evidence of the pack, do not touch
+  policy, and fit the risk; they stay hypotheses.
+
+**The report** records:
+- the compiler, schema, and report versions
+- lineage: intake, pack and digest, investigation, recipe, and source references
+- the extraction method and the candidate digest
+- the basis of every step, claim, and applicability element (`observed`, `declared`, `derived`,
+  `inferred`, `hypothesis`, `unknown`)
+- gaps, warnings, unresolved questions, and the dry-run gate results
+
+Reports are appended to `runtime/compiler/reports.jsonl`. Compiling the same inputs again reuses the
+stored version; changed inputs become a new linked version.
 
 ## Integrations and alerts
 

@@ -8,6 +8,7 @@ mod args;
 mod audit;
 mod capability;
 mod capture;
+mod compile;
 mod data;
 mod governance;
 mod link;
@@ -90,6 +91,7 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["governance", ..] => governance::governance(&rest(1)),
         ["capture", ..] => capture::capture(&rest(1)),
         ["capability", ..] => capability::capability(&rest(1)),
+        ["compile", ..] => compile::compile(&rest(1)),
         ["foxx", "event", ..] => audit::foxx_event(&rest(2)),
         ["foxx", "live", ..] => audit::foxx_live(&rest(2)),
         #[cfg(feature = "server")]
@@ -160,6 +162,11 @@ Capabilities (versioned, validated reusable procedures; publication needs an adm
   crane capability publish ID version N reason TEXT [acknowledge CODE,CODE]
   crane capability deprecate|revoke ID [version N] reason TEXT | reject ID version N reason TEXT
   crane capability stale
+
+Capability compiler (evidence of one episode -> a capability candidate; never validates or publishes)
+  crane compile demo [--json]
+  crane compile episode EPISODE pack PACK digest DIGEST capability ID name TEXT purpose TEXT
+                task-class CLASS [intent FILE] [risk RISK] [profile NAME] [--json]
 
 Admins
   crane admin register          (owner: a GitHub admin confirms the owner key on the dashboard)

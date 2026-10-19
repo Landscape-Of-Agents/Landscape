@@ -66,6 +66,9 @@ comments); whitespace-only changes never satisfy a target.
 | Work Capture | `capture demo [--json]`, `capture sources [--json]`, `capture investigate [commit SHA] [task TASK_ID] [--json]` |
 | Capabilities | `capability demo`, `capability intake ...`, `capability create\|propose FILE`, `capability validate (ID [--dry-run] \| file FILE)`, `capability inspect\|versions\|list`, `capability publish ID version N reason TEXT`, `capability deprecate\|revoke\|reject ...`, `capability stale` |
 | Compiler | `compile demo [--json]`, `compile episode EPI pack PCK digest D capability ID name TEXT purpose TEXT task-class CLASS [intent FILE] [risk RISK] [profile NAME] [--json]` |
+| Validation Lab | `lab demo [--json]`, `lab run ID [version N] [digest DIGEST] plan FILE [compilation REPORT_ID] [--json]`, `lab reports ID [version N] [--json]` |
+| Discovery | `capability discover demo [--json]`, `capability discover task-class CLASS [environment ENV] [repository REPO] [preconditions ID,ID] [entities ID,ID] [pack PACK digest DIGEST] [--json]`, `capability discover reports [--json]` |
+| Invocation | `capability invoke demo`, `capability invoke plan ID version N digest DIGEST bindings FILE key KEY ...`, `capability invoke approve\|run\|inspect\|reconcile\|abandon INVOCATION_ID ...`, `capability invoke list` |
 | Integrations | `integrate jira\|slack\|whatsapp\|github` |
 
 `protect` and `target` require `context TEXT` (guidance agents receive whenever they touch the
@@ -380,6 +383,157 @@ crane compile episode EPI pack PCK digest D capability ID name TEXT purpose TEXT
 
 Reports are appended to `runtime/compiler/reports.jsonl`. Compiling the same inputs again reuses the
 stored version; changed inputs become a new linked version.
+
+## Capability Validation Lab
+
+The lab (`src/capability_lab`) runs deterministic, non-executing checks of one exact candidate
+version. It checks the candidate against its compilation report, its cited evidence, an approved
+test plan, and the current Landscape and Crane versions, and it writes a versioned,
+integrity-protected report.
+
+```bash
+crane lab demo
+crane lab run ID [version N] [digest DIGEST] plan FILE [compilation REPORT_ID] [--json]
+crane lab reports ID [version N]
+```
+
+**What it checks:**
+- **Preflight:** the stored definition matches the requested digest; rejected and revoked versions
+  are not examined; the compilation report recomputes to its digest and names this exact version.
+  The compiler's blocking gaps are carried as `blocked`, never passed, so candidates compiled with
+  `needs_more_evidence` can be examined without bypassing them.
+- **Conformance:**
+  - Every compiled step is re-derived from its cited record with the compiler's rule and must
+    match. Steps kept as changes only because their command was unrecognized are inconclusive, and
+    so are proposed steps.
+  - Each claim's recorded basis is checked against its sources.
+- **Scenarios:** a test plan holds only a closed set of typed checks (`applicability`,
+  `stale_dependency`, `missing_evidence`, `negative_case`). Each is evaluated against the
+  candidate's contracts; nothing is executed.
+- **Invariants:**
+  - Claims are recomputed with the registry's rule.
+  - A claim resting on contradictory evidence fails.
+  - Required business invariants must verify.
+  - Stale or missing required dependencies fail.
+  - The single-episode generalization stays inconclusive.
+
+**Results.** Each check is `passed`, `failed`, `not_run`, `blocked`, or `inconclusive`, with
+counterexamples kept. The overall status is the worst one, and `lab run` exits with an error when
+a check failed. Reports reference the candidate digest, the compilation report, the test plan and
+its scenarios, the evidence, the environment, and the governance versions. They state their
+limitations: chronological order is not causation, branch notes are untested, and some steps were
+assumed changes.
+
+**Storage and authority.** Reports are appended to `runtime/capability_lab/reports.jsonl` and
+verified on load. They change no lifecycle state and no eligibility: Component 2 keeps validation
+and publication authority and has no interface that consumes lab results. Lab reports are found by
+exact version with `crane lab reports`. A passing check proves only what it tested.
+
+## Capability discovery
+
+Discovery (`src/discovery`) finds published capabilities for a task and explains every decision.
+It is read-only over the registry, the Lab, and Work Capture: it never changes a definition,
+lifecycle state, validation, or eligibility, and it executes and composes nothing.
+
+```bash
+crane capability discover demo
+crane capability discover task-class CLASS [environment ENV] [repository REPO] [preconditions ID,ID]
+               [entities ID,ID] [pack PACK digest DIGEST] [--json]
+crane capability discover reports
+```
+
+**Context.** The requester must hold a registry role, and the Work Capture access policy must be
+their own. An Evidence Pack given as context must exist, recompute to its digest, and be readable
+by the requester; its environment, repository, and zone and flow versions become observed context.
+A declared value that contradicts an observed one stays unknown.
+
+**Gates.** Candidates come from the registry's own queries. Each passes these gates in order:
+
+| Gate | Requirement | If it fails |
+| --- | --- | --- |
+| Eligibility | a published, currently eligible version (not revoked, deprecated, or stale) | rejected |
+| Validation currency | nothing the version was validated against has changed, checked live even if not yet marked | blocked |
+| Applicability | Component 2's exact matcher says yes | rejected on no, unresolved on unknown |
+| Scope | the task's zone and flow versions equal the pinned ones | rejected on a mismatch, unresolved if unknown |
+| Dependencies | every required dependency resolves now | blocked |
+| Lab reports | no lab report for the exact digest failed | blocked |
+
+Unknown conditions never count as satisfied, and an empty environment list means no known
+environment. Inconclusive lab reports are shown but never counted as success.
+
+**Ranking.** Ranking (v1) applies only to candidates that passed every gate. It orders them by a
+passed lab report, then fewer unverified assumptions, lower risk, the higher version, and finally
+the capability id.
+
+**Outcomes.** A discovery returns `recommended`, `no_match`, `insufficient_context` (only unknowns
+stand in the way), or `blocked` (the request was refused, or every applicable candidate is blocked).
+
+**Reports.** Reports record the request, the resolved context with each value's basis, the registry
+generation and governance versions, every candidate's digest, conditions, lab reports,
+disposition, and ranking reasons, and what stayed unresolved. They are integrity-protected and
+appended to `runtime/discovery/reports.jsonl`.
+
+## Capability invocation
+
+The invocation engine (`src/invocation`) invokes one exact, published capability version through
+explicitly registered, typed operations. It verifies the actual outcome with independently
+obtained evidence and records every step in an integrity-protected ledger. It never changes a
+definition, lifecycle state, validation, or policy, and it never runs recorded tool calls,
+arbitrary commands, or model output.
+
+```bash
+crane capability invoke demo
+crane capability invoke plan ID version N digest DIGEST bindings FILE key KEY [inputs FILE]
+      [environment ENV] [repository REPO] [task TASK] [preconditions ID,ID] [discovery ID] [--execute]
+crane capability invoke approve INVOCATION_ID plan-digest DIGEST
+crane capability invoke run|inspect|reconcile INVOCATION_ID
+crane capability invoke abandon INVOCATION_ID reason TEXT
+crane capability invoke list
+```
+
+**Plans.** The capability schema describes steps, not operations, so a reviewed *binding set* maps
+each step to a registered operation (adapter, operation, typed parameters) and each claim to a
+verification method. A plan is blocked when:
+- a step has no binding, or its operation's kind or effect class does not match the step;
+- a parameter is mistyped or refers to Crane policy;
+- a required input is missing;
+- the compilation report shows a proposed step, an unrecognized command, or a procedure branch
+  (plans are strictly linear);
+- a verification method reuses one of the plan's own operations.
+
+**Preflight and execution.** Before any effect, and again immediately before execution, the engine
+rechecks:
+- identity and digest, eligibility, and staleness (checked live)
+- lab reports for the exact digest (a failed one blocks)
+- dependencies, exact applicability, and confirmed preconditions
+- policy, required evidence, and adapter health
+
+A discovery report is advisory only. Medium or higher risk and every state-changing operation need
+an approval from another person of the required review level, bound to the plan digest and scope;
+a changed plan invalidates it.
+
+**Effects and reconciliation.** Dispatch intent is persisted before state-changing operations.
+- A timeout before dispatch (or of a read-only operation) may be retried within the limit.
+- Any other uncertain effect moves the invocation to `reconciliation_required`. Reconciliation
+  against the authoritative system resumes execution, proceeds to verification, or leaves the
+  invocation `unknown` until an authorized person reconciles again or abandons it.
+- Compensation is recorded separately and never treated as proof that an effect did not happen.
+
+**Lifecycle and outcomes.** The lifecycle is `requested`, `authorizing`, `preflighting`,
+`plan_ready`, `awaiting_approval`, `executing`, `verifying`, then `succeeded`, `failed`,
+`partially_verified`, `unknown`, `blocked`, or `abandoned`. Every transition is validated and
+recorded. Only verified required postconditions make `succeeded`; missing or contradictory evidence
+never does.
+
+**Ledger and events.** The ledger is `runtime/invocation/ledger.json`, one locked, atomically
+replaced document with per-record digests and idempotency keys. Lifecycle events go to DataSea's
+event log as `capability.invocation.STATE`. The outcome is also recorded in the capability's
+invocation history.
+
+**Adapters and limits.** Locally, only a read-only `git.commit` adapter is registered; the demo uses
+deterministic fixture systems. Durable transactions, compensation, and recovery belong to an
+external transaction runtime that this repository does not contain. Operations that require one
+are blocked until it is integrated behind the `TransactionRuntime` interface.
 
 ## Integrations and alerts
 

@@ -10,14 +10,17 @@
 // Capture & Evidence Ingestion, which reads those layers as evidence sources and never writes them.
 
 mod capability;
+mod capability_lab;
 mod capture;
 mod cli;
 mod compiler;
+mod discovery;
 mod foxx;
 mod github;
 mod governance;
 mod hooks;
 mod integrations;
+mod invocation;
 mod platform;
 mod selection;
 #[cfg(feature = "server")]

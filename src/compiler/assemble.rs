@@ -197,6 +197,20 @@ impl CompilationReport {
         self.digest = digest;
         self
     }
+
+    /** Check that the report's content still matches its digest and identifier
+     * Input
+        - None (uses self)
+     * Output
+        - bool
+    */
+    pub(crate) fn verify_digest(&self) -> bool {
+        let mut content = self.clone();
+        content.digest = String::new();
+        content.report_id = String::new();
+        let digest = digest_json("compiler/report/v1", &json!(content))[..32].to_string();
+        digest == self.digest && self.report_id == stable_id("cmp", &[&digest])
+    }
 }
 
 /** Check a request's own fields before anything is touched

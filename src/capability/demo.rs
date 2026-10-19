@@ -38,7 +38,7 @@ use crate::capture::ingest::pack::EvidencePack;
 use crate::capture::{demo as capture_demo, AccessPolicy, Actor, ActorKind};
 
 /** The low-risk diagnostics fixture */
-const DIAGNOSTICS: &str = include_str!("fixtures/deployment_diagnostics.json");
+pub(crate) const DIAGNOSTICS: &str = include_str!("fixtures/deployment_diagnostics.json");
 
 /** The high-risk refund recovery fixture */
 const RECOVERY: &str = include_str!("fixtures/refund_recovery.json");

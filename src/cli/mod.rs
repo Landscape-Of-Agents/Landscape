@@ -10,7 +10,10 @@ mod capability;
 mod capture;
 mod compile;
 mod data;
+mod discover;
 mod governance;
+mod invoke;
+mod lab;
 mod link;
 mod repo;
 mod runtime;
@@ -92,6 +95,7 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["capture", ..] => capture::capture(&rest(1)),
         ["capability", ..] => capability::capability(&rest(1)),
         ["compile", ..] => compile::compile(&rest(1)),
+        ["lab", ..] => lab::lab(&rest(1)),
         ["foxx", "event", ..] => audit::foxx_event(&rest(2)),
         ["foxx", "live", ..] => audit::foxx_live(&rest(2)),
         #[cfg(feature = "server")]
@@ -167,6 +171,27 @@ Capability compiler (evidence of one episode -> a capability candidate; never va
   crane compile demo [--json]
   crane compile episode EPISODE pack PACK digest DIGEST capability ID name TEXT purpose TEXT
                 task-class CLASS [intent FILE] [risk RISK] [profile NAME] [--json]
+
+Capability Validation Lab (deterministic checks of an exact candidate; nothing executed)
+  crane lab demo [--json]
+  crane lab run ID [version N] [digest DIGEST] plan FILE [compilation REPORT_ID] [--json]
+  crane lab reports ID [version N] [--json]
+
+Capability discovery (published, eligible capabilities for a task, with explanations; read-only)
+  crane capability discover demo [--json]
+  crane capability discover task-class CLASS [environment ENV] [repository REPO]
+                 [preconditions ID,ID] [entities ID,ID] [pack PACK digest DIGEST] [--json]
+  crane capability discover reports [--json]
+
+Capability invocation (exact published versions, registered operations only, verified outcomes)
+  crane capability invoke demo [--json]
+  crane capability invoke plan ID version N digest DIGEST bindings FILE key KEY [inputs FILE]
+                 [environment ENV] [repository REPO] [task TASK] [preconditions ID,ID]
+                 [discovery REPORT_ID] [compilation REPORT_ID] [--execute] [--json]
+  crane capability invoke approve INVOCATION_ID plan-digest DIGEST
+  crane capability invoke run|inspect|reconcile INVOCATION_ID
+  crane capability invoke abandon INVOCATION_ID reason TEXT
+  crane capability invoke list
 
 Admins
   crane admin register          (owner: a GitHub admin confirms the owner key on the dashboard)

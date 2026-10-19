@@ -1,0 +1,42 @@
+{
+  "plan_id": "refund-change-lab",
+  "version": 1,
+  "description": "Approved checks for the compiled refund change capability",
+  "scenarios": [
+    {
+      "scenario_id": "applies-in-production",
+      "description": "A refund change in production with its preconditions confirmed",
+      "check": {"kind": "applicability", "task_class": "refund-change", "environment": "production", "preconditions": ["repository-access", "deployment-target-known"], "expect": "yes"}
+    },
+    {
+      "scenario_id": "not-in-staging",
+      "description": "Staging was never observed, so the capability does not claim it",
+      "check": {"kind": "applicability", "task_class": "refund-change", "environment": "staging", "preconditions": ["repository-access", "deployment-target-known"], "expect": "no"}
+    },
+    {
+      "scenario_id": "unknown-environment",
+      "description": "An unknown environment never matches",
+      "check": {"kind": "applicability", "task_class": "refund-change", "environment": null, "preconditions": ["repository-access", "deployment-target-known"], "expect": "unknown"}
+    },
+    {
+      "scenario_id": "zone-moves-on",
+      "description": "The refunds zone moves to v4",
+      "check": {"kind": "stale_dependency", "dependency": "zone", "id": "refunds", "current_version": "v4", "expect": "stale"}
+    },
+    {
+      "scenario_id": "policy-unchanged",
+      "description": "The refund policy is still the version the evidence ran under",
+      "check": {"kind": "stale_dependency", "dependency": "policy", "id": "refund_safety", "current_version": "c41d0e9a3b2f7781", "expect": "resolved"}
+    },
+    {
+      "scenario_id": "without-checks",
+      "description": "Without the post-deployment checks, the deployment and the invariant are unverified",
+      "check": {"kind": "missing_evidence", "evidence_type": "verification", "expect_unresolved": ["deployment-succeeded", "invariant-inv-no-double-refund"]}
+    },
+    {
+      "scenario_id": "recovery-untested",
+      "description": "The contract states that recovery was never exercised",
+      "check": {"kind": "negative_case", "declares": "Recovery or rollback was not exercised"}
+    }
+  ]
+}

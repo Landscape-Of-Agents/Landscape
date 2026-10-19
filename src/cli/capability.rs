@@ -42,7 +42,9 @@ const USAGE: &str = "usage: crane capability demo [--json]
        crane capability publish ID version N reason TEXT [acknowledge CODE,CODE] [--json]
        crane capability deprecate|revoke ID [version N] reason TEXT
        crane capability reject ID version N reason TEXT
-       crane capability stale [--json]";
+       crane capability stale [--json]
+       crane capability discover demo|task-class CLASS ...|reports [--json]
+       crane capability invoke demo|plan|approve|run|inspect|list|reconcile|abandon ...";
 
 /** Dispatch a capability command
  * Input
@@ -86,6 +88,8 @@ pub(crate) fn capability(args: &[String]) -> Result<(), String> {
         Some(command @ ("deprecate" | "revoke" | "reject")) => {
             withdraw(command, &Args::parse(rest(), &["version", "reason"], &[])?)
         }
+        Some("discover") => super::discover::discover_command(rest()),
+        Some("invoke") => super::invoke::invoke(rest()),
         Some("stale") => stale(&Args::parse(rest(), &[], &["json"])?),
         _ => Err(USAGE.into()),
     }
@@ -114,6 +118,7 @@ fn print_json(value: &impl serde::Serialize) -> Result<(), String> {
     - actor: Actor - the person running Crane
     - reader: AccessPolicy - their Work Capture access
     - runtime: PathBuf - the repository's runtime folder in the trust directory
+    - workspace: Workspace - the repository
 */
 pub(super) struct Context {
     pub(super) registry: CapabilityRegistry,
@@ -122,6 +127,7 @@ pub(super) struct Context {
     pub(super) actor: Actor,
     pub(super) reader: AccessPolicy,
     pub(super) runtime: PathBuf,
+    pub(super) workspace: Workspace,
 }
 
 impl Context {
@@ -164,6 +170,7 @@ impl Context {
             actor,
             reader,
             runtime,
+            workspace,
         })
     }
 

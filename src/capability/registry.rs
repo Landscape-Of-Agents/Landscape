@@ -972,7 +972,6 @@ impl CapabilityRegistry {
         - CapabilityResult<()>
         - Error when unauthorized or unknown
     */
-    #[cfg_attr(not(test), allow(dead_code))] // extension point for future invocation history; exercised by the acceptance tests
     pub(crate) fn record_invocation(
         &mut self,
         actor: &Actor,

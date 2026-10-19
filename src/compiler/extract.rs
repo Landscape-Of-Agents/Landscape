@@ -113,13 +113,40 @@ fn parameter(name: &str, kind: ParamKind, description: &str) -> Parameter {
     }
 }
 
+/** Report whether the step rule recognized a record's action; false when a tool call's kind fell
+ * back to the conservative default (an unrecognized tool or command is assumed to be a change)
+ * Input
+    - record: &EvidenceRecord - record
+ * Output
+    - bool
+*/
+pub(crate) fn recognized(record: &EvidenceRecord) -> bool {
+    if record.evidence_type != EvidenceType::ToolCall {
+        return true;
+    }
+    let tool = record.field("tool").unwrap_or_default();
+    let target = record
+        .field("command")
+        .or_else(|| record.field("resource"))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match tool.as_str() {
+        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "Read" | "Grep" | "Glob" | "LS"
+        | "WebFetch" => true,
+        "Bash" | "Shell" => ["test", "pytest", "cargo test", "npm test", "go test"]
+            .iter()
+            .any(|word| target.contains(word)),
+        _ => false,
+    }
+}
+
 /** The step a record represents, if any: kind and description
  * Input
     - record: &EvidenceRecord - record
  * Output
     - Option<(StepKind, String)>
 */
-fn step_of(record: &EvidenceRecord) -> Option<(StepKind, String)> {
+pub(crate) fn step_of(record: &EvidenceRecord) -> Option<(StepKind, String)> {
     let field = |name: &str| record.field(name);
     match record.evidence_type {
         EvidenceType::ToolCall => {

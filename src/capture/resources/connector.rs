@@ -54,8 +54,8 @@ impl ConnectorStatus {
     }
 }
 
-/** The scope a query is confined to; None means the query is not confined by that dimension,
- * which validation allows only when the resource itself is not scoped by it
+/**
+The scope a query is confined to; None means the query is not confined by that dimension, which validation allows only when the resource itself is not scoped by it
  * Fields
     - repository: Option<String> - repository
     - environment: Option<String> - environment
@@ -88,9 +88,8 @@ pub(crate) struct QuerySpec {
 }
 
 impl QuerySpec {
-    /** Validate the query against the resource it is sent to: the operation and evidence type
-     * are supported, filters are declared and exact, limits are bounded, and the scope stays
-     * inside the resource's scope (a scoped resource is never queried without that scope)
+    /**
+     Validate the query against the resource it is sent to: the operation and evidence type are supported, filters are declared and exact, limits are bounded, and the scope stays inside the resource's scope (a scoped resource is never queried without that scope)
      * Input
         - definition: &ResourceDefinition - target resource
      * Output
@@ -302,9 +301,8 @@ pub(crate) trait ResourceConnector {
     fn health_check(&self) -> HealthReport;
 }
 
-/** Answer a query from an in-memory list of records: exact filters on metadata, the evidence
- * type, the time window (a record without a source time never matches a time-bounded query), the
- * cursor (an offset), and the page limit
+/**
+Answer a query from an in-memory list of records: exact filters on metadata, the evidence type, the time window (a record without a source time never matches a time-bounded query), the cursor (an offset), and the page limit
  * Input
     - records: &[SourceRecord] - every record the source holds
     - spec: &QuerySpec - query

@@ -148,7 +148,8 @@ impl ResourceConnector for FixtureConnector {
         self.apply(ConnectorOutcome::ok(found, Some(self.snapshot())))
     }
 
-    /** Answer a query from the records
+    /**
+    Answer a query from the records
      * Input
         - spec: &QuerySpec - query
      * Output

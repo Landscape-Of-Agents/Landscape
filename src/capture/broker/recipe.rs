@@ -279,7 +279,8 @@ pub(crate) struct EvidenceRecipe {
     pub(crate) limits: Budget,
 }
 
-/** Check a parameter template: a literal without braces, or exactly "{variable}"
+/**
+Check a parameter template: a literal without braces, or exactly "{variable}"
  * Input
     - template: &str - template
  * Output

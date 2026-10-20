@@ -473,11 +473,11 @@ impl EvidencePack {
         entries
     }
 
-    /** Recompute the manifest from the pack's content and compare it with the recorded one; a
-     * match proves the content is unchanged since sealing, not that its claims are true
-     * Input
+    /**
+    Recompute the manifest from the pack's content and compare it with the recorded one, match proves the content is unchanged since sealing not that its claims are true.
+    - Input
         - None (uses self)
-     * Output
+    - Output
         - Result<(), String>
         - Error naming the first item or digest that differs
     */

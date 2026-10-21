@@ -16,13 +16,17 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::proposals::ProposalStatus;
 use super::recipe::{
     self, fill, Budget, EvidenceRecipe, Predicate, RecipeBook, RecipeRef, RecipeStep,
     RequiredEvidence,
 };
-use crate::capture::correlate::assertions::{derive, AssertionStatus, Subjects};
+use crate::capture::correlate::assertions::{
+    derive, governance_touched, AssertionStatus, Subjects,
+};
+use crate::capture::correlate::graph::EvidenceGraph;
 use crate::capture::correlate::graph::{Direction, TraversalRequest};
-use crate::capture::correlate::link::{link, link_governance, LinkContext};
+use crate::capture::correlate::link::{link, link_governance_changes, LinkContext};
 use crate::capture::correlate::model::{entity_id, EntityKind, NodeRef, RelationType};
 use crate::capture::format::record::{EvidenceRecord, EvidenceType, ParseStatus, RecordScope};
 use crate::capture::ingest::contributions::{ContributionStatus, Locality, TargetKind, TargetRef};
@@ -32,10 +36,11 @@ use crate::capture::ingest::pack::{
     PackLimits, Retrieval, SourceReport, SourceState, StepSummary, Warning, WarningKind,
 };
 use crate::capture::ingest::selection::{
-    select, Criteria, DeterministicRanker, ExclusionReason, Ranker,
+    reveals_forbidden_scope, select, withheld, Criteria, DeterministicRanker, ExclusionReason,
+    Ranker,
 };
 use crate::capture::resources::connector::{
-    ConnectorOutcome, ConnectorStatus, QueryScope, QuerySpec, ResourceConnector,
+    ConnectorOutcome, ConnectorStatus, QueryScope, QuerySpec, ResourceConnector, MAX_PAGE,
 };
 use crate::capture::resources::registry::{
     Operation, ResourceDefinition, ResourceRegistry, ResourceType,
@@ -88,6 +93,8 @@ pub(crate) struct KnownRefs {
     - budget: Budget - retrieval budget (tightened by the recipe's and the ceiling)
     - freshness_ms: Option<u64> - evidence older than this is flagged
     - pack_limits: PackLimits - Evidence Pack bounds
+    - plan_required: Vec<RequiredEvidence> - for a proposed plan, evidence required under a condition
+      (absent in older requests)
 */
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct EvidenceQueryRequest {
@@ -105,6 +112,8 @@ pub(crate) struct EvidenceQueryRequest {
     pub(crate) budget: Budget,
     pub(crate) freshness_ms: Option<u64>,
     pub(crate) pack_limits: PackLimits,
+    #[serde(default)]
+    pub(crate) plan_required: Vec<RequiredEvidence>,
 }
 
 /** Whether an investigation ran fresh or replayed an earlier one
@@ -165,9 +174,14 @@ pub(crate) struct BranchDecision {
     - evidence_ids: Vec<String> - evidence records produced or matched
     - duplicates: usize - records already captured
     - snapshot: Option<String> - source snapshot the answer reflects
-    - next_cursor: Option<String> - continuation the source offered
+    - next_cursor: Option<String> - continuation still pending when the step stopped (more results
+      exist at the source; the pack reports the truncation)
     - duration_ms: u64 - time spent
     - error: Option<String> - explanation
+    - pages: usize - connector calls the step made (a query follows the source's cursor; 0 when no
+      connector was called; absent in audits written before pagination was followed)
+    - withheld: usize - records the source returned that the actor may not receive (counted, never
+      named; absent in older audits)
 */
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct QueryStepRecord {
@@ -185,6 +199,10 @@ pub(crate) struct QueryStepRecord {
     pub(crate) next_cursor: Option<String>,
     pub(crate) duration_ms: u64,
     pub(crate) error: Option<String>,
+    #[serde(default)]
+    pub(crate) pages: usize,
+    #[serde(default)]
+    pub(crate) withheld: usize,
 }
 
 /** An authorization decision
@@ -294,6 +312,8 @@ pub(crate) struct ReplayComparison {
     - pack_id: Option<String> - Evidence Pack produced
     - started_at: u64 - Unix milliseconds
     - finished_at: u64 - Unix milliseconds
+    - exploration: Option<Exploration> - how the exploration was derived, when no recipe served the
+      question (absent in older audits)
 */
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct QueryAuditRecord {
@@ -318,6 +338,41 @@ pub(crate) struct QueryAuditRecord {
     pub(crate) pack_id: Option<String>,
     pub(crate) started_at: u64,
     pub(crate) finished_at: u64,
+    #[serde(default)]
+    pub(crate) exploration: Option<Exploration>,
+}
+
+/** What one source's discovery told an exploration
+ * Fields
+    - resource_id: String - resource
+    - status: ConnectorStatus - discovery outcome
+    - complete: bool - whether the listing was complete (shorter than a page), so evidence types it
+      did not list can be left out; an incomplete or empty listing leaves every declared type in.
+      How many objects were listed is not kept: the listing is not filtered for the actor, so its
+      size could count records the actor may not see
+    - evidence_types: Vec<EvidenceType> - the types the exploration queries at this source
+    - snapshot: Option<String> - source snapshot of the discovery
+*/
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ExploredSource {
+    pub(crate) resource_id: String,
+    pub(crate) status: ConnectorStatus,
+    pub(crate) complete: bool,
+    pub(crate) evidence_types: Vec<EvidenceType>,
+    pub(crate) snapshot: Option<String>,
+}
+
+/** How an exploration was derived from the registry and the sources' discovery
+ * Fields
+    - class: String - the question class no recipe serves
+    - sources: Vec<ExploredSource> - each permitted source's discovery
+    - notes: Vec<String> - sources and evidence types left out, and why
+*/
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Exploration {
+    pub(crate) class: String,
+    pub(crate) sources: Vec<ExploredSource>,
+    pub(crate) notes: Vec<String>,
 }
 
 /** The result of an investigation
@@ -338,6 +393,8 @@ pub(crate) struct EvidenceQueryResult {
     - recipes: RecipeBook - recipes
     - store: CaptureStore - store
     - clock: Clock - timestamps
+    - shadowed: Vec<String> - accepted learned recipes the RecipeBook could not take (a built-in
+      recipe now serves their class, for example), each with the reason
 */
 pub(crate) struct EvidenceQueryBroker {
     pub(crate) registry: ResourceRegistry,
@@ -345,21 +402,59 @@ pub(crate) struct EvidenceQueryBroker {
     pub(crate) recipes: RecipeBook,
     pub(crate) store: CaptureStore,
     pub(crate) clock: Clock,
+    pub(crate) shadowed: Vec<String>,
 }
 
 /** An investigation in progress
  * Fields
     - audit: QueryAuditRecord - audit record being filled
-    - collected: Vec<String> - evidence of this investigation, in retrieval order
+    - collected: Vec<String> - evidence of this investigation the actor may receive, in retrieval
+      order (withheld records are never collected, learned from, linked, or concluded from)
     - started: Instant - wall-clock start, for time budgets
+    - withheld: usize - records retrieved but withheld from the actor by authorization or
+      sensitivity
+    - breach: Option<String> - set when a retrieved record revealed a repository or environment the
+      actor may not access; the investigation stops there, as if the request had named it
+    - unchecked: BTreeMap<String, Unchecked> - per list-valued variable with several known values,
+      what steps used and what they did not check
+    - unavailable: BTreeSet<String> - resources that failed to answer in this investigation (they
+      are not asked again by later steps, which saves the budget)
+    - unstarted: Vec<String> - the recipe's starting conditions that were unknown when it began
 */
 struct Investigation {
     audit: QueryAuditRecord,
     collected: Vec<String>,
     started: Instant,
+    withheld: usize,
+    breach: Option<String>,
+    unchecked: BTreeMap<String, Unchecked>,
+    unavailable: BTreeSet<String>,
+    unstarted: Vec<String>,
+}
+
+/** Values of a list-valued variable a step did not check (a template takes the first value)
+ * Fields
+    - used: String - the value the steps used
+    - skipped: Vec<String> - known values no step checked
+    - steps: BTreeSet<String> - the steps concerned
+*/
+struct Unchecked {
+    used: String,
+    skipped: Vec<String>,
+    steps: BTreeSet<String>,
 }
 
 impl Investigation {
+    /** When the investigation's time budget runs out (connectors that can take long honor it)
+     * Input
+        - None (uses self)
+     * Output
+        - Instant
+    */
+    fn deadline(&self) -> Instant {
+        self.started + std::time::Duration::from_millis(self.audit.budget.max_time_ms)
+    }
+
     /** Report whether a budget limit is reached
      * Input
         - None (uses self)
@@ -412,6 +507,8 @@ impl Investigation {
             next_cursor: None,
             duration_ms: 0,
             error: Some(error.into()),
+            pages: 0,
+            withheld: 0,
         });
     }
 
@@ -430,17 +527,58 @@ impl Investigation {
             reason: reason.into(),
         });
     }
+
+    /** Note that a step filled a list-valued variable with its first value while others are
+     * known, so the values it did not check are reported
+     * Input
+        - step: &RecipeStep - step
+        - templates: &[&str] - the step's record and filter templates
+        - scope: &ScopeResolution - scope
+     * Output
+        - None
+    */
+    fn note_unchecked(&mut self, step: &RecipeStep, templates: &[&str], scope: &ScopeResolution) {
+        for template in templates {
+            let Some(variable) = template
+                .strip_prefix('{')
+                .and_then(|rest| rest.strip_suffix('}'))
+            else {
+                continue;
+            };
+            if let [used, rest @ ..] = scope.values(variable) {
+                if rest.is_empty() {
+                    continue;
+                }
+                let entry = self
+                    .unchecked
+                    .entry(variable.to_string())
+                    .or_insert_with(|| Unchecked {
+                        used: used.clone(),
+                        skipped: Vec::new(),
+                        steps: BTreeSet::new(),
+                    });
+                for value in rest {
+                    if !entry.skipped.contains(value) {
+                        entry.skipped.push(value.clone());
+                    }
+                }
+                entry.steps.insert(step.step_id.clone());
+            }
+        }
+    }
 }
 
 impl EvidenceQueryBroker {
-    /** Build a broker with the built-in recipes
+    /** Build a broker with the built-in recipes, then the recipes people accepted from proposals
+     * (a learned recipe never displaces a built-in one: one the book cannot take is set aside in
+     * shadowed, with the reason)
      * Input
         - registry: ResourceRegistry - registered resources
         - store: CaptureStore - store
         - clock: Clock - clock
      * Output
         - CaptureResult<EvidenceQueryBroker>
-        - Error if a built-in recipe is invalid
+        - Error if a built-in recipe is invalid or changed since this store pinned it
     */
     pub(crate) fn new(
         registry: ResourceRegistry,
@@ -449,14 +587,78 @@ impl EvidenceQueryBroker {
     ) -> CaptureResult<Self> {
         let mut recipes = RecipeBook::default();
         recipes.add(recipe::failed_deployment())?;
+        recipes.add(recipe::failed_deployment_v2())?;
         recipes.add(recipe::local_change())?;
+        recipes.add(recipe::deployment_discovery())?;
+        recipes.add(recipe::pr_review())?;
+        let mut store = store;
+        let mut shadowed = Vec::new();
+        for learned in store.accepted_recipes() {
+            let label = format!("{} v{}", learned.recipe_id, learned.version);
+            if let Err(error) = recipes.add(learned) {
+                shadowed.push(format!("{label}: {}", error.message));
+            }
+        }
+        for recipe in recipes.all() {
+            store.pin_recipe(&recipe.recipe_id, recipe.version, &recipe.digest())?;
+        }
         Ok(Self {
             registry,
             connectors: BTreeMap::new(),
             recipes,
             store,
             clock,
+            shadowed,
         })
+    }
+
+    /** Decide a recipe proposal (see RecipeProposal::decide). Accepting publishes the recipe: the
+     * RecipeBook must take it (valid, a new version, and no other recipe serving its class), and its
+     * digest is pinned, so the version can never change afterwards
+     * Input
+        - reviewer: &AccessPolicy - reviewer and their permissions
+        - proposal_id: &str - proposal
+        - decision: ProposalStatus - Accepted or Rejected
+        - reason: &str - why
+     * Output
+        - CaptureResult<()>
+        - Error when the proposal is unknown, the review is refused, or the book cannot take the
+          recipe
+    */
+    pub(crate) fn review_recipe(
+        &mut self,
+        reviewer: &AccessPolicy,
+        proposal_id: &str,
+        decision: ProposalStatus,
+        reason: &str,
+    ) -> CaptureResult<()> {
+        let now = self.clock.now();
+        let mut proposal = self
+            .store
+            .recipe_proposals
+            .get(proposal_id)
+            .cloned()
+            .ok_or_else(|| {
+                CaptureError::new(
+                    ErrorCode::NotFound,
+                    format!("no recipe proposal '{proposal_id}'"),
+                )
+            })?;
+        proposal.decide(reviewer, decision, reason, now)?;
+        if decision == ProposalStatus::Accepted {
+            let mut book = self.recipes.clone();
+            book.add(proposal.recipe.clone())?;
+            self.store.pin_recipe(
+                &proposal.recipe.recipe_id,
+                proposal.recipe.version,
+                &proposal.recipe_digest,
+            )?;
+            self.recipes = book;
+        }
+        self.store
+            .recipe_proposals
+            .insert(proposal_id.to_string(), proposal);
+        Ok(())
     }
 
     /** Attach the connector of a registered resource
@@ -482,22 +684,248 @@ impl EvidenceQueryBroker {
         Ok(())
     }
 
-    /** Run a fresh investigation
+    /** Run a fresh investigation. A question whose class no recipe serves (and that names neither a
+     * recipe nor a plan) is explored: the broker derives a bounded plan from the registry and the
+     * sources' discovery, and the pack is Exploratory
      * Input
         - request: EvidenceQueryRequest - request
         - policy: &AccessPolicy - requester's permissions
      * Output
         - CaptureResult<EvidenceQueryResult>
-        - Error when no recipe applies or a proposed plan is invalid (authorization refusals are
-          results with status Rejected, so they are audited)
+        - Error when a named recipe is unknown, a proposed plan is invalid, or there is no permitted
+          source to explore (authorization refusals are results with status Rejected, so they are
+          audited; every error is audited too)
     */
     pub(crate) fn investigate(
         &mut self,
         request: EvidenceQueryRequest,
         policy: &AccessPolicy,
     ) -> CaptureResult<EvidenceQueryResult> {
-        let recipe = self.select_recipe(&request)?;
-        self.run(request, recipe, policy, ExecutionMode::Fresh)
+        let explorable = request.plan.is_none() && request.recipe.is_none();
+        let (recipe, exploration) = match self.select_recipe(&request) {
+            Ok(recipe) => (recipe, None),
+            Err(_) if explorable => match self.explore(&request, policy) {
+                Ok((recipe, exploration)) => (recipe, Some(exploration)),
+                Err(error) => {
+                    self.audit_refusal(&request, policy, &error);
+                    return Err(error);
+                }
+            },
+            Err(error) => {
+                self.audit_refusal(&request, policy, &error);
+                return Err(error);
+            }
+        };
+        self.run(request, recipe, policy, ExecutionMode::Fresh, exploration)
+    }
+
+    /** Derive an exploration for a question no recipe serves: every permitted, active source that
+     * answers queries is asked to discover what it holds (objects without content), and the plan
+     * queries each evidence type those sources declare and the actor may receive, filtered by
+     * every scope value the request already knows. A type a source's complete listing does not
+     * hold is left out; an incomplete, empty, or failed discovery leaves the declared types in (or
+     * the failed source out). Steps are ordered by resource type and evidence type, so the same
+     * registry and request always give the same plan
+     * Input
+        - request: &EvidenceQueryRequest - request
+        - policy: &AccessPolicy - requester's permissions
+     * Output
+        - CaptureResult<(EvidenceRecipe, Exploration)>
+        - Error (InvalidRecipe) when no permitted source can be explored
+    */
+    fn explore(
+        &self,
+        request: &EvidenceQueryRequest,
+        policy: &AccessPolicy,
+    ) -> CaptureResult<(EvidenceRecipe, Exploration)> {
+        let scope = ScopeResolution::resolve(request, &self.registry, policy);
+        let mut exploration = Exploration {
+            class: request.investigation_class.clone(),
+            sources: Vec::new(),
+            notes: Vec::new(),
+        };
+        // (resource type, evidence type) -> the filter keys every resource serving it can use
+        let mut wanted: BTreeMap<(ResourceType, EvidenceType), BTreeSet<String>> = BTreeMap::new();
+        let mut permitted = scope.permitted_resources.clone();
+        permitted.sort();
+        for resource_id in &permitted {
+            let Some(definition) = self.registry.get(resource_id) else {
+                continue;
+            };
+            if !definition
+                .capabilities
+                .operations
+                .contains(&Operation::Query)
+            {
+                exploration
+                    .notes
+                    .push(format!("{resource_id} answers no queries"));
+                continue;
+            }
+            let Some(connector) = self.connectors.get(resource_id) else {
+                exploration
+                    .notes
+                    .push(format!("{resource_id} has no connector attached"));
+                continue;
+            };
+            connector.begin();
+            let discovered = connector.discover();
+            let complete = !discovered.records.is_empty() && discovered.records.len() < MAX_PAGE;
+            let held = discovered
+                .records
+                .iter()
+                .map(|record| record.evidence_type)
+                .collect::<BTreeSet<_>>();
+            let mut types = Vec::new();
+            if discovered.status.usable() {
+                for evidence_type in &definition.capabilities.evidence_types {
+                    if !policy.permits_type(*evidence_type) {
+                        exploration.notes.push(format!(
+                            "{resource_id}: {evidence_type:?} is not permitted to the actor"
+                        ));
+                    } else if complete && !held.contains(evidence_type) {
+                        exploration.notes.push(format!(
+                            "{resource_id}: discovery listed no {evidence_type:?}"
+                        ));
+                    } else {
+                        types.push(*evidence_type);
+                    }
+                }
+            } else {
+                exploration.notes.push(format!(
+                    "{resource_id}: discovery failed ({:?}), so it was not explored",
+                    discovered.status
+                ));
+            }
+            let known = definition
+                .capabilities
+                .filters
+                .iter()
+                .filter(|key| {
+                    recipe::VARIABLES.contains(&key.as_str()) && scope.variable(key).is_some()
+                })
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            for evidence_type in &types {
+                wanted
+                    .entry((definition.resource_type, *evidence_type))
+                    .and_modify(|keys| *keys = keys.intersection(&known).cloned().collect())
+                    .or_insert_with(|| known.clone());
+            }
+            exploration.sources.push(ExploredSource {
+                resource_id: resource_id.clone(),
+                status: discovered.status,
+                complete,
+                evidence_types: types,
+                snapshot: discovered.snapshot,
+            });
+        }
+        if wanted.len() > recipe::MAX_RECIPE_STEPS {
+            exploration.notes.push(format!(
+                "{} evidence types were found; the exploration queries the first {}",
+                wanted.len(),
+                recipe::MAX_RECIPE_STEPS
+            ));
+        }
+        let steps = wanted
+            .into_iter()
+            .take(recipe::MAX_RECIPE_STEPS)
+            .map(|((resource_type, evidence_type), keys)| {
+                let name = |value: Value| value.as_str().unwrap_or_default().replace('_', "-");
+                RecipeStep {
+                    step_id: format!(
+                        "{}-{}",
+                        name(json!(resource_type)),
+                        name(json!(evidence_type))
+                    ),
+                    description: format!(
+                        "What the {} sources hold of {evidence_type:?}",
+                        name(json!(resource_type))
+                    ),
+                    resource_type,
+                    operation: Operation::Query,
+                    evidence_type,
+                    record: None,
+                    filters: keys
+                        .into_iter()
+                        .map(|key| {
+                            let template = format!("{{{key}}}");
+                            (key, template)
+                        })
+                        .collect(),
+                    limit: recipe::EXPLORATION_STEP_LIMIT,
+                    when: Predicate::Always,
+                    mandatory: false,
+                }
+            })
+            .collect::<Vec<_>>();
+        if steps.is_empty() {
+            return Err(CaptureError::new(
+                ErrorCode::InvalidRecipe,
+                format!(
+                    "no recipe for '{}', and no permitted source could be explored",
+                    request.investigation_class
+                ),
+            ));
+        }
+        Ok((
+            recipe::exploration(steps, &request.investigation_class)?,
+            exploration,
+        ))
+    }
+
+    /** Record a request refused before any recipe ran (no recipe serves it, or its proposed plan is
+     * invalid), so every refusal is audited like any other investigation
+     * Input
+        - request: &EvidenceQueryRequest - refused request
+        - policy: &AccessPolicy - requester's permissions
+        - error: &CaptureError - why it was refused
+     * Output
+        - None
+    */
+    fn audit_refusal(
+        &mut self,
+        request: &EvidenceQueryRequest,
+        policy: &AccessPolicy,
+        error: &CaptureError,
+    ) {
+        let at = self.clock.now();
+        let started = at.to_string();
+        let count = self.store.audits.len().to_string();
+        let nonce = self.clock.nonce();
+        self.store.push_audit(QueryAuditRecord {
+            query_id: stable_id(
+                "qry",
+                &[
+                    &policy.actor.id,
+                    &request.question,
+                    &started,
+                    &count,
+                    &nonce,
+                ],
+            ),
+            schema_version: SCHEMA_VERSION,
+            actor: policy.actor.clone(),
+            mode: ExecutionMode::Fresh,
+            request: request.clone(),
+            recipe: None,
+            recipe_digest: None,
+            scope: ScopeResolution::default(),
+            policy_decisions: Vec::new(),
+            branches: Vec::new(),
+            steps: Vec::new(),
+            budget: request.budget.tighter(Budget::ceiling()),
+            usage: BudgetUsage::default(),
+            stop_reason: StopReason::Rejected,
+            status: InvestigationStatus::Rejected,
+            metrics: Metrics::default(),
+            replay: None,
+            errors: vec![error.to_string()],
+            pack_id: None,
+            started_at: at,
+            finished_at: at,
+            exploration: None,
+        });
     }
 
     /** Replay a recorded investigation with its exact recipe and parameters against the sources as
@@ -532,23 +960,21 @@ impl EvidenceQueryBroker {
                 "the recorded recipe does not match its digest",
             ));
         }
+        // A replay belongs to the original's work episode, not a new one
+        let mut request = original.request.clone();
+        request.episode_id = original.scope.episode_id.clone().or(request.episode_id);
         let mut result = self.run(
-            original.request.clone(),
+            request,
             recipe,
             policy,
             ExecutionMode::Replay {
                 of_query: query_id.into(),
             },
+            None,
         )?;
         let comparison = compare(&original, &result.audit);
         result.audit.replay = Some(comparison.clone());
-        if let Some(stored) = self
-            .store
-            .audits
-            .iter_mut()
-            .rev()
-            .find(|audit| audit.query_id == result.audit.query_id)
-        {
+        if let Some(stored) = self.store.audit_mut(&result.audit.query_id) {
             stored.replay = Some(comparison);
         }
         Ok(result)
@@ -572,6 +998,7 @@ impl EvidenceQueryBroker {
                     description: "required by the request".into(),
                     when: Predicate::Always,
                 })
+                .chain(request.plan_required.iter().cloned())
                 .collect();
             return recipe::from_plan(plan.clone(), required);
         }
@@ -593,6 +1020,7 @@ impl EvidenceQueryBroker {
         - recipe: EvidenceRecipe - recipe
         - policy: &AccessPolicy - requester's permissions
         - mode: ExecutionMode - fresh or replay
+        - exploration: Option<Exploration> - how the recipe was derived, for an exploration
      * Output
         - CaptureResult<EvidenceQueryResult>
         - Error when an assertion cannot be stored
@@ -603,19 +1031,33 @@ impl EvidenceQueryBroker {
         recipe: EvidenceRecipe,
         policy: &AccessPolicy,
         mode: ExecutionMode,
+        exploration: Option<Exploration>,
     ) -> CaptureResult<EvidenceQueryResult> {
         let started_at = self.clock.now();
         let started = started_at.to_string();
         let count = self.store.audits.len().to_string();
+        // The nonce keeps two processes that start the same question at the same millisecond from
+        // producing one query id (empty under the fixed clock, so tests stay deterministic)
+        let nonce = self.clock.nonce();
         let query_id = stable_id(
             "qry",
-            &[&policy.actor.id, &request.question, &started, &count],
+            &[
+                &policy.actor.id,
+                &request.question,
+                &started,
+                &count,
+                &nonce,
+            ],
         );
         let budget = request
             .budget
             .tighter(recipe.limits)
             .tighter(Budget::ceiling());
         let mut scope = ScopeResolution::resolve(&request, &self.registry, policy);
+        // Each investigation reads its sources afresh, once
+        for connector in self.connectors.values() {
+            connector.begin();
+        }
         let episode = request
             .episode_id
             .clone()
@@ -644,10 +1086,27 @@ impl EvidenceQueryBroker {
                 pack_id: None,
                 started_at,
                 finished_at: started_at,
+                exploration,
             },
             collected: Vec::new(),
             started: Instant::now(),
+            withheld: 0,
+            breach: None,
+            unchecked: BTreeMap::new(),
+            unavailable: BTreeSet::new(),
+            unstarted: recipe
+                .starting_conditions
+                .iter()
+                .filter(|variable| scope.variable(variable).is_none())
+                .cloned()
+                .collect(),
         };
+        // The discovery calls an exploration made before it ran are connector calls too
+        if let Some(exploration) = &run.audit.exploration {
+            run.audit.metrics.connector_calls += exploration.sources.len() as u64;
+        }
+        // Contributions past their validity end before anything reads them
+        self.store.contributions.expire(started_at);
         for resource in &scope.permitted_resources {
             run.audit.policy_decisions.push(PolicyDecision {
                 subject: resource.clone(),
@@ -667,9 +1126,23 @@ impl EvidenceQueryBroker {
                 WorkEpisode::open(request.task_id.as_deref(), &request.question, started_at);
             opened.episode_id = episode.clone();
             self.store.ensure_episode(opened);
+            let before = governance_state(&self.store.graph);
             self.resolve_versions(&mut run, &mut scope, policy);
             self.execute(&mut run, &mut scope, &recipe, &request, policy);
-            let outcome = link_governance(&mut self.store.graph);
+            let after = governance_state(&self.store.graph);
+            let new_files = after
+                .0
+                .difference(&before.0)
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let changed_scopes = after
+                .1
+                .iter()
+                .filter(|(id, version)| before.1.get(*id) != Some(version))
+                .map(|(id, _)| id.clone())
+                .collect::<BTreeSet<_>>();
+            let outcome =
+                link_governance_changes(&mut self.store.graph, &new_files, &changed_scopes);
             run.audit.metrics.correlation_failures += outcome.failures.len() as u64;
         }
         if let Some(episode) = self.store.episodes.get_mut(&episode) {
@@ -721,8 +1194,12 @@ impl EvidenceQueryBroker {
                 filters: BTreeMap::new(),
                 limit: 1,
                 when: Predicate::Always,
+                mandatory: false,
             };
             for definition in &landscapes {
+                if run.exhausted().is_some() || run.breach.is_some() {
+                    break;
+                }
                 let evidence = self.call(run, scope, &step, definition, policy);
                 let version = evidence
                     .iter()
@@ -762,7 +1239,22 @@ impl EvidenceQueryBroker {
         request: &EvidenceQueryRequest,
         policy: &AccessPolicy,
     ) {
+        let mut satisfied = false;
         for (index, step) in recipe.steps.iter().enumerate() {
+            if Self::stop_on_breach(run, &recipe.steps[index..]) {
+                return;
+            }
+            // Once the required evidence is complete only mandatory steps still run (a check that
+            // could contradict what was found)
+            if satisfied && !step.mandatory {
+                run.note(
+                    step,
+                    None,
+                    StepState::NotQueried,
+                    "stopped: required evidence was complete",
+                );
+                continue;
+            }
             if let Some(limit) = run.exhausted() {
                 run.audit.metrics.budget_exhausted += 1;
                 run.audit.stop_reason = StopReason::BudgetExhausted;
@@ -820,7 +1312,9 @@ impl EvidenceQueryBroker {
                 );
                 continue;
             }
-            if !policy.permits_environment(scope.environment.as_deref()) {
+            if step.evidence_type.is_environment_bound()
+                && !policy.permits_environment(scope.environment.as_deref())
+            {
                 run.deny(
                     format!(
                         "environment:{}",
@@ -876,7 +1370,26 @@ impl EvidenceQueryBroker {
                 );
                 continue;
             }
+            // Resources of a type with different priorities are asked best first, and the next one
+            // only when the better one did not answer; equal priorities are all asked
+            let mut permitted = permitted;
+            permitted.sort_by_key(|definition| std::cmp::Reverse(definition.priority));
+            let ranked = permitted
+                .iter()
+                .map(|definition| definition.priority)
+                .collect::<BTreeSet<_>>()
+                .len()
+                > 1;
             for definition in &permitted {
+                if run.unavailable.contains(&definition.resource_id) {
+                    run.note(
+                        step,
+                        Some(&definition.resource_id),
+                        StepState::Failed,
+                        "the source did not answer earlier in this investigation and was not asked again",
+                    );
+                    continue;
+                }
                 if let Some(limit) = run.exhausted() {
                     run.audit.metrics.budget_exhausted += 1;
                     run.audit.stop_reason = StopReason::BudgetExhausted;
@@ -888,23 +1401,71 @@ impl EvidenceQueryBroker {
                     );
                     continue;
                 }
+                if run.breach.is_some() {
+                    break;
+                }
                 self.call(run, scope, step, definition, policy);
+                let answered = run.audit.steps.last().filter(|record| {
+                    record.resource_id.as_deref() == Some(definition.resource_id.as_str())
+                });
+                if let Some(record) = answered {
+                    if matches!(
+                        record.connector_status,
+                        Some(
+                            ConnectorStatus::Unavailable
+                                | ConnectorStatus::Timeout
+                                | ConnectorStatus::RateLimited
+                                | ConnectorStatus::Unauthorized
+                        )
+                    ) {
+                        run.unavailable.insert(definition.resource_id.clone());
+                    }
+                    if ranked && record.state == StepState::Executed {
+                        break;
+                    }
+                }
             }
-            if recipe.stopping.stop_when_satisfied
+            if Self::stop_on_breach(run, &recipe.steps[index + 1..]) {
+                return;
+            }
+            if !satisfied
+                && recipe.stopping.stop_when_satisfied
                 && self.missing(run, scope, recipe, request).is_empty()
             {
                 run.audit.stop_reason = StopReason::Satisfied;
-                for remaining in &recipe.steps[index + 1..] {
-                    run.note(
-                        remaining,
-                        None,
-                        StepState::NotQueried,
-                        "stopped: required evidence was complete",
-                    );
-                }
-                return;
+                satisfied = true;
             }
         }
+    }
+
+    /** Stop the investigation when a retrieved record revealed a repository or environment the
+     * actor may not access: the request is then treated as rejected (as if it had named that scope),
+     * and every step not yet run is recorded as denied without contacting any source
+     * Input
+        - run: &mut Investigation - investigation
+        - remaining: &[RecipeStep] - steps not yet run
+     * Output
+        - bool, true when the investigation stopped
+    */
+    fn stop_on_breach(run: &mut Investigation, remaining: &[RecipeStep]) -> bool {
+        let Some(breach) = run.breach.clone() else {
+            return false;
+        };
+        if run.audit.stop_reason != StopReason::Rejected {
+            run.audit.stop_reason = StopReason::Rejected;
+            run.audit
+                .errors
+                .push(format!("stopped: {breach}; nothing further was queried"));
+        }
+        for step in remaining {
+            run.note(
+                step,
+                None,
+                StepState::Denied,
+                "stopped: evidence revealed a repository or environment the actor may not access",
+            );
+        }
+        true
     }
 
     /** Execute one step against one resource: fill and validate parameters, call the connector,
@@ -945,7 +1506,7 @@ impl EvidenceQueryBroker {
             );
             return Vec::new();
         };
-        let (parameters, timer, outcome) = match step.operation {
+        let (parameters, timer, outcome, pages) = match step.operation {
             Operation::Fetch => {
                 let template = step.record.clone().unwrap_or_default();
                 let record = match fill(&template, scope) {
@@ -960,8 +1521,14 @@ impl EvidenceQueryBroker {
                         return Vec::new();
                     }
                 };
+                run.note_unchecked(step, &[template.as_str()], scope);
                 let timer = Instant::now();
-                (json!({"record": record}), timer, connector.fetch(&record))
+                (
+                    json!({"record": record}),
+                    timer,
+                    connector.fetch_within(&record, run.deadline()),
+                    1,
+                )
             }
             _ => {
                 let mut filters = BTreeMap::new();
@@ -981,6 +1548,12 @@ impl EvidenceQueryBroker {
                         }
                     }
                 }
+                let templates = step
+                    .filters
+                    .values()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                run.note_unchecked(step, &templates, scope);
                 let remaining = run
                     .audit
                     .budget
@@ -990,8 +1563,16 @@ impl EvidenceQueryBroker {
                 let spec = QuerySpec {
                     evidence_type: Some(step.evidence_type),
                     filters,
-                    since: scope.time_window.since,
-                    until: scope.time_window.until,
+                    // A time window filters only timed evidence: a zone or a policy has no time
+                    // to fall inside it
+                    since: scope
+                        .time_window
+                        .since
+                        .filter(|_| step.evidence_type.is_timed()),
+                    until: scope
+                        .time_window
+                        .until
+                        .filter(|_| step.evidence_type.is_timed()),
                     limit: step.limit.min(remaining),
                     cursor: None,
                     scope: QueryScope {
@@ -1015,17 +1596,60 @@ impl EvidenceQueryBroker {
                         next_cursor: None,
                         duration_ms: 0,
                         error: Some(error.message),
+                        pages: 0,
+                        withheld: 0,
                     });
                     return Vec::new();
                 }
                 let timer = Instant::now();
-                let outcome = connector.query(&spec);
-                (json!(spec), timer, outcome)
+                let mut outcome = connector.query_within(&spec, run.deadline());
+                let mut pages = 1;
+                // Follow the source's cursor until the step's limit, the record, step, or time
+                // budget is reached; a cursor still pending is reported as truncation, never
+                // dropped silently
+                while outcome.status.usable() {
+                    let Some(cursor) = outcome.next_cursor.clone() else {
+                        break;
+                    };
+                    let room = spec.limit.saturating_sub(outcome.records.len());
+                    let budget = &run.audit.budget;
+                    if room == 0
+                        || run.audit.usage.steps + pages >= budget.max_steps
+                        || run.started.elapsed().as_millis() as u64 >= budget.max_time_ms
+                    {
+                        break;
+                    }
+                    let next = connector.query_within(
+                        &QuerySpec {
+                            limit: room.min(MAX_PAGE),
+                            cursor: Some(cursor),
+                            ..spec.clone()
+                        },
+                        run.deadline(),
+                    );
+                    pages += 1;
+                    if !next.status.usable() {
+                        outcome.status = ConnectorStatus::Partial;
+                        outcome.error = Some(format!(
+                            "page {pages} failed ({:?}): {}",
+                            next.status,
+                            next.error.unwrap_or_default()
+                        ));
+                        break;
+                    }
+                    if next.status == ConnectorStatus::Partial {
+                        outcome.status = ConnectorStatus::Partial;
+                        outcome.error = next.error;
+                    }
+                    outcome.records.extend(next.records);
+                    outcome.next_cursor = next.next_cursor;
+                }
+                (json!(spec), timer, outcome, pages)
             }
         };
         let duration_ms = timer.elapsed().as_millis() as u64;
-        run.audit.usage.steps += 1;
-        run.audit.metrics.connector_calls += 1;
+        run.audit.usage.steps += pages;
+        run.audit.metrics.connector_calls += pages as u64;
         run.audit.metrics.connector_latency_ms += duration_ms;
         let ConnectorOutcome {
             status,
@@ -1049,6 +1673,8 @@ impl EvidenceQueryBroker {
             next_cursor: next_cursor.clone(),
             duration_ms,
             error,
+            pages,
+            withheld: 0,
         };
         if !status.usable() {
             run.audit.metrics.connector_failures += 1;
@@ -1103,6 +1729,35 @@ impl EvidenceQueryBroker {
             );
             run.audit.usage.records += 1;
             run.audit.usage.payload_bytes += size;
+            // The full authorization check runs here, before the record is linked, learned from,
+            // or collected: a record the actor may not receive must not shape the scope, the
+            // graph view, or the conclusions of this investigation
+            let Some(evidence) = self.store.evidence.get(&ingested.evidence_id).cloned() else {
+                continue;
+            };
+            if let Some(reason) = withheld(&evidence, policy) {
+                run.withheld += 1;
+                entry.withheld += 1;
+                run.deny(
+                    format!("{resource_id}:{:?}", evidence.evidence_type),
+                    match reason {
+                        ExclusionReason::TooSensitive => {
+                            "the source returned a record more sensitive than the actor may receive"
+                        }
+                        _ => "the source returned a record the actor may not receive",
+                    },
+                );
+                if reveals_forbidden_scope(&evidence, policy) {
+                    run.breach = Some(format!(
+                        "{} at {resource_id} belongs to a repository or environment the actor may not access",
+                        step.step_id
+                    ));
+                    entry.error =
+                        Some("stopped: evidence revealed a scope the actor may not access".into());
+                    break;
+                }
+                continue;
+            }
             entry.record_ids.push(record.record_id.clone());
             entry.evidence_ids.push(ingested.evidence_id.clone());
             match ingested.kind {
@@ -1117,16 +1772,14 @@ impl EvidenceQueryBroker {
                 ParseStatus::Failed => run.audit.metrics.parse_failures += 1,
                 ParseStatus::Parsed => {}
             }
-            if let Some(evidence) = self.store.evidence.get(&ingested.evidence_id).cloned() {
-                let context = LinkContext {
-                    task: task.as_deref(),
-                    episode: episode_entity.as_deref(),
-                };
-                let linked = link(&mut self.store.graph, &evidence, &context);
-                run.audit.metrics.correlation_failures += linked.failures.len() as u64;
-                run.audit.errors.extend(linked.failures);
-                scope.learn(&evidence);
-            }
+            let context = LinkContext {
+                task: task.as_deref(),
+                episode: episode_entity.as_deref(),
+            };
+            let linked = link(&mut self.store.graph, &evidence, &context);
+            run.audit.metrics.correlation_failures += linked.failures.len() as u64;
+            run.audit.errors.extend(linked.failures);
+            scope.learn(&evidence);
             if !run.collected.contains(&ingested.evidence_id) {
                 run.collected.push(ingested.evidence_id);
             }
@@ -1179,7 +1832,21 @@ impl EvidenceQueryBroker {
             .iter()
             .cloned()
             .chain(extra)
-            .filter(|required| required.when.holds(&collected, scope))
+            .filter_map(|mut required| {
+                if required.when.holds(&collected, scope) {
+                    return Some(required);
+                }
+                // A condition that needs evidence which was never retrieved cannot be judged
+                // false: the requirement stays, so knowing less never looks more complete
+                if required.when.unevaluable(&collected) {
+                    required.description = format!(
+                        "{} (required unless its condition is shown not to hold; the evidence the condition depends on was not retrieved)",
+                        required.description
+                    );
+                    return Some(required);
+                }
+                None
+            })
             .filter(|required| {
                 !collected.iter().any(|record| {
                     record.evidence_type == required.evidence_type
@@ -1212,6 +1879,10 @@ impl EvidenceQueryBroker {
         let rejected = run.audit.stop_reason == StopReason::Rejected;
         let build_timer = Instant::now();
         let mut assertion_ids = Vec::new();
+        let no_subjects = !rejected
+            && scope.task_id.is_none()
+            && scope.commits.is_empty()
+            && scope.deployments.is_empty();
         if !rejected {
             let hashes = self
                 .store
@@ -1250,6 +1921,56 @@ impl EvidenceQueryBroker {
             ) {
                 assertion_ids.push(self.store.add_assertion(assertion)?);
             }
+            // Which governed zones and flows each commit's changed files belong to, from the
+            // governance links (file BELONGS_TO zone or flow, at the version in force), supported
+            // by the commit's change evidence this actor holds
+            for commit in &scope.commits {
+                let commit_node = NodeRef::Entity(entity_id(EntityKind::Commit, commit));
+                let mut touched = BTreeSet::new();
+                for writes in self.store.graph.relations_of(
+                    &commit_node,
+                    &[RelationType::Writes],
+                    Direction::Outgoing,
+                ) {
+                    for member in self.store.graph.relations_of(
+                        &writes.target,
+                        &[RelationType::BelongsToZone, RelationType::BelongsToFlow],
+                        Direction::Outgoing,
+                    ) {
+                        if let Some(entity) = self.store.graph.entities.get(member.target.id()) {
+                            let kind = if entity.kind == EntityKind::Flow {
+                                "flow"
+                            } else {
+                                "zone"
+                            };
+                            touched.insert(format!(
+                                "{kind}:{}@{}",
+                                entity.key,
+                                entity.version.clone().unwrap_or_else(|| "unknown".into())
+                            ));
+                        }
+                    }
+                }
+                let supporting = references
+                    .iter()
+                    .filter(|record| {
+                        record.evidence_type == EvidenceType::CodeChange
+                            && record.refs.commit.as_deref() == Some(commit.as_str())
+                    })
+                    .map(|record| record.evidence_id.clone())
+                    .collect::<Vec<_>>();
+                if touched.is_empty() || supporting.is_empty() {
+                    continue;
+                }
+                let touched = touched.into_iter().collect::<Vec<_>>();
+                assertion_ids.push(self.store.add_assertion(governance_touched(
+                    commit,
+                    &touched,
+                    supporting,
+                    &record_scope,
+                    self.clock.now(),
+                ))?);
+            }
         }
         let missing = if rejected {
             Vec::new()
@@ -1260,6 +1981,7 @@ impl EvidenceQueryBroker {
         let status = match run.audit.stop_reason {
             StopReason::Rejected => InvestigationStatus::Rejected,
             StopReason::BudgetExhausted => InvestigationStatus::BudgetExhausted,
+            _ if recipe.is_exploration() => InvestigationStatus::Exploratory,
             _ if missing.is_empty() => InvestigationStatus::Sufficient,
             _ => InvestigationStatus::Incomplete,
         };
@@ -1339,6 +2061,22 @@ impl EvidenceQueryBroker {
                 .map(|commit| NodeRef::Entity(entity_id(EntityKind::Commit, commit))),
         );
         roots.retain(|root| self.store.graph.entities.contains_key(root.id()));
+        // An entity is shown only when it is a root of this investigation or evidence the actor
+        // may see observed it. The graph is shared by every investigation, so entities other
+        // investigations created (from records this actor may not receive) stay hidden
+        let mut observed = roots
+            .iter()
+            .map(|root| root.id().to_string())
+            .collect::<BTreeSet<_>>();
+        for id in &selected {
+            for relation in self.store.graph.relations_of(
+                &NodeRef::Evidence(id.clone()),
+                &[RelationType::ObservedOn],
+                Direction::Outgoing,
+            ) {
+                observed.insert(relation.target.id().to_string());
+            }
+        }
         let traversal = TraversalRequest {
             start: roots,
             relation_types: ALL_RELATIONS.to_vec(),
@@ -1350,17 +2088,33 @@ impl EvidenceQueryBroker {
             at: None,
         };
         let visible = |node: &NodeRef| match node {
-            NodeRef::Entity(_) => true,
+            NodeRef::Entity(id) => observed.contains(id),
             NodeRef::Evidence(id) => selected.contains(id),
             NodeRef::Assertion(id) => derived.contains(id),
             NodeRef::Contribution(_) => false,
         };
-        let (view, walked) = self.store.graph.context_view(
+        let (mut view, walked) = self.store.graph.context_view(
             &request.question,
             &traversal,
             &visible,
             self.clock.now(),
         )?;
+        // Provenance inside the view names only evidence the pack holds
+        for relation in &mut view.relations {
+            relation
+                .provenance
+                .evidence
+                .retain(|evidence| selected.contains(evidence));
+        }
+        for entity in &mut view.entities {
+            if entity
+                .first_evidence
+                .as_ref()
+                .is_some_and(|evidence| !selected.contains(evidence))
+            {
+                entity.first_evidence = None;
+            }
+        }
         run.audit.metrics.traversal_depth = walked.depth_reached as u64;
         let assertions = assertion_ids
             .iter()
@@ -1383,6 +2137,23 @@ impl EvidenceQueryBroker {
             &selected,
             request,
         );
+        if recipe.is_exploration() {
+            warnings.push(Warning {
+                kind: WarningKind::Uncertainty,
+                message: format!(
+                    "no recipe serves '{}', so the permitted sources were explored; nothing was required, so this pack shows what the sources hold, not whether the question is answered (feedback on it is how a recipe for the question can be learned)",
+                    request.investigation_class
+                ),
+                refs: Vec::new(),
+            });
+        }
+        if no_subjects {
+            warnings.push(Warning {
+                kind: WarningKind::Uncertainty,
+                message: "no task, commit, or deployment was established, so no conclusions were derived; an empty list of assertions here means nothing was concluded, not that nothing is wrong".into(),
+                refs: Vec::new(),
+            });
+        }
         if !walked.limits.is_empty() {
             warnings.push(Warning {
                 kind: WarningKind::Truncation,
@@ -1462,7 +2233,7 @@ impl EvidenceQueryBroker {
             episode.packs.push(pack.pack_id.clone());
         }
         self.store.packs.insert(pack.pack_id.clone(), pack.clone());
-        self.store.audits.push(run.audit.clone());
+        self.store.push_audit(run.audit.clone());
         Ok(EvidenceQueryResult {
             pack,
             audit: run.audit,
@@ -1482,6 +2253,18 @@ impl EvidenceQueryBroker {
             .filter_map(|id| self.store.evidence.get(id))
             .any(|record| record.parse_status != ParseStatus::Failed);
         let state = match step.state {
+            // The source could not fully answer and returned nothing: that is not "nothing
+            // exists"
+            StepState::Executed
+                if step.record_ids.is_empty()
+                    && step.connector_status == Some(ConnectorStatus::Partial) =>
+            {
+                SourceState::Unavailable
+            }
+            // Everything the source returned was withheld from this actor
+            StepState::Executed if step.record_ids.is_empty() && step.withheld > 0 => {
+                SourceState::Denied
+            }
             StepState::Executed if step.record_ids.is_empty() => SourceState::Empty,
             StepState::Executed if !parsed => SourceState::ParseFailed,
             StepState::Executed => SourceState::Collected,
@@ -1609,25 +2392,56 @@ impl EvidenceQueryBroker {
                 )),
                 _ => {}
             }
+            if step.state == StepState::Executed && step.next_cursor.is_some() {
+                warnings.push(warn(
+                    WarningKind::Truncation,
+                    format!(
+                        "step {} stopped with more results at the source (after {} pages); raise the step limit or the budget to collect them",
+                        step.step_id, step.pages
+                    ),
+                    vec![step.step_id.clone()],
+                ));
+            }
         }
-        let unauthorized = excluded
-            .iter()
-            .filter(|exclusion| {
-                matches!(
-                    exclusion.reason,
-                    ExclusionReason::Unauthorized | ExclusionReason::TooSensitive
-                )
-            })
-            .map(|exclusion| exclusion.evidence_id.clone())
-            .collect::<Vec<_>>();
-        if !unauthorized.is_empty() {
+        for variable in &run.unstarted {
+            warnings.push(warn(
+                WarningKind::Completeness,
+                format!(
+                    "the recipe starts from a known {variable}, which was not given; the steps that need it could only run if it was learned"
+                ),
+                Vec::new(),
+            ));
+        }
+        for (variable, unchecked) in &run.unchecked {
+            let steps = unchecked.steps.iter().cloned().collect::<Vec<_>>();
+            warnings.push(warn(
+                WarningKind::Completeness,
+                format!(
+                    "{} {variable} values are known but steps {} checked only {}; not checked: {}",
+                    unchecked.skipped.len() + 1,
+                    steps.join(", "),
+                    unchecked.used,
+                    unchecked.skipped.join(", ")
+                ),
+                steps,
+            ));
+        }
+        // Withheld records are counted, never named: their ids are not the actor's to see
+        let unauthorized = run.withheld
+            + excluded
+                .iter()
+                .filter(|exclusion| {
+                    matches!(
+                        exclusion.reason,
+                        ExclusionReason::Unauthorized | ExclusionReason::TooSensitive
+                    )
+                })
+                .count();
+        if unauthorized > 0 {
             warnings.push(warn(
                 WarningKind::Access,
-                format!(
-                    "{} records were withheld by authorization or sensitivity",
-                    unauthorized.len()
-                ),
-                unauthorized,
+                format!("{unauthorized} records were withheld by authorization or sensitivity"),
+                Vec::new(),
             ));
         }
         for item in missing {
@@ -1665,14 +2479,7 @@ impl EvidenceQueryBroker {
             let Some(record) = self.store.evidence.get(id) else {
                 continue;
             };
-            let timed = !matches!(
-                record.evidence_type,
-                EvidenceType::GraphState
-                    | EvidenceType::Policy
-                    | EvidenceType::Validation
-                    | EvidenceType::Configuration
-                    | EvidenceType::Task
-            );
+            let timed = record.evidence_type.is_timed();
             match (record.observed_at, request.freshness_ms) {
                 (None, _) if timed => warnings.push(warn(
                     WarningKind::Freshness,
@@ -1702,14 +2509,39 @@ impl EvidenceQueryBroker {
             ));
         }
         if run.audit.stop_reason == StopReason::Rejected {
-            warnings.push(warn(
-                WarningKind::Access,
-                "the request was rejected; no source was queried".into(),
-                Vec::new(),
-            ));
+            let message = if run.breach.is_some() {
+                "the investigation was stopped: evidence revealed a repository or environment the actor may not access; nothing further was queried and no conclusions were derived"
+            } else {
+                "the request was rejected; no source was queried"
+            };
+            warnings.push(warn(WarningKind::Access, message.into(), Vec::new()));
         }
         warnings
     }
+}
+
+/** The governance-relevant state of the graph: its file entities, and its zone and flow entities
+ * with their versions (governance linking compares two of these to link only what changed)
+ * Input
+    - graph: &EvidenceGraph - graph
+ * Output
+    - (BTreeSet<String>, BTreeMap<String, Option<String>>)
+*/
+fn governance_state(graph: &EvidenceGraph) -> (BTreeSet<String>, BTreeMap<String, Option<String>>) {
+    let mut files = BTreeSet::new();
+    let mut scopes = BTreeMap::new();
+    for entity in graph.entities.values() {
+        match entity.kind {
+            EntityKind::File => {
+                files.insert(entity.entity_id.clone());
+            }
+            EntityKind::Zone | EntityKind::Flow => {
+                scopes.insert(entity.entity_id.clone(), entity.version.clone());
+            }
+            _ => {}
+        }
+    }
+    (files, scopes)
 }
 
 /** Every relation type, followed when building a context view */
@@ -1787,8 +2619,44 @@ fn compare(original: &QueryAuditRecord, replay: &QueryAuditRecord) -> ReplayComp
             (None, _) | (_, None) => unverifiable = true,
             _ => {}
         }
-        if step.evidence_ids != again.evidence_ids {
+        let before = step.evidence_ids.iter().collect::<BTreeSet<_>>();
+        let after = again.evidence_ids.iter().collect::<BTreeSet<_>>();
+        if before != after {
             differences.push(format!("{key}: returned different records"));
+        } else if step.snapshot.is_some()
+            && again.snapshot.is_some()
+            && step.snapshot != again.snapshot
+        {
+            if let Some(last) = differences.last_mut() {
+                last.push_str(
+                    " (the source changed, but the records this step returned are the same)",
+                );
+            }
+        }
+    }
+    // A step that answers now but did not originally (a source that recovered, a branch that now
+    // holds) is a difference too
+    for again in replay
+        .steps
+        .iter()
+        .filter(|step| step.state == StepState::Executed)
+    {
+        let executed_before = original.steps.iter().any(|step| {
+            step.step_id == again.step_id
+                && step.resource_id == again.resource_id
+                && step.state == StepState::Executed
+        });
+        if !executed_before {
+            let was = original
+                .steps
+                .iter()
+                .find(|step| step.step_id == again.step_id && step.resource_id == again.resource_id)
+                .map_or("absent".to_string(), |step| format!("{:?}", step.state));
+            differences.push(format!(
+                "{}@{}: {was} in the original, executed in the replay",
+                again.step_id,
+                again.resource_id.clone().unwrap_or_default()
+            ));
         }
     }
     let fidelity = if !differences.is_empty() {

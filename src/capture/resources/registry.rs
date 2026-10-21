@@ -115,6 +115,8 @@ pub(crate) struct ResourceScope {
     - status: ResourceStatus - active, disabled, or unhealthy
     - created_at: u64 - Unix milliseconds
     - updated_at: u64 - Unix milliseconds
+    - priority: i32 - order among resources of one type: a step asks the highest first and the
+      next only when it did not answer; resources of equal priority are all asked (0 when absent)
 */
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ResourceDefinition {
@@ -129,6 +131,8 @@ pub(crate) struct ResourceDefinition {
     pub(crate) status: ResourceStatus,
     pub(crate) created_at: u64,
     pub(crate) updated_at: u64,
+    #[serde(default)]
+    pub(crate) priority: i32,
 }
 
 /** A connector implementation compiled into Crane
@@ -197,6 +201,12 @@ pub(crate) const CONNECTORS: &[ConnectorSpec] = &[
         resource_types: &[ResourceType::Crane],
         configuration_keys: &[],
         filters: &["kind", "name"],
+    },
+    ConnectorSpec {
+        name: "github",
+        resource_types: &[ResourceType::Github, ResourceType::Ci],
+        configuration_keys: &[],
+        filters: &["commit", "pull_request"],
     },
 ];
 

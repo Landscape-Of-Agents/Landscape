@@ -2,11 +2,15 @@
 // never write: Git (commits and changed files, via platform::git), DataSea (the local event store
 // of agent sessions and tool calls, telemetry::events), Landscape (zones and flows in
 // .crane/governance.yaml, governance::zones), and Crane (AgentScript policies and the validation
-// report, governance::policy and governance::verify). Hosted GitHub, CI, and deployment APIs have
-// no live connector yet; the fixture connector stands in for them.
+// report, governance::policy and governance::verify). GitHub pull requests and check runs have
+// their own connector (github.rs); deployment, log, and metric systems have no live connector yet,
+// and the fixture connector stands in for them.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::process::Command;
+use std::time::Instant;
 
 use serde_json::{json, Value};
 
@@ -69,18 +73,60 @@ pub(crate) struct GitConnector {
     pub(crate) root: PathBuf,
 }
 
+/** The error a Git command run within a deadline reports when it ran out of time */
+const GIT_TIMED_OUT: &str = "git did not finish within the investigation's time budget";
+
 impl GitConnector {
+    /** Run Git in the repository, within a deadline when one is given (the command is stopped when
+     * the time budget runs out)
+     * Input
+        - args: &[&str] - arguments
+        - deadline: Option<Instant> - when the time budget runs out
+     * Output
+        - Result<String, String> trimmed stdout
+        - Error with Git's message, or GIT_TIMED_OUT
+    */
+    fn run_git(&self, args: &[&str], deadline: Option<Instant>) -> Result<String, String> {
+        let Some(deadline) = deadline else {
+            return git_in(&self.root, args);
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(GIT_TIMED_OUT.into());
+        }
+        let mut command = Command::new("git");
+        command.current_dir(&self.root).args(args);
+        let output = crate::platform::process::run(&mut command, remaining)?;
+        if output.timed_out {
+            return Err(GIT_TIMED_OUT.into());
+        }
+        if !output.success {
+            let message = output.stderr.trim().to_string();
+            return Err(if message.is_empty() {
+                format!("git {} failed", args.first().copied().unwrap_or_default())
+            } else {
+                message
+            });
+        }
+        Ok(output.stdout.trim().to_string())
+    }
+
     /** Read one commit as a source record
      * Input
         - revision: &str - commit or reference
         - with_diff: bool - include a bounded diff excerpt
+        - deadline: Option<Instant> - when the time budget runs out
      * Output
         - Result<SourceRecord, String>
-        - Error if Git cannot resolve the revision
+        - Error if Git cannot resolve the revision or runs out of time
     */
-    fn commit(&self, revision: &str, with_diff: bool) -> Result<SourceRecord, String> {
-        let header = git_in(
-            &self.root,
+    fn commit(
+        &self,
+        revision: &str,
+        with_diff: bool,
+        deadline: Option<Instant>,
+    ) -> Result<SourceRecord, String> {
+        let header = self.run_git(
             &[
                 "show",
                 "-s",
@@ -88,12 +134,13 @@ impl GitConnector {
                 revision,
                 "--",
             ],
+            deadline,
         )?;
         let parts = header.split('\u{1f}').collect::<Vec<_>>();
         let [sha, author, time, subject] = parts.as_slice() else {
             return Err(format!("unexpected git output for {revision}"));
         };
-        let numstat = git_in(&self.root, &["show", "--numstat", "--format=", sha, "--"])?;
+        let numstat = self.run_git(&["show", "--numstat", "--format=", sha, "--"], deadline)?;
         let files = numstat
             .lines()
             .filter_map(|line| {
@@ -105,7 +152,7 @@ impl GitConnector {
         let mut content =
             json!({"commit": sha, "author": author, "subject": subject, "files": files});
         if with_diff {
-            let diff = git_in(&self.root, &["show", "--format=", "--patch", sha, "--"])?;
+            let diff = self.run_git(&["show", "--format=", "--patch", sha, "--"], deadline)?;
             content["diff"] = Value::String(diff.chars().take(DIFF_EXCERPT_BYTES).collect());
             content["diff_truncated"] = Value::Bool(diff.len() > DIFF_EXCERPT_BYTES);
         }
@@ -131,6 +178,120 @@ impl GitConnector {
             .ok()
             .map(|sha| format!("git:{sha}"))
     }
+
+    /** The outcome of a Git error: Timeout when the time budget ran out, Failed otherwise
+     * Input
+        - error: String - Git's error
+     * Output
+        - ConnectorOutcome
+    */
+    fn failure(error: String) -> ConnectorOutcome {
+        let status = if error == GIT_TIMED_OUT {
+            ConnectorStatus::Timeout
+        } else {
+            ConnectorStatus::Failed
+        };
+        ConnectorOutcome::failed(status, error)
+    }
+
+    /** Read one commit with a diff excerpt
+     * Input
+        - record_id: &str - commit or reference
+        - deadline: Option<Instant> - when the time budget runs out
+     * Output
+        - ConnectorOutcome
+    */
+    fn fetch_at(&self, record_id: &str, deadline: Option<Instant>) -> ConnectorOutcome {
+        if !safe_revision(record_id) {
+            return ConnectorOutcome::failed(
+                ConnectorStatus::InvalidQuery,
+                format!("unsafe revision '{record_id}'"),
+            );
+        }
+        match self.commit(record_id, true, deadline) {
+            Ok(record) => ConnectorOutcome::ok(vec![record], self.head()),
+            Err(error)
+                if error.contains("unknown revision")
+                    || error.contains("bad object")
+                    || error.contains("ambiguous") =>
+            {
+                ConnectorOutcome::ok(Vec::new(), self.head())
+            }
+            Err(error) => Self::failure(error),
+        }
+    }
+
+    /** List commits: one commit (filter "commit") or the latest ones, optionally touching a path,
+     * a page at a time (the cursor is the number of commits already listed)
+     * Input
+        - spec: &QuerySpec - query
+        - deadline: Option<Instant> - when the time budget runs out
+     * Output
+        - ConnectorOutcome
+    */
+    fn query_at(&self, spec: &QuerySpec, deadline: Option<Instant>) -> ConnectorOutcome {
+        let start = spec.filters.get("commit").map_or("HEAD", String::as_str);
+        if !safe_revision(start) {
+            return ConnectorOutcome::failed(ConnectorStatus::InvalidQuery, "unsupported revision");
+        }
+        let offset = match spec.cursor.as_deref().map(str::parse::<usize>) {
+            None => 0,
+            Some(Ok(offset)) => offset,
+            Some(Err(_)) => {
+                return ConnectorOutcome::failed(ConnectorStatus::InvalidQuery, "malformed cursor")
+            }
+        };
+        let single = spec.filters.contains_key("commit");
+        let count = if single { 1 } else { spec.limit.min(MAX_PAGE) };
+        let limit = format!("-n{count}");
+        let skip = format!("--skip={offset}");
+        let mut args = vec![
+            "log",
+            limit.as_str(),
+            skip.as_str(),
+            "--format=%H",
+            start,
+            "--",
+        ];
+        if let Some(path) = spec.filters.get("path") {
+            args.push(path);
+        }
+        let listing = match self.run_git(&args, deadline) {
+            Ok(listing) => listing,
+            Err(error) => return Self::failure(error),
+        };
+        let shas = listing
+            .lines()
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        let mut records = Vec::new();
+        for sha in &shas {
+            match self.commit(sha, false, deadline) {
+                Ok(record) => records.push(record),
+                Err(error) => {
+                    let mut outcome = ConnectorOutcome::ok(records, self.head());
+                    outcome.status = ConnectorStatus::Partial;
+                    outcome.error = Some(error);
+                    return outcome;
+                }
+            }
+        }
+        let filtered = page(
+            &records,
+            &QuerySpec {
+                filters: BTreeMap::new(),
+                cursor: None,
+                ..spec.clone()
+            },
+            self.head(),
+        );
+        // A full page may be followed by more commits; an empty next page simply ends the listing
+        let next_cursor = (!single && shas.len() == count).then(|| (offset + count).to_string());
+        ConnectorOutcome {
+            next_cursor,
+            ..filtered
+        }
+    }
 }
 
 impl ResourceConnector for GitConnector {
@@ -151,77 +312,39 @@ impl ResourceConnector for GitConnector {
         - ConnectorOutcome
     */
     fn fetch(&self, record_id: &str) -> ConnectorOutcome {
-        if !safe_revision(record_id) {
-            return ConnectorOutcome::failed(
-                ConnectorStatus::InvalidQuery,
-                format!("unsafe revision '{record_id}'"),
-            );
-        }
-        match self.commit(record_id, true) {
-            Ok(record) => ConnectorOutcome::ok(vec![record], self.head()),
-            Err(error)
-                if error.contains("unknown revision")
-                    || error.contains("bad object")
-                    || error.contains("ambiguous") =>
-            {
-                ConnectorOutcome::ok(Vec::new(), self.head())
-            }
-            Err(error) => ConnectorOutcome::failed(ConnectorStatus::Failed, error),
-        }
+        self.fetch_at(record_id, None)
     }
 
-    /** List commits: one commit (filter "commit") or the latest ones, optionally touching a path
+    /** List commits (see query_at)
      * Input
         - spec: &QuerySpec - query
      * Output
         - ConnectorOutcome
     */
     fn query(&self, spec: &QuerySpec) -> ConnectorOutcome {
-        let start = spec.filters.get("commit").map_or("HEAD", String::as_str);
-        if !safe_revision(start) || spec.cursor.is_some() {
-            return ConnectorOutcome::failed(
-                ConnectorStatus::InvalidQuery,
-                "unsupported revision or cursor",
-            );
-        }
-        let count = if spec.filters.contains_key("commit") {
-            1
-        } else {
-            spec.limit.min(MAX_PAGE)
-        };
-        let limit = format!("-n{count}");
-        let mut args = vec!["log", limit.as_str(), "--format=%H", start, "--"];
-        if let Some(path) = spec.filters.get("path") {
-            args.push(path);
-        }
-        let listing = match git_in(&self.root, &args) {
-            Ok(listing) => listing,
-            Err(error) => return ConnectorOutcome::failed(ConnectorStatus::Failed, error),
-        };
-        let mut records = Vec::new();
-        for sha in listing.lines().filter(|line| !line.is_empty()) {
-            match self.commit(sha, false) {
-                Ok(record) => records.push(record),
-                Err(error) => {
-                    let mut outcome = ConnectorOutcome::ok(records, self.head());
-                    outcome.status = ConnectorStatus::Partial;
-                    outcome.error = Some(error);
-                    return outcome;
-                }
-            }
-        }
-        let filtered = page(
-            &records,
-            &QuerySpec {
-                filters: BTreeMap::new(),
-                ..spec.clone()
-            },
-            self.head(),
-        );
-        ConnectorOutcome {
-            next_cursor: None,
-            ..filtered
-        }
+        self.query_at(spec, None)
+    }
+
+    /** Read one commit, stopping Git when the deadline passes
+     * Input
+        - record_id: &str - commit or reference
+        - deadline: Instant - when the time budget runs out
+     * Output
+        - ConnectorOutcome
+    */
+    fn fetch_within(&self, record_id: &str, deadline: Instant) -> ConnectorOutcome {
+        self.fetch_at(record_id, Some(deadline))
+    }
+
+    /** List commits, stopping Git when the deadline passes
+     * Input
+        - spec: &QuerySpec - query
+        - deadline: Instant - when the time budget runs out
+     * Output
+        - ConnectorOutcome
+    */
+    fn query_within(&self, spec: &QuerySpec, deadline: Instant) -> ConnectorOutcome {
+        self.query_at(spec, Some(deadline))
     }
 
     /** Check that Git can read the repository
@@ -247,14 +370,30 @@ impl ResourceConnector for GitConnector {
 /** Agent sessions, tool calls, and decisions from DataSea's local event store
  * Fields
     - store: EventStore - the repository's event store
+    - cache: RefCell<Option<(Vec<SourceRecord>, Option<String>)>> - the event log as read for the
+      current investigation (read once per investigation, dropped by begin)
 */
 #[derive(Debug, Clone)]
 pub(crate) struct DataSeaConnector {
     pub(crate) store: EventStore,
+    cache: RefCell<Option<(Vec<SourceRecord>, Option<String>)>>,
 }
 
 impl DataSeaConnector {
-    /** Read every event as a source record (events are already redacted by DataSea)
+    /** A connector over an event store
+     * Input
+        - store: EventStore - the repository's event store
+     * Output
+        - DataSeaConnector
+    */
+    pub(crate) fn new(store: EventStore) -> Self {
+        Self {
+            store,
+            cache: RefCell::new(None),
+        }
+    }
+
+    /** Every event as a source record, read once per investigation
      * Input
         - None (uses self)
      * Output
@@ -262,6 +401,22 @@ impl DataSeaConnector {
         - Error if the event log is unreadable
     */
     fn records(&self) -> Result<(Vec<SourceRecord>, Option<String>), String> {
+        if let Some(cached) = self.cache.borrow().as_ref() {
+            return Ok(cached.clone());
+        }
+        let read = self.read_records()?;
+        *self.cache.borrow_mut() = Some(read.clone());
+        Ok(read)
+    }
+
+    /** Read every event as a source record (events are already redacted by DataSea)
+     * Input
+        - None (uses self)
+     * Output
+        - Result<(Vec<SourceRecord>, Option<String>), String> records and the chain head
+        - Error if the event log is unreadable
+    */
+    fn read_records(&self) -> Result<(Vec<SourceRecord>, Option<String>), String> {
         let events = self.store.read_all()?;
         let head = events
             .last()
@@ -281,6 +436,9 @@ impl DataSeaConnector {
                     object.remove("spec");
                     object.insert("session".into(), json!(event.scope.foxx_session_id));
                     object.insert("task".into(), json!(event.scope.foxx_task_id));
+                    // The tracker's key (CRANE_TASK_ID) is kept beside Crane's canonical task id,
+                    // so a person asking by the key they know finds the agent's work
+                    object.insert("external_task".into(), json!(event.scope.external_task_id));
                 }
                 SourceRecord {
                     record_id: event.event_id.clone(),
@@ -292,6 +450,7 @@ impl DataSeaConnector {
                     metadata: metadata(&[
                         ("session", event.scope.foxx_session_id.clone()),
                         ("task", event.scope.foxx_task_id.clone()),
+                        ("external_task", event.scope.external_task_id.clone()),
                         ("event_type", Some(event.event_type.clone())),
                     ]),
                 }
@@ -302,6 +461,16 @@ impl DataSeaConnector {
 }
 
 impl ResourceConnector for DataSeaConnector {
+    /** Start an investigation: the event log is read again
+     * Input
+        - None (uses self)
+     * Output
+        - None
+    */
+    fn begin(&self) {
+        self.cache.borrow_mut().take();
+    }
+
     /** Describe the event log (event identifiers and types)
      * Input
         - None (uses self)
@@ -345,7 +514,9 @@ impl ResourceConnector for DataSeaConnector {
         }
     }
 
-    /** Query events by session, task, or event type
+    /** Query events by session, task, or event type. A task filter matches either identity of a
+     * task: Crane's canonical id (tsk_...) or the tracker's key (CRANE_TASK_ID, for example a Jira
+     * key), so asking by either finds the same agent work
      * Input
         - spec: &QuerySpec - query
      * Output
@@ -353,7 +524,20 @@ impl ResourceConnector for DataSeaConnector {
     */
     fn query(&self, spec: &QuerySpec) -> ConnectorOutcome {
         match self.records() {
-            Ok((records, head)) => page(&records, spec, head),
+            Ok((records, head)) => {
+                let mut rest = spec.clone();
+                let task = rest.filters.remove("task");
+                let matching = records
+                    .into_iter()
+                    .filter(|record| {
+                        task.as_ref().is_none_or(|task| {
+                            record.metadata.get("task") == Some(task)
+                                || record.metadata.get("external_task") == Some(task)
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                page(&matching, &rest, head)
+            }
             Err(error) => ConnectorOutcome::failed(ConnectorStatus::Unavailable, error),
         }
     }
@@ -513,10 +697,13 @@ impl ResourceConnector for LandscapeConnector {
  * changes a policy)
  * Fields
     - workspace: Workspace - repository
+    - cache: RefCell<Option<ConnectorOutcome>> - policies and the validation report as read for the
+      current investigation (verification runs once per investigation, dropped by begin)
 */
 #[derive(Debug, Clone)]
 pub(crate) struct CraneConnector {
     pub(crate) workspace: Workspace,
+    cache: RefCell<Option<ConnectorOutcome>>,
 }
 
 impl CraneConnector {
@@ -585,13 +772,42 @@ impl CraneConnector {
         })
     }
 
-    /** Every record with the snapshot they reflect
+    /** A connector over a repository's Crane governance
+     * Input
+        - workspace: Workspace - repository
+     * Output
+        - CraneConnector
+    */
+    pub(crate) fn new(workspace: Workspace) -> Self {
+        Self {
+            workspace,
+            cache: RefCell::new(None),
+        }
+    }
+
+    /** Every record with the snapshot they reflect, read once per investigation (verification is
+     * the costly part, and it runs once)
      * Input
         - None (uses self)
      * Output
         - ConnectorOutcome, Partial when the validation report could not be produced
     */
     fn all(&self) -> ConnectorOutcome {
+        if let Some(cached) = self.cache.borrow().as_ref() {
+            return cached.clone();
+        }
+        let read = self.read_all();
+        *self.cache.borrow_mut() = Some(read.clone());
+        read
+    }
+
+    /** Read every record with the snapshot they reflect
+     * Input
+        - None (uses self)
+     * Output
+        - ConnectorOutcome, Partial when the validation report could not be produced
+    */
+    fn read_all(&self) -> ConnectorOutcome {
         let mut records = match self.policies() {
             Ok(records) => records,
             Err(error) => return ConnectorOutcome::failed(ConnectorStatus::Failed, error),
@@ -611,6 +827,16 @@ impl CraneConnector {
 }
 
 impl ResourceConnector for CraneConnector {
+    /** Start an investigation: policies and validation are read again
+     * Input
+        - None (uses self)
+     * Output
+        - None
+    */
+    fn begin(&self) {
+        self.cache.borrow_mut().take();
+    }
+
     /** Describe policies and the validation report
      * Input
         - None (uses self)

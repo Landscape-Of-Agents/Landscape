@@ -227,7 +227,10 @@ fn refuse(code: ErrorCode, message: &str) -> CaptureError {
     CaptureError::new(code, message)
 }
 
-/** Report whether a constraint proposal would weaken a policy (relax, remove, or allow)
+/** Report whether a constraint proposal could weaken a policy. Only effects that can only make a
+ * policy stricter or clearer (tighten, add, clarify) are allowed here; anything else, or no stated
+ * effect, is treated as weakening. This check is advisory: an accepted proposal still goes through
+ * Crane's signed policy workflow, which is the authority
  * Input
     - content: &Value - proposal content
  * Output
@@ -238,9 +241,9 @@ fn weakens_policy(content: &Value) -> bool {
         .get("effect")
         .and_then(Value::as_str)
         .is_none_or(|effect| {
-            matches!(
+            !matches!(
                 effect.to_ascii_lowercase().as_str(),
-                "relax" | "remove" | "allow" | "disable" | "weaken"
+                "tighten" | "add" | "clarify"
             )
         })
 }
@@ -313,6 +316,18 @@ impl ContributionLedger {
             return Err(CaptureError::new(
                 ErrorCode::EvidenceRequired,
                 format!("evidence '{missing}' does not exist"),
+            ));
+        }
+        if proposal.contribution_type == ContributionType::ConstraintProposal
+            && proposal
+                .content
+                .get("policy")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+        {
+            return Err(refuse(
+                ErrorCode::InvalidTransition,
+                "a constraint proposal must name the policy it concerns (content.policy) and its effect (content.effect)",
             ));
         }
         if proposal.contribution_type == ContributionType::ConstraintProposal

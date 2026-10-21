@@ -83,7 +83,9 @@ impl Entity {
     }
 }
 
-/** The stable identifier of an entity
+/** The stable identifier of an entity. Keys whose spelling does not change their meaning are
+ * normalized first (a commit sha and an environment name are case-insensitive and trimmed), so
+ * "9F1C2AB7D4" and "9f1c2ab7d4" are one commit
  * Input
     - kind: EntityKind - kind
     - key: &str - natural key
@@ -91,11 +93,15 @@ impl Entity {
     - String
 */
 pub(crate) fn entity_id(kind: EntityKind, key: &str) -> String {
-    let kind = serde_json::to_value(kind)
+    let name = serde_json::to_value(kind)
         .ok()
         .and_then(|value| value.as_str().map(str::to_string))
         .unwrap_or_default();
-    stable_id("ent", &[&kind, key])
+    let key = match kind {
+        EntityKind::Commit | EntityKind::Environment => key.trim().to_ascii_lowercase(),
+        _ => key.to_string(),
+    };
+    stable_id("ent", &[&name, &key])
 }
 
 /** A node of the evidence graph

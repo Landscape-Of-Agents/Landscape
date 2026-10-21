@@ -137,6 +137,7 @@ pub(crate) fn definition(resource: &FixtureResource, scenario: &Scenario) -> Res
         status: ResourceStatus::Active,
         created_at: 0,
         updated_at: 0,
+        priority: 0,
     }
 }
 
@@ -222,6 +223,7 @@ pub(crate) fn request(scenario: &Scenario) -> EvidenceQueryRequest {
         budget: Budget::default(),
         freshness_ms: None,
         pack_limits: PackLimits::default(),
+        plan_required: Vec::new(),
     }
 }
 
@@ -321,7 +323,14 @@ pub(crate) fn run() -> CaptureResult<DemoReport> {
             notes: "The test report and runtime metrics are needed before concluding".into(),
             at: now,
         });
-        episode.record_outcome(&policy.actor, EpisodeOutcome::Failed, deployment, now)?;
+        broker.store.record_outcome(
+            &episode_id,
+            &policy.actor,
+            policy.may_review,
+            EpisodeOutcome::Failed,
+            deployment,
+            now,
+        )?;
     }
     Ok(DemoReport {
         contributions: broker

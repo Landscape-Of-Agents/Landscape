@@ -100,10 +100,8 @@ pub(crate) struct ScopeResolution {
 }
 
 impl ScopeResolution {
-    /** Resolve a request's scope and the resources the actor may use. A repository or
-     * environment the actor may not see is denied, not dropped; a resource is permitted only when
-     * it is active, granted by the policy, named by the request (when the request names any), and
-     * within the repository and environment of the investigation
+    /**
+    Resolve a request's scope and the resources the actor may use. A repository or environment the actor may not see is denied, not dropped; a resource is permitted only when it is active, granted by the policy, named by the request (when the request names any), and within the repository and environment of the investigation
      * Input
         - request: &EvidenceQueryRequest - request
         - registry: &ResourceRegistry - registered resources
@@ -260,9 +258,29 @@ impl ScopeResolution {
         }
     }
 
-    /** Learn unknown scope facts a retrieved record states: a pull request's or deployment's
-     * commit, a task's pull request, a deployment's environment, a session (never overwriting a
-     * known value)
+    /** Every known value of a list-valued template variable (commit, pull_request, deployment,
+     * session). A template takes the first; the broker warns when others exist, so a value known
+     * but never checked is reported instead of silently skipped
+     * Input
+        - name: &str - variable
+     * Output
+        - &[String], empty for an unknown or single-valued variable
+    */
+    pub(crate) fn values(&self, name: &str) -> &[String] {
+        match name {
+            "commit" => &self.commits,
+            "pull_request" => &self.pull_requests,
+            "deployment" => &self.deployments,
+            "session" => &self.sessions,
+            _ => &[],
+        }
+    }
+
+    /** Learn scope facts a retrieved record states: a pull request's or deployment's commit, a
+     * deployment itself, and a session are added when not yet known (every distinct one, so a second
+     * deployment is not hidden behind the first, and a deployment found by a discovery query becomes
+     * part of the scope); a pull request's task, a task's pull request, and a deployment's
+     * environment fill an unknown value (a known value is never overwritten)
      * Input
         - record: &EvidenceRecord - retrieved record
      * Output
@@ -274,11 +292,28 @@ impl ScopeResolution {
         if matches!(
             record.evidence_type,
             EvidenceType::PullRequest | EvidenceType::Deployment
-        ) && self.commits.is_empty()
-        {
+        ) {
             if let Some(commit) = &refs.commit {
-                self.commits.push(commit.clone());
-                facts.push(("commit", commit.clone()));
+                if !self.commits.contains(commit) {
+                    self.commits.push(commit.clone());
+                    facts.push(("commit", commit.clone()));
+                }
+            }
+        }
+        if record.evidence_type == EvidenceType::Deployment {
+            let deployment = refs
+                .deployment
+                .clone()
+                .unwrap_or_else(|| record.source_ref.record_id.clone());
+            if !self.deployments.contains(&deployment) {
+                self.deployments.push(deployment.clone());
+                facts.push(("deployment", deployment));
+            }
+        }
+        if record.evidence_type == EvidenceType::PullRequest && self.task_id.is_none() {
+            if let Some(task) = &refs.task {
+                self.task_id = Some(task.clone());
+                facts.push(("task", task.clone()));
             }
         }
         if record.evidence_type == EvidenceType::Task && self.pull_requests.is_empty() {

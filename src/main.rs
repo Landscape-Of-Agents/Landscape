@@ -7,7 +7,8 @@
 // enforcement) -> telemetry (identity, events, metrics, autonomy ledger, compliance) -> foxx
 // (read-only dashboard) and integrations; cli dispatches the commands. The server feature adds the
 // DataSea ingestion service, which stores every installation's uploads in MongoDB. capture is Work
-// Capture & Evidence Ingestion, which reads those layers as evidence sources and never writes them.
+// Capture & Evidence Ingestion, which reads those layers as evidence sources and never writes them;
+// insight finds patterns across what capture kept and turns them into proposals people review.
 
 mod capability;
 mod capability_lab;
@@ -20,6 +21,7 @@ mod foxx;
 mod github;
 mod governance;
 mod hooks;
+mod insight;
 mod integrations;
 mod invocation;
 mod platform;

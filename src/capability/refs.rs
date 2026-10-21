@@ -122,10 +122,7 @@ impl CurrentVersions {
                 }
             }
         }
-        let crane = CraneConnector {
-            workspace: workspace.clone(),
-        }
-        .discover();
+        let crane = CraneConnector::new(workspace.clone()).discover();
         if crane.status.usable() {
             current.crane_known = true;
             for record in crane.records {

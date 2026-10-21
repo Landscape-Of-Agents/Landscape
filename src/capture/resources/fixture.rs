@@ -17,6 +17,10 @@ use super::connector::{
     - Normal - answer from its records
     - Fail(ConnectorStatus) - fail every operation with this status
     - Partial(usize) - return at most this many records of each answer, marked partial
+    - Pages(usize) - answer queries in pages of at most this many records, with a cursor to the
+      rest (as a paginated API does)
+    - Slow(u64) - take this many milliseconds per operation; within a deadline it cannot meet, it
+      answers Timeout at once (as a source that honors deadlines does)
 */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FixtureBehavior {
@@ -24,6 +28,10 @@ pub(crate) enum FixtureBehavior {
     Fail(ConnectorStatus),
     #[cfg_attr(not(test), allow(dead_code))]
     Partial(usize),
+    #[cfg_attr(not(test), allow(dead_code))]
+    Pages(usize),
+    #[cfg_attr(not(test), allow(dead_code))]
+    Slow(u64),
 }
 
 /** A fixture-backed connector
@@ -76,6 +84,26 @@ impl FixtureConnector {
         self.calls.get()
     }
 
+    /** For a slow fixture, the Timeout answer when the deadline leaves too little time
+     * Input
+        - deadline: std::time::Instant - deadline
+     * Output
+        - Option<ConnectorOutcome>, None when there is time (or the fixture is not slow)
+    */
+    fn too_slow(&self, deadline: std::time::Instant) -> Option<ConnectorOutcome> {
+        let FixtureBehavior::Slow(millis) = self.behavior else {
+            return None;
+        };
+        let needed = std::time::Duration::from_millis(millis);
+        (std::time::Instant::now() + needed > deadline).then(|| {
+            self.calls.set(self.calls.get() + 1);
+            ConnectorOutcome::failed(
+                ConnectorStatus::Timeout,
+                format!("the source needs {millis} ms, more than the time budget left"),
+            )
+        })
+    }
+
     /** The snapshot identifier of the current records
      * Input
         - None (uses self)
@@ -95,7 +123,11 @@ impl FixtureConnector {
     fn apply(&self, mut outcome: ConnectorOutcome) -> ConnectorOutcome {
         self.calls.set(self.calls.get() + 1);
         match self.behavior {
-            FixtureBehavior::Normal => outcome,
+            FixtureBehavior::Normal | FixtureBehavior::Pages(_) => outcome,
+            FixtureBehavior::Slow(millis) => {
+                std::thread::sleep(std::time::Duration::from_millis(millis));
+                outcome
+            }
             FixtureBehavior::Fail(status) => ConnectorOutcome::failed(
                 status,
                 format!("fixture configured to fail with {status:?}"),
@@ -156,7 +188,42 @@ impl ResourceConnector for FixtureConnector {
         - ConnectorOutcome
     */
     fn query(&self, spec: &QuerySpec) -> ConnectorOutcome {
-        self.apply(page(&self.records, spec, Some(self.snapshot())))
+        let paged = match self.behavior {
+            FixtureBehavior::Pages(size) => QuerySpec {
+                limit: spec.limit.min(size.max(1)),
+                ..spec.clone()
+            },
+            _ => spec.clone(),
+        };
+        self.apply(page(&self.records, &paged, Some(self.snapshot())))
+    }
+
+    /** Fetch within a deadline: a slow fixture that cannot answer in time answers Timeout at once
+     * Input
+        - record_id: &str - record id
+        - deadline: std::time::Instant - deadline
+     * Output
+        - ConnectorOutcome
+    */
+    fn fetch_within(&self, record_id: &str, deadline: std::time::Instant) -> ConnectorOutcome {
+        match self.too_slow(deadline) {
+            Some(outcome) => outcome,
+            None => self.fetch(record_id),
+        }
+    }
+
+    /** Query within a deadline: a slow fixture that cannot answer in time answers Timeout at once
+     * Input
+        - spec: &QuerySpec - query
+        - deadline: std::time::Instant - deadline
+     * Output
+        - ConnectorOutcome
+    */
+    fn query_within(&self, spec: &QuerySpec, deadline: std::time::Instant) -> ConnectorOutcome {
+        match self.too_slow(deadline) {
+            Some(outcome) => outcome,
+            None => self.query(spec),
+        }
     }
 
     /** Report availability: a connector configured to fail is unavailable

@@ -1,8 +1,9 @@
 // The Work Capture store. Like the rest of Crane's runtime evidence it lives in the trust
 // directory's runtime folder (runtime/capture), outside the repository, as JSON files kept
 // logically separate: raw artifact metadata and content blobs, normalized evidence, entities and
-// relations, assertions, contributions, episodes, questions, packs, query audit records, and
-// ingestion state (seen deliveries, source cursors). In memory it keeps indexes by source record,
+// relations, assertions, contributions, episodes (with pack feedback), questions, packs, query
+// audit records, recipe proposals, and ingestion state (seen deliveries, source cursors, pinned
+// recipe digests). In memory it keeps indexes by source record,
 // evidence type, episode, and observed time. The layout is versioned (state.json); a newer layout
 // is refused, an older one migrated. Ingestion is idempotent: a repeated webhook delivery or a
 // record already captured is recognized, and every path that observed an artifact is kept.
@@ -14,6 +15,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::capture::broker::proposals::{ProposalStatus, RecipeProposal};
+use crate::capture::broker::recipe::EvidenceRecipe;
 use crate::capture::broker::run::QueryAuditRecord;
 use crate::capture::correlate::assertions::Assertion;
 use crate::capture::correlate::graph::{Direction, EvidenceGraph};
@@ -26,11 +29,15 @@ use crate::capture::format::record::{EvidenceRecord, EvidenceType, ParseStatus};
 use crate::capture::ingest::contributions::{
     ContextContribution, ContributionLedger, ContributionStatus, Proposal, TargetKind,
 };
-use crate::capture::ingest::episode::{Question, WorkEpisode};
+use crate::capture::ingest::episode::{
+    EpisodeOutcome, PackFeedback, Question, QuestionState, WorkEpisode,
+};
 use crate::capture::ingest::pack::EvidencePack;
 use crate::capture::resources::connector::SourceRecord;
 use crate::capture::resources::registry::ResourceDefinition;
-use crate::capture::{AccessPolicy, Actor, CaptureError, CaptureResult, ErrorCode, SCHEMA_VERSION};
+use crate::capture::{
+    AccessPolicy, Actor, ActorKind, CaptureError, CaptureResult, ErrorCode, Truth, SCHEMA_VERSION,
+};
 use crate::platform::files::{read_lines, write_atomic, Lock};
 
 /** How a record arrived
@@ -90,12 +97,16 @@ pub(crate) struct IngestOutcome {
     - schema_version: u32 - store layout version
     - deliveries: BTreeMap<String, String> - webhook delivery id to evidence id
     - cursors: BTreeMap<String, String> - resource id to its incremental cursor
+    - recipes: BTreeMap<String, String> - "recipe@vN" to the digest of the recipe version this
+      store has run (absent in stores written before recipes were pinned)
 */
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct StoreState {
     schema_version: u32,
     deliveries: BTreeMap<String, String>,
     cursors: BTreeMap<String, String>,
+    #[serde(default)]
+    recipes: BTreeMap<String, String>,
 }
 
 /** The Work Capture store
@@ -111,6 +122,7 @@ struct StoreState {
     - questions: BTreeMap<String, Question> - questions by id
     - packs: BTreeMap<String, EvidencePack> - packs by id
     - audits: Vec<QueryAuditRecord> - query audit records in order
+    - recipe_proposals: BTreeMap<String, RecipeProposal> - recipe proposals by id
     - state: StoreState - deliveries and cursors
     - by_source: BTreeMap<(String, String), Vec<String>> - (resource, record) to evidence ids
     - by_type: BTreeMap<EvidenceType, BTreeSet<String>> - type to evidence ids
@@ -131,6 +143,8 @@ pub(crate) struct CaptureStore {
     pub(crate) questions: BTreeMap<String, Question>,
     pub(crate) packs: BTreeMap<String, EvidencePack>,
     pub(crate) audits: Vec<QueryAuditRecord>,
+    pub(crate) recipe_proposals: BTreeMap<String, RecipeProposal>,
+    audit_index: BTreeMap<String, usize>,
     state: StoreState,
     by_source: BTreeMap<(String, String), Vec<String>>,
     by_type: BTreeMap<EvidenceType, BTreeSet<String>>,
@@ -184,7 +198,91 @@ fn write_collection<'a, T: Serialize + 'a>(
         text.push_str(&serde_json::to_string(item).map_err(|error| storage(error.to_string()))?);
         text.push('\n');
     }
+    // A collection that did not change is left as it is (no rewrite, no new file time)
+    if std::fs::read(path).is_ok_and(|current| current == text.as_bytes()) {
+        return Ok(());
+    }
     write_atomic(path, text.as_bytes()).map_err(storage)
+}
+
+/** Merge a collection read from disk with the one held in memory, by identifier: an item only on
+ * one side is kept, an item on both sides is combined (memory first)
+ * Input
+    - stored: Vec<T> - the collection as another process may have saved it
+    - mine: &BTreeMap<String, T> - this store's collection
+    - key: impl Fn(&T) -> String - an item's identifier
+    - combine: impl Fn(&T, &T) -> T - combine this store's item with the stored one
+ * Output
+    - BTreeMap<String, T>
+*/
+fn merge_keyed<T: Clone>(
+    stored: Vec<T>,
+    mine: &BTreeMap<String, T>,
+    key: impl Fn(&T) -> String,
+    combine: impl Fn(&T, &T) -> T,
+) -> BTreeMap<String, T> {
+    let mut merged = stored
+        .into_iter()
+        .map(|item| (key(&item), item))
+        .collect::<BTreeMap<_, _>>();
+    for (id, item) in mine {
+        let value = match merged.get(id) {
+            Some(stored) => combine(item, stored),
+            None => item.clone(),
+        };
+        merged.insert(id.clone(), value);
+    }
+    merged
+}
+
+/** Unite two lists, keeping the first list's order and appending what only the second holds
+ * Input
+    - first: &[String] - first list
+    - second: &[String] - second list
+ * Output
+    - Vec<String>
+*/
+fn union(first: &[String], second: &[String]) -> Vec<String> {
+    let mut united = first.to_vec();
+    for item in second {
+        if !united.contains(item) {
+            united.push(item.clone());
+        }
+    }
+    united
+}
+
+/** How far a recipe proposal has moved in its lifecycle: a merge keeps the decided one
+ * Input
+    - status: ProposalStatus - status
+ * Output
+    - u8
+*/
+fn proposal_rank(status: ProposalStatus) -> u8 {
+    match status {
+        ProposalStatus::Proposed => 0,
+        ProposalStatus::Accepted | ProposalStatus::Rejected => 1,
+    }
+}
+
+/** Largest note of a pack feedback, in characters */
+const MAX_FEEDBACK_NOTES: usize = 2000;
+
+/** How far a contribution has moved in its lifecycle: a merge keeps the further one, so a status
+ * never moves backwards (proposed, then accepted, then a final state)
+ * Input
+    - status: ContributionStatus - status
+ * Output
+    - u8
+*/
+fn lifecycle_rank(status: ContributionStatus) -> u8 {
+    match status {
+        ContributionStatus::Proposed => 0,
+        ContributionStatus::Accepted => 1,
+        ContributionStatus::Rejected
+        | ContributionStatus::Superseded
+        | ContributionStatus::Expired => 2,
+    }
 }
 
 impl CaptureStore {
@@ -274,49 +372,221 @@ impl CaptureStore {
         for pack in read_collection::<EvidencePack>(&directory.join("packs.jsonl"))? {
             store.packs.insert(pack.pack_id.clone(), pack);
         }
+        for proposal in
+            read_collection::<RecipeProposal>(&directory.join("recipe_proposals.jsonl"))?
+        {
+            store
+                .recipe_proposals
+                .insert(proposal.proposal_id.clone(), proposal);
+        }
         store.audits = read_collection(&directory.join("audit.jsonl"))?;
+        store.audit_index = store
+            .audits
+            .iter()
+            .enumerate()
+            .map(|(position, audit)| (audit.query_id.clone(), position))
+            .collect();
         Ok(store)
     }
 
-    /** Persist every collection (each file replaced atomically); an in-memory store does nothing
+    /** Persist every collection (each file replaced atomically); an in-memory store does nothing.
+     * Another process may have saved since this store was opened, so under the lock every
+     * collection is read again and merged with what this store holds before it is written: nothing
+     * another investigation saved is lost. Identifiers are derived from content, so the same id is
+     * the same object and a union is safe; lists of paths, provenance, packs, and feedback are
+     * united, and a contribution's status never moves backwards in its lifecycle
      * Input
         - None (uses self)
      * Output
         - CaptureResult<()>
-        - Error when a file cannot be written
+        - Error when a file cannot be read or written
     */
     pub(crate) fn save(&self) -> CaptureResult<()> {
         let Some(directory) = &self.directory else {
             return Ok(());
         };
         let _lock = Lock::acquire(&directory.join("capture.lock")).map_err(storage)?;
-        write_collection(&directory.join("artifacts.jsonl"), self.artifacts.values())?;
-        let blobs = self.blobs.iter().collect::<Vec<_>>();
-        write_collection(&directory.join("blobs.jsonl"), blobs.iter())?;
-        write_collection(&directory.join("evidence.jsonl"), self.evidence.values())?;
-        write_collection(
-            &directory.join("entities.jsonl"),
-            self.graph.entities.values(),
-        )?;
-        write_collection(
-            &directory.join("relations.jsonl"),
-            self.graph.relations.values(),
-        )?;
-        write_collection(
-            &directory.join("assertions.jsonl"),
-            self.assertions.values(),
-        )?;
-        write_collection(
-            &directory.join("contributions.jsonl"),
-            self.contributions.contributions.values(),
-        )?;
-        write_collection(&directory.join("episodes.jsonl"), self.episodes.values())?;
-        write_collection(&directory.join("questions.jsonl"), self.questions.values())?;
-        write_collection(&directory.join("packs.jsonl"), self.packs.values())?;
-        write_collection(&directory.join("audit.jsonl"), self.audits.iter())?;
+        let path = |name: &str| directory.join(name);
+        let artifacts = merge_keyed(
+            read_collection::<RawArtifact>(&path("artifacts.jsonl"))?,
+            &self.artifacts,
+            |artifact| artifact.artifact_id.clone(),
+            |mine, stored| RawArtifact {
+                observed_via: union(&mine.observed_via, &stored.observed_via),
+                ..mine.clone()
+            },
+        );
+        write_collection(&path("artifacts.jsonl"), artifacts.values())?;
+        let blobs = merge_keyed(
+            read_collection::<(String, Value)>(&path("blobs.jsonl"))?,
+            &self
+                .blobs
+                .iter()
+                .map(|(hash, value)| (hash.clone(), (hash.clone(), value.clone())))
+                .collect::<BTreeMap<_, _>>(),
+            |(hash, _)| hash.clone(),
+            |mine, _| mine.clone(),
+        );
+        write_collection(&path("blobs.jsonl"), blobs.values())?;
+        let evidence = merge_keyed(
+            read_collection::<EvidenceRecord>(&path("evidence.jsonl"))?,
+            &self.evidence,
+            |record| record.evidence_id.clone(),
+            |mine, stored| {
+                let mut record = mine.clone();
+                record.provenance.ingestion_paths = union(
+                    &mine.provenance.ingestion_paths,
+                    &stored.provenance.ingestion_paths,
+                );
+                record.supersedes = mine.supersedes.clone().or(stored.supersedes.clone());
+                record
+            },
+        );
+        write_collection(&path("evidence.jsonl"), evidence.values())?;
+        let entities = merge_keyed(
+            read_collection::<Entity>(&path("entities.jsonl"))?,
+            &self.graph.entities,
+            |entity| entity.entity_id.clone(),
+            |mine, stored| {
+                let mut entity = mine.clone();
+                for (key, value) in &stored.attributes {
+                    entity
+                        .attributes
+                        .entry(key.clone())
+                        .or_insert_with(|| value.clone());
+                }
+                entity.version = mine.version.clone().or(stored.version.clone());
+                entity.first_evidence = mine
+                    .first_evidence
+                    .clone()
+                    .or(stored.first_evidence.clone());
+                entity
+            },
+        );
+        write_collection(&path("entities.jsonl"), entities.values())?;
+        let relations = merge_keyed(
+            read_collection::<Relation>(&path("relations.jsonl"))?,
+            &self.graph.relations,
+            |relation| relation.relation_id.clone(),
+            |mine, stored| {
+                let mut relation = mine.clone();
+                relation.provenance.evidence =
+                    union(&mine.provenance.evidence, &stored.provenance.evidence);
+                relation
+            },
+        );
+        write_collection(&path("relations.jsonl"), relations.values())?;
+        let assertions = merge_keyed(
+            read_collection::<Assertion>(&path("assertions.jsonl"))?,
+            &self.assertions,
+            |assertion| assertion.assertion_id.clone(),
+            |mine, _| mine.clone(),
+        );
+        write_collection(&path("assertions.jsonl"), assertions.values())?;
+        let contributions = merge_keyed(
+            read_collection::<ContextContribution>(&path("contributions.jsonl"))?,
+            &self.contributions.contributions,
+            |contribution| contribution.contribution_id.clone(),
+            |mine, stored| {
+                if lifecycle_rank(stored.status) > lifecycle_rank(mine.status) {
+                    stored.clone()
+                } else {
+                    mine.clone()
+                }
+            },
+        );
+        write_collection(&path("contributions.jsonl"), contributions.values())?;
+        let episodes = merge_keyed(
+            read_collection::<WorkEpisode>(&path("episodes.jsonl"))?,
+            &self.episodes,
+            |episode| episode.episode_id.clone(),
+            |mine, stored| {
+                let mut episode = mine.clone();
+                episode.packs = union(&mine.packs, &stored.packs);
+                for feedback in &stored.feedback {
+                    if !episode.feedback.contains(feedback) {
+                        episode.feedback.push(feedback.clone());
+                    }
+                }
+                for change in &stored.outcome_history {
+                    if !episode.outcome_history.contains(change) {
+                        episode.outcome_history.push(change.clone());
+                    }
+                }
+                if stored.ended_at > mine.ended_at {
+                    episode.outcome = stored.outcome;
+                    episode
+                        .outcome_evidence
+                        .clone_from(&stored.outcome_evidence);
+                    episode
+                        .outcome_recorded_by
+                        .clone_from(&stored.outcome_recorded_by);
+                    episode.ended_at = stored.ended_at;
+                }
+                episode
+            },
+        );
+        write_collection(&path("episodes.jsonl"), episodes.values())?;
+        let questions = merge_keyed(
+            read_collection::<Question>(&path("questions.jsonl"))?,
+            &self.questions,
+            |question| question.question_id.clone(),
+            |mine, _| mine.clone(),
+        );
+        write_collection(&path("questions.jsonl"), questions.values())?;
+        let packs = merge_keyed(
+            read_collection::<EvidencePack>(&path("packs.jsonl"))?,
+            &self.packs,
+            |pack| pack.pack_id.clone(),
+            |mine, _| mine.clone(),
+        );
+        write_collection(&path("packs.jsonl"), packs.values())?;
+        let proposals = merge_keyed(
+            read_collection::<RecipeProposal>(&path("recipe_proposals.jsonl"))?,
+            &self.recipe_proposals,
+            |proposal| proposal.proposal_id.clone(),
+            |mine, stored| {
+                if proposal_rank(stored.status) > proposal_rank(mine.status) {
+                    stored.clone()
+                } else {
+                    mine.clone()
+                }
+            },
+        );
+        write_collection(&path("recipe_proposals.jsonl"), proposals.values())?;
+        // Audits keep their order: what is on disk first, then this store's new ones; a stored
+        // audit is replaced only by a copy that adds the replay comparison
+        let mut audits = read_collection::<QueryAuditRecord>(&path("audit.jsonl"))?;
+        for audit in &self.audits {
+            match audits
+                .iter_mut()
+                .find(|stored| stored.query_id == audit.query_id)
+            {
+                Some(stored) if stored.replay.is_none() && audit.replay.is_some() => {
+                    *stored = audit.clone();
+                }
+                Some(_) => {}
+                None => audits.push(audit.clone()),
+            }
+        }
+        write_collection(&path("audit.jsonl"), audits.iter())?;
+        let mut state = self.state.clone();
+        if let Ok(text) = std::fs::read_to_string(path("state.json")) {
+            if let Ok(stored) = serde_json::from_str::<StoreState>(&text) {
+                for (delivery, evidence) in stored.deliveries {
+                    state.deliveries.entry(delivery).or_insert(evidence);
+                }
+                for (resource, cursor) in stored.cursors {
+                    state.cursors.entry(resource).or_insert(cursor);
+                }
+                for (recipe, digest) in stored.recipes {
+                    state.recipes.entry(recipe).or_insert(digest);
+                }
+            }
+        }
         let state =
-            serde_json::to_vec_pretty(&self.state).map_err(|error| storage(error.to_string()))?;
-        write_atomic(&directory.join("state.json"), &state).map_err(storage)
+            serde_json::to_vec_pretty(&state).map_err(|error| storage(error.to_string()))?;
+        write_atomic(&path("state.json"), &state).map_err(storage)
     }
 
     /** Add a record to the indexes
@@ -376,7 +646,7 @@ impl CaptureStore {
         let label = path.label();
         if path.kind == "webhook" {
             if let Some(existing) = self.state.deliveries.get(&path.id).cloned() {
-                return self.duplicate(&existing, &label);
+                return self.duplicate(&existing, &label, episode_id);
             }
         }
         let (artifact, stored) = capture(definition, record, now, &label);
@@ -386,7 +656,7 @@ impl CaptureStore {
                     .deliveries
                     .insert(path.id.clone(), existing.clone());
             }
-            return self.duplicate(&existing, &label);
+            return self.duplicate(&existing, &label, episode_id);
         }
         let mut evidence = normalize(
             definition,
@@ -445,13 +715,27 @@ impl CaptureStore {
      * Input
         - evidence_id: &str - existing record
         - label: &str - ingestion path
+        - episode: Option<&str> - work episode that observed it now
      * Output
         - IngestOutcome (Duplicate)
     */
-    fn duplicate(&mut self, evidence_id: &str, label: &str) -> IngestOutcome {
+    fn duplicate(
+        &mut self,
+        evidence_id: &str,
+        label: &str,
+        episode: Option<&str>,
+    ) -> IngestOutcome {
         let mut parse_status = ParseStatus::Failed;
         if let Some(evidence) = self.evidence.get_mut(evidence_id) {
             parse_status = evidence.parse_status;
+            // Every work episode that observed the record is remembered, not only the first
+            if let Some(episode) = episode {
+                if evidence.episode_id.as_deref() != Some(episode)
+                    && !evidence.observed_in.iter().any(|seen| seen == episode)
+                {
+                    evidence.observed_in.push(episode.to_string());
+                }
+            }
             if !evidence
                 .provenance
                 .ingestion_paths
@@ -702,16 +986,11 @@ impl CaptureStore {
         proposal: Proposal,
         now: u64,
     ) -> CaptureResult<String> {
+        // The target must already exist. Nothing a contribution says may create or change an entity
+        // (a zone's version is what evidence observed, never what a proposer claims), so the graph
+        // is only touched after the ledger has accepted the proposal
         let target = match proposal.target_ref.kind {
-            TargetKind::Entity => {
-                if !self.graph.entities.contains_key(&proposal.target_ref.id) {
-                    return Err(CaptureError::new(
-                        ErrorCode::NotFound,
-                        format!("no entity '{}'", proposal.target_ref.id),
-                    ));
-                }
-                proposal.target_ref.id.clone()
-            }
+            TargetKind::Entity => proposal.target_ref.id.clone(),
             TargetKind::WorkEpisode => {
                 if !self.episodes.contains_key(&proposal.target_ref.id) {
                     return Err(CaptureError::new(
@@ -721,17 +1000,18 @@ impl CaptureStore {
                 }
                 entity_id(EntityKind::WorkEpisode, &proposal.target_ref.id)
             }
-            TargetKind::Zone | TargetKind::Flow => {
-                let kind = if proposal.target_ref.kind == TargetKind::Zone {
-                    EntityKind::Zone
-                } else {
-                    EntityKind::Flow
-                };
-                let mut entity = Entity::new(kind, &proposal.target_ref.id);
-                entity.version = proposal.target_ref.version.clone();
-                self.graph.add_entity(entity)
-            }
+            TargetKind::Zone => entity_id(EntityKind::Zone, &proposal.target_ref.id),
+            TargetKind::Flow => entity_id(EntityKind::Flow, &proposal.target_ref.id),
         };
+        if !self.graph.entities.contains_key(&target) {
+            return Err(CaptureError::new(
+                ErrorCode::NotFound,
+                format!(
+                    "no {:?} '{}' has been observed; context can only be proposed for an observed target",
+                    proposal.target_ref.kind, proposal.target_ref.id
+                ),
+            ));
+        }
         let evidence = &self.evidence;
         let id =
             self.contributions
@@ -765,6 +1045,335 @@ impl CaptureStore {
         Ok(id)
     }
 
+    /** Record a work episode's outcome. Every evidence id cited must exist and belong to the
+     * episode (captured for it, or included in one of its Evidence Packs), so an outcome can never
+     * rest on evidence that does not exist or concerns other work
+     * Input
+        - episode_id: &str - episode
+        - actor: &Actor - recorder
+        - may_review: bool - whether the recorder may review (needed to change another's outcome)
+        - outcome: EpisodeOutcome - outcome
+        - evidence: Vec<String> - supporting evidence ids
+        - now: u64 - Unix milliseconds
+     * Output
+        - CaptureResult<()>
+        - Error when the episode is unknown, cited evidence does not exist or belongs to other
+          work, or the episode refuses the outcome (WorkEpisode::record_outcome)
+    */
+    pub(crate) fn record_outcome(
+        &mut self,
+        episode_id: &str,
+        actor: &Actor,
+        may_review: bool,
+        outcome: EpisodeOutcome,
+        evidence: Vec<String>,
+        now: u64,
+    ) -> CaptureResult<()> {
+        let episode = self.episodes.get(episode_id).ok_or_else(|| {
+            CaptureError::new(
+                ErrorCode::NotFound,
+                format!("no work episode '{episode_id}'"),
+            )
+        })?;
+        let in_packs = episode
+            .packs
+            .iter()
+            .filter_map(|pack| self.packs.get(pack))
+            .flat_map(|pack| pack.evidence.iter().map(|item| item.evidence_id.as_str()))
+            .collect::<BTreeSet<_>>();
+        for id in &evidence {
+            let Some(record) = self.evidence.get(id) else {
+                return Err(CaptureError::new(
+                    ErrorCode::EvidenceRequired,
+                    format!("evidence '{id}' does not exist"),
+                ));
+            };
+            if record.episode_id.as_deref() != Some(episode_id) && !in_packs.contains(id.as_str()) {
+                return Err(CaptureError::new(
+                    ErrorCode::EvidenceRequired,
+                    format!("evidence '{id}' does not belong to work episode '{episode_id}'"),
+                ));
+            }
+        }
+        match self.episodes.get_mut(episode_id) {
+            Some(episode) => episode.record_outcome(actor, may_review, outcome, evidence, now),
+            None => Ok(()),
+        }
+    }
+
+    /** Record whether an Evidence Pack served the person who used it. Only a person judges a pack
+     * (an agent's opinion of its own evidence is not feedback), the pack must be kept here and
+     * belong to a work episode, and the notes are redacted and bounded. Feedback is kept, never
+     * replaced: a later judgement is added beside the earlier one
+     * Input
+        - pack_id: &str - pack
+        - requester: &Actor - the person giving feedback
+        - sufficient: Truth - whether the pack was sufficient
+        - additional_evidence: Vec<EvidenceType> - evidence that was still needed
+        - notes: &str - remarks
+        - now: u64 - Unix milliseconds
+     * Output
+        - CaptureResult<String> the pack's work episode
+        - Error when the requester is not a person, or the pack or its episode is unknown
+    */
+    pub(crate) fn record_feedback(
+        &mut self,
+        pack_id: &str,
+        requester: &Actor,
+        sufficient: Truth,
+        additional_evidence: Vec<EvidenceType>,
+        notes: &str,
+        now: u64,
+    ) -> CaptureResult<String> {
+        if requester.kind != ActorKind::Human {
+            return Err(CaptureError::new(
+                ErrorCode::Unauthorized,
+                "only a person gives feedback on an Evidence Pack",
+            ));
+        }
+        let episode_id = self
+            .packs
+            .get(pack_id)
+            .ok_or_else(|| {
+                CaptureError::new(
+                    ErrorCode::NotFound,
+                    format!("no Evidence Pack '{pack_id}' is kept here"),
+                )
+            })?
+            .episode_id
+            .clone()
+            .ok_or_else(|| {
+                CaptureError::new(
+                    ErrorCode::NotFound,
+                    format!("Evidence Pack '{pack_id}' belongs to no work episode"),
+                )
+            })?;
+        let episode = self.episodes.get_mut(&episode_id).ok_or_else(|| {
+            CaptureError::new(
+                ErrorCode::NotFound,
+                format!("no work episode '{episode_id}'"),
+            )
+        })?;
+        let mut notes = Value::String(notes.chars().take(MAX_FEEDBACK_NOTES).collect());
+        crate::telemetry::events::redact_value(&mut notes);
+        let mut additional_evidence = additional_evidence;
+        additional_evidence.sort();
+        additional_evidence.dedup();
+        episode.feedback.push(PackFeedback {
+            pack_id: pack_id.into(),
+            requester: requester.clone(),
+            sufficient,
+            additional_evidence,
+            notes: notes.as_str().unwrap_or_default().to_string(),
+            at: now,
+        });
+        Ok(episode_id)
+    }
+
+    /** Keep a recipe proposal. A proposal for a recipe version that another open or accepted
+     * proposal already gives other content is refused, so one version can never mean two recipes
+     * Input
+        - proposal: RecipeProposal - proposal
+     * Output
+        - CaptureResult<String> proposal id
+        - Error when the same proposal exists or the version is taken by other content
+    */
+    pub(crate) fn propose_recipe(&mut self, proposal: RecipeProposal) -> CaptureResult<String> {
+        if self.recipe_proposals.contains_key(&proposal.proposal_id) {
+            return Err(CaptureError::new(
+                ErrorCode::InvalidTransition,
+                format!("recipe proposal '{}' exists", proposal.proposal_id),
+            ));
+        }
+        if let Some(taken) = self.recipe_proposals.values().find(|other| {
+            other.status != ProposalStatus::Rejected
+                && other.recipe.recipe_id == proposal.recipe.recipe_id
+                && other.recipe.version == proposal.recipe.version
+        }) {
+            return Err(CaptureError::new(
+                ErrorCode::InvalidRecipe,
+                format!(
+                    "{} v{} is already proposed or published ({}); propose a new version",
+                    proposal.recipe.recipe_id, proposal.recipe.version, taken.proposal_id
+                ),
+            ));
+        }
+        let id = proposal.proposal_id.clone();
+        self.recipe_proposals.insert(id.clone(), proposal);
+        Ok(id)
+    }
+
+    /** The recipes of accepted proposals, by recipe and version (the broker adds them to its
+     * RecipeBook)
+     * Input
+        - None (uses self)
+     * Output
+        - Vec<EvidenceRecipe>
+    */
+    pub(crate) fn accepted_recipes(&self) -> Vec<EvidenceRecipe> {
+        let mut accepted = self
+            .recipe_proposals
+            .values()
+            .filter(|proposal| proposal.status == ProposalStatus::Accepted)
+            .map(|proposal| proposal.recipe.clone())
+            .collect::<Vec<_>>();
+        accepted.sort_by(|a, b| (&a.recipe_id, a.version).cmp(&(&b.recipe_id, b.version)));
+        accepted
+    }
+
+    /** Pin a recipe version to its content: the first time a version is used its digest is kept, and
+     * a later run with different content under the same version is refused, so a published recipe
+     * version can never silently change meaning (old audits that name it stay true)
+     * Input
+        - recipe_id: &str - recipe
+        - version: u32 - version
+        - digest: &str - content digest
+     * Output
+        - CaptureResult<()>
+        - Error when this store ran that version with other content
+    */
+    pub(crate) fn pin_recipe(
+        &mut self,
+        recipe_id: &str,
+        version: u32,
+        digest: &str,
+    ) -> CaptureResult<()> {
+        let key = format!("{recipe_id}@v{version}");
+        match self.state.recipes.get(&key) {
+            Some(pinned) if pinned != digest => Err(CaptureError::new(
+                ErrorCode::InvalidRecipe,
+                format!(
+                    "{recipe_id} v{version} has changed since this store used it (digest {pinned}, now {digest}); publish the change as a new version"
+                ),
+            )),
+            Some(_) => Ok(()),
+            None => {
+                self.state.recipes.insert(key, digest.to_string());
+                Ok(())
+            }
+        }
+    }
+
+    /** Ask a question: store it as open (its identifier must be new)
+     * Input
+        - question: Question - question
+     * Output
+        - CaptureResult<String> question id
+        - Error when a question with that identifier exists, or it names no permitted resources
+    */
+    pub(crate) fn ask(&mut self, mut question: Question) -> CaptureResult<String> {
+        if self.questions.contains_key(&question.question_id) {
+            return Err(CaptureError::new(
+                ErrorCode::InvalidTransition,
+                format!("question '{}' was already asked", question.question_id),
+            ));
+        }
+        if question.permitted_resources.is_empty() {
+            return Err(CaptureError::new(
+                ErrorCode::InvalidQuery,
+                "a question must name the resources it may query",
+            ));
+        }
+        question.state = QuestionState::Open;
+        question.answer_pack = None;
+        let id = question.question_id.clone();
+        self.questions.insert(id.clone(), question);
+        Ok(id)
+    }
+
+    /** Move a question through its lifecycle: an open or blocked question is answered (by a kept
+     * Evidence Pack), blocked, or found unresolvable; a blocked question may be opened again
+     * Input
+        - question_id: &str - question
+        - state: QuestionState - new state
+        - answer_pack: Option<&str> - the pack that answers it (required to answer)
+     * Output
+        - CaptureResult<()>
+        - Error when the question is unknown, the transition is not allowed, or the answering pack
+          is missing or unknown
+    */
+    pub(crate) fn set_question_state(
+        &mut self,
+        question_id: &str,
+        state: QuestionState,
+        answer_pack: Option<&str>,
+    ) -> CaptureResult<()> {
+        let known_pack = answer_pack.is_some_and(|pack| self.packs.contains_key(pack));
+        let question = self.questions.get_mut(question_id).ok_or_else(|| {
+            CaptureError::new(ErrorCode::NotFound, format!("no question '{question_id}'"))
+        })?;
+        use QuestionState::{Answered, Blocked, Open, Unresolvable};
+        let allowed = matches!(
+            (question.state, state),
+            (Open, Answered | Blocked | Unresolvable) | (Blocked, Open | Answered | Unresolvable)
+        );
+        if !allowed {
+            return Err(CaptureError::new(
+                ErrorCode::InvalidTransition,
+                format!("a {:?} question cannot become {state:?}", question.state),
+            ));
+        }
+        if state == Answered && !known_pack {
+            return Err(CaptureError::new(
+                ErrorCode::EvidenceRequired,
+                "a question is answered by a kept Evidence Pack",
+            ));
+        }
+        question.state = state;
+        if state == Answered {
+            question.answer_pack = answer_pack.map(str::to_string);
+        }
+        Ok(())
+    }
+
+    /** Confirm a relation as a human reviewer: a new relation of the same type between the same
+     * nodes is recorded with status Reviewed (the original keeps how it was first known)
+     * Input
+        - reviewer: &AccessPolicy - reviewer (a human with review rights)
+        - relation_id: &str - relation to confirm
+     * Output
+        - CaptureResult<String> the reviewed relation's id
+        - Error when the reviewer may not review, or the relation is unknown or already reviewed
+    */
+    pub(crate) fn review_relation(
+        &mut self,
+        reviewer: &AccessPolicy,
+        relation_id: &str,
+    ) -> CaptureResult<String> {
+        if reviewer.actor.kind != crate::capture::ActorKind::Human || !reviewer.may_review {
+            return Err(CaptureError::new(
+                ErrorCode::Unauthorized,
+                "only an authorized human reviewer can confirm a relation",
+            ));
+        }
+        let original = self
+            .graph
+            .relations
+            .get(relation_id)
+            .cloned()
+            .ok_or_else(|| {
+                CaptureError::new(ErrorCode::NotFound, format!("no relation '{relation_id}'"))
+            })?;
+        if original.status == RelationStatus::Reviewed {
+            return Err(CaptureError::new(
+                ErrorCode::InvalidTransition,
+                "the relation is already a reviewed one",
+            ));
+        }
+        let mut reviewed = Relation::new(
+            original.relation_type,
+            original.source.clone(),
+            original.target.clone(),
+            RelationStatus::Reviewed,
+            &format!("review:{}", reviewer.actor.id),
+            original.provenance.evidence.clone(),
+        );
+        reviewed.version_scope = original.version_scope.clone();
+        reviewed.valid_from = original.valid_from;
+        reviewed.valid_to = original.valid_to;
+        self.graph.add_relation(reviewed)
+    }
+
     /** Review a contribution (see ContributionLedger::review)
      * Input
         - reviewer: &AccessPolicy - reviewer
@@ -796,7 +1405,54 @@ impl CaptureStore {
         - Option<&QueryAuditRecord>
     */
     pub(crate) fn audit(&self, query_id: &str) -> Option<&QueryAuditRecord> {
-        self.audits.iter().find(|audit| audit.query_id == query_id)
+        self.audit_position(query_id)
+            .and_then(|position| self.audits.get(position))
+    }
+
+    /** Find a recorded investigation's audit to update it (a replay adds its comparison)
+     * Input
+        - query_id: &str - investigation
+     * Output
+        - Option<&mut QueryAuditRecord>
+    */
+    pub(crate) fn audit_mut(&mut self, query_id: &str) -> Option<&mut QueryAuditRecord> {
+        self.audit_position(query_id)
+            .and_then(|position| self.audits.get_mut(position))
+    }
+
+    /** Record an investigation's audit and index it by query id
+     * Input
+        - audit: QueryAuditRecord - audit
+     * Output
+        - None
+    */
+    pub(crate) fn push_audit(&mut self, audit: QueryAuditRecord) {
+        self.audit_index
+            .insert(audit.query_id.clone(), self.audits.len());
+        self.audits.push(audit);
+    }
+
+    /** The position of an audit: from the index, or by a scan when the list was changed directly
+     * Input
+        - query_id: &str - investigation
+     * Output
+        - Option<usize>
+    */
+    fn audit_position(&self, query_id: &str) -> Option<usize> {
+        match self.audit_index.get(query_id) {
+            Some(&position)
+                if self
+                    .audits
+                    .get(position)
+                    .is_some_and(|audit| audit.query_id == query_id) =>
+            {
+                Some(position)
+            }
+            _ => self
+                .audits
+                .iter()
+                .position(|audit| audit.query_id == query_id),
+        }
     }
 }
 

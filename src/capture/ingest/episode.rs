@@ -69,6 +69,8 @@ pub(crate) struct PackFeedback {
     - outcome_recorded_by: Option<Actor> - who recorded it
     - packs: Vec<String> - Evidence Packs built for it
     - feedback: Vec<PackFeedback> - feedback on those packs
+    - outcome_history: Vec<OutcomeChange> - outcomes recorded before the current one, oldest first
+      (a changed outcome is kept, never overwritten; absent in episodes stored before)
 */
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct WorkEpisode {
@@ -85,6 +87,23 @@ pub(crate) struct WorkEpisode {
     pub(crate) outcome_recorded_by: Option<Actor>,
     pub(crate) packs: Vec<String>,
     pub(crate) feedback: Vec<PackFeedback>,
+    #[serde(default)]
+    pub(crate) outcome_history: Vec<OutcomeChange>,
+}
+
+/** An outcome that a later recording replaced
+ * Fields
+    - outcome: EpisodeOutcome - the outcome
+    - evidence: Vec<String> - its evidence
+    - recorded_by: Actor - who recorded it
+    - at: u64 - when (Unix milliseconds)
+*/
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct OutcomeChange {
+    pub(crate) outcome: EpisodeOutcome,
+    pub(crate) evidence: Vec<String>,
+    pub(crate) recorded_by: Actor,
+    pub(crate) at: u64,
 }
 
 impl WorkEpisode {
@@ -112,23 +131,30 @@ impl WorkEpisode {
             outcome_recorded_by: None,
             packs: Vec::new(),
             feedback: Vec::new(),
+            outcome_history: Vec::new(),
         }
     }
 
     /** Record the final outcome; succeeded and partially verified need evidence, and a recorded
-     * outcome can only be replaced by its recorder or a human
+     * outcome can only be replaced by its recorder or by a human reviewer (a human with the right
+     * to review); the replaced outcome is kept in outcome_history. Callers outside Work Capture go
+     * through CaptureStore::record_outcome, which also checks that the cited evidence exists and
+     * belongs to the episode
      * Input
         - actor: &Actor - recorder
+        - may_review: bool - whether the recorder may review
         - outcome: EpisodeOutcome - outcome
         - evidence: Vec<String> - evidence for it
         - now: u64 - Unix milliseconds
      * Output
         - CaptureResult<()>
-        - Error when evidence is missing or another agent's outcome would be overwritten
+        - Error when evidence is missing or someone else's outcome would be changed by anyone but a
+          human reviewer
     */
-    pub(crate) fn record_outcome(
+    pub(in crate::capture) fn record_outcome(
         &mut self,
         actor: &Actor,
+        may_review: bool,
         outcome: EpisodeOutcome,
         evidence: Vec<String>,
         now: u64,
@@ -144,12 +170,23 @@ impl WorkEpisode {
             ));
         }
         if let Some(previous) = &self.outcome_recorded_by {
-            if previous.id != actor.id && actor.kind != crate::capture::ActorKind::Human {
+            let reviewer = actor.kind == crate::capture::ActorKind::Human && may_review;
+            if previous.id != actor.id && !reviewer {
                 return Err(CaptureError::new(
                     ErrorCode::Unauthorized,
-                    "only the recorder or a human can change a recorded outcome",
+                    "only the recorder or a human reviewer can change a recorded outcome",
                 ));
             }
+        }
+        if let (Some(previous), Some(recorded_by)) =
+            (self.outcome, self.outcome_recorded_by.clone())
+        {
+            self.outcome_history.push(OutcomeChange {
+                outcome: previous,
+                evidence: std::mem::take(&mut self.outcome_evidence),
+                recorded_by,
+                at: self.ended_at.unwrap_or_default(),
+            });
         }
         self.outcome = Some(outcome);
         self.outcome_evidence = evidence;
@@ -262,6 +299,7 @@ impl Question {
             budget,
             freshness_ms: None,
             pack_limits: PackLimits::default(),
+            plan_required: Vec::new(),
         })
     }
 }

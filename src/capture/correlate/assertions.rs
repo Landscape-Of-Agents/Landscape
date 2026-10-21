@@ -21,9 +21,12 @@ pub(crate) const RULES_VERSION: &str = "1";
  * Variants
     - Proposed - a hypothesis, not evaluated against evidence
     - Supported - the evidence agrees with the claim
-    - Contradicted - the evidence disagrees with the claim
+    - Contradicted - the evidence disagrees with the claim (reserved: no rule produces it; disagreeing
+      evidence makes an assertion Unresolved with both sides kept)
     - Unresolved - no evidence, or evidence on both sides
-    - Superseded - replaced by a newer assertion
+    - Superseded - replaced by a newer assertion (reserved: a successor is a new assertion with its
+      own id; marking the older one would change the stored copy that capability intake compares
+      with the copy inside an Evidence Pack, so every earlier pack would read as changed)
 */
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -444,7 +447,113 @@ pub(crate) fn derive(
     if let Some(task) = &subjects.task {
         derived.push(change_verified(task, &derived, scope, created_at));
     }
+    // Derived after change_verified on purpose: whether the policies hold is reported beside the
+    // verification of the change, never folded into it, so an unavailable or failing validation
+    // report does not change what CI, tests, and the deployment established
+    if let Some(repository) = &scope.repository {
+        let validations = records
+            .iter()
+            .filter(|record| record.evidence_type == EvidenceType::Validation)
+            .map(|record| {
+                observe(
+                    record,
+                    status_truth(record.field("passed"), &["true"], &["false"]),
+                )
+            })
+            .collect::<Vec<_>>();
+        if !validations.is_empty() {
+            derived.push(from_observations(
+                (EntityKind::Repository, repository),
+                "policies_hold",
+                &validations,
+                scope,
+                created_at,
+            ));
+        }
+    }
     derived
+}
+
+/** The evidence types the deterministic rules read; every other type an investigation requires is
+ * context only (collected and shown, but no rule concludes from it) */
+#[cfg_attr(not(test), allow(dead_code))] // checked against the built-in recipes by the acceptance tests
+pub(crate) const RULE_INPUTS: &[EvidenceType] = &[
+    EvidenceType::CiRun,
+    EvidenceType::TestReport,
+    EvidenceType::Deployment,
+    EvidenceType::Verification,
+    EvidenceType::Validation,
+    EvidenceType::CodeChange,
+    EvidenceType::GraphState,
+];
+
+/** Evidence types required by built-in recipes that no rule concludes from, by decision: context
+ * for people and later components (what the task asked, which change it was, what the logs and
+ * metrics showed, what the agent did) */
+#[cfg_attr(not(test), allow(dead_code))] // checked against the built-in recipes by the acceptance tests
+pub(crate) const CONTEXT_ONLY: &[EvidenceType] = &[
+    EvidenceType::Task,
+    EvidenceType::PullRequest,
+    EvidenceType::RuntimeLog,
+    EvidenceType::Metric,
+    EvidenceType::ToolCall,
+];
+
+/** State which governed zones and flows a commit's changed files belong to (an informational
+ * assertion: it is supported by the commit's change evidence and lists every zone and flow with the
+ * version in force, for example "zone:refunds@v3")
+ * Input
+    - commit: &str - commit
+    - touched: &[String] - zones and flows, as "zone:ID@VERSION" or "flow:ID@VERSION"
+    - supporting: Vec<String> - the change evidence of the commit
+    - scope: &RecordScope - scope
+    - created_at: u64 - Unix milliseconds
+ * Output
+    - Assertion
+*/
+pub(crate) fn governance_touched(
+    commit: &str,
+    touched: &[String],
+    supporting: Vec<String>,
+    scope: &RecordScope,
+    created_at: u64,
+) -> Assertion {
+    let mut parts = vec!["governed_zone_touched", commit, RULES_VERSION];
+    parts.extend(touched.iter().map(String::as_str));
+    parts.extend(supporting.iter().map(String::as_str));
+    Assertion {
+        assertion_id: stable_id("asr", &parts),
+        schema_version: SCHEMA_VERSION,
+        claim: Claim {
+            subject: entity_id(EntityKind::Commit, commit),
+            subject_kind: EntityKind::Commit,
+            subject_key: commit.into(),
+            predicate: "governed_zone_touched".into(),
+            object: json!(touched),
+        },
+        statement: format!(
+            "governed_zone_touched for Commit {commit}: {}",
+            touched.join(", ")
+        ),
+        independent_support: supporting.len(),
+        independent_contradiction: 0,
+        derivation: Derivation {
+            method: DerivationMethod::Deterministic,
+            rule: "governed_zone_touched".into(),
+            version: RULES_VERSION.into(),
+            inputs: supporting.iter().cloned().map(NodeRef::Evidence).collect(),
+        },
+        supporting,
+        contradicting: Vec::new(),
+        derived_from: Vec::new(),
+        status: AssertionStatus::Supported,
+        scope: scope.clone(),
+        valid_from: None,
+        valid_to: None,
+        confidence: None,
+        created_at,
+        created_by: Actor::system(),
+    }
 }
 
 /** Derive whether a task's change is verified from the per-commit and per-deployment assertions:

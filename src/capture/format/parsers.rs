@@ -545,7 +545,11 @@ fn references(content: &Value, record: &SourceRecord) -> RecordRefs {
         agent: lookup(content, record, &["agent", "agent_id", "scope.agent_id"]),
         session: lookup(content, record, &["session", "session_id"]),
         parent_run: lookup(content, record, &["parent_run", "scope.parent_event_id"]),
-        commit: lookup(content, record, &["commit", "head_sha", "sha"]),
+        commit: lookup(
+            content,
+            record,
+            &["commit", "head_sha", "sha", "commit_sha", "git_sha"],
+        ),
         pull_request: lookup(content, record, &["pull_request", "pr"]),
         deployment: lookup(content, record, &["deployment", "deployment_id"]),
         ci_run: lookup(content, record, &["ci_run", "run_id"]),
@@ -581,23 +585,6 @@ fn observed_at(record: &SourceRecord, content: &Value) -> Option<u64> {
     })
 }
 
-/** Report whether an evidence type describes something that happened at a time
- * Input
-    - evidence_type: EvidenceType - type
- * Output
-    - bool
-*/
-fn is_event(evidence_type: EvidenceType) -> bool {
-    !matches!(
-        evidence_type,
-        EvidenceType::GraphState
-            | EvidenceType::Policy
-            | EvidenceType::Validation
-            | EvidenceType::Configuration
-            | EvidenceType::Task
-    )
-}
-
 /** Normalize a captured record into an Evidence Record
  * Input
     - definition: &ResourceDefinition - resource it came from
@@ -630,7 +617,7 @@ pub(crate) fn normalize(
         None => ParseOutcome::failed("content", "the source returned no content"),
     };
     let observed = observed_at(record, content);
-    if observed.is_none() && is_event(record.evidence_type) && outcome.payload.is_some() {
+    if observed.is_none() && record.evidence_type.is_timed() && outcome.payload.is_some() {
         outcome.issues.push(issue("observed_at", "missing"));
     }
     let refs = references(content, record);
@@ -686,5 +673,6 @@ pub(crate) fn normalize(
         episode_id: episode_id.map(str::to_string),
         refs,
         supersedes: None,
+        observed_in: Vec::new(),
     }
 }

@@ -63,7 +63,8 @@ comments); whitespace-only changes never satisfy a target.
 | Agents | `agent install\|uninstall\|hooks --profile claude\|codex\|copilot\|gemini`, `agent link` |
 | Admins | `admin list`, `admin register`, `admin add PUBLIC_KEY [name NAME]`, `admin del PUBLIC_KEY` |
 | Zones and flows | `governance sign`, `governance graph [--json]` (zones, flows, and selections as an acyclic graph, with the agents active in each) |
-| Work Capture | `capture demo [--json]`, `capture sources [--json]`, `capture investigate [commit SHA] [task TASK_ID] [--json]` |
+| Work Capture | `capture demo [--json]`, `capture sources [--json]`, `capture investigate [commit SHA] [task TASK_ID] [class CLASS] [recipe ID [version N]] [episode EPI] [--json]`, `capture replay QUERY_ID [--json]`, `capture verify PACK_ID`, `capture contribute FILE [--json]`, `capture review CONTRIBUTION_ID accept\|reject reason TEXT`, `capture outcome EPISODE OUTCOME [evidence ID,ID]`, `capture feedback PACK_ID sufficient yes\|no\|unknown [missing TYPE,TYPE] [notes TEXT]`, `capture ask FILE`, `capture question QUESTION_ID answer PACK_ID\|block\|unresolvable\|reopen`, `capture confirm RELATION_ID` |
+| Insight | `insight report [--json]`, `insight reports [--json]`, `insight propose PATTERN_ID`, `insight recipes [--json]`, `insight review PROPOSAL_ID accept\|reject reason TEXT` |
 | Capabilities | `capability demo`, `capability intake ...`, `capability create\|propose FILE`, `capability validate (ID [--dry-run] \| file FILE)`, `capability inspect\|versions\|list`, `capability publish ID version N reason TEXT`, `capability deprecate\|revoke\|reject ...`, `capability stale` |
 | Compiler | `compile demo [--json]`, `compile episode EPI pack PCK digest D capability ID name TEXT purpose TEXT task-class CLASS [intent FILE] [risk RISK] [profile NAME] [--json]` |
 | Validation Lab | `lab demo [--json]`, `lab run ID [version N] [digest DIGEST] plan FILE [compilation REPORT_ID] [--json]`, `lab reports ID [version N] [--json]` |
@@ -189,13 +190,43 @@ writes to them.
 crane capture demo                 # failed-deployment investigation from fixtures (no credentials)
 crane capture sources              # this repository's live sources and their health
 crane capture investigate task tsk_... commit HEAD --json
+crane capture investigate class pull-request-review --json   # or recipe ID [version N]
+crane capture replay QUERY_ID      # re-run a recorded investigation and report what changed
+crane capture verify PACK_ID       # check a kept Evidence Pack against its manifest
+crane capture outcome EPISODE succeeded evidence EVD_ID,EVD_ID
+crane capture investigate class release-notes --json        # no recipe serves it: an exploration
+crane capture feedback PACK_ID sufficient yes missing test_report notes "also needs the tests"
 ```
 
+**A question no recipe serves is explored, not refused.** When the class matches no recipe (and the
+request names neither a recipe nor a plan), the broker asks every permitted source to discover what
+it holds, then builds a bounded plan from the registry: one query per resource type and evidence
+type the actor may receive, filtered by every scope value already known. The plan is a recipe like
+any other (validated, digested, audited, replayable), and the same registry and request always give
+the same plan. Because an exploration cannot know what "complete" means, it requires nothing, and
+its pack is `exploratory`, never `sufficient`. `feedback` records whether a pack served the person
+who used it, and what was still missing; Insight learns recipes from that feedback (see below).
+
 `investigate` uses the live connectors (the local Git repository, DataSea's local event store,
-`.crane/governance.yaml`, and the AgentScript policies with the current validation report). It
-keeps everything under the trust directory's `runtime/capture` folder. GitHub pull requests, CI,
-deployments, logs, and metrics have no live connector yet. The demo covers them with deterministic
-fixture connectors.
+`.crane/governance.yaml`, and the AgentScript policies with the current validation report). For a
+repository connected to GitHub (`crane repo`), it also reads pull requests, commit files, and check
+runs through the GitHub CLI. It keeps everything under the trust directory's `runtime/capture`
+folder. Deployments, logs, and metrics have no live connector yet; the demo covers them with
+deterministic fixture connectors. A task can be named by Crane's id (`tsk_...`) or by the tracker
+key in `CRANE_TASK_ID`. `episode EPI` continues an earlier work episode, and a replay always stays
+in its original's episode.
+
+Built-in recipes: `failed-deployment` v1 and v2 (v2 binds its conditions to the deployment under
+investigation and fetches schema evidence when the change touches `migrations/`), `local-change`
+v1, `deployment-discovery` v1 (the deployments of an environment), and `pr-review` v1. A published
+recipe version never changes; a change is a new version.
+
+People act on context: `contribute FILE` proposes context (it stays proposed), `review` accepts or
+rejects someone else's proposal (only the repository owner or an admin may), `ask` and `question`
+track a question until a kept pack answers it, and `confirm RELATION_ID` records a reviewed
+relation beside the original. `outcome` records a work episode's outcome; `succeeded` and
+`partially_verified` need evidence of that episode, and changing someone else's outcome takes the
+owner or an admin. No capture command runs inside an AI agent session.
 
 The code lives in `src/capture`, split into four categories plus the broker:
 
@@ -228,7 +259,7 @@ the budget used, and the metrics. A replay re-runs the recorded recipe against t
 and reports `exact`, `diverged`, or `unverifiable` (when a source cannot identify its snapshot).
 
 **Evidence Pack** fields: `pack_id`, `episode_id`, `investigation`, `status`
-(`sufficient`/`incomplete`/`budget_exhausted`/`rejected`), `scope` (with zone and flow versions and
+(`sufficient`/`incomplete`/`budget_exhausted`/`rejected`/`exploratory`), `scope` (with zone and flow versions and
 facts learned from evidence), `evidence` (bounded excerpts plus artifact references), `entities`,
 `context_view`, `assertions` (supporting and contradicting evidence, derivation, lineage),
 `contributions` (`task_local` kept apart from `reusable`), `missing_evidence` (each with a state:
@@ -244,6 +275,48 @@ different human with review permission, so nobody can approve their own. Hypothe
 observations. A constraint proposal that relaxes or removes a policy is refused, and an accepted
 one still has to go through Crane's signed policy workflow. Source content is treated as data and
 is redacted before storage. A record marked secret keeps only its reference.
+
+## Insight: learning from work
+
+Insight ([src/insight/](../src/insight/)) finds patterns across everything Work Capture kept, and
+turns them into proposals that people review. It writes nothing it reads, and nothing it finds
+changes a recipe, a context, a capability, or a policy until a person accepts the proposal.
+
+```bash
+crane insight report               # patterns under your own access, kept in runtime/insight
+crane insight propose PATTERN_ID   # a recipe proposal, or context for a zone (stays proposed)
+crane insight recipes              # recipe proposals and their status
+crane insight review PROPOSAL_ID accept reason "this is what we check"   # owner and admins only
+```
+
+Five deterministic, versioned miners run over the packs, investigations, episodes, and evidence
+the person running Crane may see:
+
+| Miner | Pattern | Where it can lead |
+| --- | --- | --- |
+| `evidence-gaps` | evidence a zone's investigations keep lacking, by reason (empty, unavailable, denied, not queried, parse failed) | system-derived context for the zone, reviewed in the contribution ledger |
+| `questions` | a question class no recipe serves: how often it was asked, explored, and judged sufficient | a learned recipe, reviewed by the owner or an admin |
+| `trust` | how often a zone's investigations were sufficient, beside the outcomes of its work | the owner or an admin (the zone's agent permissions) |
+| `outcomes` | a zone or top directory whose work fails clearly more often than all work | context for the zone; a co-occurrence, never a cause |
+| `work` | an agent tool sequence that recurs across work episodes | a capability candidate compiled from one succeeded episode (`crane compile episode`) |
+
+Every pattern carries its counts, its denominator, and the cases that could not be judged, plus the
+episodes, packs, and evidence it rests on. A count below 3 is suppressed and never shown, so a
+pattern cannot single out one record. Packs and evidence are counted only when the viewer could
+open them (the same eligibility check Work Capture applies), so a staging-only person never sees
+production's rates. A report names its miners' version and is kept with a digest; a changed report
+is refused when read.
+
+**The learning loop.** A question with no recipe is explored. People judge the explorations with
+`crane capture feedback`. When two explorations of a class are judged sufficient, `insight report`
+shows a `question` pattern that leads to a recipe, and `insight propose` builds `learned-CLASS`
+from the steps that found evidence in those explorations. It requires what every one of them found,
+plus what the feedback said was still missing. The proposal is made by the system actor
+`crane-insight`, so the owner or an admin can review it. Accepting it publishes the recipe as a new
+version, pinned like the built-in ones, which can never change. From then on the class is served
+by that recipe, and Insight stops reporting it as unanswered. A learned recipe never displaces a
+built-in one: one the RecipeBook cannot take is refused at review, and `insight recipes` lists any
+that a later release shadows.
 
 ## Capability Registry
 

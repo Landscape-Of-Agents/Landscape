@@ -264,6 +264,8 @@ pub(crate) struct Manifest {
     - Incomplete - required evidence is missing (see missing_evidence)
     - BudgetExhausted - a retrieval limit stopped the investigation
     - Rejected - the request asked for something the actor may not access
+    - Exploratory - no recipe serves the question, so the permitted sources were explored; nothing
+      was required, so an exploration is never sufficient, only informative
 */
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -272,6 +274,7 @@ pub(crate) enum InvestigationStatus {
     Incomplete,
     BudgetExhausted,
     Rejected,
+    Exploratory,
 }
 
 /** An Evidence Pack
@@ -403,6 +406,37 @@ impl EvidencePack {
             }
         }
         if !dropped.is_empty() {
+            // The view keeps only evidence the pack holds; what was left out is named below
+            let held = self
+                .evidence
+                .iter()
+                .map(|evidence| evidence.evidence_id.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            self.context_view
+                .evidence
+                .retain(|evidence| held.contains(evidence));
+            for relation in &mut self.context_view.relations {
+                relation
+                    .provenance
+                    .evidence
+                    .retain(|evidence| held.contains(evidence));
+            }
+            for entity in self
+                .context_view
+                .entities
+                .iter_mut()
+                .chain(self.entities.iter_mut())
+            {
+                if entity
+                    .first_evidence
+                    .as_ref()
+                    .is_some_and(|evidence| !held.contains(evidence))
+                {
+                    entity.first_evidence = None;
+                }
+            }
+            self.context_view.view_id =
+                crate::capture::correlate::graph::view_identifier(&self.context_view);
             let message = format!(
                 "{} records were left out to keep the pack within {} bytes",
                 dropped.len(),

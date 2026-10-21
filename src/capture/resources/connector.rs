@@ -6,6 +6,7 @@
 // empty successful result.
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -299,6 +300,40 @@ pub(crate) trait ResourceConnector {
         - HealthReport
     */
     fn health_check(&self) -> HealthReport;
+
+    /** Start an investigation: drop anything cached for the previous one, so each investigation
+     * reads its sources once and sees one consistent snapshot of them
+     * Input
+        - None (uses self)
+     * Output
+        - None
+    */
+    fn begin(&self) {}
+
+    /** Fetch within a deadline. A connector whose work can outlast the investigation's time budget
+     * honors the deadline and answers Timeout; the default fetches as usual
+     * Input
+        - record_id: &str - source record id
+        - deadline: Instant - when the investigation's time budget runs out
+     * Output
+        - ConnectorOutcome
+    */
+    fn fetch_within(&self, record_id: &str, deadline: Instant) -> ConnectorOutcome {
+        let _ = deadline;
+        self.fetch(record_id)
+    }
+
+    /** Query within a deadline (see fetch_within)
+     * Input
+        - spec: &QuerySpec - query
+        - deadline: Instant - when the investigation's time budget runs out
+     * Output
+        - ConnectorOutcome
+    */
+    fn query_within(&self, spec: &QuerySpec, deadline: Instant) -> ConnectorOutcome {
+        let _ = deadline;
+        self.query(spec)
+    }
 }
 
 /**
@@ -323,7 +358,8 @@ pub(crate) fn page(
         }
     };
     let in_window = |record: &SourceRecord| {
-        if spec.since.is_none() && spec.until.is_none() {
+        // Timeless evidence (zones, policies, validation) is never filtered by a time window
+        if (spec.since.is_none() && spec.until.is_none()) || !record.evidence_type.is_timed() {
             return true;
         }
         record.source_timestamp.is_some_and(|at| {

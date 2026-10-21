@@ -202,3 +202,224 @@ fn investigates_a_local_change() {
         first["pack"]["evidence"].as_array().unwrap().len()
     );
 }
+
+/** The capture commands cover an investigation's lifecycle: replay it, verify its pack, propose
+ * context, refuse reviewing one's own proposal, and record the episode's outcome only with
+ * evidence of the episode
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn capture_commands_cover_the_lifecycle() {
+    let fixture = Fixture::ready();
+    fixture.write(
+        "app/refunds.py",
+        "def refund(amount):\n    return -amount\n",
+    );
+    fixture.commit("add refunds");
+    let (ok, result) = fixture.json(&["capture", "investigate", "--json"]);
+    assert!(ok, "{result}");
+    let query = result["audit"]["query_id"].as_str().unwrap().to_string();
+    let pack = result["pack"]["pack_id"].as_str().unwrap().to_string();
+    let episode = result["pack"]["episode_id"].as_str().unwrap().to_string();
+    let evidence = result["pack"]["evidence"][0]["evidence_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (ok, replayed) = fixture.json(&["capture", "replay", &query, "--json"]);
+    assert!(ok, "{replayed}");
+    assert_eq!(replayed["audit"]["replay"]["original_query"], json!(query));
+    assert_eq!(replayed["pack"]["episode_id"], json!(episode));
+
+    let verified = fixture.ok(&["capture", "verify", &pack]);
+    assert!(verified.contains("matches its manifest"), "{verified}");
+    let unknown = fixture.fails(&["capture", "verify", "pck_missing"]);
+    assert!(unknown.contains("no Evidence Pack"), "{unknown}");
+
+    let proposal = json!({
+        "target_ref": {"kind": "work_episode", "id": episode, "version": null},
+        "episode_id": episode,
+        "contribution_type": "observation",
+        "namespace": "observed",
+        "content": {"observation": "the refund returns a negative amount"},
+        "evidence_refs": [evidence],
+        "locality": "task_local",
+        "valid_until": null
+    });
+    fixture.write("proposal.json", &proposal.to_string());
+    let proposal_path = fixture.work.join("proposal.json");
+    let (ok, contributed) = fixture.json(&[
+        "capture",
+        "contribute",
+        proposal_path.to_str().unwrap(),
+        "--json",
+    ]);
+    assert!(ok, "{contributed}");
+    assert_eq!(contributed["status"], json!("proposed"));
+    let id = contributed["contribution_id"].as_str().unwrap().to_string();
+    let own = fixture.fails(&["capture", "review", &id, "accept", "reason", "looks right"]);
+    assert!(own.contains("cannot review their own"), "{own}");
+
+    let fabricated = fixture.fails(&[
+        "capture",
+        "outcome",
+        &episode,
+        "succeeded",
+        "evidence",
+        "evd_made_up",
+    ]);
+    assert!(fabricated.contains("does not exist"), "{fabricated}");
+    let recorded = fixture.ok(&[
+        "capture",
+        "outcome",
+        &episode,
+        "partially_verified",
+        "evidence",
+        &evidence,
+    ]);
+    assert!(recorded.contains("PartiallyVerified"), "{recorded}");
+
+    let agent = fixture.as_agent(&["capture", "contribute", proposal_path.to_str().unwrap()]);
+    assert!(
+        !agent.status.success(),
+        "an agent cannot act as the operator"
+    );
+}
+
+/** Questions and relation confirmations through the crane binary: a question is asked, answered
+ * by a kept pack, and then cannot move again; the owner confirms a relation of the pack's view
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn questions_and_confirmations_through_the_cli() {
+    let fixture = Fixture::ready();
+    fixture.write(
+        "app/refunds.py",
+        "def refund(amount):\n    return -amount\n",
+    );
+    fixture.commit("add refunds");
+    let (ok, result) = fixture.json(&["capture", "investigate", "--json"]);
+    assert!(ok, "{result}");
+    let pack = result["pack"]["pack_id"].as_str().unwrap().to_string();
+    let episode = result["pack"]["episode_id"].as_str().unwrap().to_string();
+    let relation = result["pack"]["context_view"]["relations"][0]["relation_id"]
+        .as_str()
+        .expect("the view has a relation")
+        .to_string();
+
+    let confirmed = fixture.ok(&["capture", "confirm", &relation]);
+    assert!(confirmed.contains("confirmed as"), "{confirmed}");
+
+    let question = json!({
+        "question_id": "q-tests",
+        "text": "Did the refund tests run?",
+        "target": {"kind": "work_episode", "id": episode, "version": null},
+        "reason": "no test report",
+        "relevant_evidence": [],
+        "required_evidence": ["test_report"],
+        "permitted_resources": ["git"],
+        "recipe": null
+    });
+    fixture.write("question.json", &question.to_string());
+    let path = fixture.work.join("question.json");
+    let asked = fixture.ok(&["capture", "ask", path.to_str().unwrap()]);
+    assert!(asked.contains("Asked q-tests"), "{asked}");
+    let unanswered = fixture.fails(&["capture", "question", "q-tests", "answer", "pck_missing"]);
+    assert!(unanswered.contains("kept Evidence Pack"), "{unanswered}");
+    let answered = fixture.ok(&["capture", "question", "q-tests", "answer", &pack]);
+    assert!(answered.contains("Answered"), "{answered}");
+    let moved = fixture.fails(&["capture", "question", "q-tests", "block"]);
+    assert!(moved.contains("cannot become"), "{moved}");
+}
+
+/** The learning loop through the crane binary: a question class no recipe serves is explored over
+ * the live sources, the person judges the explorations, Insight reports the question and proposes
+ * a recipe, the owner accepts it, and the class is then served by the learned recipe; an agent can
+ * run none of it
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn explorations_become_a_learned_recipe_through_the_cli() {
+    let fixture = Fixture::ready();
+    fixture.write("app/notes.py", "def notes():\n    return []\n");
+    fixture.commit("add notes");
+    let mut packs = Vec::new();
+    for _ in 0..3 {
+        let (ok, result) =
+            fixture.json(&["capture", "investigate", "class", "release-notes", "--json"]);
+        assert!(ok, "{result}");
+        assert_eq!(result["pack"]["status"], json!("exploratory"));
+        assert!(result["audit"]["recipe"]["recipe_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("explore-"));
+        packs.push(result["pack"]["pack_id"].as_str().unwrap().to_string());
+    }
+    for pack in &packs[..2] {
+        let judged = fixture.ok(&["capture", "feedback", pack, "sufficient", "yes"]);
+        assert!(judged.contains("sufficient Yes"), "{judged}");
+    }
+    let wrong = fixture.fails(&["capture", "feedback", &packs[2], "sufficient", "maybe"]);
+    assert!(wrong.contains("usage"), "{wrong}");
+
+    let (ok, report) = fixture.json(&["insight", "report", "--json"]);
+    assert!(ok, "{report}");
+    let question = report["patterns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pattern| pattern["kind"] == json!("question"))
+        .cloned()
+        .expect("the unserved question is a pattern");
+    assert_eq!(question["destination"]["to"], json!("recipe"));
+    let listed = fixture.ok(&["insight", "reports"]);
+    assert!(
+        listed.contains(report["report_id"].as_str().unwrap()),
+        "{listed}"
+    );
+
+    let proposed = fixture.ok(&[
+        "insight",
+        "propose",
+        question["pattern_id"].as_str().unwrap(),
+    ]);
+    assert!(proposed.contains("Proposed recipe"), "{proposed}");
+    let (ok, recipes) = fixture.json(&["insight", "recipes", "--json"]);
+    assert!(ok, "{recipes}");
+    let proposal = recipes["proposals"][0].clone();
+    assert_eq!(proposal["status"], json!("proposed"));
+    assert_eq!(
+        proposal["recipe"]["recipe_id"],
+        json!("learned-release-notes")
+    );
+    let id = proposal["proposal_id"].as_str().unwrap().to_string();
+    let agent = fixture.as_agent(&["insight", "review", &id, "accept", "reason", "fine"]);
+    assert!(!agent.status.success(), "an agent cannot review a recipe");
+    let accepted = fixture.ok(&[
+        "insight",
+        "review",
+        &id,
+        "accept",
+        "reason",
+        "what we check",
+    ]);
+    assert!(accepted.contains("Accepted"), "{accepted}");
+
+    let (ok, learned) =
+        fixture.json(&["capture", "investigate", "class", "release-notes", "--json"]);
+    assert!(ok, "{learned}");
+    assert_eq!(
+        learned["pack"]["retrieval"]["recipe_id"],
+        json!("learned-release-notes")
+    );
+    assert_ne!(learned["pack"]["status"], json!("exploratory"));
+}

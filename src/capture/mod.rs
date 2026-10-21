@@ -25,9 +25,9 @@ pub(crate) mod store;
 #[cfg(test)]
 mod tests;
 
-use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -223,6 +223,25 @@ impl Actor {
     pub(crate) fn system() -> Self {
         Self::new("work-capture", ActorKind::System)
     }
+
+    /** The person operating Crane, as a human actor. Being human is what lets an actor record
+     * observed context and, with review rights, accept contributions, so it is never taken from the
+     * caller's word: inside an AI agent session no human actor can be made at all
+     * Input
+        - id: &str - the operator's identity
+     * Output
+        - CaptureResult<Actor>
+        - Error when an AI agent session is detected
+    */
+    pub(crate) fn human_operator(id: &str) -> CaptureResult<Self> {
+        match crate::trust::agent_environment() {
+            Some(marker) => Err(CaptureError::new(
+                ErrorCode::Unauthorized,
+                format!("an AI agent session is active ({marker} is set); only a person acts as a human here"),
+            )),
+            None => Ok(Self::new(id, ActorKind::Human)),
+        }
+    }
 }
 
 /** How sensitive a piece of evidence is (ordered from least to most)
@@ -312,11 +331,29 @@ impl AccessPolicy {
 /** The source of timestamps: the system clock, or a fixed clock that advances one millisecond
  * per reading, so fixtures and tests are deterministic and still order their records
  * Fields
-    - fixed: Option<Cell<u64>> - next fixed reading, None for the system clock
+    - fixed: Option<AtomicU64> - next fixed reading, None for the system clock (atomic, so a clock
+      can be shared by work running on several threads)
 */
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct Clock {
-    fixed: Option<Cell<u64>>,
+    fixed: Option<AtomicU64>,
+}
+
+impl Clone for Clock {
+    /** Copy the clock: a fixed clock continues from its current reading, independently
+     * Input
+        - None (uses self)
+     * Output
+        - Clock
+    */
+    fn clone(&self) -> Self {
+        Self {
+            fixed: self
+                .fixed
+                .as_ref()
+                .map(|next| AtomicU64::new(next.load(Ordering::SeqCst))),
+        }
+    }
 }
 
 impl Clock {
@@ -338,7 +375,7 @@ impl Clock {
     */
     pub(crate) fn fixed(start: u64) -> Self {
         Self {
-            fixed: Some(Cell::new(start)),
+            fixed: Some(AtomicU64::new(start)),
         }
     }
 
@@ -350,12 +387,26 @@ impl Clock {
     */
     pub(crate) fn now(&self) -> u64 {
         match &self.fixed {
-            Some(cell) => {
-                let value = cell.get();
-                cell.set(value + 1);
-                value
-            }
+            Some(next) => next.fetch_add(1, Ordering::SeqCst),
             None => crate::platform::now_millis(),
+        }
+    }
+
+    /** A value that tells apart identifiers made at the same instant by different processes:
+     * random under the system clock, empty under a fixed clock (so fixtures stay deterministic)
+     * Input
+        - None (uses self)
+     * Output
+        - String
+    */
+    pub(crate) fn nonce(&self) -> String {
+        if self.fixed.is_some() {
+            return String::new();
+        }
+        let mut bytes = [0u8; 8];
+        match getrandom::fill(&mut bytes) {
+            Ok(()) => bytes.iter().map(|byte| format!("{byte:02x}")).collect(),
+            Err(_) => format!("{}-{}", std::process::id(), crate::platform::now_millis()),
         }
     }
 }

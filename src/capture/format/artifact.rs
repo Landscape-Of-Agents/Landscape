@@ -65,7 +65,8 @@ fn classify(record: &SourceRecord, redactions: usize) -> Sensitivity {
         Sensitivity::Confidential
     } else {
         Sensitivity::Internal
-    };
+    }
+    .max(record.evidence_type.sensitivity_floor());
     declared.map_or(floor, |declared| declared.max(floor))
 }
 

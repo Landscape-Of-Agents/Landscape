@@ -153,8 +153,9 @@ pub(crate) struct EvidenceGraph {
 }
 
 impl EvidenceGraph {
-    /** Add an entity or merge it into the existing one (attributes are added, a known version is
-     * kept unless the new one is set, the first evidence is kept)
+    /** Add an entity or merge it into the existing one (attributes are added, the first evidence is
+     * kept, and a version only fills one that is unknown: a known version changes only through
+     * observe_version, from evidence)
      * Input
         - entity: Entity - entity
      * Output
@@ -167,7 +168,7 @@ impl EvidenceGraph {
                 for (key, value) in entity.attributes {
                     existing.attributes.entry(key).or_insert(value);
                 }
-                if entity.version.is_some() {
+                if existing.version.is_none() {
                     existing.version = entity.version;
                 }
                 if existing.first_evidence.is_none() {
@@ -179,6 +180,20 @@ impl EvidenceGraph {
             }
         }
         id
+    }
+
+    /** Record the version of an entity that evidence observed (a zone or flow revision, a policy
+     * revision). This is the only way a known version changes; contributions never call it
+     * Input
+        - entity_id: &str - entity
+        - version: String - observed version
+     * Output
+        - None
+    */
+    pub(crate) fn observe_version(&mut self, entity_id: &str, version: String) {
+        if let Some(entity) = self.entities.get_mut(entity_id) {
+            entity.version = Some(version);
+        }
     }
 
     /** Make an evidence, assertion, or contribution node known to the graph
@@ -432,21 +447,32 @@ impl EvidenceGraph {
                 NodeRef::Contribution(_) => {}
             }
         }
-        let mut members = view
-            .entities
-            .iter()
-            .map(|entity| entity.entity_id.clone())
-            .collect::<Vec<_>>();
-        members.extend(view.evidence.iter().cloned());
-        members.extend(
-            view.relations
-                .iter()
-                .map(|relation| relation.relation_id.clone()),
-        );
-        let parts = std::iter::once(question)
-            .chain(members.iter().map(String::as_str))
-            .collect::<Vec<_>>();
-        view.view_id = stable_id("ctx", &parts);
+        view.view_id = view_identifier(&view);
         Ok((view, traversal))
     }
+}
+
+/** The stable identifier of a context view: its question and every member (entities, evidence,
+ * relations), so a view changed by sealing gets a new identifier
+ * Input
+    - view: &ContextView - view
+ * Output
+    - String
+*/
+pub(crate) fn view_identifier(view: &ContextView) -> String {
+    let mut members = view
+        .entities
+        .iter()
+        .map(|entity| entity.entity_id.clone())
+        .collect::<Vec<_>>();
+    members.extend(view.evidence.iter().cloned());
+    members.extend(
+        view.relations
+            .iter()
+            .map(|relation| relation.relation_id.clone()),
+    );
+    let parts = std::iter::once(view.question.as_str())
+        .chain(members.iter().map(String::as_str))
+        .collect::<Vec<_>>();
+    stable_id("ctx", &parts)
 }

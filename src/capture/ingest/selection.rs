@@ -134,6 +134,44 @@ impl Ranker for DeterministicRanker {
     }
 }
 
+/** Check whether the actor may receive a record at all. This is the one authorization check of a
+ * record: the broker applies it as each record is ingested (so nothing withheld is learned from,
+ * linked, or concluded from), and selection applies it again
+ * Input
+    - record: &EvidenceRecord - record
+    - policy: &AccessPolicy - the actor's permissions
+ * Output
+    - Option<ExclusionReason>, Unauthorized or TooSensitive, None when the actor may receive it
+*/
+pub(crate) fn withheld(record: &EvidenceRecord, policy: &AccessPolicy) -> Option<ExclusionReason> {
+    if !policy.permits_resource(&record.source_ref.resource_id)
+        || !policy.permits_type(record.evidence_type)
+        || reveals_forbidden_scope(record, policy)
+    {
+        return Some(ExclusionReason::Unauthorized);
+    }
+    if record.sensitivity > policy.max_sensitivity {
+        return Some(ExclusionReason::TooSensitive);
+    }
+    None
+}
+
+/** Check whether a record belongs to a repository or environment the actor may not see
+ * Input
+    - record: &EvidenceRecord - record
+    - policy: &AccessPolicy - the actor's permissions
+ * Output
+    - bool
+*/
+pub(crate) fn reveals_forbidden_scope(record: &EvidenceRecord, policy: &AccessPolicy) -> bool {
+    !policy.permits_environment(record.scope.environment.as_deref())
+        || record
+            .scope
+            .repository
+            .as_deref()
+            .is_some_and(|repository| !policy.permits_repository(Some(repository)))
+}
+
 /** Check one record's eligibility
  * Input
     - record: &EvidenceRecord - record
@@ -142,20 +180,8 @@ impl Ranker for DeterministicRanker {
     - Option<ExclusionReason>, None when eligible
 */
 fn ineligible(record: &EvidenceRecord, criteria: &Criteria) -> Option<ExclusionReason> {
-    let policy = criteria.policy;
-    if !policy.permits_resource(&record.source_ref.resource_id)
-        || !policy.permits_type(record.evidence_type)
-        || !policy.permits_environment(record.scope.environment.as_deref())
-        || record
-            .scope
-            .repository
-            .as_deref()
-            .is_some_and(|repository| !policy.permits_repository(Some(repository)))
-    {
-        return Some(ExclusionReason::Unauthorized);
-    }
-    if record.sensitivity > policy.max_sensitivity {
-        return Some(ExclusionReason::TooSensitive);
+    if let Some(reason) = withheld(record, criteria.policy) {
+        return Some(reason);
     }
     let other_repository = matches!((record.scope.repository.as_deref(), criteria.repository), (Some(found), Some(wanted)) if found != wanted);
     let other_episode = matches!((record.episode_id.as_deref(), criteria.episode_id), (Some(found), Some(wanted)) if found != wanted);

@@ -88,6 +88,59 @@ impl EvidenceType {
             _ => &[],
         }
     }
+
+    /** Whether the type describes something that happened at a time (an event) rather than a
+     * state that holds (a zone, a policy, a validation report, a configuration, a task). This is
+     * the one definition every rule about time uses: a missing observation time is a parse issue
+     * and a freshness warning only for timed types, and a time window filters only timed types,
+     * so governance evidence is never dropped by a window it has no time to fall in
+     * Input
+        - None (uses self)
+     * Output
+        - bool
+    */
+    pub(crate) fn is_timed(self) -> bool {
+        !matches!(
+            self,
+            Self::GraphState | Self::Policy | Self::Validation | Self::Configuration | Self::Task
+        )
+    }
+
+    /** The least sensitivity of every record of the type, whatever the redactor found: runtime logs
+     * and agent tool calls (commands and their arguments) are Confidential, because a secret in a
+     * format the redactor does not recognize would otherwise stay Internal
+     * Input
+        - None (uses self)
+     * Output
+        - Sensitivity
+    */
+    pub(crate) fn sensitivity_floor(self) -> Sensitivity {
+        match self {
+            Self::RuntimeLog | Self::ToolCall => Sensitivity::Confidential,
+            _ => Sensitivity::Internal,
+        }
+    }
+
+    /** Whether records of the type belong to a runtime environment (production, staging, CI), so
+     * an actor's environment permission applies to retrieving them; a zone, a policy, a task, or
+     * a change is not environment-bound
+     * Input
+        - None (uses self)
+     * Output
+        - bool
+    */
+    pub(crate) fn is_environment_bound(self) -> bool {
+        matches!(
+            self,
+            Self::Deployment
+                | Self::Verification
+                | Self::RuntimeLog
+                | Self::Metric
+                | Self::Configuration
+                | Self::CiRun
+                | Self::TestReport
+        )
+    }
 }
 
 /** The payload families, each with its own parser
@@ -333,6 +386,8 @@ pub(crate) struct RecordRefs {
     - episode_id: Option<String> - work episode, None when not tied to one
     - refs: RecordRefs - references to agents, commits, deployments, ...
     - supersedes: Option<String> - earlier record of the same source record (older revision)
+    - observed_in: Vec<String> - other work episodes that observed the same record after the one in
+      episode_id (absent when none)
 */
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct EvidenceRecord {
@@ -352,6 +407,8 @@ pub(crate) struct EvidenceRecord {
     pub(crate) episode_id: Option<String>,
     pub(crate) refs: RecordRefs,
     pub(crate) supersedes: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) observed_in: Vec<String>,
 }
 
 impl EvidenceRecord {

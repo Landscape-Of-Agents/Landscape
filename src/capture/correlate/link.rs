@@ -5,6 +5,8 @@
 // contains the task key, a Landscape selector matching a file) is declared when the governing
 // configuration states it and inferred otherwise. Nothing is linked by temporal proximity.
 
+use std::collections::BTreeSet;
+
 use serde_json::{json, Value};
 
 use super::graph::EvidenceGraph;
@@ -66,12 +68,15 @@ impl Linker<'_> {
         attributes: Value,
     ) -> String {
         let mut entity = Entity::new(kind, key);
-        entity.version = version;
         entity.first_evidence = Some(self.evidence.clone());
         if let Value::Object(map) = attributes {
             entity.attributes = map;
         }
         let id = self.graph.add_entity(entity);
+        // The version comes from the evidence being linked, so it may update a known one
+        if let Some(version) = version {
+            self.graph.observe_version(&id, version);
+        }
         if !self.outcome.entities.contains(&id) {
             self.outcome.entities.push(id.clone());
         }
@@ -335,7 +340,10 @@ pub(crate) fn link(
                     );
                 }
                 if let (Some(task), Some(episode)) = (context.task, context.episode) {
-                    if refs.task.as_deref() == Some(task) {
+                    // Either identity of the task ties the session to the episode
+                    if refs.task.as_deref() == Some(task)
+                        || field("external_task").as_deref() == Some(task)
+                    {
                         linker.relate(
                             RelationType::ExecutedDuring,
                             &session,
@@ -430,13 +438,51 @@ fn strings(entity: &Entity, path: &[&str]) -> Vec<String> {
 }
 
 /** Link files to the Landscape zones and flows whose declared selectors cover them, and zones and
- * flows to the Crane policies they declare (only policies already in the graph)
+ * flows to the Crane policies they declare (only policies already in the graph), for every file
+ * and every zone and flow
  * Input
     - graph: &mut EvidenceGraph - graph
  * Output
     - LinkOutcome
 */
+#[cfg_attr(not(test), allow(dead_code))] // the full linking; investigations link only what changed
 pub(crate) fn link_governance(graph: &mut EvidenceGraph) -> LinkOutcome {
+    link_governance_where(graph, &|_, _| true)
+}
+
+/** Link governance only where something changed: files first seen since the last linking against
+ * every zone and flow, and every file against zones and flows that are new or changed version. The
+ * links of unchanged pairs already exist (relation ids are deterministic), so the result equals a
+ * full linking while the work stays proportional to what changed
+ * Input
+    - graph: &mut EvidenceGraph - graph
+    - new_files: &BTreeSet<String> - file entities added since the last linking
+    - changed_scopes: &BTreeSet<String> - zone and flow entities added or re-versioned since
+ * Output
+    - LinkOutcome
+*/
+pub(crate) fn link_governance_changes(
+    graph: &mut EvidenceGraph,
+    new_files: &BTreeSet<String>,
+    changed_scopes: &BTreeSet<String>,
+) -> LinkOutcome {
+    link_governance_where(graph, &|file, scope| {
+        new_files.contains(file) || changed_scopes.contains(scope)
+    })
+}
+
+/** Link governance for the file and zone or flow pairs a filter admits (policy links of every zone
+ * and flow are always refreshed: they are few)
+ * Input
+    - graph: &mut EvidenceGraph - graph
+    - admit: &dyn Fn(&str, &str) -> bool - whether to link a file entity to a zone or flow entity
+ * Output
+    - LinkOutcome
+*/
+fn link_governance_where(
+    graph: &mut EvidenceGraph,
+    admit: &dyn Fn(&str, &str) -> bool,
+) -> LinkOutcome {
     let mut outcome = LinkOutcome::default();
     let files = graph
         .entities
@@ -479,6 +525,9 @@ pub(crate) fn link_governance(graph: &mut EvidenceGraph) -> LinkOutcome {
             scope.version.clone().unwrap_or_else(|| "unknown".into())
         ));
         for (file_id, path) in &files {
+            if !admit(file_id, &scope.entity_id) {
+                continue;
+            }
             let covered = patterns.iter().any(|pattern| glob::matches(pattern, path))
                 || files_listed.iter().any(|file| file == path)
                 || directories.iter().any(|directory| {

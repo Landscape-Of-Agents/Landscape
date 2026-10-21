@@ -92,16 +92,17 @@ pub(crate) fn investigate(
             })
             .map(|item| item.evidence_id.clone())
             .collect();
-        if let Some(episode) = broker.store.episodes.get_mut(episode_id) {
-            episode
-                .record_outcome(
-                    recorder,
-                    outcome,
-                    evidence,
-                    capture_demo::DEMO_EPOCH + 10_000,
-                )
-                .map_err(captured_error)?;
-        }
+        broker
+            .store
+            .record_outcome(
+                episode_id,
+                recorder,
+                false,
+                outcome,
+                evidence,
+                capture_demo::DEMO_EPOCH + 10_000,
+            )
+            .map_err(captured_error)?;
     }
     Ok((broker, pack))
 }

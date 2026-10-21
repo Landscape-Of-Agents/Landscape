@@ -13,6 +13,7 @@ mod data;
 mod discover;
 mod evolution;
 mod governance;
+mod insight;
 mod invoke;
 mod lab;
 mod link;
@@ -94,6 +95,7 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["admin", ..] => governance::admin(&rest(1)),
         ["governance", ..] => governance::governance(&rest(1)),
         ["capture", ..] => capture::capture(&rest(1)),
+        ["insight", ..] => insight::insight(&rest(1)),
         ["capability", ..] => capability::capability(&rest(1)),
         ["compile", ..] => compile::compile(&rest(1)),
         ["lab", ..] => lab::lab(&rest(1)),
@@ -157,7 +159,24 @@ Zones and flows (.crane/governance.yaml)
 Work Capture (evidence about a work episode, packaged as a bounded Evidence Pack)
   crane capture demo [--json]        (deterministic failed-deployment investigation from fixtures)
   crane capture sources [--json]     (this repository's evidence sources and their health)
-  crane capture investigate [commit SHA] [task TASK_ID] [--json]
+  crane capture investigate [commit SHA] [task TASK_ID] [class CLASS] [recipe ID [version N]] [episode EPI] [--json]
+  crane capture replay QUERY_ID [--json]   (re-run a recorded investigation; what changed)
+  crane capture verify PACK_ID             (check an Evidence Pack against its manifest)
+  crane capture contribute FILE [--json]   (propose context; it stays proposed until reviewed)
+  crane capture review CONTRIBUTION_ID accept|reject reason TEXT   (owner and admins only)
+  crane capture outcome EPISODE OUTCOME [evidence ID,ID]
+  crane capture feedback PACK_ID sufficient yes|no|unknown [missing TYPE,TYPE] [notes TEXT]
+  crane capture ask FILE                   (ask a question; it routes to permitted sources only)
+  crane capture question QUESTION_ID answer PACK_ID|block|unresolvable|reopen
+  crane capture confirm RELATION_ID        (record a reviewed relation; owner and admins only)
+  (a question class no recipe serves is explored: the pack is Exploratory, never Sufficient)
+
+Insight (patterns across the work Work Capture kept; proposals people review, nothing applied)
+  crane insight report [--json]      (evidence gaps, unanswered questions, trust, outcomes, work)
+  crane insight reports [--json]     (the kept reports)
+  crane insight propose PATTERN_ID   (a recipe proposal, or context for a zone; stays proposed)
+  crane insight recipes [--json]     (recipe proposals and their status)
+  crane insight review PROPOSAL_ID accept|reject reason TEXT   (owner and admins only)
 
 Capabilities (versioned, validated reusable procedures; publication needs an admin key)
   crane capability demo [--json]

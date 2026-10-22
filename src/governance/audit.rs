@@ -1,6 +1,4 @@
-// .crane/audit.jsonl: the append-only, hash-chained audit trail of governance changes (selections
-// created and moved, checkpoints, defaults, context bindings). The chain head is covered by the
-// signed manifest, so an edited, removed, or reordered entry is detected.
+// .crane/audit.jsonl: the append-only, hash-chained audit trail of governance changes (selections created and moved, checkpoints, defaults, context bindings). The chain head is covered by the signed manifest, so an edited, removed, or reordered entry is detected.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

@@ -1,10 +1,4 @@
-// The governance state and its signed manifest. Every Crane command that changes governance
-// (init, checkpoint, protect, target, defaults, policy moves, context bindings) goes through
-// commit(), which verifies the current state first, applies the change, appends an audit entry,
-// and signs a new manifest whose generation is one higher. The manifest covers the registry
-// records, checkpoints, configuration, context bindings, and audit chain by digest, and this
-// machine's rollback anchor (in the trust directory) records the latest generation seen, so
-// modification, deletion, rollback, and forks of .crane are all detected by integrity().
+// The governance state and its signed manifest. Every Crane command that changes governance (init, checkpoint, protect, target, defaults, policy moves, context bindings) goes through commit(), which verifies the current state first, applies the change, appends an audit entry, and signs a new manifest whose generation is one higher. The manifest covers the registry records, checkpoints, configuration, context bindings, and audit chain by digest, and this machine's rollback anchor (in the trust directory) records the latest generation seen, so modification, deletion, rollback, and forks of .crane are all detected by integrity().
 
 use std::fs;
 use std::io::ErrorKind;
@@ -532,10 +526,8 @@ pub(crate) fn integrity(workspace: &Workspace, state: &State, trust: &TrustStore
     findings
 }
 
-/** Apply a governance change: refuse agents, take the governance lock, load the state, refuse to
- * sign over a state that fails integrity (except the very first commit), apply the change, append
- * an audit entry, sign a new manifest one generation higher, write every covered file, and move
- * this machine's rollback anchor
+/**
+ Apply a governance change: refuse agents, take the governance lock, load the state, refuse to sign over a state that fails integrity (except the very first commit), apply the change, append an audit entry, sign a new manifest one generation higher, write every covered file, and move this machine's rollback anchor
  * Input
     - workspace: &Workspace - repository
     - command: &str - command name for the agent refusal message

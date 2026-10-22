@@ -1,7 +1,4 @@
-// .crane/context.json: policy context bindings. A text file bound to a policy is supplied to the
-// agent with that policy when a session starts. Context is guidance, never authorization: it
-// cannot relax a policy, and the hook decides independently of it. The digest of each bound file
-// is recorded, so a context file changed after binding is reported as stale.
+// .crane/context.json: policy context bindings. A text file bound to a policy is supplied to the agent with that policy when a session starts. Context is guidance, never authorization: it cannot relax a policy, and the hook decides independently of it. The digest of each bound file is recorded, so a context file changed after binding is reported as stale.
 
 use serde::{Deserialize, Serialize};
 

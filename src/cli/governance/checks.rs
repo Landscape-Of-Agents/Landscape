@@ -1,5 +1,4 @@
-// Verification commands: validate (integrity, syntax, and markers) and test (run every preserve
-// and target command of every policy), with their human-readable and JSON reports.
+// Verification commands: validate (integrity, syntax, and markers) and test (run every preserve and target command of every policy), with their human-readable and JSON reports.
 
 use crate::cli::args::Args;
 use crate::governance::policy::render_statement;

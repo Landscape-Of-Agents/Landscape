@@ -26,7 +26,7 @@ use crate::telemetry::compliance::Inputs;
     - workspace: &Workspace - repository
  * Output
     - Value {collected_at, crane_version, registry_generation, integrity, governance,
-      compliance_inputs, repo, integrations, alerting}
+      compliance_inputs, repo, integrations, alerting, bricks}
 */
 pub(crate) fn collect(workspace: &Workspace) -> Value {
     let state = State::load(workspace);
@@ -48,6 +48,7 @@ pub(crate) fn collect(workspace: &Workspace) -> Value {
         "repo": repo(workspace),
         "integrations": integrations::configured(workspace),
         "alerting": workspace.trust().map(|trust| crate::telemetry::rules::report(workspace, &crate::telemetry::Stores::open(&trust.runtime()))).unwrap_or(Value::Null),
+        "bricks": crate::brick::report::collect(workspace),
     })
 }
 

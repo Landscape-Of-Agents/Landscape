@@ -443,13 +443,21 @@ impl Guard<'_> {
             return;
         };
         decided.zones.extend(limit.entities.iter().cloned());
+        // The Bricks that tightened the limit are bound to the decision as "brick:ID@N"
+        decided.zones.extend(limit.bricks.iter().cloned());
         decided.verdict.cost += match limit.criticality {
             Criticality::Routine => 0,
             Criticality::Sensitive => 1,
             Criticality::Critical => 3,
             Criticality::Restricted => 5,
         };
-        let names = limit.entities.join(", ");
+        let names = limit
+            .entities
+            .iter()
+            .chain(&limit.bricks)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         let floor = match (limit.ceiling, limit.criticality) {
             (Ceiling::Observe, _) => Some((
                 Decision::Deny,

@@ -20,6 +20,7 @@ import { FoxxPanel, PanelHost, PanelState, Progress, ResultAction, RunResult, Se
 import { contextLabel, guidanceLines, LiveContext, liveFresh } from "./core/live";
 import { FoxxGraph, GraphHost, Positions } from "./graphView";
 import { FoxxSidebar, SidebarHost, SidebarState } from "./sidebar";
+import { Bricks } from "./bricksView";
 
 /** A registry record as stored in .crane/registry.json (only the fields Landscape shows). */
 interface RegistryRecord {
@@ -44,6 +45,8 @@ let extensionVersion = "";
 let extensionContext: vscode.ExtensionContext | undefined;
 /** The latest agent context Crane published, while it is fresh. */
 let liveContext: LiveContext | undefined;
+/** The Bricks view, once activated. */
+let bricks: Bricks | undefined;
 /** What was done in this window, newest first (the sidebar's Activity). */
 const activity: SidebarState["activity"] = [];
 
@@ -645,6 +648,15 @@ async function runAction(action: string, values: Record<string, string | boolean
     case "connect":
       await step("open", action === "graph" ? "Open the governance graph" : "Open the graph to connect zones", () => Promise.resolve(vscode.commands.executeCommand("foxx.openGraph", action === "connect" ? "connect" : undefined)));
       return { ok: true, message: action === "graph" ? "The governance graph is open beside the editor." : "Click zones in the graph, in execution order, then Create flow." };
+    case "brick_create":
+    case "brick_attach":
+    case "brick_preview":
+    case "brick_agents":
+    case "control": {
+      const command = { brick_create: "foxx.bricks.create", brick_attach: "foxx.bricks.attach", brick_preview: "foxx.bricks.preview", brick_agents: "foxx.runControl", control: "foxx.runControl" }[action];
+      await step("open", "Continue in the Bricks prompts", () => Promise.resolve(vscode.commands.executeCommand(command, action === "brick_agents" ? "brick" : undefined)));
+      return { ok: true, message: "Follow the prompts; signing changes are previewed before they are applied." };
+    }
     case "status":
       await step("run", "crane policy status", () => Promise.resolve(vscode.commands.executeCommand("foxx.policyStatus")));
       return { ok: true, message: "Policy status is in the Landscape output.", actions: [{ id: "open:output", label: "Show Crane output", kind: "command" }] };
@@ -1430,7 +1442,10 @@ export function activate(context: vscode.ExtensionContext): void {
   register("foxx.installHooks", () => installHooks());
   register("foxx.validate", () => validate());
   register("foxx.test", () => test());
-  register("foxx.refresh", () => validate(true));
+  register("foxx.refresh", async () => {
+    await validate(true);
+    await bricks?.load();
+  });
   register("foxx.revealSelection", (id, open) => revealSelection(String(id), open === true));
   register("foxx.openSidebar", () => vscode.commands.executeCommand("foxx.sidebar.focus"));
   register("foxx.policyStatus", async () => {
@@ -1469,6 +1484,27 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   extensionUri = context.extensionUri;
   extensionContext = context;
+  // Bricks and the command families (controls): every action runs the Crane CLI
+  bricks = new Bricks({
+    crane: (args) => crane(args),
+    root,
+    targets: () => {
+      try {
+        return entities(readGovernance())
+          .filter((entity) => entity.kind === "zone" || entity.kind === "flow")
+          .map((entity) => ({ kind: entity.kind as "zone" | "flow", id: entity.id, status: entity.status }));
+      } catch {
+        return [];
+      }
+    },
+    record,
+    refresh: async () => {
+      await validate(true);
+    },
+    output,
+  });
+  bricks.register(context);
+  void bricks.load();
   // The sidebar passes one "path#Lline" argument
   register("foxx.revealContext", (target) => {
     const [file, line] = String(target).split("#L");

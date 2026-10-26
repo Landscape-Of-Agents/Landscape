@@ -19,7 +19,7 @@ export type Form =
   | "none";
 
 /** The menu headings, in the order the menu shows them. */
-export const GROUPS = ["Preserve", "Target", "Zones", "Flows", "Context", "Policies", "Checks", "Agents", "Setup"] as const;
+export const GROUPS = ["Preserve", "Target", "Zones", "Flows", "Context", "Policies", "Checks", "Agents", "Bricks", "Controls", "Setup"] as const;
 
 /** A menu heading. */
 export type Group = (typeof GROUPS)[number];
@@ -53,6 +53,11 @@ export const ACTIONS: Action[] = [
   { id: "validate", label: "Validate governance", detail: "Check integrity, syntax, and markers", keywords: ["check", "verify", "integrity"], form: "none", needsSelection: false, group: "Checks" },
   { id: "test", label: "Test policies", detail: "Run every preserve and target rule", keywords: ["run", "check", "rules"], form: "none", needsSelection: false, group: "Checks" },
   { id: "hooks", label: "Install agent hooks", detail: "Make Crane check every tool call of Claude Code, Codex, Copilot CLI, or Gemini CLI", keywords: ["claude", "codex", "copilot", "gemini", "agent", "install", "enforce"], form: "hooks", needsSelection: false, group: "Agents" },
+  { id: "brick_create", label: "Create a Brick", detail: "A reusable module of one fixed type, saved as a draft (crane brick create)", keywords: ["brick", "module", "reusable", "draft", "new"], form: "none", needsSelection: false, group: "Bricks" },
+  { id: "brick_attach", label: "Attach a Brick to a zone or flow", detail: "Preview what it restricts and the context agents get, then sign (crane brick attach)", keywords: ["brick", "stack", "attach", "zone", "flow", "pin"], form: "none", needsSelection: false, group: "Bricks" },
+  { id: "brick_preview", label: "Preview the context agents receive", detail: "Flow, Zone, and Brick context with sources and digests (crane brick context preview)", keywords: ["brick", "context", "snapshot", "preview", "agent"], form: "none", needsSelection: false, group: "Bricks" },
+  { id: "brick_agents", label: "Assigned agents and monitors", detail: "Assignment and runtime status, monitor runs (crane brick agents | monitor)", keywords: ["brick", "agent", "assign", "idle", "monitor"], form: "none", needsSelection: false, group: "Bricks" },
+  { id: "control", label: "Run a Crane control", detail: "scope, permission, precondition, constraint, approval, isolation, verification, provenance, budget, recovery, revocation, selection, skill, runbook", keywords: ["scope", "permission", "precondition", "constraint", "approval", "isolation", "verification", "provenance", "budget", "recovery", "revocation", "selection", "skill", "runbook", "control"], form: "none", needsSelection: false, group: "Controls" },
 ];
 
 /** The action offered before Crane is set up. */

@@ -39,6 +39,18 @@ pub(crate) fn interval_seconds() -> u64 {
         .max(5)
 }
 
+/** Report whether the repository may have Brick monitors (a cheap file check; the sync decides)
+ * Input
+    - workspace: &Workspace - repository
+ * Output
+    - bool
+*/
+fn monitored(workspace: &Workspace) -> bool {
+    workspace
+        .file(crate::governance::state::BRICKS_FILE)
+        .exists()
+}
+
 /** Start a detached sync now, when uploads are on; the sync reports what started it, so the service
  * records the trigger (DASHBOARD.md F34) without this process writing an event of its own
  * Input
@@ -48,8 +60,9 @@ pub(crate) fn interval_seconds() -> u64 {
     - None (failures to start are ignored; the next trigger retries)
 */
 pub(crate) fn trigger(workspace: &Workspace, reason: &str) {
-    // Alert rules are evaluated by the sync too, so it runs for them even when uploads are off
-    if !configured() && !super::rules::exist(workspace) {
+    // Alert rules and Brick monitors are evaluated by the sync too, so it runs for them even when
+    // uploads are off
+    if !configured() && !super::rules::exist(workspace) && !monitored(workspace) {
         return;
     }
     let Ok(executable) = std::env::current_exe() else {
@@ -119,7 +132,7 @@ fn disinherit_standard_handles() {
     - None
 */
 pub(crate) fn trigger_if_due(workspace: &Workspace, stores: &Stores) {
-    if !configured() && !super::rules::exist(workspace) {
+    if !configured() && !super::rules::exist(workspace) && !monitored(workspace) {
         return;
     }
     let last = ingest::state(stores).last_attempt_at;

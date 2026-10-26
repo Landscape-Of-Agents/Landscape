@@ -7,6 +7,7 @@ mod alert;
 mod approval;
 mod args;
 mod audit;
+mod brick;
 mod budget;
 mod capability;
 mod capture;
@@ -123,6 +124,7 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["scope", ..] => scope::scope(&rest(1)),
         ["skill", ..] => skill::skill(&rest(1)),
         ["runbook", ..] => runbook::runbook(&rest(1)),
+        ["brick", ..] => brick::brick(&rest(1)),
         ["permission", ..] => permission::permission(&rest(1)),
         ["precondition", ..] => precondition::precondition(&rest(1)),
         ["constraint", ..] => constraint::constraint(&rest(1)),
@@ -280,6 +282,14 @@ Skills (department-neutral names for the capability lifecycle; 'crane skill' for
 
 Runbooks (exact skill versions in order, with approvals, branches, retries, and a budget)
   crane runbook create|validate|inspect|activate|plan|test|run|status|cancel|resume|revoke ...
+
+Bricks (reusable modules of a fixed type attached to flows and zones; 'crane brick' for every form)
+  crane brick types|list|show|history                     crane brick create|edit|validate|test ...
+  crane brick activate|deprecate|revoke ... --reason TEXT  crane brick stack create|show|activate|revoke ...
+  crane brick attach ID@N --target flow:ID [--context TEXT] [--dry-run]
+  crane brick detach|upgrade ATTACHMENT ...               crane brick context set|preview|status ...
+  crane brick assign|unassign|agents                      crane brick monitor run|status
+  (types are fixed; drafts grant nothing; activation, attachment, and context changes are signed)
 
 Controls (inspect, check, and test what Crane applies automatically at every protected action)
   crane permission inspect|check|test       crane precondition inspect|validate|evaluate|test

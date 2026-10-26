@@ -994,6 +994,8 @@ pub(crate) fn resolve(
     - ceiling: Ceiling - strictest ceiling of the active entities covering it
     - criticality: Criticality - highest criticality
     - entities: Vec<String> - "zone:ID" and "flow:ID" of the covering entities
+    - scopes: Vec<ScopedLimit> - line ranges with their own limits (source markers)
+    - bricks: Vec<String> - "brick:ID@N" of the Bricks that tightened this limit (see brick::effect)
 */
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Limit {
@@ -1002,6 +1004,8 @@ pub(crate) struct Limit {
     pub(crate) entities: Vec<String>,
     #[serde(default)]
     pub(crate) scopes: Vec<ScopedLimit>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) bricks: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1032,6 +1036,7 @@ impl Limit {
             criticality: self.criticality,
             entities: self.entities.clone(),
             scopes: Vec::new(),
+            bricks: self.bricks.clone(),
         };
         for scope in scopes {
             result.ceiling = result.ceiling.min(scope.ceiling);
@@ -1079,7 +1084,8 @@ pub(crate) fn cached_limits(
         Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
         Err(error) => return Err(format!("could not read .crane/{FILE}: {error}")),
     };
-    let mut material = format!("{text}\n{}\n", state.generation());
+    // Bricks tighten the limits (brick::effect), so their signed store is part of the fingerprint
+    let mut material = format!("{text}\n{}\n{}\n", state.generation(), state.bricks_digest);
     for path in git::list_files(&workspace.root)? {
         if let Ok(metadata) = fs::metadata(workspace.root.join(&path)) {
             let modified = metadata
@@ -1122,6 +1128,7 @@ pub(crate) fn cached_limits(
                 criticality: Criticality::Routine,
                 entities: Vec::new(),
                 scopes: Vec::new(),
+                bricks: Vec::new(),
             });
             entry.ceiling = entry.ceiling.min(entity.ceiling);
             entry.criticality = entry.criticality.max(entity.criticality);
@@ -1130,12 +1137,14 @@ pub(crate) fn cached_limits(
                 .push(format!("{}:{}", entity.kind, entity.id));
         }
     }
+    crate::brick::effect::apply(workspace, state, &resolution.entities, &mut limits);
     for scope in &resolution.source_scopes {
         let entry = limits.entry(scope.path.clone()).or_insert(Limit {
             ceiling: Ceiling::Autonomous,
             criticality: Criticality::Routine,
             entities: Vec::new(),
             scopes: Vec::new(),
+            bricks: Vec::new(),
         });
         entry.scopes.push(ScopedLimit {
             start_line: scope.start_line,

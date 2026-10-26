@@ -262,6 +262,11 @@ References: a skill is `ID` or `ID@N` (an exact version where it changes somethi
 `NAMESPACE:ID` for a business system. Like every Crane command, these run only for a person; agents
 receive their read-only view of the boundary in their session context.
 
+| `brick` | `types`, `list`, `show ID[@N]`, `history [ID]`, `create (--file F \| --type T --name N ...)`, `edit ID ...`, `validate ID`, `test ID[@N] [--target flow:ID]`, `activate ID --reason T [--dry-run]`, `deprecate ID@N --reason T`, `revoke ID[@N] --reason T`, `stack create\|show\|activate\|revoke ...`, `attach ID@N\|stack:ID@N --target flow:ID\|zone:ID\|runbook:ID [--context T] [--dry-run]`, `detach A --reason T`, `upgrade A --to ID@N --reason T`, `context set A --text T`, `context preview --targets ...`, `context status`, `assign AGENT --targets ...`, `unassign AGENT --reason T`, `agents`, `monitor run [--all]`, `monitor status` |
+
+Bricks: [features/bricks.md](../features/bricks.md). Every family is also available in Landscape
+for VS Code ("Landscape: Run a Crane Control" and the Bricks view).
+
 What each family guarantees: [features/controls.md](../features/controls.md). Skills and runbooks:
 [features/skills.md](../features/skills.md), [features/runbooks.md](../features/runbooks.md).
 

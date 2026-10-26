@@ -21,10 +21,30 @@ trusted workspace.
 5. **Connect agents**: "Install Agent Hooks" for Claude Code, Codex, Copilot CLI, or Gemini CLI, then
    commit `.crane`.
 
+## Bricks and controls
+
+- **Bricks view** (Landscape sidebar): drafts and active versions by type, Stacks, attachments per
+  Flow or Zone with their Current Context, assigned agents with their runtime status, and whether
+  the signed store verifies. Problems Crane reports, such as a draft that does not validate or a pin
+  that fails closed, appear in Problems.
+- **Create, edit, validate, test** a Brick of one of the fixed types. Common Context and
+  configuration are written in an editor. `test` can simulate the Brick on a chosen Flow or Zone.
+- **Activate, attach, detach, upgrade, edit Current Context, revoke**: each runs Crane with
+  `--dry-run` first and shows what the guard will restrict before and after and the snapshot agents
+  will receive. Nothing is signed until you confirm, and Crane signs with your admin key.
+- **Preview effective context** for any Flows and Zones: every source with its digest, then the
+  exact text agents receive.
+- **Run a Crane Control**: the command families (scope, permission, precondition, constraint,
+  approval, isolation, verification, provenance, budget, recovery, revocation, selection, skill,
+  runbook, brick) from a searchable list. It asks for the arguments each command requires, asks
+  for confirmation before commands that change state, and shows Crane's result.
+
+These need a Crane with `crane brick`; with an older Crane the view says so.
+
 ## While agents work
 
 When an agent touches governed code, the guidance it receives is highlighted in the editor, so you
-see what it was told.
+see what it was told, including the Brick snapshot of the Flows and Zones it is in.
 
 ## What it does not do
 

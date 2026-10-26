@@ -34,6 +34,8 @@ impl Hook {
             "session start grant",
             "grant",
         )?;
+        // A new, resumed, or compacted session receives every Brick snapshot again
+        crate::brick::context::reset(&self.stores.directory, &session.foxx_session_id);
         let (context, supplied) = self.context_text(session)?;
         // The files already changed when the session starts are not the agent's doing
         let mut baseline_files = None;
@@ -219,6 +221,50 @@ impl Hook {
                     flow.autonomy_ceiling.name(),
                     flow.description
                 ));
+            }
+        }
+        // The Bricks attached to active Zones and Flows: an index here, their context with the
+        // tool calls that touch those targets (brick::context), their limits in every decision
+        if let Ok(store) = crate::brick::store::BrickStore::of(&self.state) {
+            let active = crate::governance::zones::load(&self.workspace)
+                .map(|governance| {
+                    use crate::governance::zones::Lifecycle;
+                    governance
+                        .zones
+                        .iter()
+                        .filter(|zone| zone.status == Lifecycle::Active)
+                        .map(|zone| format!("zone:{}", zone.id))
+                        .chain(
+                            governance
+                                .flows
+                                .iter()
+                                .filter(|flow| flow.status == Lifecycle::Active)
+                                .map(|flow| format!("flow:{}", flow.id)),
+                        )
+                        .collect::<std::collections::BTreeSet<_>>()
+                })
+                .unwrap_or_default();
+            let index = crate::brick::context::index(&store)
+                .into_iter()
+                .filter(|(target, _)| active.contains(target))
+                .collect::<Vec<_>>();
+            if !index.is_empty() {
+                text.push_str("Bricks (reviewed modules; Crane enforces their restrictions in every decision, and their context arrives with the tool calls that touch each target):
+");
+            }
+            for (target, subjects) in index {
+                text.push_str(&format!(
+                    "  {target}: {}
+",
+                    subjects.join(", ")
+                ));
+                for subject in subjects {
+                    supplied.push(SuppliedContext {
+                        policy: "brick".into(),
+                        path: format!("{target}/{subject}"),
+                        digest: self.state.bricks_digest.clone(),
+                    });
+                }
             }
         }
         // The resolved boundary (the agent's read-only 'crane scope inspect')

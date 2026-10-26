@@ -14,6 +14,7 @@ pub(crate) mod query;
 pub(crate) mod redact;
 pub(crate) mod rules;
 pub(crate) mod spec;
+pub(crate) mod spec_bricks;
 pub(crate) mod spec_commands;
 pub(crate) mod sync;
 pub(crate) mod usage;

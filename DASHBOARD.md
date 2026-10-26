@@ -3058,6 +3058,69 @@ A tool from an external (MCP) server or a tool Crane does not know.
 - Telemetry [(common), known_as (OBSERVED)]
 - Other [mcp_server (string, null), effect_known (false) (boolean)]
 
+### F37. Bricks
+
+Bricks are reusable modules of one fixed type (context, identity, scope, permission, constraint,
+precondition, approval, isolation, budget, action, verification, provenance, recovery, revocation,
+monitoring, intelligence) attached to Flows and Zones. Their lifecycle commands (`crane brick ...`),
+the context the hooks deliver before an action, and the monitors the background sync runs are each
+noted on the event they belong to (the command's F13 event, the tool call's F05 event, or the sync's
+`brick.monitors_evaluated` event), and every note becomes one F37 event. Fields are identifiers,
+digests, counts, and states; context text is never recorded. A decision the guard made because of a
+Brick also carries `brick:ID@N` in Bindings (zones), next to the Zones and Flows.
+
+Common attributes
+- Action [action_type (BRICK_DRAFT, BRICK_VALIDATE, BRICK_TEST, BRICK_ACTIVATE, BRICK_DEPRECATE, BRICK_REVOKE, BRICK_STACK_DRAFT, BRICK_STACK_RESOLVE, BRICK_STACK_ACTIVATE, BRICK_STACK_REVOKE, BRICK_ATTACH, BRICK_DETACH, BRICK_UPGRADE, BRICK_CONTEXT, SUPPLY_CONTEXT, BRICK_IDENTITY, BRICK_ASSIGN, BRICK_MONITOR) (enum), action_source (CLI, EXTENSION, HOOK, SYNC), action_user (string), action_email (string, null), action_id (id of the carrying event)]
+- Repository [(as F13)]
+- Session [(as F13 for commands; as F05 for delivered context)]
+- Agent [(as F13 for commands; as F05 for delivered context)]
+- Resource [resource ([CRANE_METADATA]), resource_ids (Brick, Stack, and attachment references), resource_classification ([METADATA])]
+- Response [response_status (OK, PASSED, FAILED, BLOCKED, UNKNOWN, FIRING, FAILING, UNSUPPORTED, REVOCATION_DUE, PROPOSAL, NOT_RUN) (enum), failure_state (NA or the failing status), response_statement (string)]
+- Severity [severity_status (INFO, LOW, MEDIUM), severity_basis (OUTCOME), alert_kind (NONE)]
+- Other [brick, stack, attachment, target, targets, type, digest, snapshot, bytes, snapshot_bytes, bricks, refresh_reason (FIRST_ASSEMBLY, BRICK_STORE_CHANGED, GOVERNANCE_CHANGED, CONTEXT_CHANGED), truncated, conflicts, gaps, agent, state, monitor, source, inference (NONE), self_reviewed, pinned_attachments, context_bytes, from, members, problems, cases (each when it applies)]
+
+#### F37.1 `BRICK_DRAFT_SAVED`, `BRICK_VALIDATED`, `BRICK_TESTED`
+A draft was saved (it grants nothing), validated against its type's schema, or tested.
+- Response [response_status (OK, PASSED, FAILED, BLOCKED, UNKNOWN)]
+- Other [brick, type, problems or cases]
+
+#### F37.2 `BRICK_ACTIVATED`, `BRICK_DEPRECATED`, `BRICK_REVOKED`
+An admin signed a version into `.crane/bricks.json`, deprecated it, or revoked it (attachments pinned
+to a revoked version fail closed: changes in the target need approval until it is detached or
+upgraded).
+- Other [brick, type, digest, self_reviewed, pinned_attachments]
+
+#### F37.3 `BRICK_STACK_SAVED`, `BRICK_STACK_RESOLVED`, `BRICK_STACK_ACTIVATED`, `BRICK_STACK_REVOKED`
+A Brick Stack (a version-pinned composition, never a type) was drafted, resolved, activated, or revoked.
+- Other [stack, members, digest]
+
+#### F37.4 `BRICK_ATTACHED`, `BRICK_DETACHED`, `BRICK_UPGRADED`, `BRICK_CONTEXT_UPDATED`
+An admin attached a Brick or Stack to a Flow, Zone, or Runbook, detached it (the history stays in the
+audit trail), pinned another version, or changed the attachment's Current Context.
+- Other [attachment, target, brick, from, context_bytes]
+
+#### F37.5 `BRICK_CONTEXT_PREVIEWED`, `BRICK_CONTEXT_DELIVERED`, `BRICK_CONTEXT_REUSED`
+The effective context of targets was previewed by a person, or delivered to an agent before a tool
+call (MISS: the full snapshot was sent; HIT: the session already had this snapshot, so a one-line
+reference was sent instead). Provider-side prompt caching is not observed.
+- Eval [context_cache (HIT, MISS)]
+- Other [targets, snapshot, bytes, snapshot_bytes, bricks, refresh_reason, truncated, conflicts, gaps]
+
+#### F37.6 `BRICK_IDENTITY_MISMATCH`
+The acting agent is not admitted by an identity Brick of the target it touched. Checked and reported
+to the agent; the guard does not decide per agent yet.
+- Other [target, agent, bricks]
+
+#### F37.7 `BRICK_ASSIGNED`, `BRICK_UNASSIGNED`
+An admin assigned an agent to Flows and Zones, or revoked the assignment.
+- Other [agent, targets, state]
+
+#### F37.8 `BRICK_MONITOR_EVALUATED`
+A monitoring signal, revocation trigger, or advisory analysis of an attached Brick was evaluated
+deterministically (no model). Sources without a connector (ci, metrics, external) are UNSUPPORTED.
+- Response [response_status (OK, FIRING, FAILING, UNSUPPORTED, REVOCATION_DUE, PROPOSAL, ERROR)]
+- Other [target, brick, monitor (signal, trigger, analysis), source, inference (NONE)]
+
 ---
 
 ## Part 3: Where events appear on the dashboard

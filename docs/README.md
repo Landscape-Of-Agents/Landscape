@@ -35,6 +35,7 @@ Start with the part that matches what you need. Every term is explained in one p
 | Scope: the effective boundary | [features/scope.md](features/scope.md) |
 | Skills | [features/skills.md](features/skills.md) |
 | Runbooks | [features/runbooks.md](features/runbooks.md) |
+| Bricks: reusable modules of a fixed type, attached to flows and zones | [features/bricks.md](features/bricks.md) |
 | The eleven controls (permission, approval, budget, ...) | [features/controls.md](features/controls.md) |
 | Evidence (Work Capture) | [features/evidence.md](features/evidence.md) |
 | Insight: learning from work | [features/insight.md](features/insight.md) |

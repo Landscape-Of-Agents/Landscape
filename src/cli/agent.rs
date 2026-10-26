@@ -164,10 +164,12 @@ fn hook(args: &[String]) -> Result<(), String> {
 */
 fn sync() -> Result<(), String> {
     let workspace = crate::governance::workspace::Workspace::locate()?;
+    let stores = crate::telemetry::Stores::open(&workspace.trust()?.runtime());
     if !crate::telemetry::sync::configured() {
+        // Brick monitors still run locally (they need no service)
+        crate::brick::runtime::sync_monitors(&workspace, &stores);
         return Err("uploads are off (CRANE_INGEST_URL is 'off')".into());
     }
-    let stores = crate::telemetry::Stores::open(&workspace.trust()?.runtime());
     // Hooks and commands start background syncs (marked by the trigger); a person runs a manual one
     let trigger = if std::env::var("CRANE_SYNC_BACKGROUND").is_ok_and(|value| value == "1") {
         crate::telemetry::ingest::Trigger::Background

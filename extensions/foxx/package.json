@@ -146,6 +146,86 @@
         "command": "foxx.revealContext",
         "title": "Open Code of Agent Context",
         "category": "Landscape"
+      },
+      {
+        "command": "foxx.bricks.refresh",
+        "title": "Refresh Bricks",
+        "category": "Landscape",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "foxx.bricks.create",
+        "title": "Create Brick",
+        "category": "Landscape",
+        "icon": "$(add)"
+      },
+      {
+        "command": "foxx.bricks.edit",
+        "title": "Edit Brick",
+        "category": "Landscape"
+      },
+      {
+        "command": "foxx.bricks.validate",
+        "title": "Validate Brick",
+        "category": "Landscape",
+        "icon": "$(check)"
+      },
+      {
+        "command": "foxx.bricks.test",
+        "title": "Test Brick",
+        "category": "Landscape",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "foxx.bricks.show",
+        "title": "Show Brick",
+        "category": "Landscape"
+      },
+      {
+        "command": "foxx.bricks.activate",
+        "title": "Activate Brick (sign)",
+        "category": "Landscape",
+        "icon": "$(verified)"
+      },
+      {
+        "command": "foxx.bricks.attach",
+        "title": "Attach Brick to a Zone or Flow",
+        "category": "Landscape",
+        "icon": "$(link)"
+      },
+      {
+        "command": "foxx.bricks.detach",
+        "title": "Detach Brick",
+        "category": "Landscape",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "foxx.bricks.upgrade",
+        "title": "Pin Attachment to Another Version",
+        "category": "Landscape"
+      },
+      {
+        "command": "foxx.bricks.editContext",
+        "title": "Edit Current Context of Attachment",
+        "category": "Landscape",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "foxx.bricks.revoke",
+        "title": "Revoke Brick Version",
+        "category": "Landscape"
+      },
+      {
+        "command": "foxx.bricks.preview",
+        "title": "Preview Effective Context",
+        "category": "Landscape",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "foxx.runControl",
+        "title": "Run a Crane Control",
+        "category": "Landscape",
+        "icon": "$(terminal)"
       }
     ],
     "menus": {
@@ -182,6 +262,26 @@
         {
           "command": "foxx.refresh",
           "when": "view == foxx.sidebar || view == foxx.governance",
+          "group": "navigation@3"
+        },
+        {
+          "command": "foxx.bricks.create",
+          "when": "view == foxx.bricks",
+          "group": "navigation@0"
+        },
+        {
+          "command": "foxx.bricks.preview",
+          "when": "view == foxx.bricks",
+          "group": "navigation@1"
+        },
+        {
+          "command": "foxx.runControl",
+          "when": "view == foxx.bricks",
+          "group": "navigation@2"
+        },
+        {
+          "command": "foxx.bricks.refresh",
+          "when": "view == foxx.bricks",
           "group": "navigation@3"
         }
       ],
@@ -241,6 +341,87 @@
         {
           "command": "foxx.revealContext",
           "when": "false"
+        },
+        {
+          "command": "foxx.bricks.show",
+          "when": "false"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "foxx.bricks.validate",
+          "when": "view == foxx.bricks && viewItem =~ /^(brick-draft|brick-active|brick-deprecated)$/",
+          "group": "1_check@1"
+        },
+        {
+          "command": "foxx.bricks.validate",
+          "when": "view == foxx.bricks && viewItem =~ /^(brick-draft|brick-active|brick-deprecated)$/",
+          "group": "inline"
+        },
+        {
+          "command": "foxx.bricks.test",
+          "when": "view == foxx.bricks && viewItem =~ /^(brick-draft|brick-active|brick-deprecated)$/",
+          "group": "1_check@2"
+        },
+        {
+          "command": "foxx.bricks.edit",
+          "when": "view == foxx.bricks && viewItem =~ /^(brick-draft|brick-active)$/",
+          "group": "2_edit@1"
+        },
+        {
+          "command": "foxx.bricks.activate",
+          "when": "view == foxx.bricks && viewItem =~ /^(brick-draft)$/",
+          "group": "3_sign@1"
+        },
+        {
+          "command": "foxx.bricks.activate",
+          "when": "view == foxx.bricks && viewItem =~ /^(brick-draft)$/",
+          "group": "inline"
+        },
+        {
+          "command": "foxx.bricks.attach",
+          "when": "view == foxx.bricks && viewItem =~ /^(brick-active|stack-active|target)$/",
+          "group": "3_sign@2"
+        },
+        {
+          "command": "foxx.bricks.attach",
+          "when": "view == foxx.bricks && viewItem =~ /^(brick-active|stack-active|target)$/",
+          "group": "inline"
+        },
+        {
+          "command": "foxx.bricks.revoke",
+          "when": "view == foxx.bricks && viewItem =~ /^(brick-active|brick-deprecated)$/",
+          "group": "4_withdraw@1"
+        },
+        {
+          "command": "foxx.bricks.editContext",
+          "when": "view == foxx.bricks && viewItem =~ /^(attachment)$/",
+          "group": "2_edit@1"
+        },
+        {
+          "command": "foxx.bricks.editContext",
+          "when": "view == foxx.bricks && viewItem =~ /^(attachment)$/",
+          "group": "inline"
+        },
+        {
+          "command": "foxx.bricks.upgrade",
+          "when": "view == foxx.bricks && viewItem =~ /^(attachment)$/",
+          "group": "3_sign@3"
+        },
+        {
+          "command": "foxx.bricks.detach",
+          "when": "view == foxx.bricks && viewItem =~ /^(attachment)$/",
+          "group": "4_withdraw@1"
+        },
+        {
+          "command": "foxx.bricks.preview",
+          "when": "view == foxx.bricks && viewItem =~ /^(attachment|target)$/",
+          "group": "1_check@3"
+        },
+        {
+          "command": "foxx.bricks.preview",
+          "when": "view == foxx.bricks && viewItem =~ /^(attachment|target)$/",
+          "group": "inline"
         }
       ]
     },
@@ -261,6 +442,11 @@
         {
           "id": "foxx.governance",
           "name": "Governance",
+          "icon": "images/activity.svg"
+        },
+        {
+          "id": "foxx.bricks",
+          "name": "Bricks",
           "icon": "images/activity.svg"
         }
       ]

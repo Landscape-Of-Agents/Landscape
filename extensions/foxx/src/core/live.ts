@@ -8,7 +8,7 @@ export const LIVE_FOR_MS = 120_000;
 /** One context the agent received. */
 export interface AgentContext {
   entity: string;
-  kind: "selection" | "zone" | "flow";
+  kind: "selection" | "zone" | "flow" | "brick";
   id: string;
   name?: string | null;
   text: string;

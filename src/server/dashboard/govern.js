@@ -469,7 +469,148 @@ function retentionPanels(kept) {
   ];
 }
 
-Object.assign(window.FOXX_PAGES, { alerting, credits, audit, governance: governanceView, compliance, repositories, settings });
+// ---------------------------------------------------------------- bricks
+
+Object.assign(TONES, { active: "ok", passed: "ok", draft: "info", not_run: "warn", deprecated: "warn", revoked: "crit", failed: "bad", blocked: "bad", inconclusive: "warn", enabled: "ok", disabled: "warn",
+  IDLE: "info", RUNNING: "ok", WAITING_FOR_APPROVAL: "warn", PAUSED: "warn", REVOKED: "crit", FAILING: "bad", UNSUPPORTED: "warn", REVOCATION_DUE: "bad", PROPOSAL: "info", NOT_RUN: "warn",
+  FIRST_ASSEMBLY: "info", BRICK_STORE_CHANGED: "warn", GOVERNANCE_CHANGED: "warn", CONTEXT_CHANGED: "info",
+  enforced: "ok", checked: "info", delivered: "info", declared: "warn", paused: "warn" });
+
+/** Starting configurations per type for the draft builder; Crane validates whatever is written */
+const BRICK_TEMPLATES = {
+  context: { files: [] }, identity: { agents: ["claude"] }, scope: { include: ["src/**"] }, permission: { allow: ["read", "write"] },
+  constraint: { max_ceiling: "assisted", protected_paths: [] }, precondition: { checks: [{ kind: "file_exists", path: "README.md" }] },
+  approval: { operations: ["write", "delete"], reason: "" }, isolation: { profile: "agent-hooks" }, budget: { max_tool_calls: 200, on_exhausted: "escalate" },
+  action: { adapter: "git", operation: "git.commit" }, verification: { checks: [{ kind: "policy_tests_pass" }] }, provenance: { require: ["signed_state", "audit_chain"] },
+  recovery: { on_failure: "escalate", max_retries: 0, reconcile_before_retry: true }, revocation: { triggers: ["verification_contradicted"] },
+  monitoring: { signals: [{ source: "policy_tests", every_minutes: 60 }] }, intelligence: { analyses: ["denial_patterns"], advisory_only: true },
+};
+
+/** The draft builder: a fixed type, plain-language intent, Common Context, and the type's
+ * configuration, written as the JSON 'crane brick create --file' imports. The dashboard holds no
+ * signing key and does not validate: Crane does, on a member's machine. */
+function brickBuilder(types) {
+  const state = { type: (types[0] || {}).type || "context", name: "", intent: "", owner: "", departments: "", context: "", config: JSON.stringify(BRICK_TEMPLATES.context, null, 2) };
+  const out = h("pre", { class: "mono", style: "white-space:pre-wrap;max-height:260px;overflow:auto" });
+  const help = h("div", { class: "muted" });
+  const draft = () => {
+    let config;
+    try { config = JSON.parse(state.config || "{}"); } catch (error) { return { error: "The configuration is not JSON: " + error.message }; }
+    return { type: state.type, name: state.name, intent: state.intent, owner: state.owner || null, departments: state.departments.split(",").map((item) => item.trim()).filter(Boolean), config, common_context: { text: state.context, sensitivity: "internal" } };
+  };
+  const refresh = () => {
+    const value = draft();
+    const info = types.find((item) => item.type === state.type) || {};
+    put(help, h("b", {}, info.label || state.type), " — ", info.purpose || "", h("div", {}, "Support today: ", chip(info.support), " ", info.runtime || ""));
+    put(out, value.error ? value.error : JSON.stringify(value, null, 2));
+  };
+  const field = (label, key, area) => h("label", { class: "field", style: "display:block;margin:6px 0" }, h("div", { class: "muted" }, label),
+    h(area ? "textarea" : "input", { rows: area ? 4 : undefined, style: "width:100%", value: state[key], oninput: (event) => { state[key] = event.target.value; refresh(); } }, area ? state[key] : null));
+  const configArea = h("textarea", { rows: 6, style: "width:100%;font-family:monospace", oninput: (event) => { state.config = event.target.value; refresh(); } }, state.config);
+  const download = h("button", { type: "button", class: "btn", onclick: () => {
+    const value = draft();
+    if (value.error || !value.name) { put(out, value.error || "Give the Brick a name first."); return; }
+    const anchor = h("a", { href: URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" })), download: "brick-draft.json" });
+    anchor.click();
+  } }, "Download draft");
+  const node = h("div", {},
+    h("p", {}, "Choose one of the fixed types, say in plain words what it solves, and add its reviewed context. The dashboard cannot sign or validate: download the draft and import it on a member's machine (or build it in Landscape for VS Code). Crane validates it there, and an admin activates it."),
+    h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" }, select("Type", state.type, types.map((item) => [item.type, item.label + " (" + item.support + ")"]), (value) => { state.type = value; state.config = JSON.stringify(BRICK_TEMPLATES[value] || {}, null, 2); configArea.value = state.config; refresh(); })),
+    help, field("Name", "name"), field("What it solves (intent, in plain words)", "intent"), field("Owner", "owner"), field("Departments (comma separated)", "departments"),
+    field("Common context (guidance every agent in an attached Flow or Zone receives; never authorization; no secrets)", "context", true),
+    h("div", { class: "muted" }, "Type configuration (JSON, checked against the type's schema by Crane)"), configArea,
+    h("div", { style: "margin:8px 0" }, download),
+    h("div", { class: "muted" }, "Then on a member's machine: crane brick create --file brick-draft.json · crane brick test ID --target flow:ID · an admin runs crane brick activate ID --reason TEXT"), out);
+  refresh();
+  return node;
+}
+
+async function bricksView(main) {
+  if (needRepository(main)) return;
+  let data;
+  try { data = await api("/api/bricks"); } catch (error) { if (error.status === 404) { main.append(h("div", { class: "notice" }, error.message)); return; } throw error; }
+  const report = { kind: "report", what: "The Bricks state", reported: data.reported_at };
+  const active = data.bricks.filter((row) => row.state === "active").length;
+  const drafts = data.bricks.filter((row) => row.state === "draft").length;
+  const attention = data.monitors.filter((row) => !["OK", "NOT_RUN"].includes(row.result)).length;
+  const pinIssues = data.attachments.filter((row) => (row.issues || []).length).length;
+  main.append(hero("Bricks", ["Reusable modules of a fixed type, attached to Flows and Zones. As reported by", data.reported_by ? data.reported_by.actor : "a member", "at", dt(data.reported_at), "· store", data.trust].join(" "),
+    [["Active versions", active], ["Drafts", drafts], ["Stacks", data.stacks.length], ["Attachments", data.attachments.length], ["Assigned agents", data.assignments.length], ["Monitors needing attention", attention]]));
+  main.append(zone("brick-state", "State", "", h("div", { class: "kpis span-12" },
+    kpi("Active versions", active, { tone: "brand" }), kpi("Drafts (grant nothing)", drafts),
+    kpi("Revoked or deprecated", data.bricks.filter((row) => ["revoked", "deprecated"].includes(row.state)).length, { tone: data.bricks.some((row) => row.state === "revoked") ? "bad" : "" }),
+    kpi("Pins Crane cannot honor", pinIssues, { tone: pinIssues ? "bad" : "good", note: "these fail closed" }),
+    kpi("Snapshots delivered", data.context.deliveries), kpi("Unchanged, not resent", data.context.reused, { note: "provider caching not measured" }))));
+  main.append(zone("brick-library", "Library", "Drafts and activated versions. A published version never changes; editing starts the next version.",
+    panel("Bricks", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.bricks); put(body, dataTable([
+      { label: "Brick", get: (row) => row.ref, render: (row) => h("code", {}, row.ref) },
+      { label: "Name", get: (row) => row.name, render: (row) => h("b", {}, row.name) },
+      { label: "Type", get: (row) => row.type, filter: true },
+      { label: "State", get: (row) => row.state, render: (row) => chip(row.state), filter: true },
+      { label: "Validation", get: (row) => row.validation, render: (row) => chip(row.validation), filter: true },
+      { label: "Intent", get: (row) => row.intent },
+      { label: "Owner", get: (row) => row.owner || "", filter: true },
+      { label: "Departments", get: (row) => (row.departments || []).join(", "), filter: true },
+      { label: "Context", get: (row) => row.common_context_bytes, render: (row) => (row.common_context_bytes ? row.common_context_bytes + " B" : "—"), num: true },
+      { label: "Digest", get: (row) => row.digest, render: (row) => h("code", { class: "muted" }, String(row.digest || "").slice(0, 12)) },
+      { label: "Activated by", get: (row) => row.activated_by || row.updated_by || "", render: (row) => (row.activated_by || row.updated_by || "—") + (row.self_reviewed ? " (self-reviewed)" : "") },
+    ], data.bricks, { sort: 0, dir: 1, empty: "No Bricks yet. Build a draft below, or run 'crane brick create' on a member's machine.", name: "foxx-bricks" })); }),
+    panel("Fixed types and what each does today", { span: 12, flush: true }, async (body, big, ctx) => { ctx.record("rows", data.types); put(body, dataTable([
+      { label: "Type", get: (row) => row.label }, { label: "Support", get: (row) => row.support, render: (row) => chip(row.support), filter: true },
+      { label: "Purpose", get: (row) => row.purpose }, { label: "What really happens", get: (row) => row.runtime }, { label: "Fields", get: (row) => (row.fields || []).join(", ") },
+    ], data.types, { noColumns: true, pageSize: 16 })); })));
+  main.append(zone("brick-attachments", "Attachments and Stacks", "Where each Brick applies. Current Context belongs to one attachment and changes nothing else; only its digest and size leave the machine.",
+    panel("Attachments", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.attachments); put(body, dataTable([
+      { label: "Attachment", get: (row) => row.attachment_id, render: (row) => h("code", {}, row.attachment_id) },
+      { label: "Target", get: (row) => row.target, filter: true },
+      { label: "Brick or Stack", get: (row) => row.subject, render: (row) => h("code", {}, row.subject) },
+      { label: "State", get: (row) => row.state, render: (row) => chip(row.state), filter: true },
+      { label: "Current context", get: (row) => row.current_context_bytes, render: (row) => (row.current_context_bytes ? row.current_context_bytes + " B · " + String(row.current_context_digest).slice(0, 10) : "—") },
+      { label: "Restricts target", get: (row) => (row.target_restricted ? "yes" : "no"), filter: true },
+      { label: "Issues", get: (row) => (row.issues || []).join("; "), render: (row) => ((row.issues || []).length ? h("span", {}, chip("FAIL"), " ", row.issues.join("; ")) : "—") },
+      { label: "Attached by", get: (row) => row.attached_by, filter: true },
+    ], data.attachments, { empty: "Nothing attached yet ('crane brick attach ID@N --target flow:ID').", name: "foxx-brick-attachments" })); }),
+    panel("Stacks", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.stacks); put(body, dataTable([
+      { label: "Stack", get: (row) => row.ref, render: (row) => h("code", {}, row.ref) }, { label: "Name", get: (row) => row.name }, { label: "Purpose", get: (row) => row.purpose },
+      { label: "State", get: (row) => row.state, render: (row) => chip(row.state), filter: true }, { label: "Members", get: (row) => row.members.join(", ") },
+    ], data.stacks, { noColumns: true, empty: "No Stacks. A Stack combines exact Brick versions; it is never a new type." })); })));
+  main.append(zone("brick-agents", "Agents and monitors", "Assignment status (signed) and runtime status (derived on the reporting machine) are separate. Idle agents use no inference: monitors are deterministic.",
+    panel("Assigned agents", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.assignments); put(body, dataTable([
+      { label: "Agent", get: (row) => row.agent, render: (row) => h("b", {}, row.agent) },
+      { label: "Assignment", get: (row) => row.assignment_status, render: (row) => chip(row.assignment_status), filter: true },
+      { label: "Runtime", get: (row) => row.runtime_status, render: (row) => chip(row.runtime_status), filter: true },
+      { label: "Targets", get: (row) => (row.targets || []).join(", ") },
+      { label: "Last seen", get: (row) => row.last_seen_at, render: (row) => h("span", { class: "mono" }, row.last_seen_at ? dt(row.last_seen_at) : "—") },
+      { label: "Problems", get: (row) => (row.problems || []).join("; ") },
+      { label: "Inference", get: (row) => (row.inference ? row.inference.status : ""), render: () => h("span", { class: "muted" }, "not measured") },
+    ], data.assignments, { empty: "No agent is assigned ('crane brick assign claude --targets flow:ID').", name: "foxx-brick-agents" })); }),
+    panel("Monitors", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.monitors); put(body, dataTable([
+      { label: "Target", get: (row) => row.target, filter: true }, { label: "Brick", get: (row) => row.brick, render: (row) => h("code", {}, row.brick) },
+      { label: "Kind", get: (row) => row.monitor, filter: true }, { label: "Source", get: (row) => row.source, filter: true },
+      { label: "Result", get: (row) => row.result, render: (row) => chip(row.result), filter: true }, { label: "Detail", get: (row) => row.detail || "" },
+      { label: "Every", get: (row) => row.every_minutes, render: (row) => row.every_minutes + " min", num: true },
+      { label: "Last run", get: (row) => row.last_run, render: (row) => h("span", { class: "mono" }, row.last_run ? dt(row.last_run) : "—") },
+    ], data.monitors, { empty: "No monitoring, revocation, or intelligence Brick is attached.", name: "foxx-brick-monitors" })); })));
+  main.append(zone("brick-context", "Context snapshots", "What agents received: each snapshot's targets, digest, size, and why it was last refreshed. Unchanged snapshots are referenced, not resent.",
+    panel("Snapshots", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { const rows = data.context.snapshots || []; ctx.record("rows", rows); put(body, dataTable([
+      { label: "Targets", get: (row) => (row.targets || []).join(", ") },
+      { label: "Snapshot", get: (row) => row.digest, render: (row) => h("code", {}, String(row.digest).slice(0, 12)) },
+      { label: "Bytes", get: (row) => row.bytes, num: true }, { label: "Bricks", get: (row) => (row.bricks || []).join(", ") },
+      { label: "Refreshed because", get: (row) => row.refresh_reason, render: (row) => chip(row.refresh_reason), filter: true },
+      { label: "Assembled", get: (row) => row.assembled_at, render: (row) => h("span", { class: "mono" }, dt(row.assembled_at)) },
+      { label: "Conflicts", get: (row) => row.conflicts, num: true },
+    ], rows, { empty: "No snapshot was delivered yet (an agent must touch an attached Flow or Zone).", name: "foxx-brick-snapshots" })); })));
+  main.append(zone("brick-history", "History and events", "Signed changes from the audit trail, and the F37 events in the stream.",
+    panel("Signed Brick changes", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.history); put(body, dataTable([
+      { label: "#", get: (row) => row.seq, num: true }, { label: "Action", get: (row) => row.action, filter: true }, { label: "Actor", get: (row) => row.actor, filter: true },
+      { label: "Detail", get: (row) => JSON.stringify(row.detail), render: (row) => h("code", {}, JSON.stringify(row.detail)) },
+    ], data.history, { sort: 0, dir: -1, noColumns: true, empty: "No signed Brick change yet." })); }),
+    seriesPanel("Brick events over time", { span: 8, by: "event", clauses: [{ path: "flow", op: "is", values: ["F37"] }], info: { title: "Brick events", text: "F37: drafts, validation, activation, attachment, context delivery (MISS sent, HIT referenced), assignments, and monitor runs." } }),
+    breakdownPanel("By event", { span: 4, by: "event", clauses: [{ path: "flow", op: "is", values: ["F37"] }] })));
+  main.append(zone("brick-build", "Build a draft", "", panel("Draft builder", { span: 12 }, async (body) => put(body, brickBuilder(data.types || [])))));
+}
+
+Object.assign(window.FOXX_PAGES, { alerting, credits, audit, governance: governanceView, bricks: bricksView, compliance, repositories, settings });
 
 // ---------------------------------------------------------------- start
 

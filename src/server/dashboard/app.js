@@ -71,6 +71,7 @@ const NAV = [
   ["Govern", [
     ["audit", "Audit trail", [["audit-summary", "Summary"], ["audit-activity", "Activity"], ["audit-matrix", "Who changed what"], ["audit-timeline", "Change timeline"], ["audit-trail", "Governance changes"], ["command-events", "Commands"], ["dashboard-actions", "Dashboard actions"]]],
     ["governance", "Governance", [["gov-state", "State"], ["gov-zones", "Zones and flows"], ["gov-graphs", "Flow call graphs"], ["gov-rules", "Policies and selections"], ["gov-map", "Selection map"], ["gov-more", "Checkpoints and context"], ["gov-integrity", "Integrity"], ["gov-events", "Governance events"], ["gov-findings", "Findings"]]],
+    ["bricks", "Bricks", [["brick-state", "State"], ["brick-library", "Library"], ["brick-attachments", "Attachments and Stacks"], ["brick-agents", "Agents and monitors"], ["brick-context", "Context snapshots"], ["brick-history", "History and events"], ["brick-build", "Build a draft"]]],
     ["compliance", "Compliance", [["posture", "Posture"], ["frameworks", "Frameworks"], ["controls", "Controls"], ["evidence", "Evidence"], ["gaps", "Gaps and limitations"], ["inferred", "Inferred observability"], ["unobservable", "Not observable"]]],
   ]],
   ["Organization", [

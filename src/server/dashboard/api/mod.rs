@@ -142,6 +142,7 @@ pub(crate) fn route(
             None => error(404, format!("no session '{id}'")),
         },
         ["governance"] => governance(context),
+        ["bricks"] => controls::bricks(context),
         ["ledger"] => (200, ledger_view(context, query), None),
         ["definitions"] => (
             200,

@@ -741,6 +741,7 @@ mod tests {
             criticality: Criticality::Routine,
             entities: vec![entity.into()],
             scopes: Vec::new(),
+            bricks: Vec::new(),
         };
         let mut limits = Limits::new();
         limits.insert("web/app.js".into(), limit(Ceiling::Delegated, "zone:web"));
@@ -762,6 +763,7 @@ mod tests {
                     criticality: Criticality::Routine,
                     entities: vec!["zone:fees".into()],
                 }],
+                bricks: Vec::new(),
             },
         );
         let view = super::agent_view(&limits);

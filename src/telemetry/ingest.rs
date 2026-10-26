@@ -588,6 +588,8 @@ fn upload(workspace: &Workspace, stores: &Stores, refresh: bool) -> Result<Flush
     if let Err(error) = super::rules::evaluate(workspace, stores, "SYNC") {
         crate::platform::notes::note("ALERT_RULES_FAILED", json!({"error": error}));
     }
+    // Brick monitors: deterministic checks while assigned agents are idle (brick/runtime.rs)
+    crate::brick::runtime::sync_monitors(workspace, stores);
     let mut status = state(stores);
     let previous_attempt = status.last_attempt_at;
     status.last_attempt_at = now_millis();

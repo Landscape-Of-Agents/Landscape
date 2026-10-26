@@ -38,6 +38,8 @@ const MANIFEST_DOMAIN: &str = "registry/manifest/v1";
       empty in manifests signed before it was covered, so their heads still verify
     - skills_digest: String - digest of .crane/skills.json (the shared skill store); empty while
       there is no store, so manifests without one keep their heads
+    - bricks_digest: String - digest of .crane/bricks.json (the signed Brick store); empty while
+      there is no store, so manifests without one keep their heads
     - updated_at: u64 - Unix seconds
     - updated_by: String - actor
     - head: String - SHA-512 of this manifest without head and signature
@@ -59,6 +61,8 @@ pub(crate) struct Manifest {
     pub(crate) governance_digest: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) skills_digest: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) bricks_digest: String,
     pub(crate) updated_at: u64,
     pub(crate) updated_by: String,
     pub(crate) head: String,
@@ -104,6 +108,8 @@ pub(crate) struct RegistryFile {
     - governance_present: bool - .crane/governance.yaml exists
     - skills: Option<Value> - .crane/skills.json (the shared skill store), None when absent
     - skills_digest: String - its digest ("" when absent, "unreadable" when malformed)
+    - bricks: Option<Value> - .crane/bricks.json (the signed Brick store), None when absent
+    - bricks_digest: String - its digest ("" when absent, "unreadable" when malformed)
 */
 #[derive(Debug, Clone, Default)]
 pub(crate) struct State {
@@ -116,6 +122,8 @@ pub(crate) struct State {
     pub(crate) governance_present: bool,
     pub(crate) skills: Option<Value>,
     pub(crate) skills_digest: String,
+    pub(crate) bricks: Option<Value>,
+    pub(crate) bricks_digest: String,
 }
 
 /** File of the shared skill store inside .crane */
@@ -123,6 +131,50 @@ pub(crate) const SKILLS_FILE: &str = "skills.json";
 
 /** Finding code of a .crane/skills.json that differs from the signed manifest */
 pub(crate) const SKILLS_CHANGED: &str = "skills_store_changed";
+
+/** File of the signed Brick store inside .crane */
+pub(crate) const BRICKS_FILE: &str = "bricks.json";
+
+/** Finding code of a .crane/bricks.json that differs from the signed manifest */
+pub(crate) const BRICKS_CHANGED: &str = "bricks_store_changed";
+
+/** Digest the signed Brick store
+ * Input
+    - bricks: Option<&Value> - the store
+ * Output
+    - String, "" when there is no store
+*/
+pub(crate) fn bricks_digest(bricks: Option<&Value>) -> String {
+    bricks.map_or_else(String::new, |value| digest_json("bricks/store/v1", value))
+}
+
+/** Read an optional JSON store of .crane and digest it
+ * Input
+    - workspace: &Workspace - repository
+    - name: &str - file name inside .crane
+    - digest: fn(Option<&Value>) -> String - the store's digest
+ * Output
+    - Result<(Option<Value>, String), String> - the store (Null when malformed) and its digest
+      ("" when absent, "unreadable" when malformed, never equal to a signed digest)
+    - Error if the file exists but cannot be read
+*/
+fn read_store(
+    workspace: &Workspace,
+    name: &str,
+    digest: fn(Option<&Value>) -> String,
+) -> Result<(Option<Value>, String), String> {
+    match fs::read_to_string(workspace.file(name)) {
+        Ok(text) => match serde_json::from_str::<Value>(&text) {
+            Ok(value) => {
+                let digest = digest(Some(&value));
+                Ok((Some(value), digest))
+            }
+            Err(_) => Ok((Some(Value::Null), "unreadable".to_string())),
+        },
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok((None, String::new())),
+        Err(error) => Err(format!("could not read .crane/{name}: {error}")),
+    }
+}
 
 /** Digest the shared skill store
  * Input
@@ -232,17 +284,8 @@ impl State {
                     .map_err(|error| format!(".crane/audit.jsonl has a malformed entry ({error})"))
             })
             .collect::<Result<Vec<Entry>, String>>()?;
-        let (skills, skills_digest) = match fs::read_to_string(workspace.file(SKILLS_FILE)) {
-            Ok(text) => match serde_json::from_str::<Value>(&text) {
-                Ok(value) => {
-                    let digest = self::skills_digest(Some(&value));
-                    (Some(value), digest)
-                }
-                Err(_) => (Some(Value::Null), "unreadable".to_string()),
-            },
-            Err(error) if error.kind() == ErrorKind::NotFound => (None, String::new()),
-            Err(error) => return Err(format!("could not read .crane/{SKILLS_FILE}: {error}")),
-        };
+        let (skills, skills_digest) = read_store(workspace, SKILLS_FILE, self::skills_digest)?;
+        let (bricks, bricks_digest) = read_store(workspace, BRICKS_FILE, self::bricks_digest)?;
         Ok(Self {
             config: read_json(workspace, "config.json")?,
             checkpoints: read_json(workspace, "checkpoints.json")?,
@@ -253,6 +296,8 @@ impl State {
             governance_present: workspace.file(super::zones::FILE).exists(),
             skills,
             skills_digest,
+            bricks,
+            bricks_digest,
         })
     }
 
@@ -467,6 +512,19 @@ pub(crate) fn integrity(workspace: &Workspace, state: &State, trust: &TrustStore
             format!(".crane/{SKILLS_FILE} (the shared skill store) changed since it was signed; restore it with 'git checkout .crane/{SKILLS_FILE}'"),
         ));
     }
+    if manifest.bricks_digest.is_empty() {
+        if state.bricks.is_some() {
+            findings.push(critical(
+                BRICKS_CHANGED,
+                format!(".crane/{BRICKS_FILE} (the Brick store) is not covered by the signed manifest; it is written only by 'crane brick activate|attach|detach|revoke|...', so restore it with 'git checkout .crane/{BRICKS_FILE}' or remove it"),
+            ));
+        }
+    } else if manifest.bricks_digest != state.bricks_digest {
+        findings.push(critical(
+            BRICKS_CHANGED,
+            format!(".crane/{BRICKS_FILE} (the Brick store) changed since it was signed; restore it with 'git checkout .crane/{BRICKS_FILE}'"),
+        ));
+    }
     let mut seen = std::collections::BTreeSet::new();
     for record in &state.registry.selections {
         if !seen.insert(record.id.as_str()) {
@@ -667,6 +725,7 @@ pub(crate) fn commit(
         audit_head,
         governance_digest: state.governance_digest.clone(),
         skills_digest: skills_digest(state.skills.as_ref()),
+        bricks_digest: bricks_digest(state.bricks.as_ref()),
         updated_at: now_unix(),
         updated_by: who,
         head: String::new(),
@@ -688,6 +747,10 @@ pub(crate) fn commit(
     if let Some(skills) = &state.skills {
         let text = pretty(skills.clone()).map_err(io_error)?;
         write_atomic(&workspace.file(SKILLS_FILE), text.as_bytes())?;
+    }
+    if let Some(bricks) = &state.bricks {
+        let text = pretty(bricks.clone()).map_err(io_error)?;
+        write_atomic(&workspace.file(BRICKS_FILE), text.as_bytes())?;
     }
     write_atomic(
         &workspace.file("map"),

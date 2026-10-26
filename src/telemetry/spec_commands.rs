@@ -1147,6 +1147,12 @@ pub(super) fn notes(event: &Event) -> Vec<Spec> {
                     );
                 spec
             }
+            brick if brick.starts_with("BRICK_") => {
+                match super::spec_bricks::spec(event, brick, note) {
+                    Some(spec) => spec,
+                    None => continue,
+                }
+            }
             _ => continue,
         };
         specs.push(spec);

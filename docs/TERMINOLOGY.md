@@ -130,6 +130,22 @@ without evidence.
 | **Run** | One execution of a runbook (`rbr_…`): running, awaiting approval, needs reconciliation, succeeded, partial, failed, blocked, or cancelled. |
 | **Completion** | The steps that must succeed, with proof, for the run to succeed. |
 
+## 6a. Bricks
+
+| Term | Meaning |
+|---|---|
+| **Brick** | A reusable, versioned module of one fixed type (context, identity, scope, permission, constraint, precondition, approval, isolation, budget, action, verification, provenance, recovery, revocation, monitoring, intelligence). It can only tighten what agents may do. |
+| **Brick type** | One of the sixteen fixed kinds. People make Bricks; they never make new types. |
+| **Brick Stack** | A named set of exact Brick versions for a bigger scenario. It is not a type and cannot loosen its members. |
+| **Draft** | An unsigned Brick or Stack in `.crane/drafts/`. It grants nothing until an admin activates it. |
+| **Attachment** | A Brick or Stack version pinned to a Flow, Zone, or Runbook, signed into `.crane/bricks.json`. |
+| **Common Context** | Guidance stored with a Brick version; it travels to every target the version is attached to. |
+| **Current Context** | Guidance stored on one attachment; changing it changes only that attachment. |
+| **Snapshot** | The context agents receive for some targets, in a fixed order, with a digest for every source. Sent once per session while unchanged. |
+| **Fail closed** | When Crane cannot honor a pin (revoked, missing), changes in that target need a person's approval instead of being allowed. |
+| **Assignment** | An agent assigned to Flows and Zones. Its runtime status (idle, running, waiting, degraded) is derived, never a running model. |
+| **Monitor** | A deterministic check a Brick asks for (integrity, policy tests, selections, denials), run by the background sync without a model. |
+
 ## 7. The eleven controls
 
 The families of checks every skill, runbook, and agent action passes through (`crane <family> …`).

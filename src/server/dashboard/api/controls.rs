@@ -38,6 +38,43 @@ pub(super) fn governance(context: &Context) -> Answer {
     (200, view, None)
 }
 
+/** The Bricks view, as last reported by a member's machine: library, Stacks, attachments,
+ * assignments, monitors, context cache, and signed history (identifiers and digests only)
+ * Input
+    - context: &Context - repository data
+ * Output
+    - Answer
+*/
+pub(super) fn bricks(context: &Context) -> Answer {
+    let Some(status) = context.latest_status() else {
+        return error(
+            404,
+            "no member has reported the repository's Bricks yet; they are sent with the next upload".into(),
+        );
+    };
+    let mut view = status["bricks"].clone();
+    if view.is_null() {
+        return error(
+            404,
+            "the reporting machine runs a Crane without Bricks; update Crane on that machine"
+                .into(),
+        );
+    }
+    if view.get("error").is_some() {
+        return error(
+            500,
+            format!(
+                "the reporting machine could not read its Bricks: {}",
+                view["error"]
+            ),
+        );
+    }
+    view["reported_by"] =
+        context.member(status["installation"].as_str().map(String::from).as_ref());
+    view["reported_at"] = status["collected_at"].clone();
+    (200, view, None)
+}
+
 /** The ledger view of one session or all sessions: entries, balances, and whether every member's
  * ledger reconciles
  * Input

@@ -247,3 +247,57 @@ test("shows an agent's live context only while it is fresh, with its guidance", 
   assert.equal(contextLabel(context, "agt_claude"), "◆ agt_claude · zone payments — Charges must be idempotent; never retry a capture.");
   assert.ok(contextLabel({ ...context, text: "x".repeat(400) }).length <= 140);
 });
+
+import { attachArgs, BRICK_TEMPLATES, BRICK_TYPES, CONTROLS, controlArgs, describePreview, draftFile, envelopeLine, parseEnvelope, snapshotMarkdown, subjectOf, succeeded } from "../core/bricks";
+
+test("reads the shared envelope of family commands and nothing else", () => {
+  const envelope = parseEnvelope('{"schema_version":1,"command":"brick.list","request_id":"req_1","status":"ok","reason_codes":[],"summary":"2 Bricks","refs":{},"data":{"bricks":[]},"created_at":1}');
+  assert.equal(envelope?.command, "brick.list");
+  assert.ok(succeeded(envelope!.status));
+  assert.equal(parseEnvelope("crane: unknown command 'brick'"), undefined);
+  assert.equal(parseEnvelope('{"valid":true}'), undefined, "other JSON is not an envelope");
+  assert.ok(!succeeded("approval_required") && !succeeded("denied"));
+  assert.equal(envelopeLine({ ...envelope!, status: "denied", decision: "DENY", reason_codes: ["UNREGISTERED_OPERATION"] }), "DENIED DENY: 2 Bricks (UNREGISTERED_OPERATION)");
+});
+
+test("builds Brick drafts and attachment arguments without deciding anything", () => {
+  assert.equal(BRICK_TYPES.length, 16, "the type set is fixed");
+  assert.deepEqual(Object.keys(BRICK_TEMPLATES).sort(), [...BRICK_TYPES].sort(), "a template per fixed type");
+  const draft = JSON.parse(draftFile({ type: "constraint", name: " Prod guard ", intent: "No prod edits", context: "Ask ops", config: { max_ceiling: "assisted" }, departments: ["eng"] }));
+  assert.deepEqual(draft, { type: "constraint", name: "Prod guard", intent: "No prod edits", owner: null, departments: ["eng"], config: { max_ceiling: "assisted" }, common_context: { text: "Ask ops", sensitivity: "internal" } });
+  assert.equal(subjectOf({ ref: "g@2", brick_id: "g", version: 2, type: "scope", name: "G", state: "active" }), "g@2");
+  assert.equal(subjectOf({ ref: "stack:s@1", stack_id: "s", version: 1, name: "S", state: "active", members: [] }), "stack:s@1");
+  assert.equal(subjectOf({ ref: "g", brick_id: "g", version: 3, type: "scope", name: "G", state: "draft" }), undefined, "drafts cannot be attached");
+  assert.deepEqual(attachArgs("g@2", "flow:checkout", "/tmp/c.md", true), ["brick", "attach", "g@2", "--target", "flow:checkout", "--context-file", "/tmp/c.md", "--dry-run", "--format", "json"]);
+});
+
+test("describes a dry-run preview: restrictions before and after, widening, and the snapshot", () => {
+  const lines = describePreview({
+    target: "flow:checkout",
+    files_in_target: 3,
+    widens: false,
+    before: { files: [], restricts: false },
+    after: { files: [{ path: "app/pay.py", ceiling: "observe", reasons: ["app/pay.py is a protected path"] }], restricts: true, scope_resolved: true },
+    snapshot: { digest: "abcdef0123456789", bytes: 120, sections: [{ kind: "brick_common", source: "brick:g@2", reference: "g@2", digest: "d", bytes: 120 }], conflicts: [], gaps: [{ code: "CLASS_NOT_ENFORCED", message: "network" }] },
+  });
+  assert.equal(lines[0], "flow:checkout: 1 of 3 file(s) restricted by Bricks after this change (0 before).");
+  assert.ok(lines.some((line) => line.includes("app/pay.py → observe")));
+  assert.ok(lines.some((line) => line.startsWith("Agents in the target receive snapshot abcdef012345")));
+  assert.ok(lines.some((line) => line.startsWith("Gap CLASS_NOT_ENFORCED")));
+  assert.ok(describePreview({ target: "flow:x", widens: true, before: { files: [], restricts: true }, after: { files: [], restricts: false } }).includes("This loosens what agents may do in the target."));
+  const markdown = snapshotMarkdown({ snapshot: { targets: ["flow:x"], digest: "0123456789abcdef0", generation: 4, bricks: ["g@2"], sections: [{ kind: "brick_current", source: "attachment:a1", reference: "g@2 on flow:x", digest: "ff", bytes: 3, text: "abc" }], conflicts: [], gaps: [] }, rendered: "Crane Bricks for flow:x", truncated: false, notes: [] });
+  assert.ok(markdown.includes("| brick_current | `attachment:a1` |") && markdown.includes("Crane Bricks for flow:x"));
+});
+
+test("offers every command family with the arguments the CLI requires", () => {
+  const families = new Set(CONTROLS.map((item) => item.family));
+  for (const family of ["scope", "permission", "precondition", "constraint", "approval", "isolation", "verification", "provenance", "budget", "recovery", "revocation", "selection", "skill", "runbook", "brick"]) assert.ok(families.has(family), family);
+  const byId = (id: string) => CONTROLS.find((item) => item.id === id)!;
+  assert.deepEqual(controlArgs(byId("permission.test"), ["look-up@1"]), ["permission", "test", "--skill", "look-up@1", "--format", "json"]);
+  assert.deepEqual(controlArgs(byId("approval.deny"), ["inv@abc", "wrong amount"]), ["approval", "deny", "inv@abc", "--reason", "wrong amount", "--format", "json"]);
+  assert.deepEqual(controlArgs(byId("brick.monitor.run"), []), ["brick", "monitor", "run", "--format", "json"]);
+  assert.deepEqual(controlArgs(byId("skill.validate"), ["s@1"]), ["skill", "validate", "s@1", "--dry-run", "--format", "json"]);
+  assert.deepEqual(controlArgs(byId("selection.validate"), [""]), ["selection", "validate", "--format", "json"], "a skipped optional value is left out");
+  assert.ok(byId("approval.approve").changes && !byId("scope.inspect").changes);
+  assert.equal(new Set(CONTROLS.map((item) => item.id)).size, CONTROLS.length, "ids are unique");
+});

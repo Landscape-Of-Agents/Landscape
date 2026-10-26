@@ -236,3 +236,44 @@ approvals, branches, budgets, revocation), templates, preconditions, permission 
 approval references, and budget keys; [tests/families.rs](../../tests/families.rs) through the real
 binary (envelope, exit codes, fixture rule tests, a skill and a runbook end to end, selection aliases,
 scope forms, the agent gate).
+
+---
+
+## 10. Bricks, and the command families in Landscape for VS Code (October 2026)
+
+**Bricks** ([features/bricks.md](../features/bricks.md)) package one fixed functional type each (16
+types, closed in code, schema, CLI parsing, dashboard, and extension). Source of truth: activated
+versions, Stacks, attachments with their Current Context, and assignments are signed into
+`.crane/bricks.json` (manifest `bricks_digest`, empty when absent, so existing manifests keep their
+heads). Drafts live unsigned in `.crane/drafts/` and grant nothing. Snapshots, deliveries, and
+monitor results live in the trust directory's runtime folder; lifecycle and delivery facts are F37
+events. Enforcement reuses the guard: `brick::effect` folds the controls of attached Bricks into
+the per-file limits `cached_limits` computes, so the hooks and `crane scope` decide with them
+through one path, and they can only tighten. Context is delivered through the existing hook path
+(session start index, per-tool-call snapshot, live context file); there is no new context server.
+
+| Area | Status | Where |
+|---|---|---|
+| Type taxonomy, typed configuration, validation | implemented | `src/brick/{types,config,validate}.rs` |
+| Signed store, drafts, lifecycle, self-review rule | implemented | `src/brick/store.rs`, `src/governance/state.rs`, `src/cli/brick/` |
+| Stacks (one level), monotonic composition, fail-closed pins | implemented | `src/brick/compose.rs` |
+| Enforcement through the guard's limits | implemented for scope, permission (write), constraint, precondition, approval (write/delete), isolation | `src/brick/effect.rs`, `src/governance/zones.rs`, `src/hooks/enforce.rs` |
+| Identity per agent at the guard | partial: checked and reported, not decided | `src/hooks/runtime/bricks.rs` |
+| Snapshot assembly, delivery once per session, refresh reasons | implemented | `src/brick/context.rs`, `src/hooks/runtime/{bricks,session,tools}.rs` |
+| Assignments and runtime status, deterministic monitors | implemented (no daemon; runs on background sync or `brick monitor run`) | `src/brick/runtime.rs`, `src/telemetry/{ingest,sync}.rs` |
+| F37 events | implemented | `src/telemetry/spec_bricks.rs`, DASHBOARD.md F37 |
+| Dashboard Bricks page and draft builder | implemented (read-only view; builder downloads a draft) | `src/server/dashboard/{govern.js,api/controls.rs}`, `src/brick/report.rs` |
+| Runbook attachments applied by the runbook runtime | to build | |
+| Per-Brick budget meters, execute/network limits per target | to build | |
+
+**Command families in the extension.** Before this change Landscape for VS Code called only
+`protect`, `target`, `validate`, `test`, `governance sign|graph`, `policy`, `checkpoint`,
+`create|add policy`, `agent install`, `init`, and `foxx event|live`. None of the 14 families was
+reachable from the editor. Now:
+
+| Family | In VS Code | How |
+|---|---|---|
+| scope, permission, precondition, constraint, approval, isolation, verification, provenance, budget, recovery, revocation, selection, skill, runbook | yes | "Landscape: Run a Crane Control" (`src/core/bricks.ts` CONTROLS): the commands with the arguments the CLI requires, confirmation before state changes, the envelope's result shown |
+| brick | yes | the Bricks view and its commands (`src/bricksView.ts`), with `--dry-run` previews before every signing change |
+| skill and runbook authoring (`create`, `plan`, `invoke`, `run`, `activate`) | no | these need bindings and plan files; they stay in the CLI |
+

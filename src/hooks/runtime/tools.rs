@@ -144,8 +144,30 @@ impl Hook {
             context_candidates.push((entity, text.clone()));
             selection_guidance.push(text);
         }
+        // Bricks attached to the touched Zones and Flows (their limits are already in the guard's
+        // decision; this is their context, sent once per session while it is unchanged)
+        // A denied call may not show context to the agent, so it is not marked delivered then
+        let bricks = (!matches!(
+            decided.verdict.decision,
+            Decision::Deny | Decision::Quarantine
+        ))
+        .then(|| self.brick_guidance(session, &entities, &touched))
+        .flatten();
+        if let Some(bricks) = &bricks {
+            live_contexts.push(bricks.live.clone());
+            if bricks.delivered {
+                context_candidates.push((
+                    bricks.live["entity"]
+                        .as_str()
+                        .unwrap_or("bricks")
+                        .to_string(),
+                    bricks.text.clone(),
+                ));
+            }
+        }
         let guidance = [
             zone_guidance,
+            bricks.map(|bricks| bricks.text),
             (!selection_guidance.is_empty()).then(|| {
                 format!(
                     "Crane selection guidance (guidance only, never authorization):\n{}",

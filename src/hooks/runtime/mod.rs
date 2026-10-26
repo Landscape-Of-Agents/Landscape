@@ -4,6 +4,7 @@
 // end, and records every step as a security event. Whenever a decision or verification cannot be
 // obtained the adapter answers fail-closed, never as an allow or a clean result.
 
+mod bricks;
 mod session;
 mod tools;
 

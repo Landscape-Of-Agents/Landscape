@@ -57,6 +57,13 @@ Install: search for **Landscape** in the Extensions view, or
 | Landscape: Show Governance Graph | Zones, flows, and selections on a canvas: drag zones around, drag from a zone's right handle onto another zone to link them into a flow, click a link and press Delete to remove it, and filter what is shown |
 | Landscape: Connect Zones in the Graph | Open the graph ready for linking (no names to type) |
 | Landscape: Undo Last Governance Change | Restore (and sign) the previous `governance.yaml` |
+| Landscape: Create Brick | A draft of one of the fixed Brick types (`crane brick create --file`); it grants nothing until an admin activates it |
+| Landscape: Validate / Test Brick | `crane brick validate`; `crane brick test`, optionally simulated on a chosen Flow or Zone |
+| Landscape: Activate Brick (sign) | Previews with `--dry-run`, then `crane brick activate` after you confirm |
+| Landscape: Attach Brick to a Zone or Flow | Choose a version and a target, write the attachment's Current Context, see what the guard will restrict and what agents will receive, then sign |
+| Landscape: Edit Current Context / Detach / Pin to Another Version / Revoke | The matching `crane brick` command, previewed first where it signs |
+| Landscape: Preview Effective Context | `crane brick context preview`: every source with its digest, then the exact text agents receive |
+| Landscape: Run a Crane Control | The command families (scope, permission, precondition, constraint, approval, isolation, verification, provenance, budget, recovery, revocation, selection, skill, runbook, brick) with their required arguments; confirmation before state changes |
 
 Zone, flow, and context changes made in the panel are validated by Crane and signed with
 `crane governance sign`; only the repository's owner and admins can sign, and the change is

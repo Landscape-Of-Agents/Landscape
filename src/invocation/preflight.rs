@@ -5,6 +5,8 @@
 //
 //   identity      - the exact version exists and its stored and recomputed digests equal the request
 //   eligibility   - published and currently eligible (Component 2's rule)
+//   shared        - the shared skill store (.crane/skills.json) has not withdrawn it and records
+//                   the same digest; a store that fails verification blocks (fail closed)
 //   staleness     - not marked stale, and nothing it was validated against changed (checked live)
 //   lab           - lab reports for this exact digest: failed blocks; inconclusive, blocked, not run,
 //                   or missing are recorded (and, for medium or higher risk, require approval)
@@ -27,6 +29,7 @@ use crate::capability::query::{
 };
 use crate::capability::refs::{RefOutcome, Sources};
 use crate::capability::registry::{stale_reasons, RegistryState};
+use crate::capability::shared::{key, SharedState, SharedView};
 use crate::capability::validate::effective_claim;
 use crate::capability_lab::report::LabReport;
 use crate::capability_lab::CheckStatus;
@@ -106,6 +109,7 @@ fn check(
     - discovery_reports: &'a [DiscoveryReport] - discovery reports
     - adapters: &'a AdapterRegistry - adapters
     - runtime: &'a dyn TransactionRuntime - transaction runtime
+    - shared: &'a SharedView - the verified shared skill store
 */
 pub(crate) struct PreflightInputs<'a> {
     pub(crate) state: &'a RegistryState,
@@ -114,6 +118,7 @@ pub(crate) struct PreflightInputs<'a> {
     pub(crate) discovery_reports: &'a [DiscoveryReport],
     pub(crate) adapters: &'a AdapterRegistry,
     pub(crate) runtime: &'a dyn TransactionRuntime,
+    pub(crate) shared: &'a SharedView,
 }
 
 /** What the request names
@@ -130,6 +135,62 @@ pub(crate) struct Target<'a> {
     pub(crate) environment: Option<String>,
     pub(crate) confirmed_preconditions: &'a [String],
     pub(crate) discovery_report: Option<&'a str>,
+}
+
+/** Check a version against the shared skill store: withdrawn there, or published there with
+ * another digest, fails; a store that cannot be verified fails (fail closed); a version the store
+ * does not hold is recorded as unresolved without blocking (published on this machine only)
+ * Input
+    - shared: &SharedView - the verified shared store
+    - target: &Target - exact version
+ * Output
+    - PreflightCheck
+*/
+fn shared_check(shared: &SharedView, target: &Target) -> PreflightCheck {
+    match shared {
+        SharedView::Absent => check(
+            "shared",
+            PreflightStatus::Unresolved,
+            false,
+            "the repository has no shared skill store; the version is published on this machine only",
+        ),
+        SharedView::Unverified(reason) => check(
+            "shared",
+            PreflightStatus::Failed,
+            true,
+            format!("the shared skill store cannot be trusted: {reason}"),
+        ),
+        SharedView::Verified(entries) => match entries.get(&key(target.capability_id, target.version)) {
+            None => check(
+                "shared",
+                PreflightStatus::Unresolved,
+                false,
+                "the version is not in the shared skill store; publish it again to share it",
+            ),
+            Some(entry) if entry.state != SharedState::Published => check(
+                "shared",
+                PreflightStatus::Failed,
+                true,
+                format!(
+                    "the shared skill store records it as {:?}{}",
+                    entry.state,
+                    entry.changed_by.as_deref().map(|who| format!(" by {who}")).unwrap_or_default()
+                ),
+            ),
+            Some(entry) if entry.digest != target.digest => check(
+                "shared",
+                PreflightStatus::Failed,
+                true,
+                format!("the shared skill store published digest {}, not {}", entry.digest, target.digest),
+            ),
+            Some(_) => check(
+                "shared",
+                PreflightStatus::Passed,
+                true,
+                "published in the shared skill store with this digest",
+            ),
+        },
+    }
 }
 
 /** The identity check alone, run before any plan is built
@@ -235,6 +296,7 @@ pub(crate) fn run(
             ),
         )
     });
+    checks.push(shared_check(inputs.shared, target));
     let live = inputs
         .state
         .latest_run(record)
@@ -551,4 +613,75 @@ pub(crate) fn run(
         );
     }
     checks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{shared_check, PreflightStatus, Target};
+    use crate::capability::shared::{key, SharedState, SharedSummary, SharedView};
+
+    /** The shared store blocks withdrawn or differently published versions and an unverifiable
+     * store, passes a matching publication, and only records an absent store or version
+     * Input
+        - None
+     * Output
+        - None (panics on failure)
+    */
+    #[test]
+    fn shared_store_is_authoritative_for_withdrawal() {
+        let target = Target {
+            capability_id: "change-summary",
+            version: 1,
+            digest: "d1",
+            environment: None,
+            confirmed_preconditions: &[],
+            discovery_report: None,
+        };
+        let store = |state, digest: &str| {
+            SharedView::Verified(
+                [(
+                    key("change-summary", 1),
+                    SharedSummary {
+                        state,
+                        digest: digest.into(),
+                        changed_by: Some("Lead".into()),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            )
+        };
+        let judged = |view: &SharedView| {
+            let check = shared_check(view, &target);
+            (check.status, check.blocks())
+        };
+        assert_eq!(
+            judged(&SharedView::Absent),
+            (PreflightStatus::Unresolved, false)
+        );
+        assert_eq!(
+            judged(&SharedView::Verified(Default::default())),
+            (PreflightStatus::Unresolved, false)
+        );
+        assert_eq!(
+            judged(&store(SharedState::Published, "d1")),
+            (PreflightStatus::Passed, false)
+        );
+        assert_eq!(
+            judged(&store(SharedState::Revoked, "d1")),
+            (PreflightStatus::Failed, true)
+        );
+        assert_eq!(
+            judged(&store(SharedState::Deprecated, "d1")),
+            (PreflightStatus::Failed, true)
+        );
+        assert_eq!(
+            judged(&store(SharedState::Published, "d2")),
+            (PreflightStatus::Failed, true)
+        );
+        assert_eq!(
+            judged(&SharedView::Unverified("tampered".into())),
+            (PreflightStatus::Failed, true)
+        );
+    }
 }

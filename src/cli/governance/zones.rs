@@ -90,6 +90,8 @@ pub(crate) fn governance(args: &[String]) -> Result<(), String> {
         governance.context_packs.len(),
         markers.len()
     );
+    // The boundary as signed, for 'crane scope diff' (best effort; never undoes the signature)
+    let _ = crate::scope::snapshot::record_current(&workspace);
     Ok(())
 }
 

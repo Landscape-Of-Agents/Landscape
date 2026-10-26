@@ -453,6 +453,7 @@ impl World {
             ledger: &mut self.ledger,
             events: &mut self.events,
             clock: &self.clock,
+            shared: &crate::capability::shared::NO_SHARED_STORE,
         }
     }
 

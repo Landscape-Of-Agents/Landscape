@@ -58,6 +58,16 @@ automated scanners without a working attack.
 - **Only people change the rules.** No `crane` command runs inside an agent session, and the hooks
   deny any agent command or script that invokes `crane`. Only the owner and the admins they sign can sign rules; teammates trust the
   owner key after comparing its fingerprint, and a GitHub admin can confirm it on the dashboard.
+  Agents see the boundary without running Crane: the session context lists the files where active
+  zones and flows restrict changes (restrictions only, never the limits of enforcement), and every
+  denial names its rule. People inspect, probe, diff, and audit it with `crane scope`.
+- **One worktree per session.** A write into another worktree of the same repository is denied
+  (`OTHER_WORKTREE_WRITE`): its protected code cannot be checked against the rules this session
+  resolved. Work in that worktree with its own session.
+- **Skills are signed and withdrawable everywhere.** A published capability's exact definition is
+  signed into `.crane/skills.json` under the manifest. Invocation treats that store as authoritative
+  for withdrawal (deprecated, revoked, or another digest blocks), and a store that fails
+  verification blocks every invocation. The store never makes a version eligible by itself.
 - **Keys stay out of the repository.** Signing keys and runtime evidence live in `CRANE_HOME`
   (default `~/.crane-trust`). On Windows signing keys are sealed with the Data Protection API;
   `CRANE_KEY_PROTECTION=prompt` seals them under a passphrase typed on the console, which a process

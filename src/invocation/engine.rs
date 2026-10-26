@@ -39,6 +39,7 @@ use crate::capability::refs::{CurrentVersions, Sources};
 use crate::capability::registry::{
     stale_reasons, CapabilityRegistry, InvocationRef, InvocationStatus,
 };
+use crate::capability::shared::SharedView;
 use crate::capability::{CapabilityError, CapabilityResult, ErrorCode, Role};
 use crate::capability_lab::report::LabReport;
 use crate::capture::format::record::scalar;
@@ -189,6 +190,8 @@ pub(crate) struct VerificationResult {
     - plan_digest: String - plan approved
     - environment, repository: Option<String> - scope approved
     - at: u64 - Unix milliseconds
+    - revoked: Option<String> - why it was revoked before it was used (absent in records written
+      before revocation existed, so their digests still verify)
 */
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Approval {
@@ -197,6 +200,8 @@ pub(crate) struct Approval {
     pub(crate) environment: Option<String>,
     pub(crate) repository: Option<String>,
     pub(crate) at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) revoked: Option<String>,
 }
 
 /** A recorded transition
@@ -448,6 +453,7 @@ impl EventSink for DataSeaSink {
     - ledger: &'a mut Ledger - invocation ledger
     - events: &'a mut dyn EventSink - event sink
     - clock: &'a Clock - clock
+    - shared: &'a SharedView - the verified shared skill store
 */
 pub(crate) struct Engine<'a> {
     pub(crate) registry: &'a mut CapabilityRegistry,
@@ -460,6 +466,44 @@ pub(crate) struct Engine<'a> {
     pub(crate) ledger: &'a mut Ledger,
     pub(crate) events: &'a mut dyn EventSink,
     pub(crate) clock: &'a Clock,
+    pub(crate) shared: &'a SharedView,
+}
+
+/** Check requested limits against the engine's hard ceiling (64 operations, 1 MiB of output, 10
+ * minutes, and two retries above the default); signed policy may narrow them, never exceed them
+ * Input
+    - limits: &PlanLimits - requested limits
+ * Output
+    - Result<(), String> - the limit that exceeds the ceiling
+*/
+pub(crate) fn within_ceiling(limits: &PlanLimits) -> Result<(), String> {
+    let ceiling = PlanLimits::default();
+    if limits.max_operations > 64 {
+        return Err(format!(
+            "max_operations {} exceeds the engine's ceiling of 64",
+            limits.max_operations
+        ));
+    }
+    if limits.max_output_bytes > 1024 * 1024 {
+        return Err(format!(
+            "max_output_bytes {} exceeds the engine's ceiling of 1 MiB",
+            limits.max_output_bytes
+        ));
+    }
+    if limits.deadline_ms > 600_000 {
+        return Err(format!(
+            "deadline_ms {} exceeds the engine's ceiling of 600000",
+            limits.deadline_ms
+        ));
+    }
+    if limits.max_retries > ceiling.max_retries + 2 {
+        return Err(format!(
+            "max_retries {} exceeds the engine's ceiling of {}",
+            limits.max_retries,
+            ceiling.max_retries + 2
+        ));
+    }
+    Ok(())
 }
 
 /** Read a dotted field of a JSON value as text
@@ -585,6 +629,7 @@ impl Engine<'_> {
             discovery_reports: self.discovery_reports,
             adapters: self.adapters,
             runtime: self.runtime,
+            shared: self.shared,
         };
         let target = Target {
             capability_id: &request.capability_id,
@@ -662,16 +707,8 @@ impl Engine<'_> {
         if let Some((name, _)) = request.inputs.iter().find(|(_, value)| redact(value).1 > 0) {
             return Err(CapabilityError::new(ErrorCode::InvalidSchema, format!("input '{name}' holds a secret; pass a credential reference, never a secret value")));
         }
-        let ceiling = PlanLimits::default();
-        if request.limits.max_operations > 64
-            || request.limits.max_output_bytes > 1024 * 1024
-            || request.limits.deadline_ms > 600_000
-            || request.limits.max_retries > ceiling.max_retries + 2
-        {
-            return Err(CapabilityError::new(
-                ErrorCode::InvalidSchema,
-                "the requested limits exceed the engine's ceiling",
-            ));
+        if let Err(problem) = within_ceiling(&request.limits) {
+            return Err(CapabilityError::new(ErrorCode::InvalidSchema, problem));
         }
         let now = self.clock.now();
         let request_digest = request.digest();
@@ -887,7 +924,134 @@ impl Engine<'_> {
             environment: record.request.environment.clone(),
             repository: record.request.repository.clone(),
             at,
+            revoked: None,
         });
+        self.persist(&mut record)?;
+        Ok(record)
+    }
+
+    /** Deny an invocation awaiting approval: it is blocked and can never be approved or run
+     * Input
+        - approver: &Actor - the person deciding
+        - invocation_id: &str - invocation
+        - reason: &str - why
+     * Output
+        - CapabilityResult<InvocationRecord>
+        - Error when it is not awaiting approval, or the decider is an agent, the requester, or
+          does not hold the role its approval needs
+    */
+    pub(crate) fn deny(
+        &mut self,
+        approver: &Actor,
+        invocation_id: &str,
+        reason: &str,
+    ) -> CapabilityResult<InvocationRecord> {
+        let mut record = self.ledger.get(invocation_id)?;
+        let required = if record.approval.level >= ReviewLevel::Owner {
+            Role::Publisher
+        } else {
+            Role::Contributor
+        };
+        let refusal = if record.state != InvocationState::AwaitingApproval {
+            Some(CapabilityError::new(
+                ErrorCode::InvalidTransition,
+                format!(
+                    "the invocation is {:?}, not awaiting approval",
+                    record.state
+                ),
+            ))
+        } else if approver.kind != ActorKind::Human || approver.id == record.requester.id {
+            Some(CapabilityError::new(
+                ErrorCode::Unauthorized,
+                "only a person other than the requester decides its approval",
+            ))
+        } else if reason.trim().is_empty() {
+            Some(CapabilityError::new(
+                ErrorCode::InvalidSchema,
+                "a reason is required",
+            ))
+        } else {
+            self.registry.grants.require(approver, required).err()
+        };
+        if let Some(error) = refusal {
+            return Err(self.refuse("deny", Some(invocation_id), approver, error));
+        }
+        self.commit(
+            &mut record,
+            InvocationState::Blocked,
+            approver,
+            &format!("approval denied by {}: {reason}", approver.id),
+        )?;
+        Ok(record)
+    }
+
+    /** Revoke the approvals of an invocation that has not run yet; it waits for a new approval
+     * Input
+        - actor: &Actor - the approver who gave it, or a publisher
+        - invocation_id: &str - invocation
+        - reason: &str - why
+     * Output
+        - CapabilityResult<InvocationRecord>
+        - Error when it already ran, has no live approval, or the actor may not revoke it
+    */
+    pub(crate) fn revoke_approval(
+        &mut self,
+        actor: &Actor,
+        invocation_id: &str,
+        reason: &str,
+    ) -> CapabilityResult<InvocationRecord> {
+        let mut record = self.ledger.get(invocation_id)?;
+        let refusal = if record.state != InvocationState::AwaitingApproval {
+            Some(CapabilityError::new(
+                ErrorCode::InvalidTransition,
+                format!("the invocation is {:?}; an approval that was used cannot be revoked, its effects are reconciled instead", record.state),
+            ))
+        } else if !record
+            .approvals
+            .iter()
+            .any(|approval| approval.revoked.is_none())
+        {
+            Some(CapabilityError::new(
+                ErrorCode::NotFound,
+                "there is no approval to revoke",
+            ))
+        } else if actor.kind != ActorKind::Human {
+            Some(CapabilityError::new(
+                ErrorCode::Unauthorized,
+                "only a person revokes an approval",
+            ))
+        } else if !record
+            .approvals
+            .iter()
+            .any(|approval| approval.approver.id == actor.id)
+            && self
+                .registry
+                .grants
+                .require(actor, Role::Publisher)
+                .is_err()
+        {
+            Some(CapabilityError::new(
+                ErrorCode::Unauthorized,
+                "only the approver or a publisher revokes an approval",
+            ))
+        } else if reason.trim().is_empty() {
+            Some(CapabilityError::new(
+                ErrorCode::InvalidSchema,
+                "a reason is required",
+            ))
+        } else {
+            None
+        };
+        if let Some(error) = refusal {
+            return Err(self.refuse("revoke-approval", Some(invocation_id), actor, error));
+        }
+        for approval in record
+            .approvals
+            .iter_mut()
+            .filter(|approval| approval.revoked.is_none())
+        {
+            approval.revoked = Some(format!("{}: {reason}", actor.id));
+        }
         self.persist(&mut record)?;
         Ok(record)
     }
@@ -937,6 +1101,7 @@ impl Engine<'_> {
             approval.plan_digest == planned
                 && approval.environment == record.request.environment
                 && approval.repository == record.request.repository
+                && approval.revoked.is_none()
         });
         if record.approval.required && !approved {
             let error = CapabilityError::new(

@@ -510,12 +510,29 @@ impl Guard<'_> {
             return;
         }
         let Some(path) = self.relative(&change.path) else {
+            // Another worktree of this repository holds the same governed code, but outside the
+            // worktree this session's rules resolve against, so its selections cannot be checked
+            let raw = Path::new(&change.path);
+            let absolute = git::canonical_lenient(&if raw.is_absolute() {
+                raw.to_path_buf()
+            } else {
+                self.cwd
+                    .as_deref()
+                    .unwrap_or(&self.workspace.root)
+                    .join(raw)
+            });
+            let other = git::other_worktrees(&self.workspace.root)
+                .into_iter()
+                .any(|worktree| absolute.starts_with(worktree));
             decided.resources.push(Resource {
                 kind: "file".into(),
                 id: change.path.clone(),
                 access: "write".into(),
-                classification: Some("external".into()),
+                classification: Some(if other { "other_worktree" } else { "external" }.into()),
             });
+            if other {
+                deny(decided, "OTHER_WORKTREE_WRITE", format!("{} is in another worktree of this repository, whose protected code Crane cannot check from this session; work in that worktree's own session", change.path), false);
+            }
             return;
         };
         let full = self.workspace.root.join(&path);
@@ -627,11 +644,13 @@ impl Guard<'_> {
         let after_scan = Scan::single(&path, &after);
         let changed_ranges =
             Self::changed_line_ranges(before.as_deref().unwrap_or_default(), &after);
-        for id in before_markers
+        // Each selection once (its start and end markers both carry its id)
+        let ids = before_markers
             .iter()
             .filter(|marker| marker.kind == MarkerKind::Selection)
             .filter_map(|marker| marker.id.clone())
-        {
+            .collect::<BTreeSet<_>>();
+        for id in ids {
             let (Resolution::Resolved(old), Resolution::Resolved(new)) =
                 (resolve(&id, &before_scan), resolve(&id, &after_scan))
             else {

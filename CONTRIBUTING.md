@@ -8,8 +8,8 @@ are all welcome. For a vulnerability, follow [SECURITY.md](SECURITY.md) instead 
 - **Report a bug or propose a feature** in
   [Issues](https://github.com/Landscape-Of-Agents/Landscape/issues): what you did, what you expected,
   what happened, and the Crane, Landscape, OS, and agent versions.
-- **Improve the docs**: the [guide](docs/GUIDE.md), the extension's README, or the landing page in
-  [landing/](landing/).
+- **Improve the docs**: the [guide](docs/surfaces/cli.md), the extension's README, or the landing page in
+  [landing/](landing).
 - **Send a pull request**: for anything larger than a small fix, open an issue first so we can agree
   on the approach.
 

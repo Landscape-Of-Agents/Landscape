@@ -221,6 +221,14 @@ impl Hook {
                 ));
             }
         }
+        // The resolved boundary (the agent's read-only 'crane scope inspect')
+        if let Ok(limits) = crate::governance::zones::cached_limits(
+            &self.workspace,
+            &self.state,
+            &self.stores.directory,
+        ) {
+            text.push_str(&crate::scope::agent_view(&limits));
+        }
         let available = self.available(session)?;
         text.push_str(&format!(
             "Autonomy: mode {}, safety {:?}, {available} credits available. Credits measure risk-bearing authority; when they run out, changes need human approval.\n",

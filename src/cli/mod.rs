@@ -4,23 +4,49 @@
 
 mod agent;
 mod alert;
+mod approval;
 mod args;
 mod audit;
+mod budget;
 mod capability;
 mod capture;
 mod compile;
+mod constraint;
 mod data;
 mod discover;
 mod evolution;
+mod family;
 mod governance;
 mod insight;
 mod invoke;
+mod isolation;
 mod lab;
 mod link;
+mod permission;
+mod precondition;
+mod protocol;
+mod provenance;
+mod recovery;
 mod repo;
+mod revocation;
+mod runbook;
 mod runtime;
+mod scope;
+mod selection;
+mod skill;
+mod verification;
 
 use std::env;
+
+/** Read the exit code a family command's result carries (see protocol)
+ * Input
+    - error: &str - error returned by run()
+ * Output
+    - Option<(i32, &str)> code and message, None for an ordinary error
+*/
+pub(crate) fn exit_code(error: &str) -> Option<(i32, &str)> {
+    protocol::exit(error)
+}
 
 /** Dispatch the command line to its handler
  * Input
@@ -94,6 +120,20 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["alert", ..] => alert::alert(&rest(1)),
         ["admin", ..] => governance::admin(&rest(1)),
         ["governance", ..] => governance::governance(&rest(1)),
+        ["scope", ..] => scope::scope(&rest(1)),
+        ["skill", ..] => skill::skill(&rest(1)),
+        ["runbook", ..] => runbook::runbook(&rest(1)),
+        ["permission", ..] => permission::permission(&rest(1)),
+        ["precondition", ..] => precondition::precondition(&rest(1)),
+        ["constraint", ..] => constraint::constraint(&rest(1)),
+        ["approval", ..] => approval::approval(&rest(1)),
+        ["isolation", ..] => isolation::isolation(&rest(1)),
+        ["verification", ..] => verification::verification(&rest(1)),
+        ["provenance", ..] => provenance::provenance(&rest(1)),
+        ["budget", ..] => budget::budget(&rest(1)),
+        ["recovery", ..] => recovery::recovery(&rest(1)),
+        ["revocation", ..] => revocation::revocation(&rest(1)),
+        ["selection", ..] => selection::selection(&rest(1)),
         ["capture", ..] => capture::capture(&rest(1)),
         ["insight", ..] => insight::insight(&rest(1)),
         ["capability", ..] => capability::capability(&rest(1)),
@@ -156,6 +196,16 @@ Zones and flows (.crane/governance.yaml)
   crane governance sign
   crane governance graph [--json]   (zones, flows, and selections as an acyclic graph)
 
+Scope (the effective boundary, decided by the same guard the hooks use; read-only)
+  crane scope inspect [PATH ...] [--json]   (the boundary, its enforcement, and what is unresolved)
+  crane scope resolve read|write|delete|execute|network TARGET [lines A-B] [mode MODE] [--json]
+                                            (decide a proposed action and record the decision)
+  crane scope explain DECISION_ID|TOOL_CALL_ID [--json]   (why, and whether it still applies)
+  crane scope diff [--record] [--json]      (the boundary against the last signed baseline; fails
+                                             when it widened)
+  crane scope test [--json]                 (positive and adversarial probes; fails when one fails)
+  crane scope audit [session ID] [days N] [--json]   (the boundary against recorded attempts)
+
 Work Capture (evidence about a work episode, packaged as a bounded Evidence Pack)
   crane capture demo [--json]        (deterministic failed-deployment investigation from fixtures)
   crane capture sources [--json]     (this repository's evidence sources and their health)
@@ -187,6 +237,7 @@ Capabilities (versioned, validated reusable procedures; publication needs an adm
   crane capability publish ID version N reason TEXT [acknowledge CODE,CODE]
   crane capability deprecate|revoke ID [version N] reason TEXT | reject ID version N reason TEXT
   crane capability stale
+  crane capability shared [ID] [--json]   (the signed shared skill store, .crane/skills.json)
 
 Capability compiler (evidence of one episode -> a capability candidate; never validates or publishes)
   crane compile demo [--json]
@@ -223,6 +274,25 @@ Capability evolution (evidence-backed revision proposals and regression checks; 
   crane evolution proposal inspect PROPOSAL_ID | proposal abandon PROPOSAL_ID reason TEXT
   crane evolution regression plan|run|history PROPOSAL_ID | regression inspect RUN_ID
   crane evolution prepare-review PROPOSAL_ID   (a review packet; nothing is delivered)
+
+Skills (department-neutral names for the capability lifecycle; 'crane skill' for the details)
+  crane skill create|validate|inspect|test|plan|activate|invoke|retire|revoke ...
+
+Runbooks (exact skill versions in order, with approvals, branches, retries, and a budget)
+  crane runbook create|validate|inspect|activate|plan|test|run|status|cancel|resume|revoke ...
+
+Controls (inspect, check, and test what Crane applies automatically at every protected action)
+  crane permission inspect|check|test       crane precondition inspect|validate|evaluate|test
+  crane constraint inspect|validate|test    crane approval request|status|approve|deny|revoke|test
+  crane isolation profiles|inspect|validate|test
+  crane verification inspect|evaluate|report|test
+  crane provenance inspect|verify|export|test
+  crane budget inspect|evaluate|reserve|settle|release|test
+  crane recovery inspect|reconcile|resume|abort|test
+  crane revocation inspect|revoke|test
+  crane selection protect|target|inspect|validate|repair   (protect and target as above)
+  (these commands take --format json; exit codes: 0 ok or passed, 3 denied, failed, or blocked,
+   4 approval required, 5 unknown or unresolved)
 
 Admins
   crane admin register          (owner: a GitHub admin confirms the owner key on the dashboard)

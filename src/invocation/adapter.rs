@@ -199,6 +199,17 @@ pub(crate) trait InvocationAdapter {
     */
     fn healthy(&self) -> bool;
 
+    /** The namespace of the resources it acts on ("repo" for the repository), which the
+     * permission check resolves; None when it declares none (resources then stay unsupported)
+     * Input
+        - None (uses self)
+     * Output
+        - Option<&'static str>
+    */
+    fn resource_namespace(&self) -> Option<&'static str> {
+        None
+    }
+
     /** Dispatch an operation with validated parameters
      * Input
         - operation: &str - operation id
@@ -269,6 +280,19 @@ impl AdapterRegistry {
             .operations()
             .into_iter()
             .find(|spec| spec.operation_id == operation_id)
+    }
+
+    /** Every registered operation, ordered by adapter
+     * Input
+        - None (uses self)
+     * Output
+        - Vec<OperationSpec>
+    */
+    pub(crate) fn operations(&self) -> Vec<OperationSpec> {
+        self.adapters
+            .values()
+            .flat_map(|adapter| adapter.operations())
+            .collect()
     }
 }
 
@@ -621,6 +645,16 @@ impl InvocationAdapter for GitReadAdapter {
     */
     fn adapter_id(&self) -> String {
         "git".into()
+    }
+
+    /** It reads the repository
+     * Input
+        - None
+     * Output
+        - Option<&'static str>
+    */
+    fn resource_namespace(&self) -> Option<&'static str> {
+        Some("repo")
     }
 
     /** Its single read-only operation

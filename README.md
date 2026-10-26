@@ -12,7 +12,8 @@
 
 <p align="center">
   <a href="https://github.com/Landscape-Of-Agents/Landscape/releases/latest">Download</a> ·
-  <a href="docs/GUIDE.md">Guide</a> ·
+  <a href="docs/README.md">Docs</a> ·
+  <a href="docs/surfaces/cli.md">CLI guide</a> ·
   <a href="https://marketplace.visualstudio.com/items?itemName=agentscript.foxx">Landscape for VS Code</a> ·
   <a href="https://dashboard.agentslandscape.cloud">Dashboard</a>
 </p>
@@ -61,7 +62,7 @@ enforces the policy in Claude Code, Codex, GitHub Copilot CLI, and Gemini CLI.
 
 ## Get involved
 
-- **Use it:** start with the [guide](docs/GUIDE.md).
+- **Use it:** start with the [docs index](docs/README.md) (by department, product, feature, or surface), the [CLI guide](docs/surfaces/cli.md), and the [terminology](docs/TERMINOLOGY.md).
 - **Build it:** read [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Report a vulnerability:** see [SECURITY.md](SECURITY.md).
 

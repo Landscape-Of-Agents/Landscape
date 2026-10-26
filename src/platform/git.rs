@@ -362,6 +362,54 @@ pub(crate) fn relative(root: &Path, path: &Path) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/** Canonicalize a path that may not exist yet: its nearest existing ancestor is canonicalized
+ * (symlinks resolved) and the missing parts are appended
+ * Input
+    - path: &Path - absolute path
+ * Output
+    - PathBuf, the path unchanged when no ancestor exists
+*/
+pub(crate) fn canonical_lenient(path: &Path) -> PathBuf {
+    let mut missing = Vec::new();
+    let mut existing = path.to_path_buf();
+    loop {
+        if let Ok(resolved) = existing.canonicalize() {
+            let mut result = dunce(resolved);
+            for part in missing.iter().rev() {
+                result.push(part);
+            }
+            return result;
+        }
+        match (
+            existing.file_name().map(std::ffi::OsStr::to_os_string),
+            existing.parent(),
+        ) {
+            (Some(name), Some(parent)) => {
+                missing.push(name);
+                existing = parent.to_path_buf();
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
+/** List the other worktrees of the repository a worktree belongs to (absolute, canonical)
+ * Input
+    - root: &Path - this worktree's top level
+ * Output
+    - Vec<PathBuf>, empty when Git lists none or cannot run
+*/
+pub(crate) fn other_worktrees(root: &Path) -> Vec<PathBuf> {
+    let here = canonical_lenient(root);
+    git_in(root, &["worktree", "list", "--porcelain"])
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(|path| canonical_lenient(Path::new(path)))
+        .filter(|path| *path != here)
+        .collect()
+}
+
 /** Remove the Windows verbatim prefix (\\?\) that canonicalize adds, so paths compare with the
  * ones Git prints
  * Input

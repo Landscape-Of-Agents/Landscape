@@ -194,15 +194,17 @@ fn demo_command(args: &Args) -> Result<(), String> {
     - adapters: AdapterRegistry - the read-only Git adapter
     - events: DataSeaSink - DataSea event sink
     - lab, discovery, compilation - verified reports
+    - shared: SharedView - the repository's shared skill store, verified with the signed state
 */
-struct Local {
-    context: Context,
-    ledger: Ledger,
-    adapters: AdapterRegistry,
-    events: DataSeaSink,
-    lab: Vec<crate::capability_lab::report::LabReport>,
-    discovery: Vec<crate::discovery::report::DiscoveryReport>,
-    compilation: Vec<CompilationReport>,
+pub(super) struct Local {
+    pub(super) context: Context,
+    pub(super) ledger: Ledger,
+    pub(super) adapters: AdapterRegistry,
+    pub(super) events: DataSeaSink,
+    pub(super) lab: Vec<crate::capability_lab::report::LabReport>,
+    pub(super) discovery: Vec<crate::discovery::report::DiscoveryReport>,
+    pub(super) compilation: Vec<CompilationReport>,
+    pub(super) shared: crate::capability::shared::SharedView,
 }
 
 impl Local {
@@ -212,7 +214,7 @@ impl Local {
      * Output
         - Result<Local, String>
     */
-    fn open() -> Result<Self, String> {
+    pub(super) fn open() -> Result<Self, String> {
         let context = Context::open()?;
         let ledger = Ledger::open(&context.runtime.join("invocation"))?;
         let adapters = AdapterRegistry::default().with(Rc::new(GitReadAdapter {
@@ -227,6 +229,7 @@ impl Local {
         let lab = LabStore::open(&context.runtime).load()?;
         let discovery = DiscoveryStore::open(&context.runtime).load()?;
         let compilation = compilation_reports(&context.runtime)?;
+        let shared = crate::capability::shared::view(&context.workspace);
         Ok(Self {
             context,
             ledger,
@@ -235,6 +238,7 @@ impl Local {
             lab,
             discovery,
             compilation,
+            shared,
         })
     }
 }
@@ -264,14 +268,14 @@ pub(super) fn compilation_reports(
 /** Run a closure with an engine over the local context
  * Input
     - local: &mut Local - local context
-    - work: impl FnOnce(&mut Engine) -> Result<InvocationRecord, String> - work
+    - work: impl FnOnce(&mut Engine) -> Result<T, String> - work
  * Output
-    - Result<InvocationRecord, String>
+    - Result<T, String>
 */
-fn with_engine(
+pub(super) fn with_engine<T>(
     local: &mut Local,
-    work: impl FnOnce(&mut Engine) -> Result<InvocationRecord, String>,
-) -> Result<InvocationRecord, String> {
+    work: impl FnOnce(&mut Engine) -> Result<T, String>,
+) -> Result<T, String> {
     let clock = crate::capture::Clock::system();
     let runtime = UnavailableRuntime;
     let context = &mut local.context;
@@ -290,6 +294,7 @@ fn with_engine(
         ledger: &mut local.ledger,
         events: &mut local.events,
         clock: &clock,
+        shared: &local.shared,
     };
     work(&mut engine)
 }

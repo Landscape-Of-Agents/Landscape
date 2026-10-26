@@ -4,7 +4,9 @@
 // intakes, store candidates, and validate; publishing, rejecting, deprecating, and revoking need
 // this machine's signing key to be the repository owner's or a signed admin's. Validation of a
 // file, and validation with --dry-run, change nothing; publication and withdrawal are separate
-// commands that always require a reason.
+// commands that always require a reason. Publication, deprecation, and revocation are also signed
+// into the shared skill store (.crane/skills.json), so every machine that pulls the repository
+// honors a withdrawal; 'crane capability shared' lists the store.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -21,12 +23,15 @@ use crate::capability::query::{
 };
 use crate::capability::refs::{CurrentVersions, Sources};
 use crate::capability::registry::CapabilityRegistry;
+use crate::capability::shared::{
+    share_publication, share_withdrawal, view, SharedState, SharedStore, SharedView,
+};
 use crate::capability::validate::{self, select_profile, Severity, ValidationRun};
 use crate::capability::{demo, Grants, Role};
 use crate::capture::store::CaptureStore;
 use crate::capture::{AccessPolicy, Actor, ActorKind, Sensitivity};
 use crate::governance::admins::signers;
-use crate::governance::state::State;
+use crate::governance::state::{State, SKILLS_FILE};
 use crate::governance::workspace::Workspace;
 use crate::platform::{actor, now_millis};
 
@@ -43,6 +48,7 @@ const USAGE: &str = "usage: crane capability demo [--json]
        crane capability deprecate|revoke ID [version N] reason TEXT
        crane capability reject ID version N reason TEXT
        crane capability stale [--json]
+       crane capability shared [ID] [--json]
        crane capability discover demo|task-class CLASS ...|reports [--json]
        crane capability invoke demo|plan|approve|run|inspect|list|reconcile|abandon ...";
 
@@ -91,6 +97,7 @@ pub(crate) fn capability(args: &[String]) -> Result<(), String> {
         Some("discover") => super::discover::discover_command(rest()),
         Some("invoke") => super::invoke::invoke(rest()),
         Some("stale") => stale(&Args::parse(rest(), &[], &["json"])?),
+        Some("shared") => shared(&Args::parse(rest(), &[], &["json"])?),
         _ => Err(USAGE.into()),
     }
 }
@@ -180,7 +187,7 @@ impl Context {
      * Output
         - Sources
     */
-    fn sources(&self) -> Sources<'_> {
+    pub(super) fn sources(&self) -> Sources<'_> {
         Sources {
             capture: &self.capture,
             current: &self.current,
@@ -714,12 +721,96 @@ fn publish(args: &Args) -> Result<(), String> {
             })
             .unwrap_or_default(),
     };
-    let gate = context.registry.publish(&actor, &request, now_millis())?;
+    let gate = publish_version(&mut context, &actor, &request)?;
     if args.flag("json") {
         return print_json(&gate);
     }
-    println!("Published {} v{}", request.capability_id, request.version);
+    println!(
+        "Published {} v{} and signed it into .crane/{SKILLS_FILE}; commit .crane so the team shares it",
+        request.capability_id, request.version
+    );
     Ok(())
+}
+
+/** Publish a version on this machine and sign it into the shared skill store, so other machines
+ * see exactly what was published (the one path 'capability publish' and 'skill activate' share)
+ * Input
+    - context: &mut Context - repository context
+    - actor: &Actor - publisher
+    - request: &PublicationRequest - request
+ * Output
+    - Result<crate::capability::validate::GateResult, String>
+*/
+pub(super) fn publish_version(
+    context: &mut Context,
+    actor: &Actor,
+    request: &PublicationRequest,
+) -> Result<crate::capability::validate::GateResult, String> {
+    let at = now_millis();
+    let gate = context.registry.publish(actor, request, at)?;
+    let definition = context
+        .registry
+        .state
+        .record(&request.capability_id, request.version)
+        .map_err(|error| error.to_string())?
+        .definition
+        .clone();
+    share_publication(&context.workspace, &definition, &actor.id, &request.reason, at).map_err(
+        |error| {
+            format!(
+                "published {} v{} on this machine, but it was not signed into the shared skill store: {error}",
+                request.capability_id, request.version
+            )
+        },
+    )?;
+    Ok(gate)
+}
+
+/** Withdraw versions on this machine and, for deprecation and revocation, in the shared skill
+ * store (the one path 'capability deprecate|revoke|reject' and 'skill retire|revoke' share)
+ * Input
+    - context: &mut Context - repository context
+    - actor: &Actor - publisher
+    - capability_id: &str - capability
+    - version: Option<u32> - version, None for every version that can make the transition
+    - to: LifecycleState - Deprecated, Revoked, or Rejected
+    - reason: &str - reason
+ * Output
+    - Result<(Vec<u32>, usize), String> versions changed locally, versions changed in the store
+*/
+pub(super) fn withdraw_version(
+    context: &mut Context,
+    actor: &Actor,
+    capability_id: &str,
+    version: Option<u32>,
+    to: LifecycleState,
+    reason: &str,
+) -> Result<(Vec<u32>, usize), String> {
+    let at = now_millis();
+    let changed = context
+        .registry
+        .withdraw(actor, capability_id, version, to, reason, at)?;
+    let shared_to = match to {
+        LifecycleState::Deprecated => Some(SharedState::Deprecated),
+        LifecycleState::Revoked => Some(SharedState::Revoked),
+        _ => None,
+    };
+    let shared = match shared_to {
+        Some(state) => share_withdrawal(
+            &context.workspace,
+            capability_id,
+            &changed,
+            state,
+            &actor.id,
+            reason,
+            at,
+        )
+        .map_err(|error| {
+            format!("{capability_id} {to:?} on this machine, but not in the shared skill store: {error}")
+        })?,
+        None => 0,
+    };
+    Ok((changed, shared))
 }
 
 /** Deprecate, revoke, or reject
@@ -753,13 +844,13 @@ fn withdraw(command: &str, args: &Args) -> Result<(), String> {
     let reason = args.value("reason").ok_or("'reason' is required")?;
     let mut context = Context::open()?;
     let actor = context.actor.clone();
-    let changed = context.registry.withdraw(
+    let (changed, shared) = withdraw_version(
+        &mut context,
         &actor,
         &args.positional[0],
         version,
         to,
         &reason,
-        now_millis(),
     )?;
     println!(
         "{} {:?}: {}",
@@ -771,6 +862,62 @@ fn withdraw(command: &str, args: &Args) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join(", ")
     );
+    if shared > 0 {
+        println!("  signed into .crane/{SKILLS_FILE} ({shared} shared versions); commit .crane so every machine honors it");
+    }
+    Ok(())
+}
+
+/** List the shared skill store
+ * Input
+    - args: &Args - optional capability id, --json
+ * Output
+    - Result<(), String>
+*/
+fn shared(args: &Args) -> Result<(), String> {
+    if args.positional.len() > 1 {
+        return Err("usage: crane capability shared [ID] [--json]".into());
+    }
+    let workspace = Workspace::locate()?;
+    let store = SharedStore::of(&State::load(&workspace)?)?;
+    let entries = store
+        .skills
+        .iter()
+        .filter(|entry| {
+            args.positional
+                .first()
+                .is_none_or(|id| &entry.capability_id == id)
+        })
+        .map(crate::capability::shared::summary)
+        .collect::<Vec<_>>();
+    let verified = match view(&workspace) {
+        SharedView::Absent => "absent".to_string(),
+        SharedView::Verified(_) => "verified".to_string(),
+        SharedView::Unverified(reason) => {
+            format!("UNVERIFIED ({reason}); every invocation is blocked")
+        }
+    };
+    if args.flag("json") {
+        return print_json(&json!({"store": verified, "skills": entries}));
+    }
+    println!("Shared skill store .crane/{SKILLS_FILE}: {verified}");
+    if entries.is_empty() {
+        println!("  no shared versions");
+    }
+    for entry in &entries {
+        println!(
+            "  {} v{} {} (digest {}, published by {}{})",
+            entry["capability_id"].as_str().unwrap_or_default(),
+            entry["version"],
+            entry["state"].as_str().unwrap_or_default(),
+            entry["digest"].as_str().unwrap_or_default(),
+            entry["published_by"].as_str().unwrap_or_default(),
+            entry["changed_by"]
+                .as_str()
+                .map(|who| format!(", withdrawn by {who}"))
+                .unwrap_or_default()
+        );
+    }
     Ok(())
 }
 

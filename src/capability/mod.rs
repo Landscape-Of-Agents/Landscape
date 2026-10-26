@@ -19,9 +19,12 @@ pub(crate) mod demo;
 pub(crate) mod intake;
 pub(crate) mod lifecycle;
 pub(crate) mod model;
+pub(crate) mod preconditions;
 pub(crate) mod query;
 pub(crate) mod refs;
 pub(crate) mod registry;
+pub(crate) mod shared;
+pub(crate) mod templates;
 pub(crate) mod validate;
 
 #[cfg(test)]

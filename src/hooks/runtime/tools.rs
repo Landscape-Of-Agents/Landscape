@@ -3,7 +3,6 @@
 // protected code, markers, and governance files, and shell commands that bypassed a check).
 
 use super::*;
-use crate::governance::state::integrity;
 use crate::governance::verify::{evaluate, Options, ScanMode};
 use crate::hooks::action::Operation;
 use crate::hooks::adapter::{Feedback, HookEvent, Verdict};
@@ -55,18 +54,14 @@ impl Hook {
         };
         let (call, provided) = self.tool_call_id(session, &action);
         let trust = self.workspace.trust()?;
-        let integrity_ok = !integrity(&self.workspace, &self.state, &trust)
-            .iter()
-            .any(crate::governance::Finding::blocking);
+        // The same integrity and zone limits 'crane scope' decides from (one code path)
+        let crate::scope::Enforcement {
+            integrity,
+            limits,
+            zone_error,
+        } = crate::scope::enforcement(&self.workspace, &self.state, &trust, &self.stores.directory);
+        let integrity_ok = integrity.is_empty();
         let available = self.available(session)?;
-        let (limits, zone_error) = match crate::governance::zones::cached_limits(
-            &self.workspace,
-            &self.state,
-            &self.stores.directory,
-        ) {
-            Ok(limits) => (limits, None),
-            Err(error) => (Default::default(), Some(error)),
-        };
         let guard = Guard {
             workspace: &self.workspace,
             state: &self.state,

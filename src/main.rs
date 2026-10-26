@@ -4,7 +4,8 @@
 // Layers, from the bottom: platform (Git, files, time) -> trust (keys, digests, signatures,
 // rollback anchors) -> selection (anchors, signed registry, location tracker) -> governance
 // (checkpoints, policies, configuration, verification) -> hooks (agent adapters and runtime
-// enforcement) -> telemetry (identity, events, metrics, autonomy ledger, compliance) -> foxx
+// enforcement) -> scope (the shared scope engine over the guard: resolve, explain, diff, probe,
+// audit) -> telemetry (identity, events, metrics, autonomy ledger, compliance) -> foxx
 // (read-only dashboard) and integrations; cli dispatches the commands. The server feature adds the
 // DataSea ingestion service, which stores every installation's uploads in MongoDB. capture is Work
 // Capture & Evidence Ingestion, which reads those layers as evidence sources and never writes them;
@@ -25,6 +26,8 @@ mod insight;
 mod integrations;
 mod invocation;
 mod platform;
+mod runbook;
+mod scope;
 mod selection;
 #[cfg(feature = "server")]
 mod server;
@@ -32,8 +35,10 @@ mod telemetry;
 mod trust;
 
 /** Entry point of the crane binary: run the command line and convert an error into a message
- * and an exit code: 2 for a blocking error (hooks::outcome, the blocking convention of Claude Code
- * and Codex hooks) and 1 for every other error
+ * and an exit code: the code a family command's result carries (cli::protocol: 3 denied, failed,
+ * or blocked; 4 approval required; 5 unknown or unresolved), 2 for a blocking error
+ * (hooks::outcome, the blocking convention of Claude Code and Codex hooks), and 1 for every other
+ * error
  * Input
     - None (arguments are read from the process environment)
  * Output
@@ -43,6 +48,10 @@ mod trust;
 fn main() {
     restore_broken_pipe_default();
     if let Err(error) = cli::run() {
+        if let Some((code, message)) = cli::exit_code(&error) {
+            eprintln!("crane: {message}");
+            std::process::exit(code);
+        }
         let blocked = hooks::outcome::blocked(&error);
         eprintln!("crane: {}", blocked.unwrap_or(&error));
         std::process::exit(if blocked.is_some() { 2 } else { 1 });

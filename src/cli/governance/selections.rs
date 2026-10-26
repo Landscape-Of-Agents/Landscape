@@ -177,6 +177,10 @@ pub(crate) fn select(operation: Operation, args: &[String]) -> Result<(), String
         "The anchor comments modify {} and will appear in its Git diff.",
         record.current.span.path
     );
+    // The boundary as signed, for 'crane scope diff' (best effort; never undoes the selection)
+    if let Ok(workspace) = crate::governance::workspace::Workspace::locate() {
+        let _ = crate::scope::snapshot::record_current(&workspace);
+    }
     Ok(())
 }
 

@@ -23,8 +23,10 @@
 pub(crate) mod adapter;
 pub(crate) mod demo;
 pub(crate) mod engine;
+pub(crate) mod isolation;
 pub(crate) mod ledger;
 pub(crate) mod lifecycle;
+pub(crate) mod permission;
 pub(crate) mod plan;
 pub(crate) mod preflight;
 

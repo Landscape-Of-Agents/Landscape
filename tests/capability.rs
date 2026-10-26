@@ -32,7 +32,9 @@ fn demo_runs_the_full_flow() {
 }
 
 /** A local Evidence Pack becomes an intake and a capability that validates; the author cannot
- * publish it; an admin can revoke it; agents cannot run any of it
+ * publish it, another person can, and the published version is signed into the shared skill store
+ * (tampering with it fails validation); an admin can revoke it, in the store too; agents cannot run
+ * any of it
  * Input
     - None
  * Output
@@ -188,19 +190,62 @@ fn manages_a_capability_from_a_local_pack() {
         denied.contains("publication_denied") && denied.contains("cannot publish their own"),
         "{denied}"
     );
-    fixture.ok(&[
+    // Another person publishes it, and the exact version is signed into the shared skill store
+    common::git(&fixture.work, &["config", "user.name", "Reviewer"]);
+    let published = fixture.ok(&[
+        "capability",
+        "publish",
+        "change-summary",
+        "version",
+        "1",
+        "reason",
+        "share it",
+        "acknowledge",
+        "undeclared_governance",
+    ]);
+    assert!(published.contains(".crane/skills.json"), "{published}");
+    let store = fixture.crane_json("skills.json");
+    assert_eq!(store["skills"][0]["state"], json!("published"), "{store}");
+    assert_eq!(store["skills"][0]["published_by"], json!("Reviewer"));
+    assert!(fixture.ok(&["validate"]).contains("PASS"));
+    let (_, shared) = fixture.json(&["capability", "shared", "--json"]);
+    assert_eq!(shared["store"], json!("verified"), "{shared}");
+    // Nobody can edit the store outside Crane: it is covered by the signed manifest
+    let original = fixture.read(".crane/skills.json");
+    fixture.write(
+        ".crane/skills.json",
+        &original.replace("\"published\"", "\"deprecated\""),
+    );
+    assert!(fixture
+        .fails(&["validate"])
+        .contains("skills_store_changed"));
+    let (_, tampered) = fixture.json(&["capability", "shared", "--json"]);
+    assert!(tampered["store"]
+        .as_str()
+        .unwrap()
+        .starts_with("UNVERIFIED"));
+    fixture.write(".crane/skills.json", &original);
+    let revoked = fixture.ok(&[
         "capability",
         "revoke",
         "change-summary",
         "reason",
         "superseded",
     ]);
+    assert!(
+        revoked.contains("signed into .crane/skills.json"),
+        "{revoked}"
+    );
+    let store = fixture.crane_json("skills.json");
+    assert_eq!(store["skills"][0]["state"], json!("revoked"));
+    assert_eq!(store["skills"][0]["changed_by"], json!("Reviewer"));
+    assert!(fixture.ok(&["validate"]).contains("PASS"));
     let (_, listed) = fixture.json(&["capability", "list", "--json"]);
     assert_eq!(listed, json!([]));
     let (_, everything) = fixture.json(&["capability", "list", "--all", "--json"]);
     assert_eq!(everything[0]["versions"], json!([[1, "revoked"]]));
     let (_, history) = fixture.json(&["capability", "versions", "change-summary", "--json"]);
-    assert_eq!(history["transitions"].as_array().unwrap().len(), 4);
+    assert_eq!(history["transitions"].as_array().unwrap().len(), 5);
     let refused = fixture.as_agent(&["capability", "list"]);
     assert!(
         !refused.status.success() && text(&refused).contains("cannot be executed by an AI agent")

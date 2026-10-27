@@ -4,18 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Landscape of Agents</title>
-<meta name="description" content="Guardrails for Intelligent Agents. Minimize token usage, incidents and AI psychosis by richer context, better guardrails and stronger observability for Agents.">
+<meta name="description" content="Guardrails for Intelligent Agents. Signed rules every agent meets before it acts, Bricks that only tighten them, and resident agents that watch a flow for weeks at zero model cost while idle.">
 <meta name="theme-color" content="#050506">
 <link rel="canonical" href="https://agentslandscape.cloud/">
 <meta property="og:url" content="https://agentslandscape.cloud/">
 <meta property="og:title" content="Landscape of Agents">
-<meta property="og:description" content="Guardrails for Intelligent Agents. CLI, editor extension, and dashboard.">
+<meta property="og:description" content="Guardrails for Intelligent Agents. Signed rules, Bricks, and resident agents across the CLI, the editor, and the dashboard.">
 <link rel="icon" href="favicon.png?v=3" type="image/png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png?v=3">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=5">
+<link rel="stylesheet" href="styles.css?v=6">
 </head>
 <body class="min-h-screen">
 <a href="#main" class="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-white focus:px-4 focus:py-2 focus:text-night">Skip to content</a>
@@ -30,6 +30,8 @@
   <div class="grain absolute inset-0 opacity-[0.035] mix-blend-overlay"></div>
 </div>
 
+<div id="progress" aria-hidden="true" class="fixed inset-x-0 top-0 z-50 h-px origin-left scale-x-0 bg-gradient-to-r from-white/0 via-white/70 to-white"></div>
+
 <header class="sticky top-0 z-40 px-4 pt-4">
   <div class="glass mx-auto flex max-w-page items-center gap-3 rounded-2xl px-3 py-2 sm:px-4">
     <a href="#top" class="flex items-center gap-2.5 font-medium tracking-tight">
@@ -37,6 +39,7 @@
       <span>Landscape of Agents</span>
     </a>
     <nav id="links" aria-label="Sections" class="ml-auto hidden items-center gap-1 text-sm text-ink-2 md:flex">
+      <a href="#new" class="rounded-lg px-3 py-1.5 transition hover:bg-white/5 hover:text-ink">What's new</a>
       <a href="#products" class="rounded-lg px-3 py-1.5 transition hover:bg-white/5 hover:text-ink">Product</a>
       <a href="#get" class="rounded-lg px-3 py-1.5 transition hover:bg-white/5 hover:text-ink">Install</a>
       <a href="#commands" class="rounded-lg px-3 py-1.5 transition hover:bg-white/5 hover:text-ink">Commands</a>
@@ -49,6 +52,7 @@
     </button>
   </div>
   <nav id="mobile-links" aria-label="Sections" hidden class="glass mx-auto mt-2 grid max-w-page gap-1 p-2 text-sm md:hidden">
+    <a href="#new" class="rounded-lg px-3 py-2.5 hover:bg-white/5">What's new</a>
     <a href="#products" class="rounded-lg px-3 py-2.5 hover:bg-white/5">Product</a>
     <a href="#get" class="rounded-lg px-3 py-2.5 hover:bg-white/5">Install</a>
     <a href="#commands" class="rounded-lg px-3 py-2.5 hover:bg-white/5">Commands</a>
@@ -61,14 +65,14 @@
   <!-- Hero -->
   <section id="top" class="flex flex-col items-center pt-16 text-center sm:pt-24">
     <img src="logo.png?v=3" alt="" width="88" height="88" class="h-20 w-20 animate-rise drop-shadow-[0_10px_40px_rgba(255,255,255,.18)] sm:h-[88px] sm:w-[88px]">
-    <a href="#get" class="chip mt-6 animate-rise [animation-delay:.08s] hover:border-white/20">
+    <a href="#new" class="chip mt-6 animate-rise [animation-delay:.08s] hover:border-white/20">
       <span class="relative flex h-2 w-2"><span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-white/60"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-white"></span></span>
-      <span id="release-chip">Open source · Apache-2.0</span>
+      <span id="release-chip">New · Resident agents</span>
     </a>
     <h1 class="mt-6 max-w-3xl animate-rise text-balance [text-shadow:0_4px_40px_rgba(5,5,6,.95)] text-[2.6rem] font-medium leading-[1.05] tracking-tight [animation-delay:.14s] sm:text-6xl md:text-7xl">
       Guardrails for<br> <span class="accent-shine pr-1">Intelligent Agents.</span>
     </h1>
-    <p class="mt-6 max-w-xl animate-rise text-base text-ink-2 [text-shadow:0_1px_2px_rgba(5,5,6,1),0_0_18px_rgba(5,5,6,.95)] [animation-delay:.2s] sm:text-lg">Minimize token usage, incidents and AI psychosis by richer context, better guardrails and stronger observability for Agents.</p>
+    <p class="mt-6 max-w-xl animate-rise text-base text-ink-2 [text-shadow:0_1px_2px_rgba(5,5,6,1),0_0_18px_rgba(5,5,6,.95)] [animation-delay:.2s] sm:text-lg">Fewer wasted tokens, fewer incidents, and no AI psychosis. Crane gives coding agents richer context, signed guardrails they meet before they act, and resident agents that keep watch at zero model cost while idle.</p>
     <div class="mt-8 flex animate-rise flex-wrap justify-center gap-3 [animation-delay:.26s]">
       <a href="#get" class="btn-light">Download Crane</a>
       <a href="#products" class="btn-ghost">How it works</a>
@@ -134,8 +138,8 @@
     <p class="eyebrow text-center">Works with</p>
     <div class="mask-fade-x mt-5 overflow-hidden">
       <div class="flex w-max animate-marquee gap-12 pr-12 text-lg text-ink-3 hover:[animation-play-state:paused]">
-        <span>Claude Code</span><span>Codex</span><span>GitHub Copilot CLI</span><span>Gemini CLI</span><span>VS Code</span><span>GitHub Actions</span>
-        <span aria-hidden="true">Claude Code</span><span aria-hidden="true">Codex</span><span aria-hidden="true">GitHub Copilot CLI</span><span aria-hidden="true">Gemini CLI</span><span aria-hidden="true">VS Code</span><span aria-hidden="true">GitHub Actions</span>
+        <span>Claude Code</span><span>Codex</span><span>GitHub Copilot CLI</span><span>Gemini CLI</span><span>VS Code</span><span>GitHub Actions</span><span>Slack</span><span>Jira</span>
+        <span aria-hidden="true">Claude Code</span><span aria-hidden="true">Codex</span><span aria-hidden="true">GitHub Copilot CLI</span><span aria-hidden="true">Gemini CLI</span><span aria-hidden="true">VS Code</span><span aria-hidden="true">GitHub Actions</span><span aria-hidden="true">Slack</span><span aria-hidden="true">Jira</span>
       </div>
     </div>
   </section>
@@ -162,6 +166,90 @@
         <span class="font-mono text-xs text-ink-3">03</span>
         <h3 class="mt-6 text-lg font-medium">Signed evidence</h3>
         <p class="mt-2 text-sm leading-relaxed text-ink-2">Hash-chained records show what each agent did, what was denied, and why.</p>
+      </article>
+    </div>
+  </section>
+
+  <!-- What's new: the 0.5 releases, a resident agent waking and sleeping, and Bricks composing into stacks (whatsnew.js plays both) -->
+  <section id="new" class="reveal pt-24 sm:pt-32" aria-labelledby="new-title">
+    <div class="mx-auto max-w-2xl text-center">
+      <p class="eyebrow">New in 0.5</p>
+      <h2 id="new-title" class="title mt-3">Agents that stay. <span class="accent">Rules that stack.</span></h2>
+      <p class="mt-4 text-ink-2">Bricks turn your guardrails into small signed modules you combine per Flow and Zone. Resident agents take responsibility for a Flow for weeks, sleep at zero model cost, and wake only when something they subscribe to happens.</p>
+    </div>
+
+    <ol class="rail" aria-label="Releases">
+      <li style="--d:.2s"><span class="rail-v">0.5.1</span><b>Bricks</b><span>16 fixed types, signed stacks, enforced by the guard.</span></li>
+      <li style="--d:.5s"><span class="rail-v">0.5.2</span><b>Resident agents</b><span>Idle until triggered; RCA, typed plans, proven outcomes.</span></li>
+      <li style="--d:.8s"><span class="rail-v">0.5.3</span><b>Decide from DataSea</b><span>Approve on the dashboard; GitHub Actions wake them; Jira tickets.</span></li>
+      <li style="--d:1.1s"><span class="rail-v">0.5.4</span><b>One lock, no lost writes</b><span>Background syncs never overwrite a command's change.</span></li>
+    </ol>
+
+    <div class="mt-12 grid gap-4 lg:grid-cols-2">
+      <!-- A resident agent: flat while idle, one activation per trigger, then idle again -->
+      <article id="resident" class="nw-panel" aria-labelledby="resident-title">
+        <div class="p-6 pb-0">
+          <p class="eyebrow">Resident agents</p>
+          <h3 id="resident-title" class="mt-3 text-xl font-medium tracking-tight">Asleep until it matters</h3>
+          <p class="mt-2 text-sm leading-relaxed text-ink-2">An assignment, not a session. No model and no process while idle. A CI failure wakes it: it loads context, finds a supported cause, plans typed steps, asks Crane about every one, and calls it done only when verification proves it.</p>
+        </div>
+        <div class="nw-stage" role="img" aria-label="A resident agent on flow checkout sits idle with zero model calls. A ci.failed trigger wakes it: context loads from cache, a cause is supported by a passing check, the plan's Slack and read steps are allowed while the Jira ticket needs approval, an admin approves on the dashboard, the steps run, verification passes, and the activation completes as proven before the agent goes idle again.">
+          <div class="sh-bar" aria-hidden="true">
+            <span class="sh-bar-title">resident · ci-guardian → flow:checkout</span>
+            <span id="res-status" class="sh-tag ml-auto">ACTIVE_IDLE</span>
+          </div>
+          <div aria-hidden="true">
+            <canvas id="res-pulse" class="block h-20 w-full"></canvas>
+            <ol id="res-steps" class="res-steps">
+              <li>Trigger</li><li>Context</li><li>RCA</li><li>Plan</li><li>Approve</li><li>Execute</li><li>Verify</li>
+            </ol>
+            <ul id="res-log" class="res-log"></ul>
+          </div>
+          <div class="sh-foot" aria-hidden="true">
+            <span>idle ticks <b id="res-ticks">0</b></span>
+            <span class="ml-auto">model calls while idle <b class="!text-green-300">0</b></span>
+          </div>
+        </div>
+      </article>
+
+      <!-- Bricks: sixteen fixed types; a stack lights its types, attaches to a target, and is signed -->
+      <article id="bricks" class="nw-panel" aria-labelledby="bricks-title">
+        <div class="p-6 pb-0">
+          <p class="eyebrow">Bricks</p>
+          <h3 id="bricks-title" class="mt-3 text-xl font-medium tracking-tight">Sixteen types. Endless stacks.</h3>
+          <p class="mt-2 text-sm leading-relaxed text-ink-2">Build a Brick once, from a fixed set of types, and attach it where it applies. Stacks combine exact versions. A Brick can only tighten what Crane already allows; its context guides, it never authorizes.</p>
+        </div>
+        <div class="nw-stage">
+          <ul id="bk-grid" class="bk-grid" aria-label="The sixteen Brick types"></ul>
+          <div class="bk-legend" aria-hidden="true">
+            <span><i class="bk-dot s-enforced"></i>enforced</span><span><i class="bk-dot s-checked"></i>checked</span><span><i class="bk-dot s-delivered"></i>delivered</span><span><i class="bk-dot s-declared"></i>declared</span>
+          </div>
+          <div class="bk-out" aria-hidden="true">
+            <p class="sh-label">stack <span id="bk-name" class="normal-case tracking-normal text-ink-2"></span></p>
+            <div id="bk-stack" class="mt-2 flex min-h-[1.6rem] flex-wrap gap-1.5"></div>
+            <p id="bk-attach" class="bk-line"></p>
+            <p id="bk-effect" class="bk-line"></p>
+          </div>
+          <p id="bk-caption" class="sh-foot !min-h-[2.6rem] !font-sans !text-[11.5px] leading-snug">Point at a type to see what Crane does with it today.</p>
+        </div>
+      </article>
+    </div>
+
+    <div class="mt-4 grid gap-4 md:grid-cols-3">
+      <article class="spotlight p-6">
+        <span class="font-mono text-xs text-ink-3">idle = 0</span>
+        <h3 class="mt-6 text-lg font-medium">Idle costs nothing</h3>
+        <p class="mt-2 text-sm leading-relaxed text-ink-2">What persists is the assignment record. Idle ticks call no model and write nothing; the dashboard counts model calls while idle, and it stays 0.</p>
+      </article>
+      <article class="spotlight p-6">
+        <span class="font-mono text-xs text-ink-3">only tighter</span>
+        <h3 class="mt-6 text-lg font-medium">Crane stays the authority</h3>
+        <p class="mt-2 text-sm leading-relaxed text-ink-2">Residents act only inside a signed Brick assignment, and the signed state is read again before every step. Revoke the assignment and the next step is denied.</p>
+      </article>
+      <article class="spotlight p-6">
+        <span class="font-mono text-xs text-ink-3">done = proven</span>
+        <h3 class="mt-6 text-lg font-medium">No claims, only evidence</h3>
+        <p class="mt-2 text-sm leading-relaxed text-ink-2">COMPLETED means every step succeeded and every verification passed. Anything less is UNKNOWN, and an uncertain Slack or Jira call is reconciled, never retried blindly.</p>
       </article>
     </div>
   </section>
@@ -263,7 +351,7 @@ crane agent install --profile claude</pre>
       <label class="relative block">
         <span class="sr-only">Search commands</span>
         <svg viewBox="0 0 24 24" class="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-3" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-        <input id="command-search" type="search" placeholder="Search 44 commands" autocomplete="off" class="field !pl-10">
+        <input id="command-search" type="search" placeholder="Search commands" autocomplete="off" class="field !pl-10">
       </label>
       <div id="command-groups" class="mt-3 flex gap-1.5 overflow-x-auto pb-1" role="group" aria-label="Areas"></div>
       <ul id="command-list" class="glass mt-3 divide-y divide-white/[0.06] p-1.5"></ul>
@@ -321,7 +409,8 @@ crane agent install --profile claude</pre>
 <div id="tooltip" role="tooltip" hidden class="glass pointer-events-none fixed z-50 max-w-[min(20rem,calc(100vw-2rem))] !rounded-xl !bg-night-3/95 px-3.5 py-2.5 text-sm text-ink-2"></div>
 <div id="toast" role="status" aria-live="polite" class="glass pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 translate-y-4 !rounded-xl px-4 py-2 text-sm opacity-0 transition duration-300"></div>
 <script src="globe.js?v=5" defer></script>
-<script src="app.js?v=5" defer></script>
+<script src="app.js?v=6" defer></script>
+<script src="whatsnew.js?v=1" defer></script>
 <script src="showcase.js?v=6" defer></script>
 </body>
 </html>

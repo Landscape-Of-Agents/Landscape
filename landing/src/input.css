@@ -263,6 +263,59 @@
   @keyframes row-in { from { opacity: 0; transform: translateY(-6px); background: rgba(255, 255, 255, 0.12); } to { opacity: 1; transform: none; } }
   @keyframes card-flash { 0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.4); } 100% { box-shadow: 0 0 0 12px rgba(255, 255, 255, 0); } }
 
+  /* What's new: the release rail draws itself and fills its dots once the section is seen */
+  .rail { @apply relative mx-auto mt-12 grid max-w-4xl gap-6 text-left sm:grid-cols-4 sm:gap-5; }
+  .rail::before, .rail::after { content: ""; @apply absolute bottom-2 left-[7px] top-2 w-px sm:bottom-auto sm:left-0 sm:right-0 sm:top-[7px] sm:h-px sm:w-auto; }
+  .rail::before { @apply bg-white/10; }
+  .rail::after { @apply bg-gradient-to-b from-white/70 to-white/20 sm:bg-gradient-to-r; transform: scale(1, 0); transform-origin: top left; transition: transform 1.6s cubic-bezier(0.2, 0.7, 0.2, 1) 0.2s; }
+  @media (min-width: 640px) { .rail::after { transform: scale(0, 1); } }
+  .seen .rail::after { transform: none; }
+  .rail li { @apply relative flex flex-col gap-1 pl-7 text-sm sm:pl-0 sm:pt-7; }
+  .rail li::before { content: ""; @apply absolute left-0 top-0.5 h-[15px] w-[15px] rounded-full border border-white/25 bg-night transition duration-500 sm:top-0; transition-delay: var(--d, 0s); }
+  .seen .rail li::before { @apply border-white bg-white shadow-[0_0_14px_rgba(255,255,255,.55)]; }
+  .rail li:last-child::before { @apply sm:animate-pulse; }
+  .rail-v { @apply font-mono text-[11px] text-ink-3; }
+  .rail b { @apply font-medium text-ink; }
+  .rail li > span:last-child { @apply text-[13px] leading-snug text-ink-3; }
+
+  .nw-panel { @apply glass flex flex-col overflow-hidden; }
+  .nw-stage { @apply m-4 mt-6 flex flex-1 flex-col overflow-hidden rounded-xl border border-white/[0.07] bg-black/40; }
+
+  /* A resident agent: its heartbeat, the activation's steps, and what each step found */
+  .res-steps { @apply grid grid-cols-7 gap-1 border-y border-white/[0.06] px-2 py-2.5 font-mono text-[9px] text-ink-3 sm:text-[10px]; }
+  .res-steps li { @apply flex min-w-0 flex-col items-center gap-1.5 truncate transition-colors duration-300; }
+  .res-steps li::before { content: ""; @apply h-2 w-2 rounded-full border border-white/25 transition duration-300; }
+  .res-steps li.done { @apply text-ink-2; }
+  .res-steps li.done::before { @apply border-green-300/70 bg-green-300/70; }
+  .res-steps li.on { @apply text-ink; }
+  .res-steps li.on::before { @apply scale-125 border-white bg-white shadow-[0_0_10px_rgba(255,255,255,.8)]; }
+  .res-steps li.ask::before { @apply border-amber-200 bg-amber-200 shadow-[0_0_10px_rgba(253,230,138,.7)]; }
+  .res-log { @apply flex min-h-[8.6rem] flex-1 flex-col justify-end gap-1 px-3 py-2.5 font-mono text-[10.5px] leading-snug text-ink-2 sm:text-[11px]; }
+  .res-log li { @apply flex gap-2; animation: row-in 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  .res-log li > i { @apply w-3 shrink-0 text-center not-italic text-ink-3; }
+  .res-log li.ok > i { @apply text-green-300; }
+  .res-log li.ask > i { @apply text-amber-200; }
+  .res-log li.old { @apply opacity-40 transition-opacity duration-500; }
+  .sh-tag.ask { @apply border-amber-300/40 bg-amber-300/10 text-amber-200; }
+
+  /* Bricks: the sixteen types, a stack composing from them, and what the stack changes */
+  .bk-grid { @apply grid grid-cols-2 gap-1.5 p-3 min-[420px]:grid-cols-4; }
+  .bk { @apply flex w-full min-w-0 cursor-default items-center gap-2 rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-2 text-left text-[11.5px] text-ink-2 transition duration-300 hover:border-white/25 hover:text-ink focus-visible:text-ink; }
+  .bk > span { @apply truncate; }
+  .bk.on { @apply border-white/60 bg-white/[0.08] text-ink; box-shadow: 0 0 22px -6px rgba(255, 255, 255, 0.45); animation: card-flash 0.9s ease-out; }
+  .bk-dot { @apply inline-block h-2 w-2 shrink-0 rounded-full; }
+  .bk-dot.s-enforced { @apply bg-white; }
+  .bk-dot.s-checked { @apply border border-white/80; }
+  .bk-dot.s-delivered { background: linear-gradient(90deg, #fff 50%, rgba(255, 255, 255, 0.18) 50%); }
+  .bk-dot.s-declared { @apply bg-white/20; }
+  .bk-legend { @apply flex flex-wrap gap-x-4 gap-y-1 px-3 font-mono text-[10px] text-ink-3; }
+  .bk-legend span { @apply flex items-center gap-1.5; }
+  .bk-out { @apply mt-3 flex-1 border-t border-white/[0.06] px-3 py-3; }
+  .bk-out .sh-badge { animation: line-in 0.35s ease-out both; }
+  .bk-line { @apply mt-2 min-h-[1.2em] font-mono text-[10.5px] text-ink-3 sm:text-[11px]; }
+  .bk-line.on { @apply text-ink-2; animation: line-in 0.4s ease-out both; }
+  .bk-line b { @apply font-normal text-green-300; }
+
   /* Sections fade up the first time they scroll into view (app.js adds .seen) */
   .reveal { opacity: 0; transform: translateY(18px); transition: opacity .8s cubic-bezier(.2, .7, .2, 1), transform .8s cubic-bezier(.2, .7, .2, 1); }
   .reveal.seen { opacity: 1; transform: none; }

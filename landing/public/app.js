@@ -56,6 +56,24 @@ const COMMANDS = [
   ["Alerts", "crane alert test NAME", "Send a test notification (also remove, enable, or disable NAME)."],
   ["Alerts", "crane alert log --json", "Show the history of firings, resolutions, and deliveries."],
   ["Alerts", "crane alert metrics", "List the metrics an alert rule can use."],
+  ["Bricks", "crane brick types", "List the 16 fixed Brick types, their settings, and what Crane does with each today."],
+  ["Bricks", "crane brick create --type TYPE --name NAME", "Draft a Brick of one fixed type (or --file DRAFT.json). A draft grants nothing."],
+  ["Bricks", "crane brick test ID --target flow:ID", "Simulate a Brick on a real Flow and list exactly which files the guard would restrict."],
+  ["Bricks", "crane brick activate ID --reason TEXT", "Admin: sign a validated version into .crane/bricks.json. An active version never changes."],
+  ["Bricks", "crane brick stack create", "Combine exact Brick versions into a named Stack, such as Production code change."],
+  ["Bricks", "crane brick attach ID@N --target flow:ID --context TEXT", "Pin an exact Brick or Stack version to a Flow, Zone, or Runbook, with its Current Context. Takes --dry-run."],
+  ["Bricks", "crane brick assign AGENT --targets flow:ID", "Assign an agent to Flows and Zones: the signed authority resident agents act under."],
+  ["Bricks", "crane brick monitor run", "Run the Monitoring Bricks' checks now (a schedule can call it)."],
+  ["Residents", "crane resident catalog", "Show the step types and trigger sources, and which can run today."],
+  ["Residents", "crane resident definition save --file DEFINITION.json", "Save an immutable definition version: its mission, triggers, allowed steps, and limits."],
+  ["Residents", "crane resident create --file ASSIGNMENT.json --dry-run", "Draft an assignment of one definition to one Flow, Zone, or Runbook, for 1 to 90 days."],
+  ["Residents", "crane resident test ID --event EVENT.json", "Plan only: would the trigger match, the context, the RCA path, the plan, and Crane's decision per step. Nothing runs."],
+  ["Residents", "crane resident activate ID --reason TEXT", "Admin: validate again and turn it on. It then sits ACTIVE_IDLE at zero model cost."],
+  ["Residents", "crane resident trigger --file EVENT.json", "Deliver a ci or webhook event, then run a tick."],
+  ["Residents", "crane resident status", "Ticks, idle ticks, model calls while idle, triggers, queue depth, cache, and outcomes."],
+  ["Residents", "crane resident activation ACTIVATION", "One activation's timeline: trigger, context, causes, plan, decisions, approvals, and verification."],
+  ["Residents", "crane resident approve ACTIVATION --step STEP --reason TEXT", "Admin: approve a waiting step (or --deny). Bound to the plan digest and the signed state."],
+  ["Residents", "crane resident pause ID --reason TEXT", "Pause an assignment (also resume or revoke). Making things stricter never needs an admin."],
 ].map(([group, command, help]) => ({ group, command, help }));
 
 const $ = (selector, root) => (root || document).querySelector(selector);
@@ -323,7 +341,7 @@ async function loadReleases() {
   latest = stable.find((release) => release.assets.some((asset) => !asset.name.endsWith(".sha256"))) || stable[0] || releases[0];
   const date = latest.published_at ? new Date(latest.published_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "";
   $("#release-meta").textContent = "Crane " + latest.tag_name + (date ? " · released " + date : "");
-  $("#release-chip").textContent = "Crane " + latest.tag_name + " is out";
+  $("#release-chip").textContent = "Crane " + latest.tag_name + " is out · see what's new";
   $("#release-page").href = latest.html_url;
   showOs(os);
   const published = releases.filter((release) => !release.draft);
@@ -398,6 +416,7 @@ function renderCommands() {
   }) : [make("li", { class: "px-3 py-6 text-center text-sm text-ink-3" }, "No command matches.")]));
 }
 $("#command-search").addEventListener("input", renderCommands);
+$("#command-search").placeholder = "Search " + COMMANDS.length + " commands";
 renderGroups();
 renderCommands();
 

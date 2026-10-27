@@ -722,7 +722,7 @@ function residentWizard(data, bricks) {
     id: "", name: "", purpose: "", owner: "", agent: ((crane.signed_assignments || [])[0] || {}).agent || "claude",
     target: ((crane.targets || []).find((row) => row.status === "active") || {}).target || "",
     sources: { ci: "ci.failed" }, actions: { READ_CHECK: true, VERIFY: true, ASK_USER: true, PROPOSE_RCA: true }, auto: { READ_CHECK: true, VERIFY: true },
-    rca: "", lifetime: 14, cooldown: 10, perDay: 24, maxSteps: 8, retries: 1, approvalTtl: 1440, verification: true, missing: "block", bricks: "",
+    rca: "", lifetime: 14, cooldown: 10, perDay: 24, maxSteps: 8, retries: 1, approvalTtl: 1440, verification: true, missing: "block", bricks: "", remote: false, distinct: false,
   };
   const out = h("pre", { class: "mono", style: "white-space:pre-wrap;max-height:300px;overflow:auto" });
   const review = h("div", {});
@@ -733,7 +733,7 @@ function residentWizard(data, bricks) {
     bricks: state.bricks.split(",").map((item) => item.trim()).filter(Boolean),
     triggers: Object.keys(state.sources).filter((source) => state.sources[source] !== undefined),
     actions: Object.keys(state.actions).filter((type) => state.actions[type]).map((type) => ({ step_type: type, auto: !!state.auto[type] })),
-    verification_required: state.verification, on_missing_context: state.missing,
+    verification_required: state.verification, on_missing_context: state.missing, remote_decisions: state.remote, distinct_approver: state.distinct,
     limits: { max_activations_per_day: Number(state.perDay), max_steps: Number(state.maxSteps), max_retries: Number(state.retries), max_model_calls: 0, cooldown_minutes: Number(state.cooldown), step_timeout_seconds: 30, approval_ttl_minutes: Number(state.approvalTtl), wait_minutes: 1440 },
   });
   const assignment = () => {
@@ -742,7 +742,7 @@ function residentWizard(data, bricks) {
     return {
       assignment_id: (slug(state.id || state.name) || "resident") + "-" + (state.target.split(":")[1] || "target"), definition_id: def.definition_id, definition_version: 1, agent: state.agent, target: state.target,
       rca: rca ? { rca_id: rca[0], version: Number(rca[1]) } : null,
-      subscriptions: Object.entries(state.sources).filter(([source]) => source !== "timer").map(([source, kinds]) => ({ source, kinds: String(kinds).split(",").map((item) => item.trim()).filter(Boolean), attributes: {}, scope: "target" })),
+      subscriptions: Object.entries(state.sources).filter(([source]) => source !== "timer").map(([source, kinds]) => ({ source, kinds: String(kinds).split(",").map((item) => item.trim()).filter(Boolean), attributes: {}, scope: source === "ci" ? "repository" : "target" })),
       timers: state.sources.timer !== undefined ? [{ timer_id: "scheduled", every_minutes: Math.max(5, Number(state.sources.timer) || 60) }] : [], lifetime_days: Number(state.lifetime),
     };
   };
@@ -801,6 +801,8 @@ function residentWizard(data, bricks) {
     step(3, "Context", contextBox, field("Brick versions the definition expects on the target (ID@N, comma separated; a missing one is reported as missing context)", "bricks"), select("When required context is missing", state.missing, [["block", "Block the activation"], ["ask", "Ask a person"]], (value) => { state.missing = value; refresh(); })),
     step(4, "Triggers", h("div", { class: "muted" }, "Choose real sources only. Unsupported sources are listed so the gap is visible."), sourceRows),
     step(5, "Actions and boundaries", h("div", { class: "muted" }, "Least privilege: nothing auto-runs unless ticked, and Crane can still require a person (assisted ceilings, restricted zones, approval Bricks)."), actionRows,
+      h("label", { style: "display:block;margin:6px 0" }, h("input", { type: "checkbox", checked: state.remote, onchange: (e) => { state.remote = e.target.checked; refresh(); } }), " Admins may approve and answer from the dashboard (GitHub-verified; off by default)"),
+      h("label", { style: "display:block;margin:6px 0" }, h("input", { type: "checkbox", checked: state.distinct, onchange: (e) => { state.distinct = e.target.checked; refresh(); } }), " Separation of duties: whoever activates the assignment cannot approve its steps"),
       field("Lifetime (days, at most 90)", "lifetime", "number"), field("Cooldown between activations (minutes)", "cooldown", "number"), field("Activations per day (at most 200)", "perDay", "number"), field("Steps per plan (at most 20)", "maxSteps", "number"), field("Retries of a step that failed without effect (at most 2)", "retries", "number"), field("Approval lifetime (minutes)", "approvalTtl", "number")),
     step(6, "RCA behavior", select("RCA graph", state.rca, rcaChoices, (value) => { state.rca = value; refresh(); }), h("div", { class: "muted" }, "A reviewed graph's remediations may run (each step still decided by Crane); a proposed graph's are proposed to a person. Without evidence the agent asks or proposes; it never guesses.")),
     step(7, "Verification", h("label", {}, h("input", { type: "checkbox", checked: state.verification, onchange: (e) => { state.verification = e.target.checked; refresh(); } }), " Plans with an external step must verify their outcome"), h("div", { class: "muted" }, "Either way, an activation is COMPLETED only when verification evidence proves it; otherwise it ends UNKNOWN.")),
@@ -808,6 +810,41 @@ function residentWizard(data, bricks) {
       h("div", { class: "muted" }, "Then on a member's machine: crane resident definition save --file resident-definition.json · crane resident create --file resident-assignment.json --dry-run · crane resident validate ID · crane resident test ID --event resident-event.json · an admin: crane resident definition activate ID@1 --reason TEXT and crane resident activate ID --reason TEXT"), out));
   refresh();
   return node;
+}
+
+/** What each dashboard decision means, for the form */
+const RESIDENT_ACTIONS = {
+  approve: ["Approve step", "The step runs when the machine applies this, if Crane still allows it then."],
+  deny: ["Deny step", "The step is denied; independent steps may continue."],
+  answer: ["Answer question", "The activation resumes with your answer (secret-looking values are removed)."],
+  cancel: ["Cancel activation", "Queued and waiting work stops; a started external call stays uncertain until reconciled."],
+  pause: ["Pause assignment", "It takes no trigger until a signer resumes it on a machine."],
+  revoke: ["Revoke assignment", "Final: it never acts again. A new assignment is the way back."],
+};
+
+/** Decide for a resident agent on the dashboard: GitHub confirms that you administer the
+ * repository, the service keeps the decision for the machine that holds the activation, and that
+ * machine applies it at its next sync with Crane's own checks. The dashboard can always make
+ * things stricter (pause, revoke, cancel); approvals and answers count only when the definition
+ * allows dashboard decisions, and only for the plan digest shown here. */
+function residentDecide(action, row) {
+  const [title, effect] = RESIDENT_ACTIONS[action];
+  const reason = h("input", { type: "text", maxlength: "300", placeholder: "Why (recorded with the decision)", "aria-label": "Reason", required: true });
+  const text = action === "answer" ? h("textarea", { rows: 4, maxlength: "2000", placeholder: "Your answer (never secrets)", "aria-label": "Answer", required: true }) : null;
+  const error = h("div", { class: "error-text", role: "alert" });
+  const facts = [["Machine", row.member ? (row.member.actor || row.installation) : row.installation], ["Assignment", row.assignment || row.assignment_id], ["Activation", row.activation || row.activation_id || "—"], ["Step", row.step || "—"], ["Plan", row.plan || "—"]];
+  details.open(title, h("form", { class: "form", onsubmit: (event) => {
+    event.preventDefault();
+    if (!reason.value.trim()) { error.textContent = "Say why; it is recorded."; return; }
+    if (text && !text.value.trim()) { error.textContent = "Write the answer."; return; }
+    const query = new URLSearchParams({ repository: scope.repository, installation: row.installation || "", action, activation: row.activation || row.activation_id || "", assignment: row.assignment || row.assignment_id || "", step: row.step || "", plan: row.plan || "", text: text ? text.value.trim() : "", reason: reason.value.trim() });
+    location.href = "/auth/resident?" + query.toString();
+  } },
+    h("div", { class: "kv" }, facts.map(([key, value]) => [h("div", {}, key), h("div", {}, h("code", {}, String(value)))])),
+    h("p", {}, effect), text ? h("label", {}, "Answer", text) : null, h("label", {}, "Reason", reason), error,
+    h("p", { class: "muted" }, "You will sign in with GitHub; only an admin or owner of the repository can decide, and anyone else is refused. The machine applies it at its next sync, with every check Crane makes there" + (["approve", "deny", "answer"].includes(action) ? "; it counts only if the definition allows dashboard decisions (remote_decisions) and the plan is still the one shown" : "") + ". Resuming and activating need a signer on a machine."),
+    h("button", { class: "btn primary", type: "submit" }, "Continue with GitHub")), { kind: "Resident agents" });
+  reason.focus();
 }
 
 async function residentsView(main) {
@@ -828,7 +865,8 @@ async function residentsView(main) {
   main.append(zone("res-state", "State", "Assignment lifecycle (draft, validated, active, paused, expired, revoked) and runtime status (derived from activations and from Crane now) are kept apart.", h("div", { class: "kpis span-12" },
     kpi("Active and idle", count("ACTIVE_IDLE"), { tone: "good", note: "no model, no process" }), kpi("Investigating or executing", count("INVESTIGATING") + count("EXECUTING")),
     kpi("Awaiting approval", count("AWAITING_APPROVAL"), { tone: count("AWAITING_APPROVAL") ? "warn" : "" }), kpi("Degraded", count("DEGRADED"), { tone: count("DEGRADED") ? "bad" : "good", note: "Crane would not admit it now" }),
-    kpi("Model calls while idle", counters.idle_model_calls || 0, { tone: counters.idle_model_calls ? "bad" : "good", note: "should stay 0" }), kpi("Queue depth", data.health.queue_depth || 0))));
+    kpi("Model calls while idle", counters.idle_model_calls || 0, { tone: counters.idle_model_calls ? "bad" : "good", note: "should stay 0" }), kpi("Queue depth", data.health.queue_depth || 0)),
+    h("div", { class: "muted span-12" }, "Each member's machine keeps its own resident store; this page merges every machine's latest report: ", (data.members || []).map((row) => (row.member ? row.member.actor : row.installation) + " (" + row.assignments + " assignment(s), " + dt(row.reported_at) + ")").join(" · ") || "—")));
   main.append(zone("res-registry", "Registry", "Every assignment with its target, definition version, lifetime, triggers, connector support, latest activation, last verification, and most recent failure.",
     panel("Assignments", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.assignments); put(body, dataTable([
       { label: "Assignment", get: (row) => row.assignment_id, render: (row) => h("b", {}, row.assignment_id) },
@@ -846,6 +884,8 @@ async function residentsView(main) {
       { label: "Last verified", get: (row) => row.last_verified_at, render: (row) => h("span", { class: "mono" }, row.last_verified_at ? dt(row.last_verified_at) : "—") },
       { label: "Last failure", get: (row) => (row.last_failure ? row.last_failure.reason : ""), render: (row) => (row.last_failure ? h("span", {}, chip(row.last_failure.state), " ", row.last_failure.reason || "") : "—") },
       { label: "Model calls", get: (row) => row.model_calls, num: true },
+      { label: "Machine", get: (row) => (row.member ? row.member.actor || row.installation : row.installation || ""), filter: true },
+      { label: "Act", get: () => "", render: (row) => (["active", "paused", "validated", "draft", "expired"].includes(row.lifecycle) ? h("div", {}, row.lifecycle === "active" ? h("button", { type: "button", class: "btn", onclick: () => residentDecide("pause", row) }, "Pause…") : null, " ", h("button", { type: "button", class: "btn", onclick: () => residentDecide("revoke", row) }, "Revoke…")) : "—") },
     ], data.assignments, { empty: "No resident assignment yet. Build one below, or run 'crane resident create' on a member's machine.", name: "foxx-residents" })); }),
     panel("Definitions", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.definitions); put(body, dataTable([
       { label: "Definition", get: (row) => row.ref, render: (row) => h("code", {}, row.ref) }, { label: "Name", get: (row) => row.name }, { label: "State", get: (row) => row.state, render: (row) => chip(row.state), filter: true },
@@ -867,15 +907,15 @@ async function residentsView(main) {
       { label: "Activation", get: (row) => row.activation, render: (row) => h("code", {}, row.activation) }, { label: "Assignment", get: (row) => row.assignment, filter: true }, { label: "Step", get: (row) => row.step + " " + row.type },
       { label: "What", get: (row) => row.summary || "", render: (row) => h("div", {}, row.summary || "", (row.proposed_steps || []).length ? h("div", { class: "muted" }, "proposes: " + row.proposed_steps.map((item) => item.step + " " + item.type).join(", ")) : null) },
       { label: "Why Crane asks", get: (row) => (row.reasons || []).join(", ") }, { label: "Plan", get: (row) => row.plan, render: (row) => h("code", { class: "muted" }, row.plan) },
-      { label: "Decide on a machine", get: () => "", render: (row) => command("crane resident approve " + row.activation + " --step " + row.step + " --reason TEXT [--deny]") },
+      { label: "Decide", get: () => "", render: (row) => h("div", {}, h("button", { type: "button", class: "btn", onclick: () => residentDecide("approve", row) }, "Approve…"), " ", h("button", { type: "button", class: "btn", onclick: () => residentDecide("deny", row) }, "Deny…"), h("div", { class: "muted" }, "or on a machine: ", command("crane resident approve " + row.activation + " --step " + row.step + " --reason TEXT [--deny]"))) },
     ], data.inbox.approvals, { noColumns: true, empty: "Nothing waits for approval." }))),
     panel("Questions", { span: 6, flush: true, scope: report }, async (body) => put(body, dataTable([
       { label: "Activation", get: (row) => row.activation, render: (row) => h("code", {}, row.activation) }, { label: "Question", get: (row) => row.summary || row.detail },
-      { label: "Deadline", get: (row) => row.deadline, render: (row) => (row.deadline ? dt(row.deadline) : "—") }, { label: "Answer on a machine", get: () => "", render: (row) => command("crane resident answer " + row.activation + " --step " + row.step + " --text TEXT") },
+      { label: "Deadline", get: (row) => row.deadline, render: (row) => (row.deadline ? dt(row.deadline) : "—") }, { label: "Answer", get: () => "", render: (row) => h("div", {}, h("button", { type: "button", class: "btn", onclick: () => residentDecide("answer", row) }, "Answer…"), h("div", { class: "muted" }, "or: ", command("crane resident answer " + row.activation + " --step " + row.step + " --text TEXT"))) },
     ], data.inbox.questions, { noColumns: true, empty: "No open question." }))),
     panel("Uncertain effects to reconcile", { span: 6, flush: true, scope: report }, async (body) => put(body, dataTable([
       { label: "Activation", get: (row) => row.activation, render: (row) => h("code", {}, row.activation) }, { label: "Step", get: (row) => row.step + " " + row.type }, { label: "Detail", get: (row) => row.detail },
-      { label: "Establish on a machine", get: () => "", render: (row) => command("crane resident reconcile " + row.activation + " --step " + row.step + " --happened yes|no --reason TEXT") },
+      { label: "Establish on a machine", get: () => "", render: (row) => h("div", {}, command("crane resident reconcile " + row.activation + " --step " + row.step + " --happened yes|no --reason TEXT"), h("div", { class: "muted" }, "Declared evidence comes from a person at the machine; adapters that can read back (Jira) are reconciled automatically")) },
     ], data.inbox.reconciliation, { noColumns: true, empty: "No uncertain effect." }))),
     panel("Proposed RCA graphs", { span: 6, flush: true, scope: report }, async (body) => put(body, dataTable([
       { label: "Graph", get: (row) => row.rca, render: (row) => h("code", {}, row.rca) }, { label: "Target", get: (row) => row.target }, { label: "Origin", get: (row) => row.origin.by + (row.origin.activation_id ? " " + row.origin.activation_id : "") },
@@ -898,6 +938,7 @@ async function residentsView(main) {
       { label: "Cache", get: (row) => (row.context ? (row.context.cache || {}).cache : ""), render: (row) => (row.context ? chip((row.context.cache || {}).cache) : "—"), filter: true },
       { label: "Steps", get: (row) => (row.plan ? row.plan.steps.length : 0), num: true },
       { label: "Model calls", get: (row) => row.usage.model_calls, num: true },
+      { label: "Act", get: () => "", render: (row) => (["COMPLETED", "PARTIALLY_VERIFIED", "FAILED", "BLOCKED", "CANCELLED", "UNKNOWN", "SIMULATED"].includes(row.state) || row.mode !== "live" ? "—" : h("button", { type: "button", class: "btn", onclick: () => residentDecide("cancel", row) }, "Cancel…")) },
     ], data.activations, { sort: 0, dir: -1, empty: "No activation yet: assignments are idle until a trigger arrives.", name: "foxx-resident-activations" })); }),
     panel("Activation detail", { span: 12 }, async (body) => { put(body, detail); put(detail, activationDetail(data.activations[0])); })));
   const ignoredRows = Object.entries(data.health.ignored || {}).map(([reason, total]) => ({ reason, total }));

@@ -84,33 +84,157 @@ pub(super) fn bricks(context: &Context) -> Answer {
     - Answer
 */
 pub(super) fn residents(context: &Context) -> Answer {
-    let Some(status) = context.latest_status() else {
+    let reports = context
+        .statuses
+        .iter()
+        .map(|status| {
+            (
+                status["installation"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                context.member(status["installation"].as_str().map(String::from).as_ref()),
+                status,
+            )
+        })
+        .collect::<Vec<_>>();
+    if reports.is_empty() {
         return error(
             404,
             "no member has reported the repository's resident agents yet; they are sent with the next upload".into(),
         );
-    };
-    let mut view = status["residents"].clone();
-    if view.is_null() {
-        return error(
-            404,
-            "the reporting machine runs a Crane without resident agents; update Crane on that machine"
-                .into(),
-        );
     }
-    if view.get("error").is_some() {
-        return error(
-            500,
-            format!(
-                "the reporting machine could not read its resident store: {}",
-                view["error"]
+    match merge_residents(&reports) {
+        Ok(view) => (200, view, None),
+        Err((status, message)) => error(status, message),
+    }
+}
+
+/** Merge the resident reports of every member's machine: each machine keeps its own resident
+ * store, so the page lists every machine's assignments, activations, inbox rows, and tests
+ * (each tagged with its machine, which is where a dashboard decision is applied), sums the
+ * health counters, and takes the catalogs and the Crane view from the newest report
+ * Input
+    - reports: &[(String, Value, &Value)] - installation, member, and latest status of each machine
+ * Output
+    - Result<Value, (u16, String)> the merged view, or the status and message of why there is none
+*/
+pub(super) fn merge_residents(reports: &[(String, Value, &Value)]) -> Result<Value, (u16, String)> {
+    let mut usable = reports
+        .iter()
+        .filter(|(_, _, status)| {
+            status["residents"].is_object() && status["residents"].get("error").is_none()
+        })
+        .collect::<Vec<_>>();
+    usable.sort_by_key(|(_, _, status)| {
+        std::cmp::Reverse(status["collected_at"].as_u64().unwrap_or(0))
+    });
+    let Some((_, newest_member, newest)) = usable.first() else {
+        let failed = reports
+            .iter()
+            .find_map(|(_, _, status)| status["residents"].get("error").cloned());
+        return Err(match failed {
+            Some(error) => (
+                500,
+                format!("the reporting machine could not read its resident store: {error}"),
             ),
-        );
+            None => (
+                404,
+                "the reporting machines run a Crane without resident agents; update Crane on them"
+                    .into(),
+            ),
+        });
+    };
+    let mut view = json!({
+        "schema_version": newest["residents"]["schema_version"],
+        "catalog": newest["residents"]["catalog"],
+        "crane": newest["residents"]["crane"],
+        "reported_by": newest_member,
+        "reported_at": newest["collected_at"],
+        "definitions": [], "assignments": [], "activations": [], "rcas": [], "tests": [],
+        "inbox": {"approvals": [], "questions": [], "reconciliation": [], "rca_proposals": [], "assignments": []},
+        "health": {"counters": {}, "ignored": {}, "outcomes": {}, "cache": {}, "queue_depth": 0, "dead_letter": 0, "idle_model_calls": 0, "token_usage": newest["residents"]["health"]["token_usage"]},
+        "members": [],
+    });
+    let mut definitions = std::collections::BTreeSet::new();
+    let mut rcas = std::collections::BTreeSet::new();
+    for (installation, member, status) in &usable {
+        let report = &status["residents"];
+        let tag = |row: &Value| {
+            let mut row = row.clone();
+            row["installation"] = json!(installation);
+            row["member"] = member.clone();
+            row
+        };
+        for (key, list) in [
+            ("assignments", &report["assignments"]),
+            ("activations", &report["activations"]),
+            ("tests", &report["tests"]),
+        ] {
+            for row in list.as_array().into_iter().flatten() {
+                if let Some(rows) = view[key].as_array_mut() {
+                    rows.push(tag(row));
+                }
+            }
+        }
+        // Definitions and graphs are the same records on every machine that holds them: once each
+        for (key, seen, id) in [
+            ("definitions", &mut definitions, "ref"),
+            ("rcas", &mut rcas, "rca"),
+        ] {
+            for row in report[key].as_array().into_iter().flatten() {
+                let identity = format!(
+                    "{}#{}",
+                    row[id].as_str().unwrap_or_default(),
+                    row["digest"].as_str().unwrap_or_default()
+                );
+                if seen.insert(identity) {
+                    if let Some(rows) = view[key].as_array_mut() {
+                        rows.push(tag(row));
+                    }
+                }
+            }
+        }
+        for key in [
+            "approvals",
+            "questions",
+            "reconciliation",
+            "rca_proposals",
+            "assignments",
+        ] {
+            for row in report["inbox"][key].as_array().into_iter().flatten() {
+                if let Some(rows) = view["inbox"][key].as_array_mut() {
+                    rows.push(tag(row));
+                }
+            }
+        }
+        let health = &report["health"];
+        for (group, source) in [
+            ("counters", &health["counters"]),
+            ("ignored", &health["ignored"]),
+            ("outcomes", &health["outcomes"]),
+            ("cache", &health["cache"]),
+        ] {
+            for (name, value) in source.as_object().into_iter().flatten() {
+                if let Some(number) = value.as_u64() {
+                    let total = view["health"][group][name].as_u64().unwrap_or(0) + number;
+                    view["health"][group][name] = json!(total);
+                }
+            }
+        }
+        for name in ["queue_depth", "dead_letter", "idle_model_calls"] {
+            let total =
+                view["health"][name].as_u64().unwrap_or(0) + health[name].as_u64().unwrap_or(0);
+            view["health"][name] = json!(total);
+        }
+        if let Some(members) = view["members"].as_array_mut() {
+            members.push(json!({"installation": installation, "member": member, "reported_at": status["collected_at"], "assignments": report["assignments"].as_array().map_or(0, Vec::len)}));
+        }
     }
-    view["reported_by"] =
-        context.member(status["installation"].as_str().map(String::from).as_ref());
-    view["reported_at"] = status["collected_at"].clone();
-    (200, view, None)
+    if let Some(rows) = view["activations"].as_array_mut() {
+        rows.sort_by_key(|row| std::cmp::Reverse(row["created_at"].as_u64().unwrap_or(0)));
+    }
+    Ok(view)
 }
 
 /** The ledger view of one session or all sessions: entries, balances, and whether every member's
@@ -273,4 +397,72 @@ pub(super) fn repo_view(context: &Context) -> Value {
     view["remote"] = json!(context.remote);
     view["owner"] = context.owner.clone();
     view
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_residents;
+    use serde_json::json;
+
+    /** Two machines' resident reports merge: every assignment is kept and tagged with its machine,
+     * shared definitions appear once, counters add up, and an older Crane without residents
+     * neither hides the others nor fails the page
+     * Input
+        - None
+     * Output
+        - None (panics on failure)
+    */
+    #[test]
+    fn resident_reports_of_every_machine_are_merged() {
+        let report = |id: &str, idle: u64, at: u64| {
+            json!({"collected_at": at, "residents": {
+                "schema_version": 1, "catalog": {"steps": []}, "crane": null,
+                "definitions": [{"ref": "ci-watch@1", "digest": "d1"}], "rcas": [],
+                "assignments": [{"assignment_id": id, "status": "ACTIVE_IDLE"}],
+                "activations": [{"activation_id": format!("act_{id}"), "created_at": at}], "tests": [],
+                "inbox": {"approvals": [{"activation": format!("act_{id}"), "step": "notify"}], "questions": [], "reconciliation": [], "rca_proposals": [], "assignments": []},
+                "health": {"counters": {"ticks": 10, "idle_model_calls": idle}, "ignored": {"NO_MATCH": 2}, "outcomes": {}, "cache": {}, "queue_depth": 1, "dead_letter": 0, "idle_model_calls": idle, "token_usage": "unmeasured"}
+            }})
+        };
+        let (first, second) = (report("alpha", 0, 100), report("beta", 0, 200));
+        let older = json!({"collected_at": 300, "residents": null});
+        let reports = vec![
+            ("m1".to_string(), json!({"actor": "ana"}), &first),
+            ("m2".to_string(), json!({"actor": "bo"}), &second),
+            ("m3".to_string(), json!({"actor": "cy"}), &older),
+        ];
+        let view = merge_residents(&reports).unwrap();
+        let assignments = view["assignments"].as_array().unwrap();
+        assert_eq!(
+            assignments.len(),
+            2,
+            "the newest status (m3, no residents) does not hide the others"
+        );
+        assert_eq!(
+            assignments
+                .iter()
+                .find(|row| row["assignment_id"] == "alpha")
+                .unwrap()["installation"],
+            "m1"
+        );
+        assert_eq!(
+            view["definitions"].as_array().unwrap().len(),
+            1,
+            "a shared definition appears once"
+        );
+        assert_eq!(
+            view["inbox"]["approvals"][0]["installation"], "m2",
+            "inbox rows say where a decision is applied"
+        );
+        assert_eq!(view["health"]["counters"]["ticks"], 20);
+        assert_eq!(view["health"]["ignored"]["NO_MATCH"], 4);
+        assert_eq!(view["health"]["queue_depth"], 2);
+        assert_eq!(
+            view["activations"][0]["activation_id"], "act_beta",
+            "newest first"
+        );
+        assert_eq!(view["reported_by"]["actor"], "bo");
+        let none = vec![("m3".to_string(), json!(null), &older)];
+        assert_eq!(merge_residents(&none).unwrap_err().0, 404);
+    }
 }

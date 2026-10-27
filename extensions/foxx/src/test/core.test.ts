@@ -12,7 +12,7 @@ import { busiest, layout } from "../core/graph";
 import { contextLabel, guidanceLines, liveFresh } from "../core/live";
 import { parsePolicies } from "../core/policies";
 import { checkName, confirmation, ownerKey, repoArgs } from "../core/setup";
-import { assignmentDraft, checkAssignmentId, packMarkdown, residentMarkdown, ResidentRow, residentsByTarget, residentTone } from "../core/residents";
+import { assignmentDraft, checkAssignmentId, packMarkdown, residentChanges, residentMarkdown, ResidentRow, residentsByTarget, residentTone } from "../core/residents";
 
 test("parses policies and commands", () => {
   const policies = parsePolicies(".crane/policies/p.crane", "# c\npolicy default {\n}\npolicy Payments {\n    preserve K7M2P9RX; // keep\n    target ABCD2345 change_type logical_bn;\n}\n");
@@ -324,6 +324,10 @@ test("resident drafts name explicit kinds and stay within the lifetime ceiling",
   assert.equal(draft.definition_version, 2);
   assert.deepEqual((draft.subscriptions as { kinds: string[] }[])[0].kinds, ["ci.failed", "ci.cancelled"], "a bare * is never written");
   assert.equal(draft.lifetime_days, 90);
+  assert.equal((draft.subscriptions as { scope: string }[])[0].scope, "repository", "pulled CI runs name no target");
+  assert.deepEqual(residentChanges(residentRow("a", "flow:f", "ACTIVE_IDLE")), ["pause", "revoke"]);
+  assert.deepEqual(residentChanges({ ...residentRow("a", "flow:f", "PAUSED"), lifecycle: "paused" }), ["resume", "revoke"]);
+  assert.deepEqual(residentChanges({ ...residentRow("a", "flow:f", "REVOKED"), lifecycle: "revoked" }), []);
   assert.deepEqual(assignmentDraft({ id: "x", definition: "d@1", agent: "a", target: "flow:f", kinds: "*" }).subscriptions, []);
   assert.equal(checkAssignmentId("ci-checkout"), undefined);
   assert.ok(checkAssignmentId("9bad"));

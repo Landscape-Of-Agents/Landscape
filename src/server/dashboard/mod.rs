@@ -410,7 +410,11 @@ impl Dashboard {
         }
         if matches!(
             path.as_str(),
-            "/auth/login" | "/auth/approve" | "/auth/agent-action" | "/auth/grant"
+            "/auth/login"
+                | "/auth/approve"
+                | "/auth/agent-action"
+                | "/auth/grant"
+                | "/auth/resident"
         ) {
             if let Some(location) = Auth::elsewhere(request) {
                 return Reply::redirect(&location);
@@ -429,6 +433,7 @@ impl Dashboard {
             "/auth/approve" => self.approve(request, &query),
             "/auth/agent-action" => self.start_agent_approval(request, &query),
             "/auth/grant" => self.start_grant(request, &query),
+            "/auth/resident" => self.start_resident(request, &query),
             "/auth/callback" => self.callback(request, &query),
             "/auth/logout" => {
                 // F00.8
@@ -723,6 +728,7 @@ impl Dashboard {
             state: state.clone(),
             grant: None,
             dashboard_agent: None,
+            resident: None,
         };
         let private = query.get("private").is_some_and(|value| value == "1");
         Reply::redirect(&auth.authorize_url(request, &state, private))
@@ -785,6 +791,7 @@ impl Dashboard {
                 json!({"repository": repository, "session": session, "amount": amount, "reason": reason}),
             ),
             dashboard_agent: None,
+            resident: None,
         };
         let private = query.get("private").is_some_and(|value| value == "1");
         Reply::redirect(&auth.authorize_url(request, &state, private))
@@ -848,6 +855,7 @@ impl Dashboard {
                 "repository": repository,
                 "record_id": record_id,
             })),
+            resident: None,
         };
         Reply::redirect(&auth.authorize_url(request, &state, true))
             .with_header(
@@ -858,6 +866,200 @@ impl Dashboard {
                 "Set-Cookie",
                 &Auth::cookie(request, "foxx_intent", &auth.seal(&intent), 600),
             )
+    }
+
+    /** Start a resident-agent decision: check what was asked, then GitHub sign-in carrying it in
+     * a signed cookie; GitHub decides at the callback whether the person administers the
+     * repository, and the machine decides again, with Crane's checks, when it applies it
+     * Input
+        - request: &Request - request
+        - query: &BTreeMap<String, String> - repository, installation, action (approve, deny,
+          answer, cancel, pause, revoke), activation, assignment, step, plan, text, reason
+     * Output
+        - Reply
+    */
+    fn start_resident(&self, request: &Request, query: &BTreeMap<String, String>) -> Reply {
+        let Some(auth) = &self.auth else {
+            return Reply::redirect("/");
+        };
+        let value = |key: &str| query.get(key).cloned().unwrap_or_default();
+        let identifier = |text: &str| {
+            text.len() <= 128
+                && text.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || "_-.:@".contains(character)
+                })
+        };
+        let action = value("action");
+        let bounded =
+            |key: &str, limit: usize| value(key).trim().chars().take(limit).collect::<String>();
+        let (activation, assignment, step, plan) = (
+            value("activation"),
+            value("assignment"),
+            value("step"),
+            value("plan"),
+        );
+        let reason = bounded("reason", 300);
+        let text = bounded("text", 2000);
+        let shape = match action.as_str() {
+            "approve" | "deny" => !activation.is_empty() && !step.is_empty() && !plan.is_empty(),
+            "answer" => {
+                !activation.is_empty() && !step.is_empty() && !plan.is_empty() && !text.is_empty()
+            }
+            "cancel" => !activation.is_empty(),
+            "pause" | "revoke" => !assignment.is_empty(),
+            _ => false,
+        };
+        if !is_digest(&value("repository"))
+            || !identifier(&value("installation"))
+            || value("installation").is_empty()
+            || ![&activation, &assignment, &step, &plan]
+                .iter()
+                .all(|item| identifier(item))
+            || !shape
+            || reason.is_empty()
+        {
+            return Reply::json(
+                400,
+                json!({"error": "a resident decision needs a repository, the machine, an action (approve, deny, answer, cancel, pause, revoke) with what it applies to, and a reason"}),
+            );
+        }
+        let state = random_bytes(16)
+            .map(|bytes| hex(&bytes))
+            .unwrap_or_default();
+        let intent = Intent {
+            action: "resident".into(),
+            code: String::new(),
+            state: state.clone(),
+            grant: None,
+            dashboard_agent: None,
+            resident: Some(json!({
+                "repository": value("repository"), "installation": value("installation"), "action": action,
+                "activation": activation, "assignment": assignment, "step": step, "plan": plan, "text": text, "reason": reason,
+            })),
+        };
+        let private = query.get("private").is_some_and(|value| value == "1");
+        Reply::redirect(&auth.authorize_url(request, &state, private))
+            .with_header(
+                "Set-Cookie",
+                &Auth::cookie(request, "foxx_oauth", &state, 600),
+            )
+            .with_header(
+                "Set-Cookie",
+                &Auth::cookie(request, "foxx_intent", &auth.seal(&intent), 600),
+            )
+    }
+
+    /** Carry out a resident-agent decision: check that the repository is known and the machine
+     * reported to it, ask GitHub whether the person administers it, and record the decision for
+     * that machine
+     * Input
+        - auth: &Auth - sign-in settings
+        - intent: &Intent - the decision asked for
+        - viewer: &Viewer - who signed in
+        - token: &str - their GitHub token (used for one question, then dropped)
+     * Output
+        - (bool, String) success and the message for the person
+    */
+    fn carry_out_resident(
+        &self,
+        auth: &Auth,
+        intent: &Intent,
+        viewer: &Viewer,
+        token: &str,
+    ) -> (bool, String) {
+        let asked = intent.resident.clone().unwrap_or_default();
+        let text = |key: &str| asked[key].as_str().unwrap_or_default().to_string();
+        let repository = text("repository");
+        let installation = text("installation");
+        let remote = match data::verified_repositories(&self.read) {
+            Ok(list) => list
+                .into_iter()
+                .find(|(id, _)| *id == repository)
+                .map(|(_, remote)| remote),
+            Err(error) => return (false, error),
+        };
+        let Some(remote) = remote else {
+            return (false, "that repository is not known to the service".into());
+        };
+        match self.read.find(
+            "repository_status",
+            mongodb::bson::doc! {"repository_id": &repository, "installation": &installation},
+            mongodb::bson::doc! {"collected_at": -1},
+            1,
+        ) {
+            Ok(rows) if !rows.is_empty() => {}
+            Ok(_) => {
+                return (
+                    false,
+                    "that machine has not reported to this repository".into(),
+                )
+            }
+            Err(error) => return (false, error),
+        }
+        let access = match auth.access(token, &remote) {
+            Ok(access) => access,
+            Err(error) => return (false, error),
+        };
+        let decision = approve::ResidentDecision {
+            repository: repository.clone(),
+            remote: remote.clone(),
+            installation: installation.clone(),
+            action: text("action"),
+            activation: text("activation"),
+            assignment: text("assignment"),
+            step: text("step"),
+            plan: text("plan"),
+            text: crate::telemetry::redact::redact(&text("text")).0,
+            reason: crate::telemetry::redact::redact(&text("reason")).0,
+        };
+        let outcome = self
+            .approvals
+            .resident_decision(&decision, &viewer.login, access);
+        // F38.13: a resident decision recorded or refused on the dashboard
+        let mut spec = service_events::dashboard(
+            if outcome.is_ok() {
+                "RESIDENT_DECISION_RECORDED"
+            } else {
+                "RESIDENT_DECISION_REFUSED"
+            },
+            "F38",
+            "RESIDENT_APPROVAL",
+            Some(&viewer.login),
+            Some((&repository, &remote)),
+        );
+        spec.respond(
+            if outcome.is_ok() { "OK" } else { "REFUSED" },
+            if outcome.is_ok() { "NA" } else { "NOT_ADMIN" },
+            if outcome.is_ok() {
+                "Admin decided for a resident agent; the machine applies it at its next sync."
+            } else {
+                "Resident decision refused: not an admin."
+            },
+        )
+        .set("assessment", "assessment_checks", ["GITHUB_ADMIN_ROLE"])
+        .set(
+            "decision",
+            "decision",
+            if outcome.is_ok() { "ALLOW" } else { "DENY" },
+        )
+        .set("decision", "decision_rule", "GITHUB_ADMIN_REQUIRED")
+        .set("resource", "resource", ["CRANE_METADATA"])
+        .set("other", "action", &decision.action)
+        .set("other", "activation", &decision.activation)
+        .set("other", "assignment", &decision.assignment)
+        .set("other", "step", &decision.step)
+        .set("other", "plan", &decision.plan)
+        .severity(
+            if outcome.is_ok() { "LOW" } else { "MEDIUM" },
+            "OUTCOME",
+            "NONE",
+        );
+        self.log
+            .record(spec, Some(&repository), Some(&installation));
+        match outcome {
+            Ok(message) => (true, message),
+            Err(error) => (false, error),
+        }
     }
 
     /** Carry out a credit grant: find the session's machine, ask GitHub whether the person
@@ -1307,8 +1509,11 @@ impl Dashboard {
                     Some(intent) => {
                         let grant = intent.action == "grant";
                         let agent_action = intent.action == "dashboard-agent";
+                        let resident = intent.action == "resident";
                         let (ok, message) = if grant {
                             self.carry_out_grant(auth, &intent, &viewer, &token)
+                        } else if resident {
+                            self.carry_out_resident(auth, &intent, &viewer, &token)
                         } else if agent_action {
                             self.carry_out_dashboard_agent_action(auth, &intent, &viewer, &token)
                         } else {
@@ -1320,6 +1525,8 @@ impl Dashboard {
                             u8::from(ok),
                             if grant {
                                 "credits"
+                            } else if resident {
+                                "residents"
                             } else if agent_action {
                                 "dashboard-agents"
                             } else {

@@ -334,6 +334,91 @@ pub(super) fn settle_grants(
     Ok(json!({"settled": settled}))
 }
 
+/** Return the resident-agent decisions an admin made on the dashboard for this machine, still
+ * pending and not expired (only the machine's own; nothing else is ever read back)
+ * Input
+    - database: &Database - MongoDB
+    - repository: &str - repository identity
+    - installation: &str - the machine
+ * Output
+    - Result<Value, String> {decisions: [{decision_id, action, activation, assignment, step, plan,
+      text, reason, decided_by, decided_at}]}
+*/
+pub(super) fn pending_resident_decisions(
+    database: &Database,
+    repository: &str,
+    installation: &str,
+) -> Result<Value, String> {
+    let found = database
+        .collection::<Document>("resident_decisions")
+        .find(doc! {"repository_id": repository, "installation": installation, "status": "PENDING", "expires_at": {"$gt": now_millis() as i64}})
+        .sort(doc! {"decided_at": 1})
+        .limit(50)
+        .run()
+        .map_err(io_error)?;
+    let mut decisions = Vec::new();
+    for document in found {
+        let document = document.map_err(io_error)?;
+        let text = |key: &str| document.get_str(key).unwrap_or_default().to_string();
+        decisions.push(json!({
+            "decision_id": text("decision_id"),
+            "action": text("action"),
+            "activation": text("activation"),
+            "assignment": text("assignment"),
+            "step": text("step"),
+            "plan": text("plan"),
+            "text": text("text"),
+            "reason": text("reason"),
+            "decided_by": text("decided_by"),
+            "decided_at": number(document.get("decided_at")),
+        }));
+    }
+    Ok(json!({"decisions": decisions}))
+}
+
+/** Record what a machine did with its resident decisions: applied (with the state it reached)
+ * or rejected (with why); only the machine's own pending decisions change
+ * Input
+    - database: &Database - MongoDB
+    - repository: &str - repository identity
+    - installation: &str - the machine
+    - body: &Value - {results: [{decision_id, status: APPLIED|REJECTED, detail, state}]}
+ * Output
+    - Result<Value, String> {settled}
+*/
+pub(super) fn settle_resident_decisions(
+    database: &Database,
+    repository: &str,
+    installation: &str,
+    body: &Value,
+) -> Result<Value, String> {
+    let mut settled = 0;
+    for result in body["results"].as_array().into_iter().flatten().take(50) {
+        let status = match result["status"].as_str() {
+            Some("APPLIED") => "APPLIED",
+            _ => "REJECTED",
+        };
+        let bounded = |key: &str, limit: usize| {
+            result[key]
+                .as_str()
+                .unwrap_or_default()
+                .chars()
+                .take(limit)
+                .collect::<String>()
+        };
+        let changed = database
+            .collection::<Document>("resident_decisions")
+            .update_one(
+                doc! {"decision_id": result["decision_id"].as_str().unwrap_or_default(), "repository_id": repository, "installation": installation, "status": "PENDING"},
+                doc! {"$set": {"status": status, "settled_at": now_millis() as i64, "detail": bounded("detail", 300), "state": bounded("state", 40)}},
+            )
+            .run()
+            .map_err(io_error)?;
+        settled += changed.modified_count;
+    }
+    Ok(json!({"settled": settled}))
+}
+
 /** Return the repository's owner key most recently confirmed by a GitHub admin of its remote
  * (public information: a public key and who confirmed it)
  * Input

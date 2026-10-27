@@ -72,7 +72,7 @@ fn residents_wake_on_triggers_verify_and_stop_when_authority_is_revoked() {
             "purpose": "Respond to failed CI runs of the payments zone.",
             "owner": "payments",
             "triggers": ["ci", "webhook"],
-            "actions": [{"step_type": "READ_CHECK", "auto": true}, {"step_type": "VERIFY", "auto": true}, {"step_type": "ASK_USER"}, {"step_type": "PROPOSE_RCA", "auto": true}, {"step_type": "NOTIFY_SLACK"}],
+            "actions": [{"step_type": "READ_CHECK", "auto": true}, {"step_type": "VERIFY", "auto": true}, {"step_type": "ASK_USER"}, {"step_type": "PROPOSE_RCA", "auto": true}, {"step_type": "NOTIFY_SLACK"}, {"step_type": "CREATE_TICKET"}],
             "limits": {"cooldown_minutes": 0}
         }),
     );
@@ -175,6 +175,17 @@ fn residents_wake_on_triggers_verify_and_stop_when_authority_is_revoked() {
             .any(|warning| warning[0] == "CONNECTOR_NOT_CONFIGURED"),
         "Slack is not configured: {validated}"
     );
+    assert!(
+        validated["data"]["validation"]["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning[1]
+                .as_str()
+                .unwrap_or_default()
+                .contains("jira is not configured")),
+        "CREATE_TICKET needs Jira: {validated}"
+    );
     let (code, active) = envelope(
         &fixture,
         &[
@@ -263,4 +274,33 @@ fn residents_wake_on_triggers_verify_and_stop_when_authority_is_revoked() {
         &json!({"source": "governance_change", "kind": "governance.signed", "idempotency_key": "x"}),
     );
     assert!(text(&fixture.run(&["resident", "trigger", "--file", &bad])).contains("rejected"));
+
+    // A recorded Crane event can be replayed as a plan-only test
+    let (code, replayed) = envelope(
+        &fixture,
+        &["resident", "test", "payments-ci", "--replay-event", "1"],
+    );
+    assert!(matches!(code, Some(0 | 3 | 5)), "{replayed}");
+    assert!(
+        replayed["data"]["mode"]
+            .as_str()
+            .unwrap()
+            .contains("nothing was executed"),
+        "{replayed}"
+    );
+
+    // Duplicating makes a draft with the same definition, triggers, and graph
+    let (code, copied) = envelope(
+        &fixture,
+        &[
+            "resident",
+            "duplicate",
+            "payments-ci",
+            "--as",
+            "payments-ci-2",
+        ],
+    );
+    assert_eq!(code, Some(0), "{copied}");
+    assert_eq!(copied["data"]["assignment"]["lifecycle"], "draft");
+    assert_eq!(copied["data"]["assignment"]["rca"]["rca_id"], "payments-ci");
 }

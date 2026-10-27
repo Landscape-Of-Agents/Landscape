@@ -80,6 +80,229 @@ pub(crate) trait ActionAdapter {
         - Dispatch
     */
     fn dispatch(&self, text: &str, key: &str) -> Dispatch;
+
+    /** Read back what a step with this key really did, when the external system can say
+     * Input
+        - _key: &str - idempotency key of the step
+     * Output
+        - Option<Dispatch> - Done or Failed when established, None when it cannot be read back
+    */
+    fn reconcile(&self, _key: &str) -> Option<Dispatch> {
+        None
+    }
+}
+
+/** The Jira adapter: one issue per step in the configured project ('crane integrate jira'),
+ * labelled with a digest of the step's idempotency key. Before creating, and when an outcome is
+ * unknown, the label is looked up, so a retry or a crash never opens a second issue
+ * Fields
+    - workspace: Workspace - repository
+*/
+pub(crate) struct JiraAdapter {
+    pub(crate) workspace: Workspace,
+}
+
+/** Turn a Jira answer into a dispatch outcome
+ * Input
+    - answer: crate::integrations::IssueAnswer - answer
+ * Output
+    - Dispatch
+*/
+fn jira_outcome(answer: crate::integrations::IssueAnswer) -> Dispatch {
+    use crate::integrations::IssueAnswer;
+    match answer {
+        IssueAnswer::Created(key) => Dispatch::Done {
+            external_ref: format!("jira:{key}"),
+            evidence: format!("created {key}"),
+        },
+        IssueAnswer::Found(key) => Dispatch::Done {
+            external_ref: format!("jira:{key}"),
+            evidence: format!("{key} already carries this step's label; nothing new was created"),
+        },
+        IssueAnswer::Absent => Dispatch::Failed {
+            effect: false,
+            detail: "no issue carries this step's label".into(),
+        },
+        IssueAnswer::Refused(detail) | IssueAnswer::NotConfigured(detail) => Dispatch::Failed {
+            effect: false,
+            detail,
+        },
+        IssueAnswer::Unknown(detail) => Dispatch::Uncertain { detail },
+    }
+}
+
+impl ActionAdapter for JiraAdapter {
+    /** CREATE_TICKET
+     * Input
+        - None (uses self)
+     * Output
+        - StepType
+    */
+    fn step_type(&self) -> StepType {
+        StepType::CreateTicket
+    }
+
+    /** Look the step's label up, and create the issue only when none carries it (the first line
+     * of the text is the summary, the rest the description)
+     * Input
+        - text: &str - summary and description
+        - key: &str - idempotency key
+     * Output
+        - Dispatch
+    */
+    fn dispatch(&self, text: &str, key: &str) -> Dispatch {
+        let label = crate::integrations::issue_label(key);
+        match crate::integrations::find_issue(&self.workspace, &label) {
+            crate::integrations::IssueAnswer::Absent => {
+                let (summary, description) = text.split_once('\n').unwrap_or((text, ""));
+                jira_outcome(crate::integrations::create_issue(
+                    &self.workspace,
+                    summary,
+                    description,
+                    &label,
+                ))
+            }
+            other => jira_outcome(other),
+        }
+    }
+
+    /** Establish what an uncertain step did by looking its label up
+     * Input
+        - key: &str - idempotency key
+     * Output
+        - Option<Dispatch>
+    */
+    fn reconcile(&self, key: &str) -> Option<Dispatch> {
+        match crate::integrations::find_issue(
+            &self.workspace,
+            &crate::integrations::issue_label(key),
+        ) {
+            answer @ (crate::integrations::IssueAnswer::Found(_)
+            | crate::integrations::IssueAnswer::Absent) => Some(jira_outcome(answer)),
+            _ => None,
+        }
+    }
+}
+
+/** Ask the step's adapter what an uncertain step really did and record what it establishes
+ * Input
+    - env: &Env - environment (adapters)
+    - step: &PlanStep - the uncertain step
+    - record: &mut StepRecord - its record
+    - max_retries: u32 - retries allowed for a step that failed without effect
+ * Output
+    - bool - whether the adapter established the outcome
+*/
+fn reconcile_with_adapter(
+    env: &Env,
+    step: &PlanStep,
+    record: &mut StepRecord,
+    max_retries: u32,
+) -> bool {
+    let Some(answer) = env
+        .adapters
+        .iter()
+        .find(|adapter| adapter.step_type() == step.step_type)
+        .and_then(|adapter| adapter.reconcile(&record.idempotency_key))
+    else {
+        return false;
+    };
+    record.updated_at = env.now;
+    match answer {
+        Dispatch::Done {
+            external_ref,
+            evidence,
+        } => {
+            record.state = StepState::Succeeded;
+            record.detail = "reconciled from the external system: it happened".into();
+            record.external_ref = Some(external_ref);
+            record.evidence.push(format!("reconciled: {evidence}"));
+        }
+        Dispatch::Failed {
+            effect: false,
+            detail,
+        } => {
+            record.evidence.push(format!("reconciled: {detail}"));
+            if record.attempts <= max_retries {
+                record.state = StepState::Pending;
+                record.detail =
+                    "reconciled from the external system: it did not happen; retrying".into();
+            } else {
+                record.state = StepState::Failed;
+                record.detail = "reconciled from the external system: it did not happen".into();
+            }
+        }
+        Dispatch::Failed { .. } | Dispatch::Uncertain { .. } => return false,
+    }
+    true
+}
+
+/** Try to resolve the uncertain steps of an activation waiting for reconciliation through their
+ * adapters; when every one is established, the activation continues
+ * Input
+    - store: &mut ResidentStore - store
+    - env: &mut Env - environment
+    - activation_id: &str - activation
+ * Output
+    - Result<bool, String> - whether it continued
+*/
+pub(crate) fn auto_reconcile(
+    store: &mut ResidentStore,
+    env: &mut Env,
+    activation_id: &str,
+) -> Result<bool, String> {
+    let mut activation = store.activation(activation_id)?.clone();
+    if activation.state != ActivationState::ReconciliationRequired {
+        return Ok(false);
+    }
+    let max_retries = store
+        .definition(
+            &activation.definition_id,
+            Some(activation.definition_version),
+        )
+        .map(|record| record.definition.limits.max_retries)
+        .unwrap_or(0);
+    let plan = activation
+        .plan
+        .clone()
+        .unwrap_or_else(|| Plan::new(Vec::new()));
+    let mut resolved = 0;
+    let mut open = 0;
+    for step in &plan.steps {
+        let Some(record) = activation.steps.get_mut(&step.step_id) else {
+            continue;
+        };
+        if record.state != StepState::Uncertain {
+            continue;
+        }
+        if reconcile_with_adapter(env, step, record, max_retries) {
+            resolved += 1;
+        } else {
+            open += 1;
+        }
+    }
+    if resolved == 0 || open > 0 {
+        if resolved > 0 {
+            store.put_activation(activation);
+            store.save()?;
+        }
+        return Ok(false);
+    }
+    activation.record(
+        ActivationState::Executing,
+        "RECONCILED",
+        "the external system established every uncertain step",
+        env.now,
+    );
+    activity(
+        "RESIDENT_ACTION_RESULT",
+        &activation,
+        json!({"result": "OK", "basis": "RECONCILED"}),
+    );
+    store.put_activation(activation);
+    store.save()?;
+    advance(store, env, activation_id)?;
+    Ok(true)
 }
 
 /** The Slack adapter: the configured channel of 'crane integrate slack', waiting for Slack's answer
@@ -227,9 +450,14 @@ pub(crate) fn live(workspace: &Workspace, runtime: &std::path::Path) -> Env {
             }
         }),
         reasoner: Box::new(rca::GraphReasoner),
-        adapters: vec![Box::new(SlackAdapter {
-            workspace: workspace.clone(),
-        })],
+        adapters: vec![
+            Box::new(SlackAdapter {
+                workspace: workspace.clone(),
+            }),
+            Box::new(JiraAdapter {
+                workspace: workspace.clone(),
+            }),
+        ],
         cache: PackCache::open(runtime),
         now: crate::platform::now_millis(),
         worker: format!("{}:{}", crate::platform::actor(), std::process::id()),
@@ -333,8 +561,12 @@ pub(crate) fn ingest(store: &mut ResidentStore, triggers: Vec<Trigger>, now: u64
                 let source = step.params.get("source");
                 let concerns = trigger.targets.is_empty()
                     || trigger.targets.contains(&assignment.target.key());
+                // An event that happened before the activation's own trigger (delivered late,
+                // out of order) is not the event the wait is for
+                let later = trigger.occurred_at >= activation.trigger.occurred_at;
                 if kind_matches(&kind, &trigger.kind)
                     && concerns
+                    && later
                     && source.is_none_or(|source| *source == trigger.source.name())
                 {
                     record.state = StepState::Succeeded;
@@ -962,7 +1194,8 @@ pub(crate) fn advance(
     Err(format!("activation {activation_id} did not settle"))
 }
 
-/** The text of a NOTIFY_SLACK step, identifying its source event
+/** The text of an external step (NOTIFY_SLACK's text, or CREATE_TICKET's summary and
+ * description), identifying its source event
  * Input
     - activation: &Activation - activation
     - assignment: &Assignment - assignment
@@ -972,8 +1205,16 @@ pub(crate) fn advance(
 */
 fn message(activation: &Activation, assignment: &Assignment, step: &PlanStep) -> String {
     format!(
-        "{}\n(resident {} on {}, activation {}, trigger {} {} {})",
-        step.params.get("text").cloned().unwrap_or_default(),
+        "{}\n{}(resident {} on {}, activation {}, trigger {} {} {})",
+        step.params
+            .get("text")
+            .or_else(|| step.params.get("summary"))
+            .cloned()
+            .unwrap_or_default(),
+        step.params
+            .get("description")
+            .map(|description| format!("{description}\n"))
+            .unwrap_or_default(),
         assignment.assignment_id,
         assignment.target.key(),
         activation.activation_id,
@@ -1015,11 +1256,18 @@ fn execute_next(
         match record.state {
             state if state.finished() => continue,
             StepState::Uncertain | StepState::Dispatching => {
+                let max_retries = definition
+                    .map(|record| record.definition.limits.max_retries)
+                    .unwrap_or(0);
                 let record = activation
                     .steps
                     .get_mut(&step.step_id)
                     .ok_or("step record")?;
                 record.state = StepState::Uncertain;
+                // The external system may be able to say what happened
+                if reconcile_with_adapter(env, step, record, max_retries) {
+                    return Ok(());
+                }
                 record.detail = "the external call started but its outcome was not recorded; establish what happened".into();
                 activation.lease = None;
                 activation.record(
@@ -1281,7 +1529,7 @@ fn run_step(
                 );
             }
         }
-        StepType::NotifySlack => {
+        StepType::NotifySlack | StepType::CreateTicket => {
             let Some(adapter) = env
                 .adapters
                 .iter()
@@ -1292,7 +1540,10 @@ fn run_step(
                     .get_mut(&step.step_id)
                     .ok_or("step record")?;
                 record.state = StepState::Unavailable;
-                record.detail = "no adapter is registered for NOTIFY_SLACK in this runtime".into();
+                record.detail = format!(
+                    "no adapter is registered for {} in this runtime",
+                    step.step_type.name()
+                );
                 return Ok(());
             };
             // Persist the dispatch before the call, so a crash leaves it uncertain, never repeated
@@ -1512,7 +1763,7 @@ fn run_step(
             );
             activation.plan = Some(plan);
         }
-        StepType::CreateTicket | StepType::PageOncall | StepType::ExecuteProcedure => {
+        StepType::PageOncall | StepType::ExecuteProcedure => {
             let record = activation
                 .steps
                 .get_mut(&step.step_id)
@@ -1639,14 +1890,94 @@ fn verify(activation: &mut Activation, now: u64) {
     end(activation, state, status, reason, now);
 }
 
+/** Where a person's decision comes from
+ * Variants
+    - Machine - a person running Crane on their machine (signers: the repository's signer keys)
+    - Dashboard - a repository admin GitHub verified on the dashboard, deciding on the plan digest
+      they were shown
+*/
+pub(crate) enum Via<'a> {
+    Machine { signers: &'a [String] },
+    Dashboard { plan: &'a str },
+}
+
+/** Check that a person may decide a waiting step: a signer key on a machine (for approvals), or a
+ * dashboard decision the definition allows and that was made on the plan as it is now; and, when
+ * the definition separates duties, not the person who activated the assignment
+ * Input
+    - store: &ResidentStore - store
+    - activation: &Activation - activation
+    - decider: &Author - who decides
+    - via: &Via - where the decision comes from
+    - approval: bool - an approval (true) or an answer
+ * Output
+    - Result<(), String>
+*/
+fn check_decider(
+    store: &ResidentStore,
+    activation: &Activation,
+    decider: &Author,
+    via: &Via,
+    approval: bool,
+) -> Result<(), String> {
+    let definition = store.definition(
+        &activation.definition_id,
+        Some(activation.definition_version),
+    )?;
+    match via {
+        Via::Machine { signers } => {
+            if approval
+                && !decider
+                    .key
+                    .as_ref()
+                    .is_some_and(|key| signers.contains(key))
+            {
+                return Err("only the repository owner or an admin (a signer) can decide resident approvals".into());
+            }
+        }
+        Via::Dashboard { plan } => {
+            if !definition.definition.remote_decisions {
+                return Err(format!(
+                    "definition {}@{} does not take decisions from the dashboard (remote_decisions is off)",
+                    definition.definition.definition_id, definition.definition.version
+                ));
+            }
+            let current = activation
+                .plan
+                .as_ref()
+                .map(|plan| plan.digest.as_str())
+                .unwrap_or_default();
+            if current != *plan {
+                return Err(format!("the plan changed since the decision was made (decided on {plan}, now {current})"));
+            }
+        }
+    }
+    if approval && definition.definition.distinct_approver {
+        let activator = store
+            .assignment(&activation.assignment_id)?
+            .changes
+            .iter()
+            .rev()
+            .find(|change| change.to == "active")
+            .map(|change| change.by.name.clone());
+        if activator.as_deref() == Some(decider.name.as_str()) {
+            return Err(format!(
+                "separation of duties: {} activated this assignment and cannot approve its steps",
+                decider.name
+            ));
+        }
+    }
+    Ok(())
+}
+
 /** Record a person's decision on a step that waits for approval, then resume the activation
  * Input
     - store: &mut ResidentStore - store
     - env: &mut Env - environment
     - activation_id: &str - activation
     - step_id: &str - step
-    - approver: &Author - who (must be a signer of the repository)
-    - signers: &[String] - public keys of the repository's owner and admins
+    - approver: &Author - who
+    - via: Via - a signer on a machine, or a verified admin on the dashboard
     - approved: bool - approve or deny
     - reason: &str - why
  * Output
@@ -1659,23 +1990,15 @@ pub(crate) fn approve(
     activation_id: &str,
     step_id: &str,
     approver: &Author,
-    signers: &[String],
+    via: Via,
     approved: bool,
     reason: &str,
 ) -> Result<ActivationState, String> {
     if reason.trim().is_empty() {
         return Err("a reason is required".into());
     }
-    if !approver
-        .key
-        .as_ref()
-        .is_some_and(|key| signers.contains(key))
-    {
-        return Err(
-            "only the repository owner or an admin (a signer) can decide resident approvals".into(),
-        );
-    }
     let mut activation = store.activation(activation_id)?.clone();
+    check_decider(store, &activation, approver, &via, true)?;
     let record = activation
         .steps
         .get(step_id)
@@ -1742,6 +2065,7 @@ pub(crate) fn approve(
     - step_id: &str - step
     - text: &str - answer
     - by: &Author - who
+    - via: Via - a person on a machine, or a verified admin on the dashboard
  * Output
     - Result<ActivationState, String>
 */
@@ -1752,12 +2076,14 @@ pub(crate) fn answer(
     step_id: &str,
     text: &str,
     by: &Author,
+    via: Via,
 ) -> Result<ActivationState, String> {
     let (text, secrets) = crate::telemetry::redact::redact(text);
     if text.trim().is_empty() {
         return Err("the answer is empty".into());
     }
     let mut activation = store.activation(activation_id)?.clone();
+    check_decider(store, &activation, by, &via, false)?;
     let plan = activation
         .plan
         .clone()
@@ -1986,6 +2312,7 @@ pub(crate) fn cancel(
     - expired: Vec<String> - assignments whose lifetime ended
     - recovered: Vec<String> - activations resumed after an expired lease
     - deadlines: Vec<String> - waits that passed their deadline
+    - reconciled: Vec<String> - activations whose uncertain effects an adapter established
     - model_calls: u64 - model calls made by this tick
     - idle: bool - nothing was received, advanced, or due
 */
@@ -1997,6 +2324,7 @@ pub(crate) struct Ticked {
     pub(crate) expired: Vec<String>,
     pub(crate) recovered: Vec<String>,
     pub(crate) deadlines: Vec<String>,
+    pub(crate) reconciled: Vec<String>,
     pub(crate) model_calls: u64,
     pub(crate) idle: bool,
 }
@@ -2101,6 +2429,22 @@ pub(crate) fn tick(
         }
     }
     done.ingested = ingest(store, triggers, now);
+    // Uncertain effects an adapter can read back are established without a person
+    let uncertain = store
+        .state
+        .activations
+        .values()
+        .filter(|activation| {
+            activation.mode == Mode::Live
+                && activation.state == ActivationState::ReconciliationRequired
+        })
+        .map(|activation| activation.activation_id.clone())
+        .collect::<Vec<_>>();
+    for id in uncertain {
+        if auto_reconcile(store, env, &id)? {
+            done.reconciled.push(id);
+        }
+    }
     // Activations a crashed worker left behind
     let running = [
         ActivationState::ContextLoading,
@@ -2159,7 +2503,8 @@ pub(crate) fn tick(
     done.idle = done.ingested.received == 0
         && done.advanced.is_empty()
         && done.expired.is_empty()
-        && done.deadlines.is_empty();
+        && done.deadlines.is_empty()
+        && done.reconciled.is_empty();
     if done.idle {
         store.state.counters.idle_ticks += 1;
         store.state.counters.idle_model_calls += done.model_calls;
@@ -2170,6 +2515,71 @@ pub(crate) fn tick(
     store.state.counters.last_tick_ms = started.elapsed().as_millis() as u64;
     store.save()?;
     Ok(done)
+}
+
+/** How often GitHub Actions is read for finished runs, in milliseconds */
+const CI_POLL_MS: u64 = 300_000;
+
+/** Read finished GitHub Actions runs when an active assignment subscribes to CI and the last read
+ * is old enough (no model; one GitHub API call). CRANE_RESIDENT_CI_POLL=off turns it off
+ * Input
+    - api: &dyn crate::capture::resources::github::GitHubApi - GitHub (gh in practice)
+    - label: &str - the repository as "github.com/OWNER/NAME"
+    - store: &mut ResidentStore - store (cursors)
+    - repository_id: &str - this repository
+    - now: u64 - Unix milliseconds
+ * Output
+    - Vec<Trigger>
+*/
+pub(crate) fn poll_ci(
+    api: &dyn crate::capture::resources::github::GitHubApi,
+    label: &str,
+    store: &mut ResidentStore,
+    repository_id: &str,
+    now: u64,
+) -> Vec<Trigger> {
+    let wanted = store.state.assignments.values().any(|assignment| {
+        assignment.lifecycle == Lifecycle::Active
+            && assignment
+                .subscriptions
+                .iter()
+                .any(|subscription| subscription.source == super::model::TriggerSource::Ci)
+    });
+    if !wanted
+        || std::env::var("CRANE_RESIDENT_CI_POLL").is_ok_and(|value| value == "off")
+        || now < store.state.cursors.ci_polled_at + CI_POLL_MS
+    {
+        return Vec::new();
+    }
+    let mut parts = label.splitn(3, '/');
+    let (Some(_host), Some(owner), Some(name)) = (parts.next(), parts.next(), parts.next()) else {
+        return Vec::new();
+    };
+    let safe = |part: &str| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+    };
+    if !safe(owner) || !safe(name) {
+        return Vec::new();
+    }
+    store.state.cursors.ci_polled_at = now;
+    match api.get(
+        &format!("repos/{owner}/{name}/actions/runs?status=completed&per_page=20"),
+        None,
+    ) {
+        crate::capture::resources::github::ApiAnswer::Found(runs) => {
+            let (found, cursor) =
+                trigger::from_workflow_runs(&runs, store.state.cursors.ci_run, repository_id, now);
+            store.state.cursors.ci_run = cursor;
+            found
+        }
+        _ => {
+            store.state.counters.connector_errors += 1;
+            Vec::new()
+        }
+    }
 }
 
 /** Collect the triggers of the real sources since the cursors, advancing them
@@ -2235,6 +2645,16 @@ pub(crate) fn collect(
     for (key, slot, found) in due {
         store.state.timers.insert(key, slot);
         triggers.push(found);
+    }
+    // Finished GitHub Actions runs, when the repository is connected to GitHub
+    if let Ok(Some(connection)) = crate::github::load(workspace) {
+        triggers.extend(poll_ci(
+            &crate::capture::resources::github::GhCli,
+            &connection.normalized,
+            store,
+            &workspace.repository_id,
+            now,
+        ));
     }
     triggers
 }

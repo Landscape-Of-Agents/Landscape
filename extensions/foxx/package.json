@@ -240,6 +240,12 @@
         "icon": "$(add)"
       },
       {
+        "command": "foxx.residents.change",
+        "title": "Pause, Resume, or Revoke Resident Agent",
+        "category": "Landscape",
+        "icon": "$(debug-pause)"
+      },
+      {
         "command": "foxx.residents.validate",
         "title": "Validate Resident Agent",
         "category": "Landscape",
@@ -381,6 +387,11 @@
           "command": "foxx.residents.validate",
           "when": "view == foxx.bricks && viewItem =~ /^resident-(draft|validated|active|paused|expired)$/",
           "group": "1_check@2"
+        },
+        {
+          "command": "foxx.residents.change",
+          "when": "view == foxx.bricks && viewItem =~ /^resident-(draft|validated|active|paused|expired)$/",
+          "group": "2_change@1"
         },
         {
           "command": "foxx.residents.create",

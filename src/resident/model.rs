@@ -29,7 +29,8 @@ pub(crate) const DAY_MS: u64 = 86_400_000;
     - GovernanceChange - the signed governance generation changed
     - BrickMonitor - a Brick monitor of the target reported FIRING, FAILING, or REVOCATION_DUE
     - Timer - a timer of the assignment fell due
-    - Ci - a CI result, delivered by a CI step running 'crane resident trigger'
+    - Ci - a CI result: a finished GitHub Actions run (pulled), or delivered by a CI step running
+      'crane resident trigger'
     - Webhook - a typed event a person or a CI step delivers with 'crane resident trigger'
     - Metric - a metric or alert threshold (no connector: unsupported)
     - Deployment - a deployment result (no connector: unsupported)
@@ -90,7 +91,7 @@ impl TriggerSource {
             Self::Timer => {
                 Some("evaluated by every tick (background sync or 'crane resident tick')")
             }
-            Self::Ci => Some("a CI step runs 'crane resident trigger --file EVENT.json'"),
+            Self::Ci => Some("GitHub Actions runs, read with the GitHub CLI every 5 minutes (repository scope), or a CI step running 'crane resident trigger --file EVENT.json'"),
             Self::Webhook => Some("'crane resident trigger --file EVENT.json' (no HTTP listener)"),
             Self::Metric | Self::Deployment | Self::Slack | Self::Ticket => None,
         }
@@ -249,6 +250,10 @@ pub(crate) fn limit_ceilings(limits: &Limits) -> [(&'static str, u32, u32); 8] {
       (an activation without verification evidence is never completed either way)
     - on_missing_context: MissingContext - what a context gap does
     - limits: Limits - operating limits
+    - remote_decisions: bool - approvals and answers may also come from a GitHub-verified
+      repository admin on the dashboard (off by default; pausing, revoking, and cancelling from
+      the dashboard are always allowed because they only make things stricter)
+    - distinct_approver: bool - the person who activated the assignment may not approve its steps
     - created_by: Author - author
     - created_at: u64 - Unix milliseconds
 */
@@ -273,6 +278,11 @@ pub(crate) struct Definition {
     pub(crate) on_missing_context: MissingContext,
     #[serde(default)]
     pub(crate) limits: Limits,
+    // Omitted when off, so the digests of definitions saved before these fields do not change
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) remote_decisions: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) distinct_approver: bool,
     #[serde(default)]
     pub(crate) created_by: Author,
     #[serde(default)]
@@ -297,6 +307,16 @@ fn first() -> u32 {
 */
 fn yes() -> bool {
     true
+}
+
+/** Report whether a flag is off (serde skips it then)
+ * Input
+    - value: &bool - flag
+ * Output
+    - bool
+*/
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Definition {

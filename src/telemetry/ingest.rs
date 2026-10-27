@@ -680,6 +680,34 @@ fn apply_grants(client: &Client, workspace: &Workspace, stores: &Stores) -> Resu
     Ok(results.len())
 }
 
+/** Apply the resident-agent decisions an admin made on the dashboard for this machine (approve,
+ * deny, answer, cancel, pause, revoke; resident/remote.rs applies them with the CLI's checks, each
+ * at most once), then tell the service the outcome
+ * Input
+    - client: &Client - service connection
+    - workspace: &Workspace - repository
+    - stores: &Stores - runtime stores
+ * Output
+    - Result<usize, String> decisions settled
+*/
+fn apply_resident_decisions(
+    client: &Client,
+    workspace: &Workspace,
+    stores: &Stores,
+) -> Result<usize, String> {
+    let answer = client.call("GET", "resident-decisions", &[])?;
+    let decisions = answer["decisions"].as_array().cloned().unwrap_or_default();
+    if decisions.is_empty() {
+        return Ok(0);
+    }
+    let mut store = crate::resident::store::ResidentStore::open(&stores.directory)?;
+    let mut env = crate::resident::worker::live(workspace, &stores.directory);
+    let results = crate::resident::remote::apply(&mut store, &mut env, &decisions);
+    let body = serde_json::to_vec(&json!({"results": results})).map_err(io_error)?;
+    client.call("POST", "resident-decisions", &body)?;
+    Ok(results.len())
+}
+
 /** Reconcile and upload: see the module comment
  * Input
     - client: &Client - service connection
@@ -722,6 +750,11 @@ fn push(
     // entries are uploaded by this sync (a failure only delays them to the next one)
     if let Err(error) = apply_grants(client, workspace, stores) {
         crate::platform::notes::note("CREDIT_GRANTS_FAILED", json!({"error": error}));
+    }
+    // Resident-agent decisions made on the dashboard, applied before the events are read so their
+    // notes are uploaded by this sync
+    if let Err(error) = apply_resident_decisions(client, workspace, stores) {
+        crate::platform::notes::note("RESIDENT_DECISIONS_FAILED", json!({"error": error}));
     }
     let all_events = stores.events.read_all()?;
     let ledger = stores.ledger.entries()?;

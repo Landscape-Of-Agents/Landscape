@@ -159,6 +159,8 @@ without evidence.
 | **RCA graph** | A versioned graph of signals, causes, checks, remediations, and verifications, each with how it is known. Proposed until a person reviews it. |
 | **Supported cause** | A cause this activation's checks support. Not the same as confirmed. |
 | **Step type** | One of twelve fixed kinds of plan step (`READ_CHECK`, `NOTIFY_SLACK`, `VERIFY`, …). One without an adapter is unavailable and never counts as done. |
+| **Dashboard decision** | An approval, denial, answer, cancel, pause, or revoke a GitHub-verified repository admin makes on the dashboard. The machine applies it at its next sync with Crane's own checks. Approvals and answers count only when the definition allows it. |
+| **Separation of duties** | A definition option: the person who activated an assignment cannot approve its steps. |
 | **Idle** | Active with no activation running. No model call; shown as ACTIVE_IDLE, or DEGRADED when Crane would not admit it now. |
 
 ## 7. The eleven controls

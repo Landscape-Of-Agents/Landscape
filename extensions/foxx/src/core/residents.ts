@@ -100,10 +100,27 @@ export function assignmentDraft(input: { id: string; definition: string; agent: 
     agent: input.agent,
     target: input.target,
     rca: rca ? { rca_id: rca[0], version: Number(rca[1] || 1) } : null,
-    subscriptions: kinds.length ? [{ source: input.source ?? "ci", kinds, attributes: {}, scope: "target" }] : [],
+    // CI runs pulled from GitHub Actions name no target, so CI subscriptions take the repository scope
+    subscriptions: kinds.length ? [{ source: input.source ?? "ci", kinds, attributes: {}, scope: (input.source ?? "ci") === "ci" ? "repository" : "target" }] : [],
     timers: [],
     lifetime_days: Math.min(90, Math.max(1, input.lifetimeDays ?? 14)),
   };
+}
+
+/** The lifecycle changes Landscape offers, what each needs, and what it means. */
+export const RESIDENT_CHANGES = {
+  pause: { from: ["active"], label: "Pause", detail: "It takes no trigger until it is resumed; queued work waits." },
+  resume: { from: ["paused"], label: "Resume", detail: "It takes triggers again." },
+  revoke: { from: ["draft", "validated", "active", "paused", "expired"], label: "Revoke", detail: "Final: it never acts again. Queued and waiting work is cancelled; an external call already started stays uncertain until reconciled." },
+} as const;
+
+/**
+ * The lifecycle changes an assignment can take now.
+ * @param row assignment
+ * @returns change names
+ */
+export function residentChanges(row: ResidentRow): (keyof typeof RESIDENT_CHANGES)[] {
+  return (Object.keys(RESIDENT_CHANGES) as (keyof typeof RESIDENT_CHANGES)[]).filter((name) => (RESIDENT_CHANGES[name].from as readonly string[]).includes(row.lifecycle));
 }
 
 /**

@@ -24,7 +24,7 @@ use super::rca::{
 use super::registry;
 use super::store::{ActivationState, ResidentStore, StepState};
 use super::trigger::{self, Trigger};
-use super::worker::{self, ActionAdapter, Dispatch, Env};
+use super::worker::{self, ActionAdapter, Dispatch, Env, Via};
 use crate::brick::context::Snapshot;
 use crate::brick::model::Author;
 use crate::governance::zones::{Ceiling, Criticality, Lifecycle as TargetLifecycle};
@@ -129,6 +129,8 @@ fn definition(auto_slack: bool) -> Definition {
             max_model_calls: 2,
             ..Limits::default()
         },
+        remote_decisions: false,
+        distinct_approver: false,
         created_by: Author::default(),
         created_at: 0,
     }
@@ -571,10 +573,15 @@ fn definitions_and_assignments_are_validated() {
     ] {
         assert!(codes.contains(&code), "{code} in {codes:?}");
     }
-    let (_, warnings) = registry::check_definition(&definition(true));
+    let mut paging = definition(true);
+    paging.actions.push(StepPolicy {
+        step_type: StepType::PageOncall,
+        auto: false,
+    });
+    let (_, warnings) = registry::check_definition(&paging);
     assert!(
         warnings.iter().any(|(code, _)| code == "STEP_UNAVAILABLE"),
-        "CREATE_TICKET is listed as unavailable"
+        "PAGE_ONCALL is listed as unavailable"
     );
     assert!(super::model::check_kind("*").is_err());
     assert!(super::model::check_kind("ci.*").is_ok());
@@ -1193,7 +1200,9 @@ fn restart_recovery_reconciles_instead_of_repeating() {
         &id,
         "notify",
         &person("bob"),
-        &signers(),
+        Via::Machine {
+            signers: &signers(),
+        },
         true,
         "go",
     )
@@ -1340,7 +1349,9 @@ fn authorization_is_checked_before_every_step() {
         &id,
         "notify",
         &person("bob"),
-        &signers(),
+        Via::Machine {
+            signers: &signers(),
+        },
         true,
         "go",
     )
@@ -1466,7 +1477,9 @@ fn approvals_are_bound_single_use_and_signer_only() {
         &id,
         "notify",
         &person("mallory"),
-        &signers(),
+        Via::Machine {
+            signers: &signers()
+        },
         true,
         "me"
     )
@@ -1479,7 +1492,9 @@ fn approvals_are_bound_single_use_and_signer_only() {
             &id,
             "notify",
             &person("bob"),
-            &signers(),
+            Via::Machine {
+                signers: &signers()
+            },
             true,
             " "
         )
@@ -1530,7 +1545,9 @@ fn approvals_are_bound_single_use_and_signer_only() {
         &id,
         "notify",
         &person("bob"),
-        &signers(),
+        Via::Machine {
+            signers: &signers(),
+        },
         true,
         "go",
     )
@@ -2038,6 +2055,9 @@ fn human_waits_and_event_waits_resume_the_same_activation() {
         "ask",
         "Cancelled by the release manager",
         &person("alice"),
+        Via::Machine {
+            signers: &signers(),
+        },
     )
     .unwrap();
     assert_eq!(
@@ -2174,6 +2194,9 @@ fn human_waits_and_event_waits_resume_the_same_activation() {
         "context-gap",
         "continue",
         &person("alice"),
+        Via::Machine {
+            signers: &signers(),
+        },
     )
     .unwrap();
     assert_eq!(state, ActivationState::Completed);
@@ -2301,5 +2324,644 @@ fn report_status_and_redaction() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|step| step["type"] == "CREATE_TICKET" && step["available"] == false));
+        .any(|step| step["type"] == "PAGE_ONCALL" && step["available"] == false));
+}
+
+/** A fake Jira: issues by label; it can answer "unknown" after creating (a timeout after the
+ * effect), and it can be unreachable for reconciliation
+ * Fields
+    - issues: Rc<RefCell<BTreeMap<String, String>>> - label to issue key
+    - created: Rc<Cell<u32>> - issues created
+    - uncertain: Rc<Cell<bool>> - answer "unknown" after creating
+    - unreachable: Rc<Cell<bool>> - reconciliation cannot read Jira
+*/
+struct FakeJira {
+    issues: Rc<RefCell<BTreeMap<String, String>>>,
+    created: Rc<Cell<u32>>,
+    uncertain: Rc<Cell<bool>>,
+    unreachable: Rc<Cell<bool>>,
+}
+
+impl ActionAdapter for FakeJira {
+    /** CREATE_TICKET
+     * Input
+        - None (uses self)
+     * Output
+        - StepType
+    */
+    fn step_type(&self) -> StepType {
+        StepType::CreateTicket
+    }
+
+    /** Create the issue unless one carries the step's label
+     * Input
+        - _text: &str - summary and description
+        - key: &str - idempotency key
+     * Output
+        - Dispatch
+    */
+    fn dispatch(&self, _text: &str, key: &str) -> Dispatch {
+        let label = crate::integrations::issue_label(key);
+        if let Some(existing) = self.issues.borrow().get(&label) {
+            return Dispatch::Done {
+                external_ref: format!("jira:{existing}"),
+                evidence: "existing".into(),
+            };
+        }
+        self.created.set(self.created.get() + 1);
+        let issue = format!("PAY-{}", self.created.get());
+        self.issues.borrow_mut().insert(label, issue.clone());
+        if self.uncertain.get() {
+            Dispatch::Uncertain {
+                detail: "timed out".into(),
+            }
+        } else {
+            Dispatch::Done {
+                external_ref: format!("jira:{issue}"),
+                evidence: "created".into(),
+            }
+        }
+    }
+
+    /** Look the label up, unless Jira is unreachable
+     * Input
+        - key: &str - idempotency key
+     * Output
+        - Option<Dispatch>
+    */
+    fn reconcile(&self, key: &str) -> Option<Dispatch> {
+        if self.unreachable.get() {
+            return None;
+        }
+        Some(
+            match self
+                .issues
+                .borrow()
+                .get(&crate::integrations::issue_label(key))
+            {
+                Some(issue) => Dispatch::Done {
+                    external_ref: format!("jira:{issue}"),
+                    evidence: "found by label".into(),
+                },
+                None => Dispatch::Failed {
+                    effect: false,
+                    detail: "no issue".into(),
+                },
+            },
+        )
+    }
+}
+
+/** The fixture world whose reviewed remediation opens a Jira ticket, with a fake Jira
+ * Input
+    - None
+ * Output
+    - (World, FakeJira handles: issues, created, uncertain, unreachable)
+*/
+#[allow(clippy::type_complexity)]
+fn ticket_world() -> (
+    World,
+    Rc<RefCell<BTreeMap<String, String>>>,
+    Rc<Cell<u32>>,
+    Rc<Cell<bool>>,
+    Rc<Cell<bool>>,
+) {
+    let mut world = setup(true, Some(RcaState::Reviewed));
+    world
+        .authority
+        .borrow_mut()
+        .connectors
+        .insert("jira".into(), true);
+    let mut graph = checkout_graph();
+    graph.version = 2;
+    graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == "notify")
+        .unwrap()
+        .steps = vec![rca::step(
+        "ticket",
+        StepType::CreateTicket,
+        &[("summary", "Checkout tests failed".into())],
+        &[],
+        String::new(),
+    )];
+    registry::save_rca(&mut world.store, graph, &person("alice"), NOW).unwrap();
+    registry::review_rca(
+        &mut world.store,
+        "checkout-ci",
+        2,
+        true,
+        &person("bob"),
+        "ok",
+        NOW,
+    )
+    .unwrap();
+    let mut assignment = world.store.assignment("checkout").unwrap().clone();
+    assignment.rca = Some(RcaRef {
+        rca_id: "checkout-ci".into(),
+        version: 2,
+    });
+    world.store.put_assignment(assignment);
+    let issues = Rc::new(RefCell::new(BTreeMap::new()));
+    let created = Rc::new(Cell::new(0));
+    let uncertain = Rc::new(Cell::new(false));
+    let unreachable = Rc::new(Cell::new(false));
+    world.env.adapters.push(Box::new(FakeJira {
+        issues: issues.clone(),
+        created: created.clone(),
+        uncertain: uncertain.clone(),
+        unreachable: unreachable.clone(),
+    }));
+    (world, issues, created, uncertain, unreachable)
+}
+
+/** CREATE_TICKET opens one Jira issue per step; an unknown outcome is established by looking the
+ * step's label up (no person, no second issue), and stays with a person when Jira cannot answer
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn tickets_are_created_once_and_reconciled_from_jira() {
+    let (mut world, _, created, _, _) = ticket_world();
+    worker::tick(
+        &mut world.store,
+        &mut world.env,
+        vec![ci("j1", "ci.failed", &[("job", "tests")], NOW)],
+    )
+    .unwrap();
+    let activation = only(&world);
+    assert_eq!(
+        activation.state,
+        ActivationState::Completed,
+        "{:?}",
+        activation.timeline
+    );
+    assert_eq!(
+        activation.steps["ticket"].external_ref.as_deref(),
+        Some("jira:PAY-1")
+    );
+    assert_eq!(created.get(), 1);
+
+    // Jira created the issue but the answer was lost: the next tick finds it by its label
+    let (mut world, _, created, uncertain, _) = ticket_world();
+    uncertain.set(true);
+    worker::tick(
+        &mut world.store,
+        &mut world.env,
+        vec![ci("j2", "ci.failed", &[("job", "tests")], NOW)],
+    )
+    .unwrap();
+    assert_eq!(only(&world).state, ActivationState::ReconciliationRequired);
+    let done = worker::tick(&mut world.store, &mut world.env, Vec::new()).unwrap();
+    assert_eq!(
+        done.reconciled.len(),
+        1,
+        "established from Jira without a person"
+    );
+    assert_eq!(
+        only(&world).state,
+        ActivationState::Completed,
+        "{:?}",
+        only(&world).timeline
+    );
+    assert_eq!(
+        only(&world).steps["ticket"].external_ref.as_deref(),
+        Some("jira:PAY-1")
+    );
+    assert_eq!(created.get(), 1, "never a second issue");
+
+    // Jira cannot be read: a person reconciles, and the next tick tries Jira again first
+    let (mut world, _, created, uncertain, unreachable) = ticket_world();
+    uncertain.set(true);
+    unreachable.set(true);
+    worker::tick(
+        &mut world.store,
+        &mut world.env,
+        vec![ci("j3", "ci.failed", &[("job", "tests")], NOW)],
+    )
+    .unwrap();
+    assert_eq!(only(&world).state, ActivationState::ReconciliationRequired);
+    worker::tick(&mut world.store, &mut world.env, Vec::new()).unwrap();
+    assert_eq!(
+        only(&world).state,
+        ActivationState::ReconciliationRequired,
+        "still unknown while Jira cannot answer"
+    );
+    unreachable.set(false);
+    let done = worker::tick(&mut world.store, &mut world.env, Vec::new()).unwrap();
+    assert_eq!(done.reconciled.len(), 1);
+    assert_eq!(only(&world).state, ActivationState::Completed);
+    assert_eq!(created.get(), 1);
+}
+
+/** Dashboard decisions are applied on the machine with the same checks, at most once: approvals
+ * and answers only when the definition takes them and the plan is the one the admin saw; pause,
+ * revoke, and cancel always; resume never
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn dashboard_decisions_are_applied_once_with_the_same_checks() {
+    let decision = |id: &str, action: &str, activation: &str, plan: &str| serde_json::json!({"decision_id": id, "action": action, "activation": activation, "assignment": "checkout", "step": "notify", "plan": plan, "reason": "seen in CI", "decided_by": "octo"});
+    // The definition does not take dashboard approvals
+    let mut world = setup(false, Some(RcaState::Reviewed));
+    worker::tick(
+        &mut world.store,
+        &mut world.env,
+        vec![ci("d1", "ci.failed", &[("job", "tests")], NOW)],
+    )
+    .unwrap();
+    let activation = only(&world);
+    let plan = activation.plan.as_ref().unwrap().digest.clone();
+    let results = super::remote::apply(
+        &mut world.store,
+        &mut world.env,
+        &[decision(
+            "rsd_1",
+            "approve",
+            &activation.activation_id,
+            &plan,
+        )],
+    );
+    assert_eq!(results[0]["status"], "REJECTED");
+    assert!(results[0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("remote_decisions"));
+    assert!(world.sent.borrow().is_empty());
+    // Pausing is always accepted; resuming never is
+    let results = super::remote::apply(
+        &mut world.store,
+        &mut world.env,
+        &[
+            decision("rsd_2", "pause", "", ""),
+            decision("rsd_3", "resume", "", ""),
+        ],
+    );
+    assert_eq!(results[0]["status"], "APPLIED");
+    assert_eq!(
+        world.store.assignment("checkout").unwrap().lifecycle,
+        Lifecycle::Paused
+    );
+    assert_eq!(results[1]["status"], "REJECTED");
+
+    // The definition takes them: a decision on another plan is refused, the current one applies
+    let mut definition = definition(false);
+    definition.remote_decisions = true;
+    let mut world = world_with(definition, Some(RcaState::Reviewed));
+    worker::tick(
+        &mut world.store,
+        &mut world.env,
+        vec![ci("d2", "ci.failed", &[("job", "tests")], NOW)],
+    )
+    .unwrap();
+    let activation = only(&world);
+    let plan = activation.plan.as_ref().unwrap().digest.clone();
+    let results = super::remote::apply(
+        &mut world.store,
+        &mut world.env,
+        &[decision(
+            "rsd_4",
+            "approve",
+            &activation.activation_id,
+            "0000",
+        )],
+    );
+    assert!(results[0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("plan changed"));
+    let results = super::remote::apply(
+        &mut world.store,
+        &mut world.env,
+        &[decision(
+            "rsd_5",
+            "approve",
+            &activation.activation_id,
+            &plan,
+        )],
+    );
+    assert_eq!(results[0]["status"], "APPLIED", "{results:?}");
+    assert_eq!(results[0]["state"], "COMPLETED");
+    assert_eq!(world.sent.borrow().len(), 1);
+    let approval = &world
+        .store
+        .activation(&activation.activation_id)
+        .unwrap()
+        .approvals[0];
+    assert_eq!(approval.approver.name, "@octo (dashboard, GitHub admin)");
+    // A redelivered decision is not applied twice
+    let results = super::remote::apply(
+        &mut world.store,
+        &mut world.env,
+        &[decision(
+            "rsd_5",
+            "approve",
+            &activation.activation_id,
+            &plan,
+        )],
+    );
+    assert!(results[0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("already applied"));
+    assert_eq!(world.sent.borrow().len(), 1);
+}
+
+/** Separation of duties keeps the activator from approving, and a denial blocks the step and
+ * sends nothing
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn separation_of_duties_and_denials() {
+    let mut definition = definition(false);
+    definition.distinct_approver = true;
+    let mut world = world_with(definition, Some(RcaState::Reviewed));
+    worker::tick(
+        &mut world.store,
+        &mut world.env,
+        vec![ci("s1", "ci.failed", &[("job", "tests")], NOW)],
+    )
+    .unwrap();
+    let id = only(&world).activation_id;
+    let error = worker::approve(
+        &mut world.store,
+        &mut world.env,
+        &id,
+        "notify",
+        &person("alice"),
+        Via::Machine {
+            signers: &signers(),
+        },
+        true,
+        "mine",
+    )
+    .unwrap_err();
+    assert!(error.contains("separation of duties"), "{error}");
+    let state = worker::approve(
+        &mut world.store,
+        &mut world.env,
+        &id,
+        "notify",
+        &person("bob"),
+        Via::Machine {
+            signers: &signers(),
+        },
+        false,
+        "not now",
+    )
+    .unwrap();
+    assert_eq!(state, ActivationState::Blocked);
+    assert_eq!(
+        world.store.activation(&id).unwrap().steps["notify"].state,
+        StepState::Denied
+    );
+    assert!(world.sent.borrow().is_empty());
+}
+
+/** An event delivered late (it happened before the activation's own trigger) does not satisfy a
+ * wait for a later event; the next real one does
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn out_of_order_events_do_not_satisfy_waits() {
+    let mut world = setup(true, Some(RcaState::Reviewed));
+    let mut graph = checkout_graph();
+    graph.version = 2;
+    graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == "notify")
+        .unwrap()
+        .steps
+        .push(rca::step(
+            "wait",
+            StepType::WaitForEvent,
+            &[("kind", "ci.passed".into())],
+            &["notify"],
+            String::new(),
+        ));
+    registry::save_rca(&mut world.store, graph, &person("alice"), NOW).unwrap();
+    registry::review_rca(
+        &mut world.store,
+        "checkout-ci",
+        2,
+        true,
+        &person("bob"),
+        "ok",
+        NOW,
+    )
+    .unwrap();
+    let mut assignment = world.store.assignment("checkout").unwrap().clone();
+    assignment.rca = Some(RcaRef {
+        rca_id: "checkout-ci".into(),
+        version: 2,
+    });
+    world.store.put_assignment(assignment);
+    world.env.now = NOW + 10 * MINUTE;
+    worker::tick(
+        &mut world.store,
+        &mut world.env,
+        vec![ci(
+            "o1",
+            "ci.failed",
+            &[("job", "tests")],
+            NOW + 10 * MINUTE,
+        )],
+    )
+    .unwrap();
+    let id = world
+        .store
+        .state
+        .activations
+        .values()
+        .next()
+        .unwrap()
+        .activation_id
+        .clone();
+    assert_eq!(
+        world.store.activation(&id).unwrap().state,
+        ActivationState::WaitingForEvent
+    );
+    world.env.now = NOW + 12 * MINUTE;
+    let done = worker::tick(
+        &mut world.store,
+        &mut world.env,
+        vec![ci("o0", "ci.passed", &[], NOW + 5 * MINUTE)],
+    )
+    .unwrap();
+    assert!(
+        done.ingested.resumed.is_empty(),
+        "a pass that happened before the failure is not the awaited one"
+    );
+    assert_eq!(
+        world.store.activation(&id).unwrap().state,
+        ActivationState::WaitingForEvent
+    );
+    let done = worker::tick(
+        &mut world.store,
+        &mut world.env,
+        vec![ci("o2", "ci.passed", &[], NOW + 12 * MINUTE)],
+    )
+    .unwrap();
+    assert_eq!(done.ingested.resumed, vec![id.clone()]);
+    assert_eq!(
+        world.store.activation(&id).unwrap().state,
+        ActivationState::Completed
+    );
+}
+
+/** Recorded GitHub answers
+ * Fields
+    - answer: RefCell<serde_json::Value> - what every GET answers
+    - calls: Cell<u32> - GETs made
+*/
+struct FakeGitHub {
+    answer: RefCell<serde_json::Value>,
+    calls: Cell<u32>,
+}
+
+impl crate::capture::resources::github::GitHubApi for FakeGitHub {
+    /** Answer a GET with the recorded value
+     * Input
+        - _path: &str - API path
+        - _deadline: Option<std::time::Instant> - deadline
+     * Output
+        - ApiAnswer
+    */
+    fn get(
+        &self,
+        _path: &str,
+        _deadline: Option<std::time::Instant>,
+    ) -> crate::capture::resources::github::ApiAnswer {
+        self.calls.set(self.calls.get() + 1);
+        crate::capture::resources::github::ApiAnswer::Found(self.answer.borrow().clone())
+    }
+}
+
+/** Finished GitHub Actions runs become CI triggers: the first read only records where it is, a
+ * new run becomes one trigger with its workflow and branch, reads are at most every 5 minutes,
+ * and nothing is read without a CI subscription
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn github_actions_runs_become_ci_triggers() {
+    let run = |id: u64, conclusion: &str| serde_json::json!({"id": id, "status": "completed", "conclusion": conclusion, "name": "tests", "head_branch": "main", "event": "push", "run_attempt": 1, "head_sha": "abcdef1234567890", "updated_at": "2027-01-15T08:00:00Z"});
+    let api = FakeGitHub {
+        answer: RefCell::new(serde_json::json!({"workflow_runs": [run(41, "success")]})),
+        calls: Cell::new(0),
+    };
+    let mut world = setup(true, Some(RcaState::Reviewed));
+    let first = worker::poll_ci(&api, "github.com/acme/shop", &mut world.store, "repo", NOW);
+    assert!(first.is_empty(), "history is recorded, not replayed");
+    assert_eq!(world.store.state.cursors.ci_run, 41);
+    *api.answer.borrow_mut() =
+        serde_json::json!({"workflow_runs": [run(42, "failure"), run(41, "success")]});
+    assert!(
+        worker::poll_ci(
+            &api,
+            "github.com/acme/shop",
+            &mut world.store,
+            "repo",
+            NOW + MINUTE
+        )
+        .is_empty(),
+        "within 5 minutes nothing is read"
+    );
+    assert_eq!(api.calls.get(), 1);
+    let found = worker::poll_ci(
+        &api,
+        "github.com/acme/shop",
+        &mut world.store,
+        "repo",
+        NOW + 6 * MINUTE,
+    );
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].kind, "ci.failed");
+    assert_eq!(found[0].attributes["workflow"], "tests");
+    assert_eq!(found[0].attributes["branch"], "main");
+    assert_eq!(found[0].idempotency_key, "gh-run:42:1");
+    assert!(
+        found[0].targets.is_empty(),
+        "a workflow run belongs to the repository"
+    );
+    // A repository-scope subscription takes it
+    let mut assignment = world.store.assignment("checkout").unwrap().clone();
+    assignment.subscriptions[0].scope = SubscriptionScope::Repository;
+    assert!(trigger::assignment_matches(&assignment, &found[0]).is_ok());
+    // No CI subscription: GitHub is not read at all
+    world
+        .store
+        .state
+        .assignments
+        .values_mut()
+        .for_each(|assignment| assignment.subscriptions.clear());
+    assert!(worker::poll_ci(
+        &api,
+        "github.com/acme/shop",
+        &mut world.store,
+        "repo",
+        NOW + 20 * MINUTE
+    )
+    .is_empty());
+    assert_eq!(api.calls.get(), 2);
+}
+
+/** Duplicating an assignment makes a draft; on another target the RCA graph is dropped
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn assignments_are_duplicated_as_drafts() {
+    let mut world = setup(true, Some(RcaState::Reviewed));
+    let copy = registry::duplicate_assignment(
+        &mut world.store,
+        "checkout",
+        "checkout-2",
+        None,
+        &person("alice"),
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(copy.lifecycle, Lifecycle::Draft);
+    assert!(copy.rca.is_some());
+    let other = registry::duplicate_assignment(
+        &mut world.store,
+        "checkout",
+        "refund",
+        Some(crate::brick::model::Target::parse("flow:refund").unwrap()),
+        &person("alice"),
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(other.target.key(), "flow:refund");
+    assert!(other.rca.is_none(), "a graph explains one target");
+    assert!(
+        registry::duplicate_assignment(
+            &mut world.store,
+            "checkout",
+            "refund",
+            None,
+            &person("alice"),
+            NOW
+        )
+        .is_err(),
+        "ids are unique"
+    );
 }

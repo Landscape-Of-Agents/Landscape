@@ -21,11 +21,12 @@ const USAGE: &str = "usage: crane resident catalog
        crane resident definition activate|revoke ID@N --reason TEXT
        crane resident definition list | show ID[@N]
        crane resident create --file ASSIGNMENT.json [--dry-run]
+       crane resident duplicate ID --as NEW_ID [--target flow:ID|zone:ID]
        crane resident validate ID
        crane resident activate|renew ID --reason TEXT [--dry-run]
        crane resident pause|resume|revoke ID --reason TEXT
        crane resident list | show ID | context ID | status
-       crane resident test ID (--event EVENT.json | --replay ACTIVATION)
+       crane resident test ID (--event EVENT.json | --replay ACTIVATION | --replay-event SEQUENCE)
        crane resident trigger --file EVENT.json
        crane resident tick
        crane resident activations [--assignment ID] | activation ACTIVATION
@@ -55,6 +56,7 @@ pub(crate) fn resident(args: &[String]) -> Result<(), String> {
         ["definition", "list", ..] => registry::definitions(rest(2)),
         ["definition", "show", ..] => registry::show_definition(rest(2)),
         ["create", ..] => registry::create(rest(1)),
+        ["duplicate", ..] => registry::duplicate(rest(1)),
         ["validate", ..] => registry::validate(rest(1)),
         ["activate", ..] => registry::lifecycle(rest(1), "activate"),
         ["renew", ..] => registry::lifecycle(rest(1), "renew"),

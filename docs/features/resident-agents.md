@@ -19,23 +19,28 @@ part of the organization gets from it, and what is honestly not done yet. Status
 
 | Area | What changed | Status |
 |---|---|---|
-| Runtime | New module [src/resident/](../../src/resident) (about 10,600 lines with its unit tests): model, triggers, RCA, plans, authority, context cache, sealed store, worker, report | exists |
-| CLI | New family `crane resident` (30 commands, shared envelope, exit codes) in [src/cli/resident/](../../src/cli/resident) | exists |
+| Runtime | New module [src/resident/](../../src/resident) (about 12,000 lines with its unit tests): model, triggers, RCA, plans, authority, context cache, sealed store, worker, dashboard decisions, report | exists |
+| CLI | New family `crane resident` (31 commands, shared envelope, exit codes) in [src/cli/resident/](../../src/cli/resident) | exists |
 | Worker | One tick per background sync (hooks and commands already start it) or `crane resident tick`; no daemon | exists |
 | Authority | Re-reads the signed state before every effectful step; only acts inside a signed Brick assignment | exists |
-| Telemetry | 32 typed F38 events ([DASHBOARD.md](../../DASHBOARD.md#f38-resident-agents)), registered and documented | exists |
-| Dashboard | New **Resident agents** page (Govern group): registry, review inbox, activation timeline, idle cost and health, test and simulate, creation wizard; route `/api/residents` | exists (as last reported by a member's machine) |
-| VS Code | **Resident agents** group in the Bricks view; show, context preview, create draft (with dry-run and confirmation), validate | exists |
-| Trigger sources | Crane events, signed generation changes, Brick monitors, timers, and delivered CI or webhook events | exists |
-| Action adapters | READ_CHECK, VERIFY, NOTIFY_SLACK (real Slack integration), and the human or internal steps | exists |
-| Not wired | Ticket creation, on-call paging, runbook execution, metrics, deployments, inbound Slack or tickets, a model provider, an HTTP webhook listener, a sandbox | to build (shown as unavailable everywhere) |
+| Telemetry | 33 machine F38 events and 2 service events ([DASHBOARD.md](../../DASHBOARD.md#f38-resident-agents)), registered and documented | exists |
+| Dashboard | New **Resident agents** page (Govern group): registry, review inbox, activation timeline, idle cost and health, test and simulate, creation wizard; route `/api/residents`, merged across every member's machine | exists |
+| Dashboard decisions | Approve, deny, answer, cancel, pause, revoke from the page (GitHub-verified admin), applied by the machine at its next sync with Crane's checks; route `/auth/resident` and the machine routes `resident-decisions` | exists (approvals and answers only where the definition allows them) |
+| VS Code | **Resident agents** group in the Bricks view; show, context preview, create draft (with dry-run and confirmation), validate, pause, resume, revoke | exists |
+| Trigger sources | Crane events, signed generation changes, Brick monitors, timers, **GitHub Actions runs (pulled)**, and delivered CI or webhook events | exists |
+| Action adapters | READ_CHECK, VERIFY, NOTIFY_SLACK (Slack), **CREATE_TICKET (Jira, deduplicated and reconciled by label)**, and the human or internal steps | exists |
+| Governance options | Dashboard decisions (opt-in per definition), separation of duties (the activator cannot approve) | exists |
+| Not wired | On-call paging, runbook execution, metrics, deployments, inbound Slack or tickets, a model provider, an HTTP webhook listener, a sandbox | to build (shown as unavailable everywhere) |
 
 Files changed outside the new modules are small hook-ins: [src/main.rs](../../src/main.rs) and
 [src/cli/mod.rs](../../src/cli/mod.rs) (module and dispatch),
 [src/cli/agent.rs](../../src/cli/agent.rs) and [src/telemetry/ingest.rs](../../src/telemetry/ingest.rs)
 (one tick per background sync), [src/foxx/status.rs](../../src/foxx/status.rs) (the `residents`
-report), [src/telemetry/spec_commands.rs](../../src/telemetry/spec_commands.rs) (F38 dispatch), and
-the dashboard and extension files listed in sections 7 and 8.
+report, and pulling dashboard decisions), [src/telemetry/spec_commands.rs](../../src/telemetry/spec_commands.rs)
+(F38 dispatch), [src/integrations/mod.rs](../../src/integrations/mod.rs) (Jira issue create and
+lookup), the service files [src/server/ingest.rs](../../src/server/ingest.rs) and
+[src/server/store.rs](../../src/server/store.rs) (the machine routes for decisions), and the
+dashboard and extension files listed in sections 7 and 8.
 
 ---
 
@@ -59,8 +64,13 @@ the dashboard and extension files listed in sections 7 and 8.
 6. **Answer when it asks.** Approvals, questions, uncertain effects to reconcile, and proposed RCA
    graphs appear in the dashboard's review inbox with the exact command to run. The answer resumes
    the same activation.
-7. **Stop it.** Pause, revoke, or let it expire. Revoking the signed Brick assignment
-   (`crane brick unassign`) stops it too, before its next step.
+7. **Decide from the dashboard.** A repository admin approves, denies, or answers a waiting step,
+   cancels an activation, or pauses or revokes an assignment from the page. GitHub confirms the
+   role, and the machine applies the decision at its next sync with every check Crane makes there.
+   Approvals and answers count only when the definition says `remote_decisions: true`, and only for
+   the plan the admin was shown.
+8. **Stop it.** Pause, revoke, or let it expire, from the CLI, the dashboard, or VS Code. Revoking
+   the signed Brick assignment (`crane brick unassign`) stops it too, before its next step.
 
 ### Lifecycles (kept separate on purpose)
 
@@ -152,8 +162,14 @@ dependency**.
 - **Loops are impossible by construction:** events the runtime caused (`resident.*` events and
   commands that carry `RESIDENT_*` notes) never become triggers.
 - **Concurrency:** one worker at a time (a worker lock). Leases make crash recovery explicit.
+- **Automatic reconciliation:** an adapter that can read its result back does so before anyone is
+  asked. Jira issues carry a label derived from the step's idempotency key. Before creating, and on
+  every tick while a step is uncertain, the label is looked up. An issue that exists is the
+  outcome, and a second one is never opened.
 - **Exactly-once effects are not claimed.** Slack incoming webhooks take no idempotency key, so an
   uncertain Slack call stays uncertain until a person says what happened.
+- **Out-of-order events:** a wait for a later event (for example "the next green run") ignores an
+  event that happened before the activation's own trigger, even if it arrives later.
 
 ### 3.5 Context and cache
 
@@ -195,7 +211,7 @@ person writes a new version.
 | `NOTIFY_SLACK` | external | available when Slack is configured; message names its assignment, activation, and trigger |
 | `REQUEST_APPROVAL`, `ASK_USER`, `WAIT_FOR_EVENT`, `RECONCILE` | internal | available (durable waits with deadlines; no polling) |
 | `PROPOSE_RCA`, `PROPOSE_ACTION_PLAN` | internal | available (proposals for review) |
-| `CREATE_TICKET` | external | **unavailable**: the Jira integration only comments on existing issues |
+| `CREATE_TICKET` | external | available when Jira is configured: one issue per step in the configured project, deduplicated and reconciled by its label |
 | `PAGE_ONCALL` | external | **unavailable**: no on-call adapter |
 | `EXECUTE_PROCEDURE` | external | **unavailable**: residents cannot start runbooks yet |
 
@@ -222,8 +238,24 @@ the signed state again and applies these rules. The strictest one wins.
 | External step on an **observe** target | DENY |
 | External step on an **assisted** or **restricted** target, under an approval, read-only, or fail-closed Brick control, on a runbook target, or not marked auto | REQUIRE_APPROVAL |
 
+Who may decide a waiting step:
+
+| Decision | From a machine (CLI or VS Code) | From the dashboard |
+|---|---|---|
+| Approve or deny | A repository signer (owner or admin key) | A GitHub-verified repository admin, only if the definition has `remote_decisions: true`, and only for the plan digest shown |
+| Answer a question | Any person running Crane | Same rule as approvals |
+| Cancel, pause, revoke | Any person running Crane | Any GitHub-verified repository admin (it only makes things stricter) |
+| Resume, activate, renew, review an RCA graph | A repository signer | Never |
+| Reconcile an uncertain effect | Any person running Crane (declared evidence) | Never; adapters that can read back (Jira) reconcile automatically |
+
+With `distinct_approver: true`, the person who activated the assignment cannot approve its steps.
+
 Other guarantees:
 
+- **Dashboard decisions** pass three gates: GitHub confirms the admin role when the decision is
+  made, the decision waits for at most one day for its machine, and the machine applies it through
+  the same functions and checks as the CLI. Each decision is applied once (by its id). A decision
+  about a plan that changed since is refused, and the refusal is reported back to the page.
 - **Approvals** bind to the activation, the plan digest, the step's content, and the signed-state
   digest. They expire (`approval_ttl_minutes`), are used once, and come only from a repository
   signer (owner or admin key). A change to the signed rules after approval voids it.
@@ -255,7 +287,16 @@ with approver, digest, expiry, and use. F38 events link to these records by id.
 - **Where it runs:** the background sync that hooks and commands already start, and
   `crane resident tick`, which an OS scheduler (cron, Task Scheduler) can run to get timers
   without agent activity. There is no daemon to deploy.
-- **How CI wakes it:** add a step that runs `crane resident trigger --file event.json`, for example:
+- **How CI wakes it, option 1 (pulled):** when the repository is connected to GitHub
+  (`crane repo --gh-cli` or another method) and the `gh` CLI is signed in, every tick reads finished
+  GitHub Actions runs, at most once every 5 minutes and only while an active assignment subscribes
+  to `ci`. Runs become `ci.passed`, `ci.failed`, `ci.cancelled`, and so on, with the attributes
+  `workflow`, `branch`, `event`, `run_id`, `attempt`, `sha`, and `conclusion`. They name no target,
+  so subscribe with `"scope": "repository"` (and filter with attributes such as
+  `{"branch": "main"}`). The first read only records where it is; history is not replayed. Set
+  `CRANE_RESIDENT_CI_POLL=off` to turn this off.
+- **How CI wakes it, option 2 (delivered):** add a step that runs
+  `crane resident trigger --file event.json`, for example:
 
   ```json
   {"source": "ci", "kind": "ci.failed", "targets": ["flow:checkout"], "attributes": {"job": "tests"}, "idempotency_key": "gh-run-9172-attempt-1"}
@@ -282,11 +323,12 @@ crane resident definition save --file DEFINITION.json [--dry-run]
 crane resident definition activate|revoke ID@N --reason TEXT        (activate: admin)
 crane resident definition list | show ID[@N]
 crane resident create --file ASSIGNMENT.json [--dry-run]
+crane resident duplicate ID --as NEW_ID [--target flow:ID|zone:ID]    (a new draft)
 crane resident validate ID
 crane resident activate|renew ID --reason TEXT [--dry-run]          (admin)
 crane resident pause|resume|revoke ID --reason TEXT
 crane resident list | show ID | context ID | status
-crane resident test ID (--event EVENT.json | --replay ACTIVATION)   (plan only)
+crane resident test ID (--event EVENT.json | --replay ACTIVATION | --replay-event SEQUENCE)   (plan only)
 crane resident trigger --file EVENT.json                            (ci or webhook, then a tick)
 crane resident tick
 crane resident activations [--assignment ID] | activation ACTIVATION
@@ -309,9 +351,9 @@ failed, blocked, or denied, 4 approval required, 5 unknown.
 | Zone | What it shows |
 |---|---|
 | State | Active and idle, investigating or executing, awaiting approval, degraded, model calls while idle (should stay 0), queue depth |
-| Registry | Assignments (status, lifecycle, target, definition, agent, RCA, trigger support per source, Crane's health now, expiry, last event, latest activation, last verification, last failure, model calls); definitions; RCA graphs with node bases |
-| Review inbox | Pending approvals (with proposed steps and why Crane asks), questions, uncertain effects, proposed RCA graphs, expired or unhealthy assignments, each with the exact command |
-| Activation timeline | Every activation with filters; detail: trigger, context sources and versions, cache, candidate causes with evidence, plan with Crane's decision per step, approvals, usage, and timeline |
+| Registry | Assignments (with their machine and **Pause… / Revoke…** buttons; status, lifecycle, target, definition, agent, RCA, trigger support per source, Crane's health now, expiry, last event, latest activation, last verification, last failure, model calls); definitions; RCA graphs with node bases |
+| Review inbox | Pending approvals (with proposed steps and why Crane asks), questions, uncertain effects, proposed RCA graphs, expired or unhealthy assignments. **Approve…, Deny…, Answer…** buttons decide on the page; the exact command is shown as the alternative |
+| Activation timeline | Every activation with filters and a **Cancel…** button while it runs; detail: trigger, context sources and versions, cache, candidate causes with evidence, plan with Crane's decision per step, approvals, usage, and timeline |
 | Idle cost and health | The counters from section 5, ignored triggers by reason, outcomes, and F38 events over time |
 | Test and simulate | Test reports; a typed test-event builder with an in-browser "would it match" preview; what can run today (step types and trigger sources, supported or not) |
 | Create | An eight-step wizard: identity and goal, target (inactive ones marked unavailable), context preview from the reported Brick attachments, real trigger sources only, actions and limits (least privilege, nothing auto-runs by default), RCA behavior, verification, and review with risks and missing integrations |
@@ -321,11 +363,23 @@ Files: [src/server/dashboard/govern.js](../../src/server/dashboard/govern.js) (`
 [api/controls.rs](../../src/server/dashboard/api/controls.rs) and
 [api/mod.rs](../../src/server/dashboard/api/mod.rs) (`/api/residents`).
 
-**What the dashboard cannot do (by design, as for Bricks):** it holds no signing key, so it cannot
-validate, activate, approve, or execute anything. The wizard and test builder **download** draft
-and event files that a member imports. Approvals and answers are given with the command shown. The
-page shows the state **as last reported by a member's machine**. The durable record is that
-machine's resident store; DataSea receives the report and the F38 events.
+**How a dashboard decision travels:** the button opens a short form (reason; the answer for a
+question). GitHub sign-in confirms that you administer the repository, and the service records the
+decision for the machine that holds the activation (`resident_decisions`, waiting at most one
+day). That machine's next sync fetches it (`GET resident-decisions`) and applies it through
+`resident::remote`, with the same functions and checks as the CLI. It then reports `APPLIED` or
+`REJECTED` with the reason (`POST resident-decisions`). Events: `RESIDENT_DECISION_RECORDED` or
+`RESIDENT_DECISION_REFUSED` on the service, then `RESIDENT_DECISION_APPLIED` from the machine.
+
+**Several members:** every member's machine keeps its own resident store. The page merges the
+latest report of every machine. Each row says which machine it is on, which is where a decision is
+applied, and counters are summed. A member whose Crane has no resident agents no longer hides the
+others.
+
+**What the dashboard still cannot do:** it holds no signing key, so it cannot validate, activate,
+resume, or renew an assignment, review an RCA graph, or declare a reconciliation. The wizard and
+test builder **download** draft and event files that a member imports. The durable record is each
+machine's resident store; DataSea receives reports, events, and pending decisions only.
 
 ---
 
@@ -342,6 +396,8 @@ triggers, Crane's answer now, its latest activation, and model calls. Commands:
   JSON, see Crane's `--dry-run` validation, confirm, and create the draft. Activation stays an
   admin's step.
 - **Validate Resident Agent**: problems and warnings appear in the output.
+- **Pause, Resume, or Revoke Resident Agent**: offers only the changes its lifecycle allows, asks for
+  a reason, confirms, and runs Crane (resuming needs what Crane requires).
 
 It reads the same `crane resident` envelopes as the dashboard's data source, so an assignment made
 on the dashboard path (draft imported with the CLI) and one made in the editor are the same
@@ -356,49 +412,60 @@ untrusted workspaces, as before. Files: [core/residents.ts](../../extensions/fox
 
 | Command | Covers | Result |
 |---|---|---|
-| `cargo test --bin crane resident` | 17 resident unit tests, the F38 registration and documentation test, and the CLI status mapping | 19 passed |
-| `cargo test --test residents` | The real binary: definition and RCA save, activate, and review; dry-run create; validate; activate; agent gate; plan-only test; trigger to PROVEN; duplicate; tick with 0 model calls; revoke to DEGRADED and BLOCKED; rejected delivery | 1 passed |
+| `cargo test --bin crane resident` | 23 resident unit tests, the F38 registration and documentation test, and the CLI status mapping | 25 passed |
+| `cargo test --features server --bin crane resident_reports_of_every_machine` | Merging several machines' reports on the dashboard | 1 passed |
+| `cargo test --test residents` | The real binary: definition and RCA save, activate, and review; dry-run create; validate (Slack and Jira not configured); activate; agent gate; plan-only test; trigger to PROVEN; duplicate; tick with 0 model calls; revoke to DEGRADED and BLOCKED; rejected delivery; replay of a recorded event; duplicate | 1 passed |
 | `cargo test --bin crane telemetry::spec` | Event specification, including the dispatch change | 6 passed |
+| `cargo test --bin crane integrations::` | Integration providers (the Jira module gained functions) | 2 passed |
 | `cargo test --test bricks` | Bricks end to end (the reused authority path) | 1 passed |
 | `cargo test --test cli_basics version_and_help` | Help text | 1 passed |
-| `cargo clippy --bin crane --tests` and `--features server --bin crane` | No warning in changed code | clean |
+| `cargo clippy --bin crane --tests` and `--features server --bin crane --tests` | No warning in changed code | clean |
 | `rustfmt --check` on changed files | Formatting | clean |
-| `npx tsc -p .` and `node --test --test-name-pattern=resident out/test/core.test.js` (extension) | Types; 3 resident tests | 3 passed |
+| `npx tsc -p .` and `node --test --test-name-pattern=resident out/test/core.test.js` (extension) | Types; 3 resident tests (now also lifecycle changes and repository-scope CI drafts) | 3 passed |
 | `node --check` on `govern.js` and `app.js` | Dashboard scripts parse | ok |
 
-The unit tests use a fake clock, fixtures, a counting fake model, and a fake Slack adapter. No test
-needs a paid model, a real Slack message, a ticket, or credentials. They cover: validation of
-definitions and assignments; lifecycle and expiry; zero model calls over 13 idle days, then exactly
-one in the activation; trigger normalization and rejection; deduplication, filters, scope,
-cooldown, and the daily limit; the round trip to PROVEN and back to ACTIVE_IDLE; crash recovery
-(lease expiry, dispatching to uncertain, no repeat, reconciliation); a reopened store resuming an
-approval; tamper detection; cache hit, miss, and invalidation, and the cache never authorizing;
-revocation between planning and execution; observe, assisted, restricted, fail-closed, and
-unavailable decisions; approval binding, expiry, single use, and signer-only; RCA basis (proposed,
-contradicted, unknown, insufficient); plan validation; UNKNOWN without verification; unavailable
-steps; retry only without effect; uncertain effects not retried; dry runs without side effects;
-questions and event waits resuming the same activation; deadlines; missing context asking a person;
-timers; self-caused events; and report status and redaction.
+The unit tests use a fake clock, fixtures, a counting fake model, a fake Slack, a fake Jira, and
+recorded GitHub answers. No test needs a paid model, a real Slack message, a ticket, a GitHub call,
+or credentials. Besides the first round's coverage, this round adds:
 
-**Not run:** the dashboard integration tests (`tests/dashboard.rs`) need a live MongoDB
-(`CRANE_TEST_MONGODB_URI`) and skip without it, so the `/api/residents` route and the page were
-checked by type-checking, `node --check`, and the report unit tests, not in a browser. The
-extension's webview tests and the rest of the repository's suites were not run, by instruction.
+- one Jira issue per step, including after a lost answer (found by label on the next tick)
+- a person reconciling while Jira cannot answer
+- dashboard decisions:
+  - refused without `remote_decisions`
+  - refused for a changed plan
+  - applied for the current plan
+  - applied only once
+  - pause accepted and resume refused
+- separation of duties and the deny path
+- out-of-order events not satisfying a wait
+- GitHub Actions runs:
+  - history recorded, not replayed
+  - one trigger per new run
+  - reads limited to one per 5 minutes
+  - no read without a CI subscription
+- duplicating an assignment
 
----
+**Not run:** the dashboard integration tests (`tests/dashboard.rs`) and the ingestion tests need a
+live MongoDB (`CRANE_TEST_MONGODB_URI`). So the `/auth/resident` sign-in flow, the
+`resident-decisions` service routes, and the page buttons were checked by type-checking, clippy,
+`node --check`, and the unit tests of both ends (the machine's `remote::apply` and the dashboard's
+merge), not against a running service or in a browser. The real Jira and GitHub calls were not
+made; their request shapes follow the integrations already in the repository.
 
 ## 10. Limitations and next steps
 
 | Gap | Effect today | Next step |
 |---|---|---|
-| No model provider | Reasoning is deterministic RCA traversal; ambiguous cases become questions or proposals | Plug a provider into `Reasoner`, metered and bounded by `max_model_calls` |
-| Dashboard cannot write | Creation, approvals, and answers go through the CLI with the shown command | A service-side draft and decision inbox that a machine pulls and applies (as suggested for Bricks) |
-| No HTTP webhook listener | CI and webhooks deliver with `crane resident trigger` | A signed, authenticated listener on the DataSea service |
-| Ticketing, paging, runbooks | Steps listed as unavailable | Jira issue creation with dedup keys; an on-call adapter; runbook start from an approved step |
-| Metrics, deployments, inbound Slack or tickets | Sources listed as unsupported | Connectors in `trigger.rs`, one at a time, each with tests |
+| No model provider | Reasoning is deterministic RCA traversal; ambiguous cases become questions or proposals | Choose a provider and decide whether repository context may leave the machine; then plug it into `Reasoner`, metered and bounded by `max_model_calls` |
+| Runbook execution from a plan | `EXECUTE_PROCEDURE` is unavailable | Start an active runbook version from an approved step, and track its run through reconciliation (the runbook engine lives in the CLI layer today) |
+| On-call paging | `PAGE_ONCALL` is unavailable | An on-call adapter (PagerDuty or Opsgenie) with dedup keys |
+| No HTTP webhook listener | Webhooks deliver with `crane resident trigger`; CI is also pulled from GitHub Actions | A signed, authenticated listener on the DataSea service |
+| Metrics, deployments, inbound Slack or tickets | Sources listed as unsupported | Connectors in `trigger.rs`, one at a time |
+| Pulled CI names no target | CI subscriptions use the repository scope with attribute filters | Map a run's changed files to Zones and Flows |
 | Slack has no idempotency key | An uncertain Slack call needs a person to reconcile it | Bot-token mode with message lookup for automatic reconciliation |
-| Approvals are one person's | Any signer can approve, and self-approval is allowed (and recorded) | Approval groups and separation of duties |
-| One machine's store | Each member's machine has its own resident store; the dashboard shows the latest report | Choose one runner machine per repository, or move durable state to the service |
+| Separation of duties compares names | A person known as `@login` on the dashboard and by their Git name on a machine is not recognised as the same | Link identities (the dashboard already links machines to GitHub accounts) |
+| Dashboard cannot resume, activate, or review | Those stay signer actions on a machine | Keep, by design: loosening needs a signing key |
+| One store per machine | Each member's machine runs the assignments it holds | Pick one runner machine per repository, or move durable state to the service |
 | Sandbox | Tests are plan-only | An isolation profile that can really confine execution |
 
 Related: [Bricks](bricks.md) (the signed assignment residents act under),

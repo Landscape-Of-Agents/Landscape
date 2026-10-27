@@ -960,6 +960,98 @@ impl Approvals {
     }
 }
 
+/** How long a resident decision waits for its machine before it lapses (one day: a decision on a
+ * plan is only meaningful while that plan is current) */
+const RESIDENT_DECISION_MILLIS: u64 = 24 * 60 * 60 * 1000;
+
+/** A resident-agent decision asked for on the dashboard
+ * Fields
+    - repository: String - repository identity
+    - remote: String - its verified remote
+    - installation: String - the machine that holds the activation or assignment
+    - action: String - approve, deny, answer, cancel, pause, or revoke
+    - activation: String - activation (for step and activation decisions)
+    - assignment: String - assignment (for pause and revoke)
+    - step: String - step (approve, deny, answer)
+    - plan: String - the plan digest the admin was shown
+    - text: String - the answer (answer only)
+    - reason: String - why
+*/
+pub(crate) struct ResidentDecision {
+    pub(crate) repository: String,
+    pub(crate) remote: String,
+    pub(crate) installation: String,
+    pub(crate) action: String,
+    pub(crate) activation: String,
+    pub(crate) assignment: String,
+    pub(crate) step: String,
+    pub(crate) plan: String,
+    pub(crate) text: String,
+    pub(crate) reason: String,
+}
+
+impl Approvals {
+    /** Record a resident decision an admin made; the machine applies it at its next sync, with
+     * the checks the CLI makes, and reports back
+     * Input
+        - decision: &ResidentDecision - what was decided
+        - login: &str - the admin's GitHub login
+        - access: Access - their access to the repository, from GitHub
+     * Output
+        - Result<String, String> what was recorded, for the person
+    */
+    pub(crate) fn resident_decision(
+        &self,
+        decision: &ResidentDecision,
+        login: &str,
+        access: Access,
+    ) -> Result<String, String> {
+        if !access.admin {
+            return Err(format!("GitHub does not show @{login} as an admin of {}; only admins and owners decide for resident agents", decision.remote));
+        }
+        let now = now_millis();
+        let decision_id = format!(
+            "rsd_{}",
+            &digest(
+                "dashboard/resident-decision-id/v1",
+                &[
+                    decision.repository.as_bytes(),
+                    decision.activation.as_bytes(),
+                    decision.assignment.as_bytes(),
+                    decision.step.as_bytes(),
+                    decision.action.as_bytes(),
+                    login.as_bytes(),
+                    now.to_string().as_bytes()
+                ]
+            )[..24]
+        );
+        self.database
+            .collection::<Document>("resident_decisions")
+            .insert_one(doc! {
+                "decision_id": &decision_id,
+                "repository_id": &decision.repository,
+                "installation": &decision.installation,
+                "action": &decision.action,
+                "activation": &decision.activation,
+                "assignment": &decision.assignment,
+                "step": &decision.step,
+                "plan": &decision.plan,
+                "text": &decision.text,
+                "reason": &decision.reason,
+                "decided_by": login,
+                "decided_at": now as i64,
+                "expires_at": (now + RESIDENT_DECISION_MILLIS) as i64,
+                "status": "PENDING",
+            })
+            .run()
+            .map_err(io_error)?;
+        Ok(format!(
+            "@{login} decided to {} ({decision_id}). The machine that holds it applies it at its next sync, with every check Crane makes there; the Resident agents page shows the result.",
+            decision.action
+        ))
+    }
+}
+
 /** How long a grant waits for its machine before it lapses */
 const GRANT_LIFETIME_MILLIS: u64 = 7 * 24 * 60 * 60 * 1000;
 

@@ -15,7 +15,6 @@ use super::model::{
     limit_ceilings, transition_allowed, Assignment, AssignmentDraft, Change, Definition,
     DefinitionRecord, DefinitionState, Lifecycle, Problems, Validation, DAY_MS, MAX_LIFETIME_DAYS,
 };
-use super::plan::StepType;
 use super::rca::{self, Graph, Origin, RcaRecord, RcaState};
 use super::store::{ActivationState, ResidentStore, StepState};
 use crate::brick::model::{Author, Subject, Target};
@@ -316,6 +315,45 @@ pub(crate) fn create_assignment(
     Ok(assignment)
 }
 
+/** Duplicate an assignment as a new draft: same definition version, agent, subscriptions, and
+ * timers, optionally on another target (the RCA graph is kept only on the same target, since a
+ * graph explains one target). Nothing of the source's lifecycle or activations is copied
+ * Input
+    - store: &mut ResidentStore - store
+    - source_id: &str - assignment to copy
+    - new_id: &str - the new assignment's id
+    - target: Option<Target> - another target, None for the same
+    - author: &Author - author
+    - now: u64 - Unix milliseconds
+ * Output
+    - Result<Assignment, String>
+*/
+pub(crate) fn duplicate_assignment(
+    store: &mut ResidentStore,
+    source_id: &str,
+    new_id: &str,
+    target: Option<Target>,
+    author: &Author,
+    now: u64,
+) -> Result<Assignment, String> {
+    let source = store.assignment(source_id)?.clone();
+    let same = target
+        .as_ref()
+        .is_none_or(|target| *target == source.target);
+    let draft = AssignmentDraft {
+        assignment_id: new_id.into(),
+        definition_id: source.definition_id.clone(),
+        definition_version: source.definition_version,
+        agent: source.agent.clone(),
+        target: target.unwrap_or(source.target.clone()).key(),
+        rca: if same { source.rca.clone() } else { None },
+        subscriptions: source.subscriptions.clone(),
+        timers: source.timers.clone(),
+        lifetime_days: source.lifetime_days,
+    };
+    create_assignment(store, draft, author, now)
+}
+
 /** Validate an assignment against its definition and the current signed state, as if it were
  * activated now
  * Input
@@ -458,10 +496,15 @@ pub(crate) fn check_assignment(
         },
     }
     if let Some(record) = definition {
-        if record.definition.policy(StepType::NotifySlack).is_some()
-            && !authority.connectors.get("slack").copied().unwrap_or(false)
-        {
-            warnings.push(("CONNECTOR_NOT_CONFIGURED".to_string(), "NOTIFY_SLACK is allowed but Slack is not configured; those steps will be unavailable".into()));
+        for policy in &record.definition.actions {
+            if let Some((name, setup)) = super::authority::connector(policy.step_type) {
+                if !authority.connectors.get(name).copied().unwrap_or(false) {
+                    warnings.push((
+                        "CONNECTOR_NOT_CONFIGURED".to_string(),
+                        format!("{} is allowed but {name} is not configured ('{setup}'); those steps will be unavailable", policy.step_type.name()),
+                    ));
+                }
+            }
         }
         for policy in &record.definition.actions {
             if let Some(reason) = policy.step_type.info().available {

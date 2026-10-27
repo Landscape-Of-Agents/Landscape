@@ -276,6 +276,20 @@ pub(crate) fn admit(
     answer
 }
 
+/** The integration an external step type needs, with the command that configures it
+ * Input
+    - step_type: StepType - type
+ * Output
+    - Option<(&'static str, &'static str)> (connector name, setup command)
+*/
+pub(crate) fn connector(step_type: StepType) -> Option<(&'static str, &'static str)> {
+    match step_type {
+        StepType::NotifySlack => Some(("slack", "crane integrate slack")),
+        StepType::CreateTicket => Some(("jira", "crane integrate jira")),
+        _ => None,
+    }
+}
+
 /** Decide one step, immediately before it would run
  * Input
     - authority: &Authority - Crane view, freshly read
@@ -306,14 +320,14 @@ pub(crate) fn authorize(
     if let Some(reason) = info.available {
         answer.tighten(Decision::Unavailable, "STEP_UNAVAILABLE", reason.into());
     }
-    if step.step_type == StepType::NotifySlack
-        && !authority.connectors.get("slack").copied().unwrap_or(false)
-    {
-        answer.tighten(
-            Decision::Unavailable,
-            "CONNECTOR_NOT_CONFIGURED",
-            "Slack is not configured ('crane integrate slack')".into(),
-        );
+    if let Some((name, setup)) = connector(step.step_type) {
+        if !authority.connectors.get(name).copied().unwrap_or(false) {
+            answer.tighten(
+                Decision::Unavailable,
+                "CONNECTOR_NOT_CONFIGURED",
+                format!("{name} is not configured ('{setup}')"),
+            );
+        }
     }
     if info.effect != Effect::External {
         return answer;
@@ -431,10 +445,15 @@ pub(crate) fn load(
             active: assignment.state == AssignmentState::Active,
         })
         .collect();
-    let connectors = BTreeMap::from([(
-        "slack".to_string(),
-        crate::integrations::load(workspace, "slack").is_some(),
-    )]);
+    let connectors = ["slack", "jira"]
+        .into_iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                crate::integrations::load(workspace, name).is_some(),
+            )
+        })
+        .collect();
     Ok(Authority {
         trust,
         generation: state.generation(),

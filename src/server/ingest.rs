@@ -322,6 +322,15 @@ pub(super) fn handle(
                 .map_err(|error| (400, format!("invalid grant results: {error}")))?;
             store::settle_grants(database, &repository, &installation, &results)
         }
+        // Resident-agent decisions an admin made on the dashboard, for this machine only
+        ("GET", "resident-decisions") => {
+            store::pending_resident_decisions(database, &repository, &installation)
+        }
+        ("POST", "resident-decisions") => {
+            let results: Value = serde_json::from_slice(&body)
+                .map_err(|error| (400, format!("invalid decision results: {error}")))?;
+            store::settle_resident_decisions(database, &repository, &installation, &results)
+        }
         ("POST", "clear") => {
             let request: Value = serde_json::from_slice(&body)
                 .map_err(|error| (400, format!("invalid clear request: {error}")))?;
@@ -366,9 +375,11 @@ pub(super) fn handle(
             super::dashboard::uploaded(&repository);
             Ok(result)
         }
-        (_, "positions" | "batch" | "link" | "owner" | "agent-policy" | "grants" | "clear") => {
-            return Err((405, "method not allowed".into()))
-        }
+        (
+            _,
+            "positions" | "batch" | "link" | "owner" | "agent-policy" | "grants"
+            | "resident-decisions" | "clear",
+        ) => return Err((405, "method not allowed".into())),
         _ => return Err(not_found()),
     };
     stored.map_err(|error| {

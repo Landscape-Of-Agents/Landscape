@@ -152,7 +152,7 @@ impl StepType {
         };
         match self {
             Self::ReadCheck => entry(Effect::ReadOnly, None, "deterministic checks (rca::CheckSpec)", true, true, &[], true, "the check's result and what it read", "the evidence could not be read: unknown, never passed"),
-            Self::CreateTicket => entry(Effect::External, Some("no ticket-creation adapter: the Jira integration only comments on existing issues"), "none", false, false, &[("summary", true)], false, "none", "unavailable"),
+            Self::CreateTicket => entry(Effect::External, None, "the Jira integration ('crane integrate jira'): an issue in the configured project, labelled with the step's key", true, true, &[("summary", true), ("description", false)], false, "the issue key", "known failure: retried within the limit; unknown outcome: the label is looked up before anything is repeated"),
             Self::NotifySlack => entry(Effect::External, None, "the Slack integration ('crane integrate slack'), the configured channel only", false, false, &[("text", true)], false, "the HTTP status Slack answered", "known failure: retried within the limit; unknown outcome: reconciliation by a person"),
             Self::PageOncall => entry(Effect::External, Some("no on-call adapter is registered"), "none", false, false, &[("summary", true)], false, "none", "unavailable"),
             Self::ExecuteProcedure => entry(Effect::External, Some("residents cannot start runbooks yet; a person runs 'crane runbook run'"), "none", false, false, &[("runbook", true)], false, "none", "unavailable"),

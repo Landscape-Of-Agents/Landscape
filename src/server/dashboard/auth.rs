@@ -34,6 +34,9 @@ const INTENT_DOMAIN: &str = "foxx/dashboard/intent/v1";
     - code: String - the one-time code (empty for a grant)
     - state: String - the sign-in state it belongs to
     - grant: Option<Value> - for a grant: {repository, session, amount, reason}
+    - dashboard_agent: Option<Value> - for a Dashboard Agent action: {action, repository, record_id}
+    - resident: Option<Value> - for a resident decision: {repository, installation, action,
+      activation, assignment, step, plan, text, reason}
 */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Intent {
@@ -44,6 +47,8 @@ pub(crate) struct Intent {
     pub(crate) grant: Option<Value>,
     #[serde(default)]
     pub(crate) dashboard_agent: Option<Value>,
+    #[serde(default)]
+    pub(crate) resident: Option<Value>,
 }
 
 /** The viewer's access to a repository, as GitHub reports it

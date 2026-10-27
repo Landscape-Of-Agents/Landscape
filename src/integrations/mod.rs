@@ -17,7 +17,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::governance::workspace::Workspace;
 use crate::platform::files::{restrict_to_owner, write_atomic};
@@ -496,6 +496,168 @@ pub(crate) fn configure(name: &str) -> Result<Integration, String> {
         }
     }
     Ok(integration)
+}
+
+/** The label that ties a Jira issue to one resident step: "crane-" and 24 hex characters of the
+ * step's idempotency key, so a retry or a reconciliation finds the issue instead of opening another
+ * Input
+    - key: &str - idempotency key
+ * Output
+    - String
+*/
+pub(crate) fn issue_label(key: &str) -> String {
+    format!(
+        "crane-{}",
+        &crate::trust::crypto::digest("integrations/jira/label/v1", &[key.as_bytes()])[..24]
+    )
+}
+
+/** What a Jira issue call answered
+ * Variants
+    - Created - the issue key
+    - Found - an issue with the label already exists (its key)
+    - Absent - no issue has the label
+    - Refused - Jira refused (HTTP 4xx), so nothing was created
+    - Unknown - the outcome is not known (5xx, timeout, transport error)
+    - NotConfigured - Jira is not configured or incomplete
+*/
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum IssueAnswer {
+    Created(String),
+    Found(String),
+    Absent,
+    Refused(String),
+    Unknown(String),
+    NotConfigured(String),
+}
+
+/** The settings an issue call needs: site, API version, project, issue type, Authorization header
+ * Input
+    - workspace: &Workspace - repository
+ * Output
+    - Result<(String, String, String, String, String), String>
+*/
+fn issue_settings(
+    workspace: &Workspace,
+) -> Result<(String, String, String, String, String), String> {
+    let jira = load(workspace, "jira").ok_or("Jira is not configured ('crane integrate jira')")?;
+    let text = |key: &str| {
+        jira.settings
+            .get(key)
+            .and_then(Value::as_str)
+            .map(String::from)
+    };
+    let authorization = jira::authorization(&jira, &secrets(workspace, "jira"))
+        .ok_or("the Jira credentials are incomplete")?;
+    match (text("site_url"), text("api_version"), text("project_key")) {
+        (Some(site), Some(version), Some(project)) => Ok((
+            site,
+            version,
+            project,
+            text("issue_type").unwrap_or_else(|| "Task".into()),
+            authorization,
+        )),
+        _ => Err("the Jira configuration is incomplete".into()),
+    }
+}
+
+/** Classify a Jira answer that is not a success
+ * Input
+    - result: Result<(u16, String), String> - the HTTP answer
+ * Output
+    - IssueAnswer (Refused or Unknown)
+*/
+fn issue_failure(result: Result<(u16, String), String>) -> IssueAnswer {
+    match result {
+        Ok((status, body)) if (400..500).contains(&status) => {
+            IssueAnswer::Refused(failed(status, &body))
+        }
+        Ok((status, body)) => IssueAnswer::Unknown(failed(status, &body)),
+        Err(error) => IssueAnswer::Unknown(error),
+    }
+}
+
+/** Find the issue that carries a label in the configured project
+ * Input
+    - workspace: &Workspace - repository
+    - label: &str - label (issue_label)
+ * Output
+    - IssueAnswer (Found, Absent, Refused, Unknown, or NotConfigured)
+*/
+pub(crate) fn find_issue(workspace: &Workspace, label: &str) -> IssueAnswer {
+    let (site, version, project, _, authorization) = match issue_settings(workspace) {
+        Ok(settings) => settings,
+        Err(error) => return IssueAnswer::NotConfigured(error),
+    };
+    let path = if version == "3" {
+        "search/jql"
+    } else {
+        "search"
+    };
+    let body = json!({"jql": format!("project = \"{project}\" AND labels = \"{label}\""), "maxResults": 1, "fields": ["key"]});
+    let headers = ["Content-Type: application/json".to_string(), authorization];
+    match crate::platform::http::request(
+        "POST",
+        &format!("{site}/rest/api/{version}/{path}"),
+        &headers,
+        Some(&body.to_string()),
+    ) {
+        Ok((status, answer)) if (200..300).contains(&status) => {
+            let value: Value = serde_json::from_str(&answer).unwrap_or(Value::Null);
+            match value["issues"][0]["key"].as_str() {
+                Some(key) => IssueAnswer::Found(key.into()),
+                None => IssueAnswer::Absent,
+            }
+        }
+        other => issue_failure(other),
+    }
+}
+
+/** Create an issue in the configured project with a label (the caller looks the label up first)
+ * Input
+    - workspace: &Workspace - repository
+    - summary: &str - summary (at most 250 characters are sent)
+    - description: &str - description
+    - label: &str - label (issue_label)
+ * Output
+    - IssueAnswer (Created, Refused, Unknown, or NotConfigured)
+*/
+pub(crate) fn create_issue(
+    workspace: &Workspace,
+    summary: &str,
+    description: &str,
+    label: &str,
+) -> IssueAnswer {
+    if std::env::var("CRANE_ALERTS_DRY_RUN").is_ok_and(|value| value == "1") {
+        return IssueAnswer::Refused("CRANE_ALERTS_DRY_RUN is set: nothing was created".into());
+    }
+    let (site, version, project, issue_type, authorization) = match issue_settings(workspace) {
+        Ok(settings) => settings,
+        Err(error) => return IssueAnswer::NotConfigured(error),
+    };
+    let summary = summary.chars().take(250).collect::<String>();
+    let description = if version == "3" {
+        json!({"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}]})
+    } else {
+        json!(description)
+    };
+    let body = json!({"fields": {"project": {"key": project}, "summary": summary, "description": description, "issuetype": {"name": issue_type}, "labels": [label]}});
+    let headers = ["Content-Type: application/json".to_string(), authorization];
+    match crate::platform::http::request(
+        "POST",
+        &format!("{site}/rest/api/{version}/issue"),
+        &headers,
+        Some(&body.to_string()),
+    ) {
+        Ok((status, answer)) if (200..300).contains(&status) => {
+            let value: Value = serde_json::from_str(&answer).unwrap_or(Value::Null);
+            match value["key"].as_str() {
+                Some(key) => IssueAnswer::Created(key.into()),
+                None => IssueAnswer::Unknown("Jira answered without an issue key".into()),
+            }
+        }
+        other => issue_failure(other),
+    }
 }
 
 #[cfg(test)]

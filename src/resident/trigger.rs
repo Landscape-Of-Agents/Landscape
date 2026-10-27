@@ -531,6 +531,111 @@ pub(crate) fn from_monitors(
     (triggers, cursor)
 }
 
+/** The kind of a finished GitHub Actions run: "ci." and its conclusion (success is ci.passed,
+ * failure ci.failed; others keep their name, such as ci.cancelled or ci.timed_out)
+ * Input
+    - conclusion: &str - the run's conclusion
+ * Output
+    - String
+*/
+fn run_kind(conclusion: &str) -> String {
+    let word = match conclusion {
+        "success" => "passed".to_string(),
+        "failure" => "failed".to_string(),
+        other => other
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect(),
+    };
+    format!(
+        "ci.{}",
+        if word.is_empty() {
+            "unknown".into()
+        } else {
+            word
+        }
+    )
+}
+
+/** Triggers from finished GitHub Actions runs newer than the cursor (a run id). They name no
+ * target (a workflow run belongs to the repository), so subscriptions take them with the
+ * repository scope; attributes carry the workflow, branch, event, run id, attempt, and commit
+ * Input
+    - runs: &Value - the answer of GET repos/OWNER/NAME/actions/runs
+    - after: u64 - the newest run id already read (0: never read, which records it without triggers)
+    - repository_id: &str - this repository
+    - now: u64 - Unix milliseconds
+ * Output
+    - (Vec<Trigger>, u64) triggers and the new cursor
+*/
+pub(crate) fn from_workflow_runs(
+    runs: &Value,
+    after: u64,
+    repository_id: &str,
+    now: u64,
+) -> (Vec<Trigger>, u64) {
+    let mut cursor = after;
+    let mut triggers = Vec::new();
+    let list = runs["workflow_runs"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    for run in list.iter().rev() {
+        let Some(id) = run["id"].as_u64() else {
+            continue;
+        };
+        cursor = cursor.max(id);
+        if after == 0 || id <= after || run["status"].as_str() != Some("completed") {
+            continue;
+        }
+        let text = |key: &str| {
+            let value = run[key].as_str().unwrap_or_default();
+            value
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(200)
+                .collect::<String>()
+        };
+        let attempt = run["run_attempt"].as_u64().unwrap_or(1);
+        let attributes = BTreeMap::from([
+            ("workflow".to_string(), text("name")),
+            ("branch".to_string(), text("head_branch")),
+            ("event".to_string(), text("event")),
+            ("conclusion".to_string(), text("conclusion")),
+            ("run_id".to_string(), id.to_string()),
+            ("attempt".to_string(), attempt.to_string()),
+            (
+                "sha".to_string(),
+                text("head_sha").chars().take(12).collect(),
+            ),
+        ]);
+        let occurred = crate::capture::resources::github::unix_millis(&text("updated_at"))
+            .unwrap_or(now)
+            .min(now);
+        if let Ok(trigger) = normalize(
+            TriggerSource::Ci,
+            &run_kind(&text("conclusion")),
+            occurred,
+            Vec::new(),
+            attributes,
+            &format!("gh-run:{id}:{attempt}"),
+            "github actions",
+            repository_id,
+            repository_id,
+            now,
+        ) {
+            triggers.push(trigger);
+        }
+    }
+    (triggers, cursor)
+}
+
 /** Triggers of the timers that fell due for active assignments
  * Input
     - assignments: &[&Assignment] - active assignments

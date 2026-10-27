@@ -35,7 +35,7 @@ import {
   succeeded,
   TypeInfo,
 } from "./core/bricks";
-import { assignmentDraft, checkAssignmentId, PackData, packMarkdown, ResidentList, residentMarkdown, ResidentRow, residentsByTarget, residentTone } from "./core/residents";
+import { assignmentDraft, checkAssignmentId, PackData, packMarkdown, RESIDENT_CHANGES, residentChanges, ResidentList, residentMarkdown, ResidentRow, residentsByTarget, residentTone } from "./core/residents";
 
 /** What the Bricks view needs from the rest of Landscape. */
 export interface BricksHost {
@@ -136,6 +136,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     register("foxx.residents.context", (node) => this.residentContext(node as BrickNode | undefined));
     register("foxx.residents.create", (node) => this.createResident(node as BrickNode | undefined));
     register("foxx.residents.validate", (node) => this.validateResident(node as BrickNode | undefined));
+    register("foxx.residents.change", (node) => this.changeResident(node as BrickNode | undefined));
   }
 
   /**
@@ -361,6 +362,29 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     } finally {
       fs.rmSync(path.dirname(file), { recursive: true, force: true });
     }
+  }
+
+  /**
+   * Pause, resume, or revoke an assignment, after the person confirms (Crane decides whether it is
+   * allowed; resuming may need a signer).
+   * @param node node
+   */
+  async changeResident(node?: BrickNode): Promise<void> {
+    const row = await this.residentOf(node);
+    if (!row) return;
+    const changes = residentChanges(row);
+    if (!changes.length) {
+      vscode.window.showInformationMessage(`Landscape: ${row.assignment_id} is ${row.lifecycle}; it cannot be paused, resumed, or revoked now.`);
+      return;
+    }
+    const chosen = await vscode.window.showQuickPick(changes.map((name) => ({ label: RESIDENT_CHANGES[name].label, detail: RESIDENT_CHANGES[name].detail, name })), { placeHolder: `Change ${row.assignment_id} (${row.lifecycle})` });
+    if (!chosen) return;
+    const reason = await vscode.window.showInputBox({ prompt: `Why ${chosen.label.toLowerCase()} ${row.assignment_id}? (recorded)`, validateInput: (value) => (value.trim() ? undefined : "A reason is required") });
+    if (!reason) return;
+    const go = await vscode.window.showWarningMessage(`Landscape: ${chosen.label.toLowerCase()} ${row.assignment_id}?`, { modal: true, detail: chosen.detail }, chosen.label);
+    if (go !== chosen.label) return;
+    const result = await this.envelope(["resident", chosen.name, row.assignment_id, "--reason", reason]);
+    if (result) await this.report(result, `${chosen.label} resident`, false);
   }
 
   /**

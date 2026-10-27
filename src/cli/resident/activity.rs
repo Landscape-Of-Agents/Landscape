@@ -124,7 +124,7 @@ pub(super) fn status(args: &[String]) -> Result<(), String> {
     - Result<(), String>
 */
 pub(super) fn test(args: &[String]) -> Result<(), String> {
-    let args = parse(args, &["event", "replay"], &[])?;
+    let args = parse(args, &["event", "replay", "replay-event"], &[])?;
     args.expect_positional(
         1,
         "crane resident test ID (--event EVENT.json | --replay ACTIVATION)",
@@ -132,12 +132,47 @@ pub(super) fn test(args: &[String]) -> Result<(), String> {
     let id = args.positional[0].clone();
     let mut repo = open()?;
     let now = crate::platform::now_millis();
-    let fixture = match (args.value("event"), args.value("replay")) {
-        (Some(file), None) => {
+    let fixture = match (
+        args.value("event"),
+        args.value("replay"),
+        args.value("replay-event"),
+    ) {
+        (Some(file), None, None) => {
             trigger::fixture(&read_json(&file)?, &repo.workspace.repository_id, now)?
         }
-        (None, Some(activation)) => repo.store.activation(&activation)?.trigger.clone(),
-        _ => return Err("give --event EVENT.json or --replay ACTIVATION".into()),
+        (None, Some(activation), None) => repo.store.activation(&activation)?.trigger.clone(),
+        (None, None, Some(sequence)) => {
+            // A recorded Crane event, read from this machine's event store
+            let sequence = sequence
+                .parse::<u64>()
+                .map_err(|_| "--replay-event takes an event sequence number")?;
+            let events = crate::telemetry::Stores::open(&repo.runtime)
+                .events
+                .read_all()?;
+            let event = events
+                .iter()
+                .find(|event| event.sequence == sequence)
+                .ok_or_else(|| format!("no event with sequence {sequence}"))?;
+            if trigger::self_caused(event) {
+                return Err(format!("event {sequence} was caused by resident agents themselves; it never becomes a trigger"));
+            }
+            let (found, _) = trigger::from_events(
+                std::slice::from_ref(event),
+                sequence.saturating_sub(1),
+                &repo.workspace.repository_id,
+                now,
+            );
+            found
+                .into_iter()
+                .next()
+                .ok_or_else(|| format!("event {sequence} does not normalize into a trigger"))?
+        }
+        _ => {
+            return Err(
+                "give one of --event EVENT.json, --replay ACTIVATION, or --replay-event SEQUENCE"
+                    .into(),
+            )
+        }
     };
     let mut env = worker::live(&repo.workspace, &repo.runtime);
     let report = worker::test(&mut repo.store, &mut env, &id, fixture)?;
@@ -405,7 +440,7 @@ pub(super) fn approve(args: &[String]) -> Result<(), String> {
         &id,
         &step,
         &author,
-        &keys,
+        worker::Via::Machine { signers: &keys },
         !args.flag("deny"),
         &reason,
     )?;
@@ -430,7 +465,16 @@ pub(super) fn answer(args: &[String]) -> Result<(), String> {
     let mut repo = open()?;
     let author = repo.author.clone();
     let mut env = worker::live(&repo.workspace, &repo.runtime);
-    let state = worker::answer(&mut repo.store, &mut env, &id, &step, &text, &author)?;
+    let keys = signers(&repo.workspace);
+    let state = worker::answer(
+        &mut repo.store,
+        &mut env,
+        &id,
+        &step,
+        &text,
+        &author,
+        worker::Via::Machine { signers: &keys },
+    )?;
     resumed(&args, "resident.answer", &id, state, &repo)
 }
 

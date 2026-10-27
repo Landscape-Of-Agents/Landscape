@@ -3134,10 +3134,10 @@ never recorded. Every activity event carries `assignment`, `activation`, `trigge
 `step` as correlation ids.
 
 Common attributes
-- Action [action_type (RESIDENT_DEFINE, RESIDENT_LIFECYCLE, RESIDENT_TRIGGER, RESIDENT_ACTIVATION, RESIDENT_CONTEXT, RESIDENT_RCA, RESIDENT_PLAN, RESIDENT_APPROVAL, RESIDENT_ACTION, RESIDENT_VERIFY, RESIDENT_TEST) (enum), action_source (CLI, SYNC), action_user (string), action_id (id of the carrying event)]
+- Action [action_type (RESIDENT_DEFINE, RESIDENT_LIFECYCLE, RESIDENT_TRIGGER, RESIDENT_ACTIVATION, RESIDENT_CONTEXT, RESIDENT_RCA, RESIDENT_PLAN, RESIDENT_APPROVAL, RESIDENT_ACTION, RESIDENT_VERIFY, RESIDENT_TEST) (enum), action_source (CLI, SYNC, DASHBOARD), action_user (string), action_id (id of the carrying event)]
 - Repository [(as F13)]
 - Resource [resource ([CRANE_METADATA]), resource_ids (assignment, activation, trigger, definition, RCA graph, and step ids), resource_classification ([METADATA])]
-- Response [response_status (OK, PASSED, FAILED, BLOCKED, UNKNOWN, CONTRADICTED, PROPOSAL, APPROVED, DENIED, ANSWERED, ACCEPTED, UNSUPPORTED, DUPLICATE, NO_MATCH, COOLDOWN, RATE_LIMITED, PAUSED, EXPIRED, DEFINITION_MISSING, REVIEWED, REJECTED, PROVEN, PARTIALLY_VERIFIED, CANCELLED, AMBIGUOUS, INSUFFICIENT_EVIDENCE) (enum), failure_state (NA or the failing status), response_statement (string)]
+- Response [response_status (OK, PASSED, FAILED, BLOCKED, UNKNOWN, CONTRADICTED, PROPOSAL, APPROVED, DENIED, ANSWERED, ACCEPTED, UNSUPPORTED, DUPLICATE, NO_MATCH, COOLDOWN, RATE_LIMITED, PAUSED, EXPIRED, DEFINITION_MISSING, REVIEWED, REJECTED, APPLIED, REFUSED, PROVEN, PARTIALLY_VERIFIED, CANCELLED, AMBIGUOUS, INSUFFICIENT_EVIDENCE) (enum), failure_state (NA or the failing status), response_statement (string)]
 - Eval [context_cache (HIT, MISS), model_calls (integer: model invocations actually made; never inferred)]
 - Severity [severity_status (INFO, LOW, MEDIUM), severity_basis (OUTCOME), alert_kind (NONE)]
 - Other [assignment, activation, trigger, step, step_type, definition, rca, target, agent, state, from, mode (live, dry_run), source, kind, targets, origin, plan (plan digest), steps, conclusion (IDENTIFIED, AMBIGUOUS, INSUFFICIENT_EVIDENCE), digest, decision (ALLOW, REQUIRE_APPROVAL, UNAVAILABLE, DENY), reasons, approver, basis (DECLARED), pack, refresh_reason, missing, problems, warnings, gaps, model_calls, external_calls, self_reviewed, expires_at, schema_version (each when it applies)]
@@ -3203,6 +3203,26 @@ A verification step evaluated its postcondition (PASSED, CONTRADICTED, or UNKNOW
 effect is uncertain and waits for a person to establish what happened (it is never retried blindly).
 - Response [response_status (PASSED, CONTRADICTED, UNKNOWN)]
 - Other [step]
+
+#### F38.12 `RESIDENT_DECISION_APPLIED`
+A decision a repository admin made on the dashboard (GitHub verified it when it was made) reached the
+machine that holds the activation and was applied there through the same checks as the CLI, or was
+refused (the definition does not take dashboard decisions, the plan changed since, separation of
+duties, an action the dashboard may not take). Pausing, revoking, and cancelling are always
+accepted from the dashboard; approvals and answers only when the definition allows it.
+- Response [response_status (APPLIED, REJECTED)]
+- Other [decision, action (approve, deny, answer, cancel, pause, revoke), activation, assignment, step, approver, source (DASHBOARD)]
+
+#### F38.13 `RESIDENT_DECISION_RECORDED`, `RESIDENT_DECISION_REFUSED` (service)
+The dashboard recorded a resident decision for the machine that holds the activation or assignment
+(GitHub confirmed the person administers the repository), or refused it because they do not. Recorded
+by the service itself; the machine later notes `RESIDENT_DECISION_APPLIED` when it applies or refuses
+it. Decisions wait at most one day.
+- Action [action_type (RESIDENT_APPROVAL), action_source (DASHBOARD), action_user (GitHub login)]
+- Assessment [assessment_checks ([GITHUB_ADMIN_ROLE])]
+- Decision [decision (ALLOW, DENY), decision_rule (GITHUB_ADMIN_REQUIRED)]
+- Response [response_status (OK, REFUSED), failure_state (NA, NOT_ADMIN)]
+- Other [action, activation, assignment, step, plan]
 
 #### F38.11 `RESIDENT_TESTED`
 An assignment was tested against a fixture or replayed trigger in plan-only mode: matching,

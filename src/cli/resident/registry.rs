@@ -264,6 +264,40 @@ pub(super) fn create(args: &[String]) -> Result<(), String> {
     finish(&args, response, &[])
 }
 
+/** Run 'crane resident duplicate': copy an assignment as a new draft
+ * Input
+    - args: &[String] - arguments
+ * Output
+    - Result<(), String>
+*/
+pub(super) fn duplicate(args: &[String]) -> Result<(), String> {
+    let args = parse(args, &["as", "target"], &[])?;
+    args.expect_positional(
+        1,
+        "crane resident duplicate ID --as NEW_ID [--target flow:ID|zone:ID]",
+    )?;
+    let source = args.positional[0].clone();
+    let new_id = args.value("as").ok_or("--as is required")?;
+    let target = args
+        .value("target")
+        .map(|text| crate::brick::model::Target::parse(&text))
+        .transpose()?;
+    let mut repo = open()?;
+    let assignment = registry::duplicate_assignment(
+        &mut repo.store,
+        &source,
+        &new_id,
+        target,
+        &repo.author.clone(),
+        crate::platform::now_millis(),
+    )?;
+    repo.store.save()?;
+    let response = Response::new("resident.duplicate", Status::Ok, format!("created {new_id} as a draft copy of {source} for {}; next: crane resident validate {new_id}", assignment.target.key()))
+        .reference("assignment_ref", new_id)
+        .data(json!({"assignment": assignment}));
+    finish(&args, response, &[])
+}
+
 /** Run 'crane resident validate'
  * Input
     - args: &[String] - arguments

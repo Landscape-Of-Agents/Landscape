@@ -22,6 +22,7 @@ administration. Each machine is linked to a person once (`crane agent link`).
 | **Bricks** | The library by type and state, the fixed types and what each does today, attachments and Stacks, assigned agents (assignment and runtime status), monitors and coverage gaps, context snapshots, signed history, F37 events | exists (as last reported by a member's machine) |
 | **Brick draft builder** | Plain form: type, intent, Common Context, settings; downloads a draft a member imports with `crane brick create --file` | partial: the dashboard cannot validate or sign |
 | **Resident agents** | Assignments with lifecycle and derived status (idle, investigating, awaiting approval, degraded), the review inbox, each activation from trigger to verified outcome with Crane's decision per step, idle cost (model calls while idle) and health, plan-only test reports, F38 events | exists (as last reported by a member's machine) |
+| **Resident agent decisions** | Approve, deny, or answer a waiting step, cancel an activation, pause or revoke an assignment, after GitHub confirms you administer the repository; the machine applies it at its next sync with Crane's checks | exists (approvals and answers only when the definition allows dashboard decisions) |
 | **Resident agent wizard** | Eight steps (goal, target, context, triggers, actions and limits, RCA, verification, review); downloads the definition and assignment drafts, and test events, a member imports | partial: the dashboard cannot validate, activate, or approve |
 | **Skill Builder** | Plain forms to draft skills; drafts are proposals a signer activates | to build (decided) |
 | **Near misses, replay, role views** | The Black Box views | to build |
@@ -30,8 +31,8 @@ administration. Each machine is linked to a person once (`crane agent link`).
 ## What the dashboard may change
 
 Only narrow, repository-scoped writes: linking a machine to a person, confirming the owner key,
-granting credits, Dashboard Agent settings and incidents, quarantine requests, and context
-proposals. Sensitive ones need a fresh GitHub check that you are a repository admin. It cannot sign
+granting credits, Dashboard Agent settings and incidents, quarantine requests, context
+proposals, and resident-agent decisions (which the machine applies and checks again). Sensitive ones need a fresh GitHub check that you are a repository admin. It cannot sign
 rules: signing needs an owner or admin key on a machine.
 
 ## Stopping an agent

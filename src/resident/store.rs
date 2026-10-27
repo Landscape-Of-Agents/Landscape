@@ -485,12 +485,18 @@ pub(crate) struct Ignored {
     - event_sequence: u64 - last event store sequence read
     - generation: u64 - signed generation last seen
     - monitor_run: u64 - last Brick monitor run read
+    - ci_run: u64 - newest GitHub Actions run id read
+    - ci_polled_at: u64 - when GitHub Actions was last read (Unix milliseconds)
 */
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Cursors {
     pub(crate) event_sequence: u64,
     pub(crate) generation: u64,
     pub(crate) monitor_run: u64,
+    #[serde(default)]
+    pub(crate) ci_run: u64,
+    #[serde(default)]
+    pub(crate) ci_polled_at: u64,
 }
 
 /** Idle cost and health counters
@@ -507,6 +513,7 @@ pub(crate) struct Cursors {
     - last_tick_ms: u64 - duration of the last tick
     - lag_ms: u64 - the longest time from a trigger's occurrence to its receipt in the last tick
     - cache_hits, cache_misses, cache_invalidations: u64 - context pack cache outcomes
+    - connector_errors: u64 - reads of a trigger source that failed (GitHub Actions)
 */
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Counters {
@@ -524,6 +531,8 @@ pub(crate) struct Counters {
     pub(crate) cache_hits: u64,
     pub(crate) cache_misses: u64,
     pub(crate) cache_invalidations: u64,
+    #[serde(default)]
+    pub(crate) connector_errors: u64,
 }
 
 /** What the store holds
@@ -538,6 +547,7 @@ pub(crate) struct Counters {
     - timers: BTreeMap<String, u64> - "assignment:timer" to the last slot fired
     - tests: VecDeque<Value> - recent test reports
     - counters: Counters - idle cost and health
+    - remote: BTreeMap<String, u64> - dashboard decisions already applied, with when
 */
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StoreState {
@@ -551,6 +561,8 @@ pub(crate) struct StoreState {
     pub(crate) timers: BTreeMap<String, u64>,
     pub(crate) tests: VecDeque<Value>,
     pub(crate) counters: Counters,
+    #[serde(default)]
+    pub(crate) remote: BTreeMap<String, u64>,
 }
 
 /** The resident store

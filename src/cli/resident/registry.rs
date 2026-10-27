@@ -5,7 +5,7 @@
 
 use serde_json::json;
 
-use super::{open, read_json, reason, require_signer, versioned};
+use super::{open, open_read, read_json, reason, require_signer, versioned};
 use crate::cli::protocol::{finish, parse, Response, Status};
 use crate::resident::authority;
 use crate::resident::context::PackCache;
@@ -159,7 +159,7 @@ pub(super) fn change_definition(args: &[String], activate: bool) -> Result<(), S
 */
 pub(super) fn definitions(args: &[String]) -> Result<(), String> {
     let args = parse(args, &[], &[])?;
-    let repo = open()?;
+    let repo = open_read()?;
     let rows =
         report::build(&repo.store, None, crate::platform::now_millis())["definitions"].clone();
     let detail = rows
@@ -194,7 +194,7 @@ pub(super) fn show_definition(args: &[String]) -> Result<(), String> {
     let args = parse(args, &[], &[])?;
     args.expect_positional(1, "crane resident definition show ID[@N]")?;
     let (id, version) = versioned(&args.positional[0])?;
-    let repo = open()?;
+    let repo = open_read()?;
     let record = repo.store.definition(&id, version)?;
     let response = Response::new(
         "resident.definition.show",
@@ -452,7 +452,7 @@ pub(super) fn lifecycle(args: &[String], action: &str) -> Result<(), String> {
 */
 pub(super) fn list(args: &[String]) -> Result<(), String> {
     let args = parse(args, &[], &[])?;
-    let repo = open()?;
+    let repo = open_read()?;
     let view = authority::load(&repo.workspace).ok();
     let report = report::build(&repo.store, view.as_ref(), crate::platform::now_millis());
     let detail = report["assignments"]
@@ -485,7 +485,7 @@ pub(super) fn show(args: &[String]) -> Result<(), String> {
     let args = parse(args, &[], &[])?;
     args.expect_positional(1, "crane resident show ID")?;
     let id = args.positional[0].clone();
-    let repo = open()?;
+    let repo = open_read()?;
     let view = authority::load(&repo.workspace).ok();
     let report = report::build(&repo.store, view.as_ref(), crate::platform::now_millis());
     let row = report["assignments"]
@@ -600,7 +600,7 @@ pub(super) fn review_rca(args: &[String]) -> Result<(), String> {
 */
 pub(super) fn rcas(args: &[String]) -> Result<(), String> {
     let args = parse(args, &[], &[])?;
-    let repo = open()?;
+    let repo = open_read()?;
     let rows = report::build(&repo.store, None, crate::platform::now_millis())["rcas"].clone();
     let detail = rows
         .as_array()
@@ -634,7 +634,7 @@ pub(super) fn show_rca(args: &[String]) -> Result<(), String> {
     let args = parse(args, &[], &[])?;
     args.expect_positional(1, "crane resident rca show ID[@N]")?;
     let (id, version) = versioned(&args.positional[0])?;
-    let repo = open()?;
+    let repo = open_read()?;
     let record = repo.store.rca(&id, version)?;
     let response = Response::new(
         "resident.rca.show",

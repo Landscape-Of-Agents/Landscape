@@ -22,8 +22,8 @@ use crate::platform::io_error;
 
 /** Current schema version applied by the migrations (3: records keyed by installation; 4: the
  * members' repository status and the service's settings; 10: Dashboard Agent enforcement and
- * approval-gated flow context) */
-pub(crate) const SCHEMA_VERSION: i64 = 10;
+ * approval-gated flow context; 11: resident-agent decisions made on the dashboard) */
+pub(crate) const SCHEMA_VERSION: i64 = 11;
 
 /** How the service reaches its database
  * Fields
@@ -370,6 +370,25 @@ const COLLECTIONS: &[Collection] = &[
                 false,
             ),
             (&[("repository_id", 1), ("approved_at", -1)], false),
+        ],
+    },
+    Collection {
+        name: "resident_decisions",
+        required: &[
+            "decision_id",
+            "repository_id",
+            "installation",
+            "action",
+            "decided_by",
+            "status",
+        ],
+        indexes: &[
+            (&[("decision_id", 1)], true),
+            (
+                &[("repository_id", 1), ("installation", 1), ("status", 1)],
+                false,
+            ),
+            (&[("repository_id", 1), ("decided_at", -1)], false),
         ],
     },
     Collection {

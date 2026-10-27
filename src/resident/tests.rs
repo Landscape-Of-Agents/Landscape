@@ -2965,3 +2965,34 @@ fn assignments_are_duplicated_as_drafts() {
         "ids are unique"
     );
 }
+
+/** Writers exclude each other: while a command holds the store, background work cannot open it to
+ * write (so it can never overwrite the command's change), the holder's own tick still runs, and
+ * the store is free again once the holder is dropped
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn writers_hold_one_lock_from_read_to_save() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut held = ResidentStore::open_exclusive(directory.path()).unwrap();
+    assert!(
+        ResidentStore::try_open_exclusive(directory.path())
+            .unwrap()
+            .is_none(),
+        "a background writer skips while a command holds the store"
+    );
+    assert!(
+        matches!(held.worker_lock(), Ok(Some(None))),
+        "the holder's own tick runs under the lock it already holds"
+    );
+    held.state.counters.ticks = 7;
+    held.save().unwrap();
+    drop(held);
+    let reopened = ResidentStore::try_open_exclusive(directory.path())
+        .unwrap()
+        .expect("free after the holder ends");
+    assert_eq!(reopened.state.counters.ticks, 7);
+}

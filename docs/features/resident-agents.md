@@ -161,7 +161,7 @@ dependency**.
   (ceiling 2).
 - **Loops are impossible by construction:** events the runtime caused (`resident.*` events and
   commands that carry `RESIDENT_*` notes) never become triggers.
-- **Concurrency:** one worker at a time (a worker lock). Leases make crash recovery explicit.
+- **Concurrency:** every writer (a command that changes the store, the background sync's tick, applying dashboard decisions) holds one lock from reading the store to its last save, so a background sync can never overwrite a command's change. Background work skips its turn when the lock is busy; commands wait for it. Leases make crash recovery explicit.
 - **Automatic reconciliation:** an adapter that can read its result back does so before anyone is
   asked. Jira issues carry a label derived from the step's idempotency key. Before creating, and on
   every tick while a step is uncertain, the label is looked up. An issue that exists is the
@@ -412,7 +412,7 @@ untrusted workspaces, as before. Files: [core/residents.ts](../../extensions/fox
 
 | Command | Covers | Result |
 |---|---|---|
-| `cargo test --bin crane resident` | 23 resident unit tests, the F38 registration and documentation test, and the CLI status mapping | 25 passed |
+| `cargo test --bin crane resident` | 24 resident unit tests, the F38 registration and documentation test, and the CLI status mapping | 26 passed |
 | `cargo test --features server --bin crane resident_reports_of_every_machine` | Merging several machines' reports on the dashboard | 1 passed |
 | `cargo test --test residents` | The real binary: definition and RCA save, activate, and review; dry-run create; validate (Slack and Jira not configured); activate; agent gate; plan-only test; trigger to PROVEN; duplicate; tick with 0 model calls; revoke to DEGRADED and BLOCKED; rejected delivery; replay of a recorded event; duplicate | 1 passed |
 | `cargo test --bin crane telemetry::spec` | Event specification, including the dispatch change | 6 passed |

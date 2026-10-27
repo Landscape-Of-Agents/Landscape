@@ -2,8 +2,10 @@
 // assignments, RCA graph versions, activations, the trigger deduplication set, ignored triggers,
 // source cursors, timer slots, test reports, and idle-cost counters. Definitions and graphs are
 // checked against their digests and assignments and activations are sealed, so a store edited
-// outside Crane is refused when it is read. Writes are atomic and made under a lock; a tick holds
-// its own lock so two workers never advance the same activations.
+// outside Crane is refused when it is read. Writes are atomic. Every writer (a command that
+// changes it, the background sync's tick, applying dashboard decisions) opens it exclusively: one
+// lock (resident/worker.lock) is held from the read to the last save, so two processes never
+// overwrite each other's changes. Read-only commands read without it.
 //
 // This store is the authoritative transactional record of resident work. DataSea receives events
 // about it (F38) and the status report; it never holds the durable state.
@@ -569,10 +571,12 @@ pub(crate) struct StoreState {
  * Fields
     - directory: Option<PathBuf> - runtime/resident, None in memory
     - state: StoreState - contents
+    - held: Option<Lock> - the writers' lock, held from the read until the store is dropped
 */
 pub(crate) struct ResidentStore {
     directory: Option<PathBuf>,
     pub(crate) state: StoreState,
+    held: Option<Lock>,
 }
 
 impl ResidentStore {
@@ -586,7 +590,49 @@ impl ResidentStore {
         Self {
             directory: None,
             state: StoreState::default(),
+            held: None,
         }
+    }
+
+    /** The writers' lock file of a runtime directory
+     * Input
+        - runtime: &Path - runtime directory
+     * Output
+        - PathBuf
+    */
+    fn lock_path(runtime: &Path) -> PathBuf {
+        runtime.join("resident").join("worker.lock")
+    }
+
+    /** Open the store to change it: wait for the writers' lock, then read, and keep the lock until
+     * the store is dropped (commands)
+     * Input
+        - runtime: &Path - runtime directory
+     * Output
+        - Result<ResidentStore, String>
+        - Error if the lock is not free within the lock timeout, or the store was altered
+    */
+    pub(crate) fn open_exclusive(runtime: &Path) -> Result<Self, String> {
+        let lock = Lock::acquire(&Self::lock_path(runtime))?;
+        let mut store = Self::open(runtime)?;
+        store.held = Some(lock);
+        Ok(store)
+    }
+
+    /** Open the store to change it only if no other writer holds it (background work, which
+     * simply runs again at the next sync)
+     * Input
+        - runtime: &Path - runtime directory
+     * Output
+        - Result<Option<ResidentStore>, String> - None when another writer holds it
+    */
+    pub(crate) fn try_open_exclusive(runtime: &Path) -> Result<Option<Self>, String> {
+        let Some(lock) = Lock::try_acquire(&Self::lock_path(runtime))? else {
+            return Ok(None);
+        };
+        let mut store = Self::open(runtime)?;
+        store.held = Some(lock);
+        Ok(Some(store))
     }
 
     /** Open the store of a runtime directory, refusing one that was altered
@@ -607,6 +653,7 @@ impl ResidentStore {
         let store = Self {
             directory: Some(directory),
             state,
+            held: None,
         };
         store.verify()?;
         Ok(store)
@@ -681,8 +728,8 @@ impl ResidentStore {
         write_atomic(&directory.join("store.json"), text.as_bytes())
     }
 
-    /** Take the worker lock of the store, or None when another worker holds it (in memory: a
-     * lock is never needed)
+    /** Take the worker lock of the store, or None when another worker holds it (a store opened
+     * exclusively already holds it; in memory a lock is never needed)
      * Input
         - None (uses self)
      * Output
@@ -692,6 +739,9 @@ impl ResidentStore {
         let Some(directory) = &self.directory else {
             return Ok(Some(None));
         };
+        if self.held.is_some() {
+            return Ok(Some(None));
+        }
         std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
         Ok(Lock::try_acquire(&directory.join("worker.lock"))?.map(Some))
     }

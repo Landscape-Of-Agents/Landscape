@@ -98,16 +98,41 @@ pub(super) struct Repo {
     pub(super) author: Author,
 }
 
-/** Open the repository and its resident store
+/** Open the repository and its resident store to change it (holding the writers' lock until the
+ * command ends, so a background sync never overwrites the change)
  * Input
     - None
  * Output
     - Result<Repo, String>
 */
 pub(super) fn open() -> Result<Repo, String> {
+    open_with(true)
+}
+
+/** Open the repository and its resident store only to read it (no lock)
+ * Input
+    - None
+ * Output
+    - Result<Repo, String>
+*/
+pub(super) fn open_read() -> Result<Repo, String> {
+    open_with(false)
+}
+
+/** Open the repository and its resident store
+ * Input
+    - write: bool - hold the writers' lock
+ * Output
+    - Result<Repo, String>
+*/
+fn open_with(write: bool) -> Result<Repo, String> {
     let workspace = Workspace::locate()?;
     let runtime = workspace.trust()?.runtime();
-    let store = ResidentStore::open(&runtime)?;
+    let store = if write {
+        ResidentStore::open_exclusive(&runtime)?
+    } else {
+        ResidentStore::open(&runtime)?
+    };
     let author = crate::brick::store::author(&workspace);
     Ok(Repo {
         workspace,

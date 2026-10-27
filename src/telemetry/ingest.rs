@@ -700,7 +700,12 @@ fn apply_resident_decisions(
     if decisions.is_empty() {
         return Ok(0);
     }
-    let mut store = crate::resident::store::ResidentStore::open(&stores.directory)?;
+    // Busy with a command or a tick: the decisions stay pending at the service until the next sync
+    let Some(mut store) =
+        crate::resident::store::ResidentStore::try_open_exclusive(&stores.directory)?
+    else {
+        return Ok(0);
+    };
     let mut env = crate::resident::worker::live(workspace, &stores.directory);
     let results = crate::resident::remote::apply(&mut store, &mut env, &decisions);
     let body = serde_json::to_vec(&json!({"results": results})).map_err(io_error)?;

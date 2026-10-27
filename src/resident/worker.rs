@@ -2567,7 +2567,8 @@ pub(crate) fn poll_ci(
     store.state.cursors.ci_polled_at = now;
     match api.get(
         &format!("repos/{owner}/{name}/actions/runs?status=completed&per_page=20"),
-        None,
+        // Bounded well under the writers' lock timeout, which commands wait on
+        Some(std::time::Instant::now() + std::time::Duration::from_secs(8)),
     ) {
         crate::capture::resources::github::ApiAnswer::Found(runs) => {
             let (found, cursor) =
@@ -2677,7 +2678,8 @@ pub(crate) fn sync(workspace: &Workspace, stores: &crate::telemetry::Stores) {
     {
         return;
     }
-    let Ok(mut store) = ResidentStore::open(&stores.directory) else {
+    // A command or another sync is changing the store: this sync's tick waits for the next one
+    let Ok(Some(mut store)) = ResidentStore::try_open_exclusive(&stores.directory) else {
         return;
     };
     let busy = store

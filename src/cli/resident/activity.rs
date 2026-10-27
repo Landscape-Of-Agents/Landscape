@@ -6,7 +6,7 @@
 
 use serde_json::json;
 
-use super::{open, read_json, reason, require_signer, signers};
+use super::{open, open_read, read_json, reason, require_signer, signers};
 use crate::cli::protocol::{finish, parse, Response, Status};
 use crate::resident::store::ActivationState;
 use crate::resident::{authority, context, report, trigger, word, worker};
@@ -41,7 +41,7 @@ pub(super) fn context(args: &[String]) -> Result<(), String> {
     let args = parse(args, &[], &[])?;
     args.expect_positional(1, "crane resident context ID")?;
     let id = args.positional[0].clone();
-    let repo = open()?;
+    let repo = open_read()?;
     let assignment = repo.store.assignment(&id)?.clone();
     let definition = repo
         .store
@@ -89,7 +89,7 @@ pub(super) fn context(args: &[String]) -> Result<(), String> {
 */
 pub(super) fn status(args: &[String]) -> Result<(), String> {
     let args = parse(args, &[], &[])?;
-    let repo = open()?;
+    let repo = open_read()?;
     let view = authority::load(&repo.workspace).ok();
     let report = report::build(&repo.store, view.as_ref(), crate::platform::now_millis());
     let counters = &report["health"]["counters"];
@@ -302,7 +302,7 @@ pub(super) fn tick(args: &[String]) -> Result<(), String> {
 */
 pub(super) fn activations(args: &[String]) -> Result<(), String> {
     let args = parse(args, &["assignment"], &[])?;
-    let repo = open()?;
+    let repo = open_read()?;
     let filter = args.value("assignment");
     let mut rows = repo
         .store
@@ -344,7 +344,7 @@ pub(super) fn activations(args: &[String]) -> Result<(), String> {
 pub(super) fn activation(args: &[String]) -> Result<(), String> {
     let args = parse(args, &[], &[])?;
     args.expect_positional(1, "crane resident activation ACTIVATION")?;
-    let repo = open()?;
+    let repo = open_read()?;
     let activation = repo.store.activation(&args.positional[0])?;
     let detail = activation
         .timeline

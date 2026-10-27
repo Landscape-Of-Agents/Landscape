@@ -15,26 +15,45 @@ const loader = Module as unknown as { _resolveFilename: (request: string, ...res
  * @param file compiled module next to this test's parent folder
  * @returns the page
  */
-function render(file: string): string {
+function render(file: string, args: unknown[] = ["vscode-resource:", "logo.png"]): string {
   const resolve = loader._resolveFilename;
   loader._resolveFilename = (request, ...rest) => (request === "vscode" ? "vscode-stub" : resolve.call(Module, request, ...rest));
   loader._cache["vscode-stub"] = { id: "vscode-stub", filename: "vscode-stub", loaded: true, exports: {} };
   try {
     const full = path.join(__dirname, "..", file);
     const source = require("fs").readFileSync(full, "utf8") + "\nmodule.exports.__html = html;";
-    const compiled = new Module(full) as unknown as { filename: string; paths: string[]; _compile: (code: string, name: string) => void; exports: { __html: (a: string, b: string) => string } };
+    const compiled = new Module(full) as unknown as { filename: string; paths: string[]; _compile: (code: string, name: string) => void; exports: { __html: (...values: unknown[]) => string } };
     compiled.filename = full;
     compiled.paths = (Module as unknown as { _nodeModulePaths: (directory: string) => string[] })._nodeModulePaths(path.dirname(full));
     compiled._compile(source, full);
-    return compiled.exports.__html("vscode-resource:", "logo.png");
+    return compiled.exports.__html(...args);
+  } finally {
+    loader._resolveFilename = resolve;
+  }
+}
+
+/**
+ * Load a compiled module with vscode stubbed.
+ * @param file compiled module next to this test's parent folder
+ * @returns its exports
+ */
+function load<T>(file: string): T {
+  const resolve = loader._resolveFilename;
+  loader._resolveFilename = (request, ...rest) => (request === "vscode" ? "vscode-stub" : resolve.call(Module, request, ...rest));
+  loader._cache["vscode-stub"] = { id: "vscode-stub", filename: "vscode-stub", loaded: true, exports: { TreeItem: class {} } };
+  try {
+    return require(path.join(__dirname, "..", file)) as T;
   } finally {
     loader._resolveFilename = resolve;
   }
 }
 
 test("every webview script parses", () => {
-  for (const file of ["panel.js", "sidebar.js", "graphView.js"]) {
-    const page = render(file);
+  const { BRICKS_PAGE } = load<{ BRICKS_PAGE: unknown }>("bricksPanel.js");
+  const { AGENTS_PAGE } = load<{ AGENTS_PAGE: unknown }>("agentsPanel.js");
+  const pages: [string, unknown[] | undefined][] = [["panel.js", undefined], ["sidebar.js", undefined], ["graphView.js", undefined], ["workbench.js", ["vscode-resource:", BRICKS_PAGE]], ["workbench.js", ["vscode-resource:", AGENTS_PAGE]]];
+  for (const [file, args] of pages) {
+    const page = render(file, args);
     const script = page.split(/<script nonce="[^"]+">/)[1]?.split("</script>")[0];
     assert.ok(script, `${file} has no script`);
     assert.doesNotThrow(() => new Function(script), `${file}'s script does not parse`);

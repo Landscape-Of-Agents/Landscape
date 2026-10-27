@@ -21,6 +21,9 @@ import { contextLabel, guidanceLines, LiveContext, liveFresh } from "./core/live
 import { FoxxGraph, GraphHost, Positions } from "./graphView";
 import { FoxxSidebar, SidebarHost, SidebarState } from "./sidebar";
 import { Bricks } from "./bricksView";
+import { AGENTS_PAGE, AGENTS_PANEL, agentsHost, AgentsTree } from "./agentsPanel";
+import { BRICKS_PAGE, BRICKS_PANEL, bricksHost } from "./bricksPanel";
+import { PanelDeps, Workbench } from "./workbench";
 
 /** A registry record as stored in .crane/registry.json (only the fields Landscape shows). */
 interface RegistryRecord {
@@ -324,6 +327,8 @@ function refreshGraph(): Promise<GraphData | undefined> {
     graphRunning = undefined;
     FoxxSidebar.update();
     FoxxGraph.update(lastGraph, graphError);
+    Workbench.update(BRICKS_PANEL);
+    Workbench.update(AGENTS_PANEL);
   });
   return graphRunning;
 }
@@ -1415,6 +1420,20 @@ async function revealContext(file: string, line: number): Promise<void> {
 }
 
 /**
+ * The Zones and Flows of .crane/governance.yaml.
+ * @returns targets, none when the file cannot be read
+ */
+function targetsOf(): { kind: "zone" | "flow"; id: string; status: string }[] {
+  try {
+    return entities(readGovernance())
+      .filter((entity) => entity.kind === "zone" || entity.kind === "flow")
+      .map((entity) => ({ kind: entity.kind as "zone" | "flow", id: entity.id, status: entity.status }));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Register the commands, views, and listeners.
  * @param context extension context
  */
@@ -1488,15 +1507,7 @@ export function activate(context: vscode.ExtensionContext): void {
   bricks = new Bricks({
     crane: (args) => crane(args),
     root,
-    targets: () => {
-      try {
-        return entities(readGovernance())
-          .filter((entity) => entity.kind === "zone" || entity.kind === "flow")
-          .map((entity) => ({ kind: entity.kind as "zone" | "flow", id: entity.id, status: entity.status }));
-      } catch {
-        return [];
-      }
-    },
+    targets: targetsOf,
     record,
     refresh: async () => {
       await validate(true);
@@ -1505,6 +1516,29 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   bricks.register(context);
   void bricks.load();
+  // The Bricks and Resident Agents panels: a graph of the Zones and Flows with what hangs on them
+  const panelDeps: PanelDeps = {
+    crane: (args) => crane(args),
+    graph: (refresh) => graphHost.load(refresh),
+    targets: targetsOf,
+    refresh: async () => {
+      await Promise.all([bricks?.load(), agents.load()]);
+      await validate(true);
+    },
+    record,
+  };
+  const agents = new AgentsTree(panelDeps);
+  const brickPanel = bricksHost(panelDeps);
+  const agentPanel = agentsHost(panelDeps, () => void agents.load());
+  register("foxx.bricks.openPanel", (target) => Workbench.show(extensionUri, BRICKS_PAGE, brickPanel, typeof target === "string" ? target : undefined));
+  register("foxx.agents.openPanel", (target) => Workbench.show(extensionUri, AGENTS_PAGE, agentPanel, typeof target === "string" ? target : undefined));
+  register("foxx.agents.refresh", () => agents.load());
+  const agentsView = vscode.window.createTreeView("foxx.agents", { treeDataProvider: agents });
+  // Showing the Agents view opens the Resident Agents panel beside the editor
+  context.subscriptions.push(agentsView, agentsView.onDidChangeVisibility((event) => {
+    if (event.visible) void vscode.commands.executeCommand("foxx.agents.openPanel");
+  }));
+  if (root()) void agents.load();
   // The sidebar passes one "path#Lline" argument
   register("foxx.revealContext", (target) => {
     const [file, line] = String(target).split("#L");

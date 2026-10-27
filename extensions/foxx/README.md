@@ -26,6 +26,13 @@ Install: search for **Landscape** in the Extensions view, or
 - **Right-click a file in the Explorer → Open in Landscape:** the same panel for the whole file.
 - **Right-click in the editor → Landscape:** preserve or target the selected lines, attach the file as
   policy context, create a policy, and more.
+- **The Bricks icon in the activity bar:** opens the Bricks panel. It shows the Zones and Flows with
+  the Bricks attached to each. You can create a Brick, attach it to a Zone or Flow, and edit its
+  common context (shared by every attachment) or the volatile context of one attachment.
+- **The Resident Agents icon in the activity bar:** opens the Resident Agents panel. It has the same
+  graph, with the agents working on each Zone and Flow. You can create an agent and set all its
+  properties. Saved agents are listed under "Not working yet" until you put one to work on a Zone or
+  Flow, for 30 to 90 days per period, renewable.
 - **Status bar:** the **Landscape** item (bottom left) shows the repository's state.
 - **Command palette (Ctrl+Shift+P):** type "Landscape".
 

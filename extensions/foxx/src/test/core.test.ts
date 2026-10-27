@@ -12,6 +12,7 @@ import { busiest, layout } from "../core/graph";
 import { contextLabel, guidanceLines, liveFresh } from "../core/live";
 import { parsePolicies } from "../core/policies";
 import { checkName, confirmation, ownerKey, repoArgs } from "../core/setup";
+import { assignmentFile, checkDefinition, definitionFile, friendlyError, mergeTargets, overlayGraph, problemLines } from "../core/workbench";
 import { assignmentDraft, checkAssignmentId, packMarkdown, residentChanges, residentMarkdown, ResidentRow, residentsByTarget, residentTone } from "../core/residents";
 
 test("parses policies and commands", () => {
@@ -342,4 +343,57 @@ test("resident previews show versions and never claim authority", () => {
   assert.match(pack, /INVALIDATED \(changed: context\)/);
   assert.match(pack, /\| brick_common \| `brick:idem@1` \| idem@1 \(abc\) \| 40 \|/);
   assert.match(pack, /RCA_MISSING/);
+});
+
+test("hangs attachments on their zones and flows, and keeps unknown targets visible", () => {
+  const graph = {
+    generation: 1,
+    nodes: [
+      { id: "flow:checkout", kind: "flow" as const, name: "checkout", stages: ["cart", "pay"], status: "active" },
+      { id: "zone:cart", kind: "zone" as const, name: "cart", status: "active" },
+      { id: "zone:pay", kind: "zone" as const, name: "pay" },
+      { id: "selection:K7M2P9RX", kind: "selection" as const, name: "fee" },
+    ],
+    edges: [
+      { from: "flow:checkout", to: "zone:cart", kind: "stage" as const },
+      { from: "zone:cart", to: "zone:pay", kind: "next" as const },
+      { from: "zone:pay", to: "selection:K7M2P9RX", kind: "contains" as const },
+    ],
+    rejected: [],
+    acyclic: true,
+    activity: [],
+    findings: [],
+  };
+  const drawn = overlayGraph(graph, [{ id: "a1", label: "Guard", sub: "guard@1", target: "zone:pay" }, { id: "a2", label: "Old", sub: "old@1", target: "flow:gone" }]);
+  assert.deepEqual(drawn.nodes.map((node) => node.id), ["flow:checkout", "zone:cart", "zone:pay", "item:a1", "flow:gone", "item:a2"]);
+  assert.equal(drawn.nodes.find((node) => node.id === "flow:gone")?.missing, true);
+  assert.deepEqual(drawn.edges.map((edge) => edge.kind), ["stage", "next", "attached", "attached"]);
+  assert.deepEqual(overlayGraph(undefined, []), { nodes: [], edges: [] });
+});
+
+test("says what Crane refused in words a person can act on", () => {
+  assert.match(friendlyError("crane: activating a definition needs the repository owner's or an admin's signing key ('crane admin ...')"), /^Only a repository admin can do this step/);
+  assert.match(friendlyError("definition x@1 already exists; versions are immutable, save version 2"), /Save it as the next version/);
+  assert.match(friendlyError("crane: unknown command 'resident'"), /no resident agents yet/);
+  assert.equal(friendlyError("something odd"), "Something odd");
+  assert.match(friendlyError(""), /without saying why/);
+  assert.deepEqual(problemLines([["TRIGGER_KIND", "bad kind"], { code: "C", message: "m" }]), ["bad kind (TRIGGER_KIND)", "m (C)"]);
+});
+
+test("builds resident definitions and assignments from the forms", () => {
+  const input = { id: "ci-triage", version: 2, name: " Triage ", purpose: "Look at CI", owner: "team", bricks: [], triggers: ["ci"], actions: [{ type: "read_check", auto: true }], verification: true, onMissing: "block" as const, limits: { max_steps: 5 }, remote: false, distinct: true };
+  assert.deepEqual(checkDefinition(input), {});
+  const file = definitionFile(input);
+  assert.equal(file.name, "Triage");
+  assert.deepEqual(file.actions, [{ step_type: "read_check", auto: true }]);
+  assert.equal((file.limits as Record<string, number>).max_steps, 5);
+  assert.equal((file.limits as Record<string, number>).max_retries, 1);
+  assert.deepEqual(Object.keys(checkDefinition({ ...input, id: "9x", triggers: [], limits: { max_steps: 99 } })).sort(), ["id", "limit:max_steps", "triggers"]);
+  const draft = assignmentFile({ id: "ci-triage-pay", definition: "ci-triage@2", agent: "claude", target: "zone:pay", wake: { ci: "ci.failed, *", timer: "60", webhook: "" }, lifetimeDays: 120 });
+  assert.deepEqual(draft.subscriptions, [{ source: "ci", kinds: ["ci.failed"], attributes: {}, scope: "repository" }]);
+  assert.deepEqual(draft.timers, [{ timer_id: "every-60-min", every_minutes: 60 }]);
+  assert.equal(draft.definition_version, 2);
+  assert.equal(draft.lifetime_days, 90);
+  assert.deepEqual(mergeTargets([{ kind: "zone", id: "cart" }, "flow:checkout"], "zone:cart"), ["zone:cart", "flow:checkout"]);
+  assert.deepEqual(mergeTargets([], "zone:pay"), ["zone:pay"]);
 });

@@ -148,6 +148,12 @@
         "category": "Landscape"
       },
       {
+        "command": "foxx.bricks.openPanel",
+        "title": "Open Bricks Panel",
+        "category": "Landscape",
+        "icon": "$(window)"
+      },
+      {
         "command": "foxx.bricks.refresh",
         "title": "Refresh Bricks",
         "category": "Landscape",
@@ -256,6 +262,18 @@
         "title": "Run a Crane Control",
         "category": "Landscape",
         "icon": "$(terminal)"
+      },
+      {
+        "command": "foxx.agents.openPanel",
+        "title": "Open Resident Agents Panel",
+        "category": "Landscape",
+        "icon": "$(window)"
+      },
+      {
+        "command": "foxx.agents.refresh",
+        "title": "Refresh Agents",
+        "category": "Landscape",
+        "icon": "$(refresh)"
       }
     ],
     "menus": {
@@ -274,6 +292,11 @@
         }
       ],
       "view/title": [
+        {
+          "command": "foxx.bricks.openPanel",
+          "when": "view == foxx.bricks",
+          "group": "navigation@-1"
+        },
         {
           "command": "foxx.openGraph",
           "when": "view == foxx.sidebar",
@@ -313,6 +336,16 @@
           "command": "foxx.bricks.refresh",
           "when": "view == foxx.bricks",
           "group": "navigation@3"
+        },
+        {
+          "command": "foxx.agents.openPanel",
+          "when": "view == foxx.agents",
+          "group": "navigation@0"
+        },
+        {
+          "command": "foxx.agents.refresh",
+          "when": "view == foxx.agents",
+          "group": "navigation@1"
         }
       ],
       "foxx.editor": [
@@ -493,11 +526,20 @@
           "id": "foxx.governance",
           "name": "Governance",
           "icon": "images/activity.svg"
-        },
+        }
+      ],
+      "foxx-bricks": [
         {
           "id": "foxx.bricks",
           "name": "Bricks",
-          "icon": "images/activity.svg"
+          "icon": "images/bricks.svg"
+        }
+      ],
+      "foxx-agents": [
+        {
+          "id": "foxx.agents",
+          "name": "Agents",
+          "icon": "images/agents.svg"
         }
       ]
     },
@@ -546,6 +588,16 @@
           "id": "foxx",
           "title": "Landscape",
           "icon": "images/activity.svg"
+        },
+        {
+          "id": "foxx-bricks",
+          "title": "Landscape Bricks",
+          "icon": "images/bricks.svg"
+        },
+        {
+          "id": "foxx-agents",
+          "title": "Resident Agents",
+          "icon": "images/agents.svg"
         }
       ]
     },

@@ -1,7 +1,8 @@
 // Bricks and Crane's command families in Landscape: the Bricks view (drafts, activated versions,
 // Stacks, attachments with their Current Context, assigned agents), the commands that create,
 // edit, validate, test, activate, attach, detach, upgrade, and revoke Bricks, the effective context
-// preview, and "Run a Crane Control" for the command families. Crane is the authority: every
+// preview, "Run a Crane Control" for the command families, and the resident agents attached to the
+// workspace's Zones and Flows (the same assignments the dashboard shows, read from Crane). Crane is the authority: every
 // action runs the CLI, every signing action is previewed first with '--dry-run' (what the guard
 // will restrict before and after, and the snapshot agents will receive), and nothing is signed
 // until the person confirms. Problems Crane reports become diagnostics on the files they concern.
@@ -34,6 +35,7 @@ import {
   succeeded,
   TypeInfo,
 } from "./core/bricks";
+import { assignmentDraft, checkAssignmentId, PackData, packMarkdown, ResidentList, residentMarkdown, ResidentRow, residentsByTarget, residentTone } from "./core/residents";
 
 /** What the Bricks view needs from the rest of Landscape. */
 export interface BricksHost {
@@ -102,6 +104,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
   readonly onDidChangeTreeData = this.changed.event;
   private list: BrickList | undefined;
   private agents: Record<string, unknown>[] = [];
+  private residents: ResidentList | undefined;
   private problem: string | undefined;
   private types: TypeInfo[] = [];
   private readonly diagnostics = vscode.languages.createDiagnosticCollection("crane-bricks");
@@ -129,6 +132,10 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     register("foxx.bricks.revoke", (node) => this.revoke(node as BrickNode | undefined));
     register("foxx.bricks.preview", (node) => this.preview(node as BrickNode | undefined));
     register("foxx.runControl", (family) => this.runControl(typeof family === "string" ? family : undefined));
+    register("foxx.residents.show", (node) => this.showResident(node as BrickNode | undefined));
+    register("foxx.residents.context", (node) => this.residentContext(node as BrickNode | undefined));
+    register("foxx.residents.create", (node) => this.createResident(node as BrickNode | undefined));
+    register("foxx.residents.validate", (node) => this.validateResident(node as BrickNode | undefined));
   }
 
   /**
@@ -168,6 +175,9 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     if (envelope) {
       const agents = await this.host.crane(["brick", "agents", "--format", "json"]);
       this.agents = (agents && parseEnvelope<{ assignments: Record<string, unknown>[] }>(agents.stdout)?.data.assignments) || [];
+      // An older Crane has no resident agents: the group then says so instead of failing the view
+      const residents = await this.host.crane(["resident", "list", "--format", "json"]);
+      this.residents = (residents && parseEnvelope<ResidentList>(residents.stdout)?.data) || undefined;
     }
     this.diagnose();
     this.changed.fire();
@@ -231,7 +241,140 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     }), { icon: new vscode.ThemeIcon(target.startsWith("flow:") ? "git-merge" : "symbol-namespace"), contextValue: "target", data: target })), { description: String(list.attachments.length), icon: new vscode.ThemeIcon("link") });
     const agents = new BrickNode("Assigned agents", this.agents.map((row) => new BrickNode(String(row.agent), [], { description: `${String(row.assignment_status)} · ${String(row.runtime_status)}`, tooltip: `${(row.targets as string[] | undefined)?.join(", ") ?? ""}\n${((row.problems as string[] | undefined) ?? []).join("\n")}\nInference while idle: none (monitors are deterministic); tokens are not measured.`, icon: icon("robot", String(row.runtime_status)), data: row })), { description: String(this.agents.length), icon: new vscode.ThemeIcon("robot") });
     const store = new BrickNode("Signed store", [], { description: `${list.store.trust} · generation ${list.store.generation}`, icon: icon("shield", list.store.trust === "verified" || list.store.trust === "absent" ? "active" : "failed") });
-    return [library, stacks, attachments, agents, store];
+    const residents = this.residentGroup();
+    return [library, stacks, attachments, agents, residents, store];
+  }
+
+  /**
+   * The resident agents group: assignments by target, the workspace's own Zones and Flows first.
+   * @returns node
+   */
+  private residentGroup(): BrickNode {
+    if (!this.residents) return new BrickNode("Resident agents", [new BrickNode("This Crane has no resident agents; install a newer Crane", [], { icon: new vscode.ThemeIcon("info") })], { icon: new vscode.ThemeIcon("watch") });
+    const local = this.host.targets().map((target) => `${target.kind}:${target.id}`);
+    const tones: Record<string, string> = { ok: "active", busy: "draft", attention: "paused", bad: "failed", off: "deprecated" };
+    const groups = residentsByTarget(this.residents.assignments, local).map(([target, rows, inWorkspace]) => new BrickNode(target, rows.map((row: ResidentRow) => {
+      const child = new BrickNode(row.assignment_id, [], {
+        description: `${row.status} · ${row.definition}`,
+        tooltip: new vscode.MarkdownString(residentMarkdown(row)),
+        icon: icon("watch", tones[residentTone(row.status)]),
+        contextValue: `resident-${row.lifecycle}`,
+        data: row,
+      });
+      child.command = { command: "foxx.residents.show", title: "Show", arguments: [child] };
+      return child;
+    }), { description: inWorkspace ? String(rows.length) : `${rows.length} · not in this workspace`, icon: new vscode.ThemeIcon(target.startsWith("flow:") ? "git-merge" : "symbol-namespace"), contextValue: "resident-target", data: target }));
+    const idle = this.residents.health?.counters?.idle_model_calls ?? 0;
+    return new BrickNode("Resident agents", groups.length ? groups : [new BrickNode("No resident assignment yet", [], { icon: new vscode.ThemeIcon("info"), command: { command: "foxx.residents.create", title: "Create" } })], { description: `${this.residents.assignments.length} · ${idle} model call(s) while idle`, icon: new vscode.ThemeIcon("watch"), contextValue: "resident-group" });
+  }
+
+  /**
+   * The assignment a node shows, or one the person chooses.
+   * @param node node
+   * @returns assignment
+   */
+  private async residentOf(node: BrickNode | undefined): Promise<ResidentRow | undefined> {
+    const row = node?.data as ResidentRow | undefined;
+    if (row && typeof row === "object" && "assignment_id" in row) return row;
+    if (!this.residents) await this.load();
+    const rows = this.residents?.assignments ?? [];
+    if (!rows.length) {
+      vscode.window.showInformationMessage("Landscape: there is no resident assignment yet.");
+      return undefined;
+    }
+    const chosen = await vscode.window.showQuickPick(rows.map((item) => ({ label: item.assignment_id, description: `${item.status} · ${item.target}`, item })), { placeHolder: "Which resident assignment?" });
+    return chosen?.item;
+  }
+
+  /**
+   * Show an assignment: what Crane reports about it, and its latest activations.
+   * @param node node
+   */
+  async showResident(node?: BrickNode): Promise<void> {
+    const row = await this.residentOf(node);
+    if (!row) return;
+    const result = await this.envelope<{ assignment: ResidentRow; activations: Record<string, unknown>[] }>(["resident", "show", row.assignment_id]);
+    if (!result) return;
+    const activations = (result.data.activations ?? []).slice(0, 10).map((activation) => `- \`${String(activation.activation_id)}\` ${String(activation.state)} · ${String(((activation.trigger as Record<string, unknown>) ?? {}).kind ?? "")}`);
+    const text = `${residentMarkdown(result.data.assignment)}\n\n## Latest activations\n\n${activations.length ? activations.join("\n") : "_none: idle until a trigger arrives_"}\n`;
+    const document = await vscode.workspace.openTextDocument({ content: text, language: "markdown" });
+    await vscode.commands.executeCommand("markdown.showPreviewToSide", document.uri).then(undefined, () => undefined);
+  }
+
+  /**
+   * Preview the context pack an activation of an assignment would receive now (nothing is written).
+   * @param node node
+   */
+  async residentContext(node?: BrickNode): Promise<void> {
+    const row = await this.residentOf(node);
+    if (!row) return;
+    const result = await this.envelope<PackData>(["resident", "context", row.assignment_id]);
+    if (!result) return;
+    const document = await vscode.workspace.openTextDocument({ content: packMarkdown(row.assignment_id, result.data), language: "markdown" });
+    await vscode.commands.executeCommand("markdown.showPreviewToSide", document.uri).then(undefined, () => undefined);
+  }
+
+  /**
+   * Create a resident assignment draft for a Zone or Flow of this workspace: build the draft, let
+   * the person edit it, preview Crane's validation with '--dry-run', and create it only after they
+   * confirm. Activation stays an admin's separate step.
+   * @param node a target node, when started from one
+   */
+  async createResident(node?: BrickNode): Promise<void> {
+    if (!this.residents) await this.load();
+    const definitions = (this.residents?.definitions ?? []).filter((row) => row.state === "active");
+    if (!definitions.length) {
+      vscode.window.showWarningMessage("Landscape: no active resident definition; save one with 'crane resident definition save --file' and have an admin activate it.");
+      return;
+    }
+    const fromNode = typeof node?.data === "string" ? node.data : undefined;
+    const targets = this.host.targets().filter((target) => target.status === "active").map((target) => `${target.kind}:${target.id}`);
+    const target = fromNode ?? (await vscode.window.showQuickPick(targets, { placeHolder: "Which active Zone or Flow is it responsible for?" }));
+    if (!target) return;
+    const definition = await vscode.window.showQuickPick(definitions.map((row) => ({ label: row.ref, description: row.name })), { placeHolder: "Which definition version?" });
+    if (!definition) return;
+    const id = await vscode.window.showInputBox({ prompt: "Assignment id", value: `${definition.label.split("@")[0]}-${target.split(":")[1]}`, validateInput: checkAssignmentId });
+    if (!id) return;
+    const agent = await vscode.window.showInputBox({ prompt: "Agent of the signed Brick assignment (provider or agent id)", value: "claude" });
+    if (!agent) return;
+    const kinds = await vscode.window.showInputBox({ prompt: "CI trigger kinds it wakes on (comma separated; no bare *)", value: "ci.failed" });
+    if (kinds === undefined) return;
+    const text = await this.writeInEditor("resident assignment draft (JSON; Crane validates it)", JSON.stringify(assignmentDraft({ id, definition: definition.label, agent, target, kinds }), null, 2), "json");
+    if (text === undefined) return;
+    try {
+      JSON.parse(text);
+    } catch (error) {
+      vscode.window.showErrorMessage(`Landscape: the draft is not JSON: ${(error as Error).message}`);
+      return;
+    }
+    const file = this.temporary("resident.json", text);
+    try {
+      const preview = await this.envelope<{ validation: { problems: [string, string][]; warnings: [string, string][] } }>(["resident", "create", "--file", file, "--dry-run"]);
+      if (!preview) return;
+      const problems = (preview.data.validation?.problems ?? []).map(([code, message]) => `problem ${code}: ${message}`);
+      const warnings = (preview.data.validation?.warnings ?? []).map(([code, message]) => `warning ${code}: ${message}`);
+      const detail = [preview.summary, ...problems, ...warnings, "", "It is created as a draft: it receives no trigger until it is validated and an admin activates it."].join("\n");
+      const go = await vscode.window.showWarningMessage(`Landscape: create resident ${id} on ${target}?`, { modal: true, detail }, "Create draft");
+      if (go !== "Create draft") return;
+      const result = await this.envelope(["resident", "create", "--file", file]);
+      if (result) await this.report(result, "Create resident", false);
+    } finally {
+      fs.rmSync(path.dirname(file), { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Validate an assignment against the current signed state.
+   * @param node node
+   */
+  async validateResident(node?: BrickNode): Promise<void> {
+    const row = await this.residentOf(node);
+    if (!row) return;
+    const result = await this.envelope<{ validation: { problems: [string, string][]; warnings: [string, string][] } }>(["resident", "validate", row.assignment_id]);
+    if (!result) return;
+    for (const [code, message] of result.data.validation?.problems ?? []) this.host.output.appendLine(`  problem ${code}: ${message}`);
+    for (const [code, message] of result.data.validation?.warnings ?? []) this.host.output.appendLine(`  warning ${code}: ${message}`);
+    await this.report(result, "Validate resident", false);
   }
 
   /**

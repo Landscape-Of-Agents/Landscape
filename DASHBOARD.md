@@ -3121,6 +3121,96 @@ deterministically (no model). Sources without a connector (ci, metrics, external
 - Response [response_status (OK, FIRING, FAILING, UNSUPPORTED, REVOCATION_DUE, PROPOSAL, ERROR)]
 - Other [target, brick, monitor (signal, trigger, analysis), source, inference (NONE)]
 
+### F38. Resident agents
+
+A resident agent is an assignment that stays responsible for one Flow, Zone, or Runbook for days or
+weeks while using no model and no process when idle. Its lifecycle commands (`crane resident ...`)
+and the worker's activations are noted on the event they belong to (the command's F13 event, or the
+`resident.tick` event the background sync stores when a tick did something; idle ticks store
+nothing), and every note becomes one F38 event. The durable state lives in the machine's resident
+store (`runtime/resident/store.json`); these events are the record of it, never its source. Fields
+are identifiers, digests, counts, states, and reason codes; context text, answers, and messages are
+never recorded. Every activity event carries `assignment`, `activation`, `trigger`, and (for steps)
+`step` as correlation ids.
+
+Common attributes
+- Action [action_type (RESIDENT_DEFINE, RESIDENT_LIFECYCLE, RESIDENT_TRIGGER, RESIDENT_ACTIVATION, RESIDENT_CONTEXT, RESIDENT_RCA, RESIDENT_PLAN, RESIDENT_APPROVAL, RESIDENT_ACTION, RESIDENT_VERIFY, RESIDENT_TEST) (enum), action_source (CLI, SYNC), action_user (string), action_id (id of the carrying event)]
+- Repository [(as F13)]
+- Resource [resource ([CRANE_METADATA]), resource_ids (assignment, activation, trigger, definition, RCA graph, and step ids), resource_classification ([METADATA])]
+- Response [response_status (OK, PASSED, FAILED, BLOCKED, UNKNOWN, CONTRADICTED, PROPOSAL, APPROVED, DENIED, ANSWERED, ACCEPTED, UNSUPPORTED, DUPLICATE, NO_MATCH, COOLDOWN, RATE_LIMITED, PAUSED, EXPIRED, DEFINITION_MISSING, REVIEWED, REJECTED, PROVEN, PARTIALLY_VERIFIED, CANCELLED, AMBIGUOUS, INSUFFICIENT_EVIDENCE) (enum), failure_state (NA or the failing status), response_statement (string)]
+- Eval [context_cache (HIT, MISS), model_calls (integer: model invocations actually made; never inferred)]
+- Severity [severity_status (INFO, LOW, MEDIUM), severity_basis (OUTCOME), alert_kind (NONE)]
+- Other [assignment, activation, trigger, step, step_type, definition, rca, target, agent, state, from, mode (live, dry_run), source, kind, targets, origin, plan (plan digest), steps, conclusion (IDENTIFIED, AMBIGUOUS, INSUFFICIENT_EVIDENCE), digest, decision (ALLOW, REQUIRE_APPROVAL, UNAVAILABLE, DENY), reasons, approver, basis (DECLARED), pack, refresh_reason, missing, problems, warnings, gaps, model_calls, external_calls, self_reviewed, expires_at, schema_version (each when it applies)]
+
+#### F38.1 `RESIDENT_DEFINITION_SAVED`, `RESIDENT_DEFINITION_ACTIVATED`, `RESIDENT_DEFINITION_REVOKED`
+A reusable agent definition version was saved as a draft (it grants nothing), activated by an
+admin, or revoked (every assignment of it stops at its next step).
+- Other [definition, digest, self_reviewed]
+
+#### F38.2 `RESIDENT_CREATED`, `RESIDENT_VALIDATED`, `RESIDENT_ACTIVATED`, `RESIDENT_PAUSED`, `RESIDENT_RESUMED`, `RESIDENT_RENEWED`, `RESIDENT_EXPIRED`, `RESIDENT_REVOKED`
+The assignment lifecycle. Activation and renewal validate again against the signed state of that
+moment, and an assignment only acts inside an active signed Brick assignment of its agent.
+- Response [response_status (OK, PASSED, FAILED)]
+- Other [assignment, definition, target, agent, state, from, expires_at, problems, warnings]
+
+#### F38.3 `RESIDENT_TRIGGER_RECEIVED`, `RESIDENT_TRIGGER_IGNORED`
+A trigger was normalized (a local Crane event, a signed generation change, a Brick monitor result, a
+timer, or a delivered ci or webhook event), or woke nothing, with the reason.
+- Response [response_status (OK, DUPLICATE, NO_MATCH, COOLDOWN, RATE_LIMITED, PAUSED, EXPIRED, DEFINITION_MISSING)]
+- Other [trigger, source, kind, targets, origin, assignment, schema_version]
+
+#### F38.4 `RESIDENT_ACTIVATION_QUEUED`, `RESIDENT_ACTIVATION_STARTED`, `RESIDENT_ACTIVATION_COMPLETED`
+An activation was created for a matching assignment (one per assignment and trigger), started by the
+worker, or ended. Its outcome comes from verification evidence: PROVEN only when every step
+succeeded and every verification passed.
+- Response [response_status (OK, PROVEN, PARTIALLY_VERIFIED, CONTRADICTED, FAILED, BLOCKED, CANCELLED, UNKNOWN)]
+- Eval [model_calls]
+- Other [assignment, activation, trigger, kind, mode, state, model_calls, external_calls]
+
+#### F38.5 `RESIDENT_CONTEXT_READY`, `RESIDENT_CONTEXT_CACHE_HIT`, `RESIDENT_CONTEXT_CACHE_MISS`, `RESIDENT_CONTEXT_CACHE_INVALIDATED`
+The activation's context pack (agent mission, Flow and Zone context, Brick Common and Current
+Context, RCA graph version) was compiled, and how it compares with the pack kept for the
+assignment. Provider-side prompt caching is not observed; the cache never authorizes anything.
+- Eval [context_cache (HIT, MISS)]
+- Other [pack, refresh_reason (definition, assignment, generation, governance, bricks, context, rca), missing]
+
+#### F38.6 `RESIDENT_RCA_SAVED`, `RESIDENT_RCA_PROPOSED`, `RESIDENT_RCA_REVIEWED`
+An RCA graph version was saved (proposed until reviewed), an investigation ended in a proposal or a
+question instead of a known remediation (insufficient or ambiguous evidence), or a person reviewed a
+graph. Review never turns hypotheses into confirmed causes.
+- Response [response_status (OK, PROPOSAL, REVIEWED, REJECTED, AMBIGUOUS, INSUFFICIENT_EVIDENCE)]
+- Other [rca, target, digest, gaps, self_reviewed]
+
+#### F38.7 `RESIDENT_PLAN_CREATED`
+A typed plan was created from the investigation, or extended when a person accepted proposed steps.
+- Response [response_status (OK, ACCEPTED)]
+- Other [plan, steps, conclusion, rca, problems, model_calls]
+
+#### F38.8 `RESIDENT_APPROVAL_REQUIRED`, `RESIDENT_APPROVAL_DECIDED`
+A step waits for a person (an approval bound to the activation, plan digest, step, and signed state;
+single use; it expires), or a person approved, denied, or answered it.
+- Response [response_status (OK, APPROVED, DENIED, ANSWERED)]
+- Other [step, step_type, digest, reasons, approver]
+
+#### F38.9 `RESIDENT_ACTION_STARTED`, `RESIDENT_ACTION_DENIED`, `RESIDENT_ACTION_RESULT`
+Crane decided a step immediately before it ran (from the signed state read at that moment), denied
+it, or the step reported its result. A step type without an adapter is UNSUPPORTED, never OK.
+- Response [response_status (OK, FAILED, UNKNOWN, UNSUPPORTED)]
+- Other [step, step_type, decision, reasons, basis (DECLARED when a person reconciled it)]
+
+#### F38.10 `RESIDENT_VERIFICATION_RESULT`, `RESIDENT_RECONCILIATION_REQUIRED`
+A verification step evaluated its postcondition (PASSED, CONTRADICTED, or UNKNOWN), or an external
+effect is uncertain and waits for a person to establish what happened (it is never retried blindly).
+- Response [response_status (PASSED, CONTRADICTED, UNKNOWN)]
+- Other [step]
+
+#### F38.11 `RESIDENT_TESTED`
+An assignment was tested against a fixture or replayed trigger in plan-only mode: matching,
+deduplication, cooldown, context, investigation, and Crane's decision for every step. Nothing was
+executed (there is no sandbox).
+- Response [response_status (PASSED, BLOCKED, INCONCLUSIVE)]
+- Other [assignment, trigger, model_calls]
+
 ---
 
 ## Part 3: Where events appear on the dashboard

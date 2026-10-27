@@ -1153,6 +1153,12 @@ pub(super) fn notes(event: &Event) -> Vec<Spec> {
                     None => continue,
                 }
             }
+            resident if resident.starts_with("RESIDENT_") => {
+                match super::spec_resident::spec(event, resident, note) {
+                    Some(spec) => spec,
+                    None => continue,
+                }
+            }
             _ => continue,
         };
         specs.push(spec);

@@ -21,6 +21,8 @@ administration. Each machine is linked to a person once (`crane agent link`).
 | **Reports** | CSV exports; the agent-context API for tools | exists |
 | **Bricks** | The library by type and state, the fixed types and what each does today, attachments and Stacks, assigned agents (assignment and runtime status), monitors and coverage gaps, context snapshots, signed history, F37 events | exists (as last reported by a member's machine) |
 | **Brick draft builder** | Plain form: type, intent, Common Context, settings; downloads a draft a member imports with `crane brick create --file` | partial: the dashboard cannot validate or sign |
+| **Resident agents** | Assignments with lifecycle and derived status (idle, investigating, awaiting approval, degraded), the review inbox, each activation from trigger to verified outcome with Crane's decision per step, idle cost (model calls while idle) and health, plan-only test reports, F38 events | exists (as last reported by a member's machine) |
+| **Resident agent wizard** | Eight steps (goal, target, context, triggers, actions and limits, RCA, verification, review); downloads the definition and assignment drafts, and test events, a member imports | partial: the dashboard cannot validate, activate, or approve |
 | **Skill Builder** | Plain forms to draft skills; drafts are proposals a signer activates | to build (decided) |
 | **Near misses, replay, role views** | The Black Box views | to build |
 | **Receipts** | Proof per pull request | to build |

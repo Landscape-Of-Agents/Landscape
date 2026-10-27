@@ -36,6 +36,7 @@ Start with the part that matches what you need. Every term is explained in one p
 | Skills | [features/skills.md](features/skills.md) |
 | Runbooks | [features/runbooks.md](features/runbooks.md) |
 | Bricks: reusable modules of a fixed type, attached to flows and zones | [features/bricks.md](features/bricks.md) |
+| Resident agents: assignments that stay idle (no model) until a trigger wakes them | [features/resident-agents.md](features/resident-agents.md) |
 | The eleven controls (permission, approval, budget, ...) | [features/controls.md](features/controls.md) |
 | Evidence (Work Capture) | [features/evidence.md](features/evidence.md) |
 | Insight: learning from work | [features/insight.md](features/insight.md) |

@@ -29,6 +29,7 @@ mod protocol;
 mod provenance;
 mod recovery;
 mod repo;
+mod resident;
 mod revocation;
 mod runbook;
 mod runtime;
@@ -125,6 +126,7 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["skill", ..] => skill::skill(&rest(1)),
         ["runbook", ..] => runbook::runbook(&rest(1)),
         ["brick", ..] => brick::brick(&rest(1)),
+        ["resident", ..] => resident::resident(&rest(1)),
         ["permission", ..] => permission::permission(&rest(1)),
         ["precondition", ..] => precondition::precondition(&rest(1)),
         ["constraint", ..] => constraint::constraint(&rest(1)),
@@ -289,6 +291,13 @@ Bricks (reusable modules of a fixed type attached to flows and zones; 'crane bri
   crane brick attach ID@N --target flow:ID [--context TEXT] [--dry-run]
   crane brick detach|upgrade ATTACHMENT ...               crane brick context set|preview|status ...
   crane brick assign|unassign|agents                      crane brick monitor run|status
+
+Resident agents (assignments that stay idle, with no model, until a trigger or timer wakes them)
+  crane resident definition save|activate|revoke|list|show  crane resident create|validate|activate|renew ...
+  crane resident pause|resume|revoke ID --reason TEXT       crane resident list|show|context|status|catalog
+  crane resident test ID --event EVENT.json                 crane resident trigger --file EVENT.json | tick
+  crane resident activations|activation ID                  crane resident approve|answer|reconcile|cancel ...
+  crane resident rca save|review|list|show ...
   (types are fixed; drafts grant nothing; activation, attachment, and context changes are signed)
 
 Controls (inspect, check, and test what Crane applies automatically at every protected action)

@@ -146,6 +146,21 @@ without evidence.
 | **Assignment** | An agent assigned to Flows and Zones. Its runtime status (idle, running, waiting, degraded) is derived, never a running model. |
 | **Monitor** | A deterministic check a Brick asks for (integrity, policy tests, selections, denials), run by the background sync without a model. |
 
+## 6b. Resident agents
+
+| Term | Meaning |
+|---|---|
+| **Resident agent** | An agent assignment that stays responsible for one Flow, Zone, or Runbook for days or weeks. It uses no model and no process while idle. |
+| **Definition** | A reusable, versioned description of a resident: its mission, the trigger sources and step types it may use, and its limits. Grants nothing by itself. |
+| **Resident assignment** | One definition version on one target for a lifetime (at most 90 days). It acts only inside an active signed Brick assignment. |
+| **Trigger** | A normalized event that may wake a resident: a Crane event, a signed rule change, a Brick monitor result, a timer, or a delivered CI or webhook event. Data, never instructions. |
+| **Activation** | One bounded, persisted run of a resident for one trigger (`act_…`). It resumes after a crash or a person's answer. |
+| **Context pack** (resident) | The versioned context an activation receives, cached by its dependencies (HIT, MISS, INVALIDATED). Never authority. |
+| **RCA graph** | A versioned graph of signals, causes, checks, remediations, and verifications, each with how it is known. Proposed until a person reviews it. |
+| **Supported cause** | A cause this activation's checks support. Not the same as confirmed. |
+| **Step type** | One of twelve fixed kinds of plan step (`READ_CHECK`, `NOTIFY_SLACK`, `VERIFY`, …). One without an adapter is unavailable and never counts as done. |
+| **Idle** | Active with no activation running. No model call; shown as ACTIVE_IDLE, or DEGRADED when Crane would not admit it now. |
+
 ## 7. The eleven controls
 
 The families of checks every skill, runbook, and agent action passes through (`crane <family> …`).

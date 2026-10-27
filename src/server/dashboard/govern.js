@@ -610,7 +610,328 @@ async function bricksView(main) {
   main.append(zone("brick-build", "Build a draft", "", panel("Draft builder", { span: 12 }, async (body) => put(body, brickBuilder(data.types || [])))));
 }
 
-Object.assign(window.FOXX_PAGES, { alerting, credits, audit, governance: governanceView, bricks: bricksView, compliance, repositories, settings });
+// ---------------------------------------------------------------- resident agents
+
+Object.assign(TONES, { ACTIVE_IDLE: "ok", INVESTIGATING: "info", EXECUTING: "info", AWAITING_APPROVAL: "warn", AWAITING_INPUT: "warn", WAITING_FOR_EVENT: "info", RECONCILIATION_REQUIRED: "bad", DEGRADED: "bad", VALIDATED: "info", QUEUED: "info", EXPIRED: "warn",
+  COMPLETED: "ok", PROVEN: "ok", PARTIALLY_VERIFIED: "warn", CONTRADICTED: "bad", UNKNOWN: "warn", CANCELLED: "warn", SIMULATED: "info", INCONCLUSIVE: "warn", HIT: "ok", MISS: "info", INVALIDATED: "warn",
+  ALLOW: "ok", REQUIRE_APPROVAL: "warn", DENY: "bad", UNAVAILABLE: "warn", SUCCEEDED: "ok", DENIED: "bad", SKIPPED: "warn", UNCERTAIN: "bad", DISPATCHING: "info", PENDING: "info", WAITING: "info",
+  IDENTIFIED: "ok", AMBIGUOUS: "warn", INSUFFICIENT_EVIDENCE: "warn", SUPPORTED: "ok", read_only: "ok", internal: "info", external: "warn", reviewed: "ok", proposed: "info", rejected: "bad", retired: "warn", expired: "warn", validated: "info" });
+
+/** One-line view of a cache outcome ({cache, changed}) */
+function cacheText(cache) {
+  if (!cache) return "—";
+  return cache.cache + (cache.changed && cache.changed.length ? " (" + cache.changed.join(", ") + ")" : "");
+}
+
+/** The detail of one activation: trigger, context, investigation, plan with Crane's decisions,
+ * approvals, usage, and the timeline. Everything is as reported; nothing here acts. */
+function activationDetail(row) {
+  if (!row) return h("div", { class: "muted" }, "Choose an activation above.");
+  const investigation = row.investigation || {};
+  const steps = (row.plan && row.plan.steps) || [];
+  const section = (title, ...children) => h("div", { style: "margin:10px 0" }, h("h3", { style: "margin:4px 0" }, title), ...children);
+  return h("div", {},
+    h("div", { style: "display:flex;gap:8px;flex-wrap:wrap;align-items:center" }, h("code", {}, row.activation_id), chip(row.state), row.outcome ? chip(row.outcome.status) : null, h("span", { class: "muted" }, row.outcome ? row.outcome.reason : "not ended"), chip(row.mode)),
+    section("Trigger", h("div", {}, h("code", {}, row.trigger.source + " " + row.trigger.kind), " · ", h("code", { class: "muted" }, row.trigger.id), " · occurred ", dt(row.trigger.occurred_at), " · received ", dt(row.trigger.received_at), " · from ", row.trigger.origin, row.later_triggers && row.later_triggers.length ? " · later: " + row.later_triggers.join(", ") : "")),
+    section("Context supplied", row.context ? h("div", {},
+      h("div", {}, "Pack ", h("code", {}, row.context.pack), " · cache ", chip((row.context.cache || {}).cache), " ", cacheText(row.context.cache), " · signed generation ", String((row.context.dependencies || {}).generation)),
+      dataTable([{ label: "Kind", get: (item) => item.kind, filter: true }, { label: "Source", get: (item) => item.source, render: (item) => h("code", {}, item.source) }, { label: "Version", get: (item) => item.reference }, { label: "Bytes", get: (item) => item.bytes, num: true }], row.context.sections || [], { noColumns: true, pageSize: 12, empty: "No section." }),
+      (row.context.missing || []).length ? h("div", { class: "notice" }, "Missing required context: ", row.context.missing.map((item) => item[0] + " — " + item[1]).join("; ")) : null) : h("div", { class: "muted" }, "Context was not loaded.")),
+    section("Investigation", row.investigation ? h("div", {},
+      h("div", {}, "Graph ", h("code", {}, investigation.rca || "none"), " ", chip(investigation.rca_state), " · conclusion ", chip(investigation.conclusion), investigation.cause ? h("span", {}, " · cause ", h("code", {}, investigation.cause)) : null, " · ", h("span", { class: "muted" }, investigation.reasoner)),
+      dataTable([
+        { label: "Candidate cause", get: (item) => item.node, render: (item) => h("span", {}, h("code", {}, item.node), " ", item.label) },
+        { label: "Graph says", get: (item) => item.prior, render: (item) => chip(item.prior) },
+        { label: "Evidence says", get: (item) => item.verdict, render: (item) => chip(item.verdict), filter: true },
+        { label: "Checks", get: (item) => (item.observations || []).length, render: (item) => h("div", {}, (item.observations || []).map((observation) => h("div", {}, h("code", {}, observation.relation), " ", observation.check, " → ", chip(observation.result.result), observation.result.reason ? " " + observation.result.reason : ""))) },
+      ], investigation.candidates || [], { noColumns: true, empty: "No candidate cause (no signal of the graph matched)." }),
+      (investigation.gaps || []).length ? h("div", { class: "notice" }, "Gaps: ", investigation.gaps.join("; ")) : null,
+      h("div", { class: "muted" }, "Consulted: ", (investigation.consulted || []).join(", ") || "—"),
+      h("div", { class: "muted" }, "A supported cause is supported by this activation's checks; it is not a confirmed cause. Co-occurrence is never shown as cause.")) : h("div", { class: "muted" }, "Not investigated.")),
+    section("Plan and Crane's decisions", row.plan ? h("div", {}, h("div", {}, "Plan digest ", h("code", {}, row.plan.digest), " (approvals bind to it)"),
+      dataTable([
+        { label: "Step", get: (item) => item.step, render: (item) => h("code", {}, item.step) },
+        { label: "Type", get: (item) => item.type, filter: true },
+        { label: "Effect", get: (item) => item.effect, render: (item) => chip(item.effect), filter: true },
+        { label: "Depends on", get: (item) => (item.depends_on || []).join(", ") },
+        { label: "Crane", get: (item) => (item.decision ? item.decision.decision : ""), render: (item) => (item.decision ? h("span", {}, chip(item.decision.decision), " ", h("span", { class: "muted" }, (item.decision.reasons || []).join(", "))) : "—") },
+        { label: "State", get: (item) => item.state, render: (item) => chip(item.state), filter: true },
+        { label: "Detail", get: (item) => item.detail || "" },
+        { label: "Evidence", get: (item) => (item.evidence || []).join("; ") },
+        { label: "External ref", get: (item) => item.external_ref || "", render: (item) => (item.external_ref ? h("code", {}, item.external_ref) : "—") },
+        { label: "Basis", get: (item) => item.basis || "" },
+      ], steps, { noColumns: true, empty: "No step." })) : h("div", { class: "muted" }, "No plan.")),
+    section("Approvals", dataTable([{ label: "Step", get: (item) => item.step }, { label: "Decision", get: (item) => (item.approved ? "APPROVED" : "DENIED"), render: (item) => chip(item.approved ? "ALLOW" : "DENY") }, { label: "By", get: (item) => item.approver }, { label: "Digest", get: (item) => item.digest, render: (item) => h("code", {}, item.digest) }, { label: "Used", get: (item) => (item.used ? "yes" : "no") }, { label: "Expires", get: (item) => item.expires_at, render: (item) => dt(item.expires_at) }, { label: "Reason", get: (item) => item.reason }], row.approvals || [], { noColumns: true, empty: "No approval was given or needed." })),
+    section("Usage", h("div", {}, "Model calls ", h("b", {}, String(row.usage.model_calls)), row.usage.model ? " (" + row.usage.model + ")" : " (deterministic reasoning)", " · tokens ", row.usage.tokens === null || row.usage.tokens === undefined ? h("span", { class: "muted" }, "unmeasured") : String(row.usage.tokens), " · deterministic checks ", String(row.usage.deterministic_checks), " · external calls ", String(row.usage.external_calls), " · worker time ", String(row.usage.duration_ms), " ms")),
+    section("Timeline", dataTable([{ label: "At", get: (item) => item.at, render: (item) => h("span", { class: "mono" }, dt(item.at)) }, { label: "State", get: (item) => item.state, render: (item) => chip(item.state), filter: true }, { label: "What", get: (item) => item.code, render: (item) => h("code", {}, item.code) }, { label: "Detail", get: (item) => item.detail }], row.timeline || [], { noColumns: true, sort: 0, dir: 1, pageSize: 30 })));
+}
+
+/** Decide, in the browser, whether a typed event would match an assignment's subscriptions: the
+ * same rule as resident/trigger.rs (exact kind or "prefix.*", equal attributes, target scope).
+ * A preview only: the machine decides again when the event really arrives. */
+function wouldMatch(assignment, event) {
+  if (event.source === "timer") return { matched: false, reason: "timers are evaluated by the machine's tick" };
+  const target = assignment.target;
+  for (const subscription of assignment.subscriptions || []) {
+    if (subscription.source !== event.source) continue;
+    const kindOk = (subscription.kinds || []).some((pattern) => (pattern.endsWith(".*") ? event.kind.startsWith(pattern.slice(0, -1)) : pattern === event.kind));
+    if (!kindOk) continue;
+    const attributesOk = Object.entries(subscription.attributes || {}).every(([key, value]) => (event.attributes || {})[key] === value);
+    if (!attributesOk) continue;
+    const targets = event.targets || [];
+    if (targets.includes(target) || (!targets.length && subscription.scope === "repository")) return { matched: true, reason: "subscription " + subscription.source + " " + subscription.kinds.join(",") };
+  }
+  return { matched: false, reason: "no subscription takes " + event.source + " " + event.kind + " for " + target };
+}
+
+/** The fixture builder: a canonical event file for 'crane resident test ID --event', with a
+ * preview of which assignments it would wake. Nothing is sent anywhere. */
+function residentFixture(data) {
+  const supported = (data.catalog.triggers || []).filter((item) => item.supported).map((item) => item.source);
+  const state = { source: supported.includes("ci") ? "ci" : supported[0], kind: "ci.failed", target: ((data.assignments || [])[0] || {}).target || "", attributes: "job=tests", key: "test-" + Date.now() };
+  const out = h("pre", { class: "mono", style: "white-space:pre-wrap;max-height:220px;overflow:auto" });
+  const matches = h("div", {});
+  const event = () => ({ source: state.source, kind: state.kind, targets: state.target ? [state.target] : [], attributes: Object.fromEntries(state.attributes.split(",").map((pair) => pair.split("=").map((part) => part.trim())).filter((pair) => pair[0] && pair.length === 2)), idempotency_key: state.key });
+  const refresh = () => {
+    const value = event();
+    put(out, JSON.stringify(value, null, 2));
+    put(matches, dataTable([{ label: "Assignment", get: (row) => row.assignment_id }, { label: "Status", get: (row) => row.status, render: (row) => chip(row.status) }, { label: "Would match", get: (row) => (wouldMatch(row, value).matched ? "yes" : "no"), render: (row) => chip(wouldMatch(row, value).matched ? "ALLOW" : "SKIPPED") }, { label: "Why", get: (row) => wouldMatch(row, value).reason }], data.assignments || [], { noColumns: true, empty: "No assignment yet." }));
+  };
+  const input = (label, key) => h("label", { class: "field", style: "display:block;margin:6px 0" }, h("div", { class: "muted" }, label), h("input", { style: "width:100%", value: state[key], oninput: (e) => { state[key] = e.target.value; refresh(); } }));
+  const download = h("button", { type: "button", class: "btn", onclick: () => { h("a", { href: URL.createObjectURL(new Blob([JSON.stringify(event(), null, 2)], { type: "application/json" })), download: "resident-event.json" }).click(); } }, "Download event file");
+  const node = h("div", {},
+    h("p", {}, "Build a typed test event. It is checked on a member's machine with 'crane resident test ID --event resident-event.json' (plan only: nothing is executed, no trigger is consumed). The preview below applies the same matching rule as Crane; the machine decides again."),
+    select("Source", state.source, (data.catalog.triggers || []).map((item) => [item.source, item.source + (item.supported ? "" : " (unsupported: no connector)")]), (value) => { state.source = value; refresh(); }),
+    input("Kind (dot-separated lowercase, such as ci.failed)", "kind"), input("Target (flow:ID or zone:ID; empty for repository-wide)", "target"), input("Attributes (key=value, comma separated; never secrets)", "attributes"), input("Idempotency key (a redelivery uses the same key)", "key"),
+    h("div", { style: "margin:8px 0" }, download), out, h("h3", {}, "Would it wake an assignment?"), matches,
+    h("div", { class: "muted" }, "Replay a recorded trigger instead: crane resident test ID --replay ACTIVATION."));
+  refresh();
+  return node;
+}
+
+/** The creation wizard: identity and goal, target, context preview, triggers, actions and
+ * boundaries, RCA behavior, verification, and review. It writes the two draft files Crane imports
+ * ('crane resident definition save', 'crane resident create'); the dashboard cannot sign, validate,
+ * or activate. Defaults are least privilege: nothing auto-runs and nothing external is allowed until
+ * a person ticks it. */
+function residentWizard(data, bricks) {
+  const crane = data.crane || { targets: [], signed_assignments: [], connectors: {} };
+  const steps = data.catalog.steps || [];
+  const triggers = data.catalog.triggers || [];
+  const state = {
+    id: "", name: "", purpose: "", owner: "", agent: ((crane.signed_assignments || [])[0] || {}).agent || "claude",
+    target: ((crane.targets || []).find((row) => row.status === "active") || {}).target || "",
+    sources: { ci: "ci.failed" }, actions: { READ_CHECK: true, VERIFY: true, ASK_USER: true, PROPOSE_RCA: true }, auto: { READ_CHECK: true, VERIFY: true },
+    rca: "", lifetime: 14, cooldown: 10, perDay: 24, maxSteps: 8, retries: 1, approvalTtl: 1440, verification: true, missing: "block", bricks: "",
+  };
+  const out = h("pre", { class: "mono", style: "white-space:pre-wrap;max-height:300px;overflow:auto" });
+  const review = h("div", {});
+  const contextBox = h("div", {});
+  const slug = (text) => text.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^[^a-z]+/, "").slice(0, 60);
+  const definition = () => ({
+    definition_id: slug(state.id || state.name) || "resident", version: 1, name: state.name, purpose: state.purpose, owner: state.owner,
+    bricks: state.bricks.split(",").map((item) => item.trim()).filter(Boolean),
+    triggers: Object.keys(state.sources).filter((source) => state.sources[source] !== undefined),
+    actions: Object.keys(state.actions).filter((type) => state.actions[type]).map((type) => ({ step_type: type, auto: !!state.auto[type] })),
+    verification_required: state.verification, on_missing_context: state.missing,
+    limits: { max_activations_per_day: Number(state.perDay), max_steps: Number(state.maxSteps), max_retries: Number(state.retries), max_model_calls: 0, cooldown_minutes: Number(state.cooldown), step_timeout_seconds: 30, approval_ttl_minutes: Number(state.approvalTtl), wait_minutes: 1440 },
+  });
+  const assignment = () => {
+    const def = definition();
+    const rca = state.rca ? state.rca.split("@") : null;
+    return {
+      assignment_id: (slug(state.id || state.name) || "resident") + "-" + (state.target.split(":")[1] || "target"), definition_id: def.definition_id, definition_version: 1, agent: state.agent, target: state.target,
+      rca: rca ? { rca_id: rca[0], version: Number(rca[1]) } : null,
+      subscriptions: Object.entries(state.sources).filter(([source]) => source !== "timer").map(([source, kinds]) => ({ source, kinds: String(kinds).split(",").map((item) => item.trim()).filter(Boolean), attributes: {}, scope: "target" })),
+      timers: state.sources.timer !== undefined ? [{ timer_id: "scheduled", every_minutes: Math.max(5, Number(state.sources.timer) || 60) }] : [], lifetime_days: Number(state.lifetime),
+    };
+  };
+  const refresh = () => {
+    const def = definition();
+    const asg = assignment();
+    const risks = [];
+    const signed = (crane.signed_assignments || []).some((row) => row.active && row.agent === state.agent && (row.targets || []).includes(state.target));
+    if (!signed) risks.push(["bad", "No active signed Brick assignment puts " + state.agent + " on " + (state.target || "a target") + ": activation will be refused until an admin runs 'crane brick assign " + state.agent + " --targets " + (state.target || "flow:ID") + "'."]);
+    const targetRow = (crane.targets || []).find((row) => row.target === state.target);
+    if (targetRow && targetRow.status !== "active") risks.push(["bad", state.target + " is " + targetRow.status + ": unavailable until it is approved and active."]);
+    if (targetRow && targetRow.ceiling === "observe") risks.push(["warn", state.target + " has the observe ceiling: external steps will be denied."]);
+    if (targetRow && (targetRow.ceiling === "assisted" || targetRow.criticality === "restricted")) risks.push(["warn", state.target + " needs a person for every external step, whatever 'auto' says."]);
+    for (const type of Object.keys(state.actions).filter((key) => state.actions[key])) {
+      const info = steps.find((row) => row.type === type) || {};
+      if (!info.available) risks.push(["warn", type + " is unavailable: " + (info.unavailable_reason || "no adapter") + ". It will never run or count as done."]);
+      if (info.effect === "external") risks.push(["warn", type + " has external side effects" + (state.auto[type] ? " and is set to auto-run where Crane allows" : "; each run needs a person's approval") + "."]);
+    }
+    if (state.actions.NOTIFY_SLACK && !(crane.connectors || {}).slack) risks.push(["warn", "Slack is not configured on the reporting machine ('crane integrate slack'); NOTIFY_SLACK steps will be unavailable."]);
+    if (!state.rca) risks.push(["info", "No RCA graph: every activation ends in a question or a proposal for review."]);
+    for (const source of Object.keys(state.sources)) { const info = triggers.find((row) => row.source === source); if (info && !info.supported) risks.push(["bad", source + " has no connector and cannot be subscribed."]); }
+    if (Number(state.lifetime) > 90 || Number(state.lifetime) < 1) risks.push(["bad", "The lifetime must be 1-90 days."]);
+    put(review, h("div", {}, h("div", {}, "Triggers: ", asg.subscriptions.map((row) => row.source + " " + row.kinds.join(",")).concat(asg.timers.map((row) => "timer every " + row.every_minutes + " min")).join(" · ") || "none"),
+      h("div", {}, "Actions: ", def.actions.map((row) => row.step_type + (row.auto ? " (auto)" : "")).join(", ") || "none"),
+      h("div", {}, "Lifetime ", String(state.lifetime), " days · cooldown ", String(state.cooldown), " min · at most ", String(state.perDay), " activations a day · no model calls (no provider is configured)"),
+      risks.map(([tone, text]) => h("div", { class: "notice " + tone }, text))));
+    put(out, "# resident-definition.json\n" + JSON.stringify(def, null, 2) + "\n\n# resident-assignment.json\n" + JSON.stringify(asg, null, 2));
+    const attachments = ((bricks && bricks.attachments) || []).filter((row) => row.target === state.target && row.state === "enabled");
+    put(contextBox, h("div", {}, h("div", { class: "muted" }, "What an activation will receive for ", h("code", {}, state.target || "—"), " (sources and versions; text stays on the machine). Preview the full pack with 'crane resident context ID'."),
+      dataTable([{ label: "Source", get: (row) => row.kind }, { label: "Reference", get: (row) => row.reference, render: (row) => h("code", {}, row.reference) }, { label: "Bytes", get: (row) => row.bytes, num: true }],
+        [{ kind: "agent mission (this definition)", reference: "definition:" + def.definition_id + "@1", bytes: state.purpose.length }, { kind: "Flow or Zone context", reference: "governance.yaml (signed generation " + crane.generation + ")", bytes: null }]
+          .concat(attachments.map((row) => ({ kind: "Brick Common + Current Context", reference: row.subject + " via " + row.attachment_id, bytes: row.current_context_bytes || 0 })))
+          .concat(state.rca ? [{ kind: "RCA graph", reference: "rca:" + state.rca, bytes: null }] : []), { noColumns: true })));
+  };
+  const field = (label, key, type) => h("label", { class: "field", style: "display:block;margin:6px 0" }, h("div", { class: "muted" }, label),
+    h(type === "area" ? "textarea" : "input", { rows: type === "area" ? 3 : undefined, type: type === "number" ? "number" : undefined, style: "width:100%", value: state[key], oninput: (e) => { state[key] = e.target.value; refresh(); } }, type === "area" ? state[key] : null));
+  const step = (number, title, ...children) => h("details", { open: number <= 2, style: "margin:8px 0;border:1px solid var(--line, #8883);border-radius:8px;padding:6px 10px" }, h("summary", {}, h("b", {}, number + ". " + title)), ...children);
+  const targetChoices = (crane.targets || []).map((row) => [row.target, row.target + " (" + row.status + ", " + row.ceiling + ", " + row.criticality + ")" + (row.status === "active" ? "" : " — unavailable until approved")]);
+  const sourceRows = h("div", {}, triggers.map((row) => h("div", { style: "display:flex;gap:8px;align-items:center;margin:4px 0" },
+    h("input", { type: "checkbox", disabled: !row.supported, checked: state.sources[row.source] !== undefined, onchange: (e) => { if (e.target.checked) state.sources[row.source] = row.source === "timer" ? "60" : row.source + ".*"; else delete state.sources[row.source]; refresh(); } }),
+    h("code", { style: "min-width:140px" }, row.source),
+    row.supported ? h("input", { placeholder: row.source === "timer" ? "every N minutes (at least 5)" : "kinds, comma separated (no bare *)", value: state.sources[row.source] || "", oninput: (e) => { if (state.sources[row.source] !== undefined) { state.sources[row.source] = e.target.value; refresh(); } } }) : null,
+    h("span", { class: "muted" }, row.supported ? row.delivery : "unsupported: no connector"))));
+  const actionRows = h("div", {}, steps.map((row) => h("div", { style: "display:flex;gap:8px;align-items:center;margin:4px 0" },
+    h("input", { type: "checkbox", disabled: !row.available, checked: !!state.actions[row.type], onchange: (e) => { state.actions[row.type] = e.target.checked; refresh(); } }),
+    h("code", { style: "min-width:170px" }, row.type), chip(row.effect),
+    h("label", { class: "muted" }, h("input", { type: "checkbox", disabled: !row.available, checked: !!state.auto[row.type], onchange: (e) => { state.auto[row.type] = e.target.checked; refresh(); } }), " auto-run where Crane allows"),
+    h("span", { class: "muted" }, row.available ? row.adapter : "unavailable: " + row.unavailable_reason))));
+  const rcaChoices = [["", "None (activations end in a question or a proposal)"]].concat((data.rcas || []).filter((row) => !state.target || row.target === state.target).map((row) => [row.rca, row.rca + " (" + row.state + ")"]));
+  const download = (name, value) => h("a", { href: URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" })), download: name }).click();
+  const node = h("div", {},
+    h("p", {}, "Build a resident agent step by step. The dashboard cannot sign, validate, or activate: download the two drafts and import them on a member's machine (or in Landscape for VS Code). Crane validates them there against the signed rules; an admin activates them. A test never grants authority."),
+    step(1, "Identity and goal", field("Name", "name"), field("Identifier (letters, digits, - and _)", "id"), field("Mission: what it is responsible for and the outcome you want (delivered as context; never authority; no secrets)", "purpose", "area"), field("Owner or team", "owner")),
+    step(2, "Assignment target", select("Target", state.target, targetChoices.length ? targetChoices : [["", "No Zone or Flow was reported"]], (value) => { state.target = value; refresh(); }), field("Agent of the signed Brick assignment (provider or agent id)", "agent"),
+      h("div", { class: "muted" }, "Signed assignments: ", (crane.signed_assignments || []).map((row) => row.agent + " → " + (row.targets || []).join(", ") + (row.active ? "" : " (not active)")).join(" · ") || "none")),
+    step(3, "Context", contextBox, field("Brick versions the definition expects on the target (ID@N, comma separated; a missing one is reported as missing context)", "bricks"), select("When required context is missing", state.missing, [["block", "Block the activation"], ["ask", "Ask a person"]], (value) => { state.missing = value; refresh(); })),
+    step(4, "Triggers", h("div", { class: "muted" }, "Choose real sources only. Unsupported sources are listed so the gap is visible."), sourceRows),
+    step(5, "Actions and boundaries", h("div", { class: "muted" }, "Least privilege: nothing auto-runs unless ticked, and Crane can still require a person (assisted ceilings, restricted zones, approval Bricks)."), actionRows,
+      field("Lifetime (days, at most 90)", "lifetime", "number"), field("Cooldown between activations (minutes)", "cooldown", "number"), field("Activations per day (at most 200)", "perDay", "number"), field("Steps per plan (at most 20)", "maxSteps", "number"), field("Retries of a step that failed without effect (at most 2)", "retries", "number"), field("Approval lifetime (minutes)", "approvalTtl", "number")),
+    step(6, "RCA behavior", select("RCA graph", state.rca, rcaChoices, (value) => { state.rca = value; refresh(); }), h("div", { class: "muted" }, "A reviewed graph's remediations may run (each step still decided by Crane); a proposed graph's are proposed to a person. Without evidence the agent asks or proposes; it never guesses.")),
+    step(7, "Verification", h("label", {}, h("input", { type: "checkbox", checked: state.verification, onchange: (e) => { state.verification = e.target.checked; refresh(); } }), " Plans with an external step must verify their outcome"), h("div", { class: "muted" }, "Either way, an activation is COMPLETED only when verification evidence proves it; otherwise it ends UNKNOWN.")),
+    step(8, "Review and validate", review, h("div", { style: "display:flex;gap:8px;margin:8px 0" }, h("button", { type: "button", class: "btn", onclick: () => download("resident-definition.json", definition()) }, "Download definition"), h("button", { type: "button", class: "btn", onclick: () => download("resident-assignment.json", assignment()) }, "Download assignment")),
+      h("div", { class: "muted" }, "Then on a member's machine: crane resident definition save --file resident-definition.json · crane resident create --file resident-assignment.json --dry-run · crane resident validate ID · crane resident test ID --event resident-event.json · an admin: crane resident definition activate ID@1 --reason TEXT and crane resident activate ID --reason TEXT"), out));
+  refresh();
+  return node;
+}
+
+async function residentsView(main) {
+  if (needRepository(main)) return;
+  let data;
+  try { data = await api("/api/residents"); } catch (error) { if (error.status === 404) { main.append(h("div", { class: "notice" }, error.message)); return; } throw error; }
+  let bricks = null;
+  try { bricks = await api("/api/bricks"); } catch (error) { bricks = null; }
+  data.assignments = data.assignments || []; data.definitions = data.definitions || []; data.activations = data.activations || []; data.rcas = data.rcas || []; data.tests = data.tests || [];
+  data.inbox = data.inbox || { approvals: [], questions: [], reconciliation: [], rca_proposals: [], assignments: [] };
+  data.health = data.health || { counters: {}, ignored: {}, outcomes: {}, cache: {} };
+  const report = { kind: "report", what: "The resident agents state", reported: data.reported_at };
+  const counters = data.health.counters || {};
+  const count = (status) => data.assignments.filter((row) => row.status === status).length;
+  const pending = data.inbox.approvals.length + data.inbox.questions.length + data.inbox.reconciliation.length;
+  main.append(hero("Resident agents", ["Agent assignments that stay responsible for a Flow, Zone, or Runbook and wake only on a trigger or timer. As reported by", data.reported_by ? data.reported_by.actor : "a member", "at", dt(data.reported_at)].join(" "),
+    [["Assignments", data.assignments.length], ["Idle and healthy", count("ACTIVE_IDLE")], ["Waiting for people", pending], ["Degraded", count("DEGRADED")], ["Model calls while idle", counters.idle_model_calls || 0]]));
+  main.append(zone("res-state", "State", "Assignment lifecycle (draft, validated, active, paused, expired, revoked) and runtime status (derived from activations and from Crane now) are kept apart.", h("div", { class: "kpis span-12" },
+    kpi("Active and idle", count("ACTIVE_IDLE"), { tone: "good", note: "no model, no process" }), kpi("Investigating or executing", count("INVESTIGATING") + count("EXECUTING")),
+    kpi("Awaiting approval", count("AWAITING_APPROVAL"), { tone: count("AWAITING_APPROVAL") ? "warn" : "" }), kpi("Degraded", count("DEGRADED"), { tone: count("DEGRADED") ? "bad" : "good", note: "Crane would not admit it now" }),
+    kpi("Model calls while idle", counters.idle_model_calls || 0, { tone: counters.idle_model_calls ? "bad" : "good", note: "should stay 0" }), kpi("Queue depth", data.health.queue_depth || 0))));
+  main.append(zone("res-registry", "Registry", "Every assignment with its target, definition version, lifetime, triggers, connector support, latest activation, last verification, and most recent failure.",
+    panel("Assignments", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.assignments); put(body, dataTable([
+      { label: "Assignment", get: (row) => row.assignment_id, render: (row) => h("b", {}, row.assignment_id) },
+      { label: "Status", get: (row) => row.status, render: (row) => chip(row.status), filter: true },
+      { label: "Lifecycle", get: (row) => row.lifecycle, render: (row) => chip(row.lifecycle), filter: true },
+      { label: "Target", get: (row) => row.target, filter: true },
+      { label: "Definition", get: (row) => row.definition, render: (row) => h("code", {}, row.definition), filter: true },
+      { label: "Agent", get: (row) => row.agent, filter: true },
+      { label: "RCA", get: (row) => row.rca || "", render: (row) => (row.rca ? h("code", {}, row.rca) : "—") },
+      { label: "Triggers", get: (row) => (row.connectors || []).map((item) => item.source).join(", "), render: (row) => h("div", {}, (row.connectors || []).map((item) => h("span", {}, chip(item.supported ? item.source : "UNSUPPORTED", item.delivery || "no connector"), " ")), (row.timers || []).map((timer) => h("span", { class: "muted" }, "timer " + timer.every_minutes + " min "))) },
+      { label: "Health", get: (row) => (row.health ? row.health.decision : "unknown"), render: (row) => (row.health ? h("span", {}, chip(row.health.decision), " ", h("span", { class: "muted" }, (row.health.reasons || []).join(", "))) : h("span", { class: "muted" }, "unknown")) },
+      { label: "Expires", get: (row) => row.expires_at, render: (row) => h("span", { class: "mono" }, row.expires_at ? dt(row.expires_at) : "—") },
+      { label: "Last event", get: (row) => row.last_event_at, render: (row) => h("span", { class: "mono" }, row.last_event_at ? dt(row.last_event_at) : "—") },
+      { label: "Latest activation", get: (row) => (row.latest_activation ? row.latest_activation.state : ""), render: (row) => (row.latest_activation ? h("span", {}, chip(row.latest_activation.state), " ", h("code", { class: "muted" }, row.latest_activation.id)) : "—") },
+      { label: "Last verified", get: (row) => row.last_verified_at, render: (row) => h("span", { class: "mono" }, row.last_verified_at ? dt(row.last_verified_at) : "—") },
+      { label: "Last failure", get: (row) => (row.last_failure ? row.last_failure.reason : ""), render: (row) => (row.last_failure ? h("span", {}, chip(row.last_failure.state), " ", row.last_failure.reason || "") : "—") },
+      { label: "Model calls", get: (row) => row.model_calls, num: true },
+    ], data.assignments, { empty: "No resident assignment yet. Build one below, or run 'crane resident create' on a member's machine.", name: "foxx-residents" })); }),
+    panel("Definitions", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.definitions); put(body, dataTable([
+      { label: "Definition", get: (row) => row.ref, render: (row) => h("code", {}, row.ref) }, { label: "Name", get: (row) => row.name }, { label: "State", get: (row) => row.state, render: (row) => chip(row.state), filter: true },
+      { label: "Owner", get: (row) => row.owner || "", filter: true }, { label: "Triggers", get: (row) => (row.triggers || []).join(", ") },
+      { label: "Actions", get: (row) => (row.actions || []).map((item) => item.step_type + (item.auto ? " (auto)" : "")).join(", ") },
+      { label: "Limits", get: (row) => JSON.stringify(row.limits), render: (row) => h("span", { class: "muted" }, "cooldown " + row.limits.cooldown_minutes + " min · " + row.limits.max_activations_per_day + "/day · " + row.limits.max_steps + " steps") },
+      { label: "Digest", get: (row) => row.digest, render: (row) => h("code", { class: "muted" }, String(row.digest).slice(0, 12)) },
+      { label: "Activated", get: (row) => (row.self_reviewed ? "self-reviewed" : ""), render: (row) => (row.self_reviewed ? chip("self-reviewed") : "—") },
+    ], data.definitions, { noColumns: true, empty: "No definition yet." })); }),
+    panel("RCA graphs", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.rcas); put(body, dataTable([
+      { label: "Graph", get: (row) => row.rca, render: (row) => h("code", {}, row.rca) }, { label: "Name", get: (row) => row.name }, { label: "Target", get: (row) => row.target, filter: true },
+      { label: "State", get: (row) => row.state, render: (row) => chip(row.state), filter: true }, { label: "Origin", get: (row) => row.origin.by, filter: true },
+      { label: "Nodes", get: (row) => row.nodes.length, render: (row) => h("div", {}, row.nodes.map((node) => h("div", {}, h("code", {}, node.id), " ", node.kind, " ", chip(node.status), " ", h("span", { class: "muted" }, node.basis)))) },
+      { label: "Edges", get: (row) => row.edges.length, render: (row) => h("div", { class: "muted" }, row.edges.map((edge) => edge.from + " " + edge.relation + " " + edge.to).join("; ")) },
+    ], data.rcas, { noColumns: true, empty: "No RCA graph ('crane resident rca save --file GRAPH.json')." })); })));
+  const command = (text) => h("code", { style: "user-select:all" }, text);
+  main.append(zone("res-inbox", "Review inbox", "What waits for a person. Decisions are made on a member's machine with a signing key and resume the same activation; every decision is audited with who, when, the digest, and why.",
+    panel("Pending approvals", { span: 12, flush: true, scope: report }, async (body) => put(body, dataTable([
+      { label: "Activation", get: (row) => row.activation, render: (row) => h("code", {}, row.activation) }, { label: "Assignment", get: (row) => row.assignment, filter: true }, { label: "Step", get: (row) => row.step + " " + row.type },
+      { label: "What", get: (row) => row.summary || "", render: (row) => h("div", {}, row.summary || "", (row.proposed_steps || []).length ? h("div", { class: "muted" }, "proposes: " + row.proposed_steps.map((item) => item.step + " " + item.type).join(", ")) : null) },
+      { label: "Why Crane asks", get: (row) => (row.reasons || []).join(", ") }, { label: "Plan", get: (row) => row.plan, render: (row) => h("code", { class: "muted" }, row.plan) },
+      { label: "Decide on a machine", get: () => "", render: (row) => command("crane resident approve " + row.activation + " --step " + row.step + " --reason TEXT [--deny]") },
+    ], data.inbox.approvals, { noColumns: true, empty: "Nothing waits for approval." }))),
+    panel("Questions", { span: 6, flush: true, scope: report }, async (body) => put(body, dataTable([
+      { label: "Activation", get: (row) => row.activation, render: (row) => h("code", {}, row.activation) }, { label: "Question", get: (row) => row.summary || row.detail },
+      { label: "Deadline", get: (row) => row.deadline, render: (row) => (row.deadline ? dt(row.deadline) : "—") }, { label: "Answer on a machine", get: () => "", render: (row) => command("crane resident answer " + row.activation + " --step " + row.step + " --text TEXT") },
+    ], data.inbox.questions, { noColumns: true, empty: "No open question." }))),
+    panel("Uncertain effects to reconcile", { span: 6, flush: true, scope: report }, async (body) => put(body, dataTable([
+      { label: "Activation", get: (row) => row.activation, render: (row) => h("code", {}, row.activation) }, { label: "Step", get: (row) => row.step + " " + row.type }, { label: "Detail", get: (row) => row.detail },
+      { label: "Establish on a machine", get: () => "", render: (row) => command("crane resident reconcile " + row.activation + " --step " + row.step + " --happened yes|no --reason TEXT") },
+    ], data.inbox.reconciliation, { noColumns: true, empty: "No uncertain effect." }))),
+    panel("Proposed RCA graphs", { span: 6, flush: true, scope: report }, async (body) => put(body, dataTable([
+      { label: "Graph", get: (row) => row.rca, render: (row) => h("code", {}, row.rca) }, { label: "Target", get: (row) => row.target }, { label: "Origin", get: (row) => row.origin.by + (row.origin.activation_id ? " " + row.origin.activation_id : "") },
+      { label: "Size", get: (row) => row.nodes, render: (row) => row.nodes + " nodes, " + row.edges + " edges" }, { label: "Review on a machine", get: () => "", render: (row) => command("crane resident rca review " + row.rca + " --accept|--reject --reason TEXT") },
+    ], data.inbox.rca_proposals, { noColumns: true, empty: "No proposal." }))),
+    panel("Expired or unhealthy assignments", { span: 6, flush: true, scope: report }, async (body) => put(body, dataTable([
+      { label: "Assignment", get: (row) => row.assignment }, { label: "Status", get: (row) => row.status, render: (row) => chip(row.status) },
+      { label: "Next", get: () => "", render: (row) => command(row.status === "EXPIRED" ? "crane resident renew " + row.assignment + " --reason TEXT" : "crane resident show " + row.assignment) },
+    ], data.inbox.assignments, { noColumns: true, empty: "Every assignment is healthy." })))));
+  const detail = h("div", {});
+  main.append(zone("res-timeline", "Activation timeline", "Every activation from trigger to outcome: matching, context, investigation, plan, Crane's decision for each step, approvals, actions, verification, and usage. Model calls are shown only when they happened.",
+    panel("Activations", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.activations); put(body, dataTable([
+      { label: "Created", get: (row) => row.created_at, render: (row) => h("span", { class: "mono" }, dt(row.created_at)) },
+      { label: "Activation", get: (row) => row.activation_id, render: (row) => h("a", { href: "javascript:void 0", onclick: () => put(detail, activationDetail(row)) }, h("code", {}, row.activation_id)) },
+      { label: "Assignment", get: (row) => row.assignment, filter: true },
+      { label: "Trigger", get: (row) => row.trigger.source + " " + row.trigger.kind, filter: true },
+      { label: "State", get: (row) => row.state, render: (row) => chip(row.state), filter: true },
+      { label: "Outcome", get: (row) => (row.outcome ? row.outcome.status : ""), render: (row) => (row.outcome ? chip(row.outcome.status) : "—"), filter: true },
+      { label: "Conclusion", get: (row) => (row.investigation ? row.investigation.conclusion : ""), render: (row) => (row.investigation ? chip(row.investigation.conclusion) : "—"), filter: true },
+      { label: "Cache", get: (row) => (row.context ? (row.context.cache || {}).cache : ""), render: (row) => (row.context ? chip((row.context.cache || {}).cache) : "—"), filter: true },
+      { label: "Steps", get: (row) => (row.plan ? row.plan.steps.length : 0), num: true },
+      { label: "Model calls", get: (row) => row.usage.model_calls, num: true },
+    ], data.activations, { sort: 0, dir: -1, empty: "No activation yet: assignments are idle until a trigger arrives.", name: "foxx-resident-activations" })); }),
+    panel("Activation detail", { span: 12 }, async (body) => { put(body, detail); put(detail, activationDetail(data.activations[0])); })));
+  const ignoredRows = Object.entries(data.health.ignored || {}).map(([reason, total]) => ({ reason, total }));
+  const outcomeRows = Object.entries(data.health.outcomes || {}).map(([state, total]) => ({ state, total }));
+  main.append(zone("res-health", "Idle cost and health", "Idleness made visible. Event processing and deterministic checks are counted apart from model calls; tokens are unmeasured when no provider reports them (never zero by assumption).",
+    h("div", { class: "kpis span-12" },
+      kpi("Ticks", counters.ticks || 0, { note: (counters.idle_ticks || 0) + " idle" }), kpi("Model calls while idle", counters.idle_model_calls || 0, { tone: counters.idle_model_calls ? "bad" : "good" }),
+      kpi("Model calls in activations", counters.model_calls || 0), kpi("Deterministic health checks", counters.health_checks || 0, { note: "no model" }),
+      kpi("Triggers received", counters.triggers_received || 0, { note: (counters.duplicates || 0) + " duplicates dropped, " + (counters.triggers_rejected || 0) + " rejected" }),
+      kpi("Ingestion lag", counters.lag_ms || 0, { format: (value) => Math.round(value / 1000) + " s", note: "last tick, longest" }),
+      kpi("Failed or blocked", data.health.dead_letter || 0, { tone: data.health.dead_letter ? "warn" : "" }),
+      kpi("Context cache", (data.health.cache || {}).hits || 0, { note: "hits · " + ((data.health.cache || {}).misses || 0) + " misses · " + ((data.health.cache || {}).invalidations || 0) + " invalidated" }),
+      kpi("Tokens", "unmeasured", { format: (value) => value, note: data.health.token_usage })),
+    panel("Triggers that woke nothing", { span: 4, flush: true, scope: report }, async (body) => put(body, dataTable([{ label: "Reason", get: (row) => row.reason, render: (row) => chip(row.reason) }, { label: "Count", get: (row) => row.total, num: true }], ignoredRows, { noColumns: true, empty: "None." }))),
+    panel("Outcomes", { span: 4, flush: true, scope: report }, async (body) => put(body, dataTable([{ label: "Outcome", get: (row) => row.state, render: (row) => chip(row.state) }, { label: "Count", get: (row) => row.total, num: true }], outcomeRows, { noColumns: true, empty: "None.", }))),
+    breakdownPanel("Resident events", { span: 4, by: "event", clauses: [{ path: "flow", op: "is", values: ["F38"] }] }),
+    seriesPanel("Resident events over time", { span: 12, by: "event", clauses: [{ path: "flow", op: "is", values: ["F38"] }], info: { title: "Resident events", text: "F38: lifecycle, triggers received or ignored, activations, context cache, plans, approvals, actions, verification, reconciliation, and tests." } })));
+  main.append(zone("res-test", "Test and simulate", "Plan-only tests: matching, deduplication, cooldown, context and cache, RCA path, the plan, and Crane's decision for every step. Nothing is executed; there is no sandbox, so no run here is labelled one.",
+    panel("Test reports", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.tests); put(body, dataTable([
+      { label: "Tested", get: (row) => row.tested_at, render: (row) => h("span", { class: "mono" }, dt(row.tested_at)) }, { label: "Assignment", get: (row) => row.assignment, filter: true },
+      { label: "Result", get: (row) => row.result, render: (row) => chip(row.result), filter: true }, { label: "Matched", get: (row) => (row.matching && row.matching.matched ? "yes" : "no") },
+      { label: "Context", get: (row) => (row.context && row.context.cache ? row.context.cache.cache : ""), render: (row) => h("span", {}, chip(row.context && row.context.cache ? row.context.cache.cache : null), (row.context && (row.context.missing || []).length) ? " missing: " + row.context.missing.map((item) => item[0]).join(", ") : "") },
+      { label: "Conclusion", get: (row) => row.investigation || "", render: (row) => chip(row.investigation) },
+      { label: "Decisions", get: (row) => ((row.plan || {}).steps || []).map((step) => step.type + ":" + step.decision).join(", "), render: (row) => h("div", {}, ((row.plan || {}).steps || []).map((step) => h("div", {}, h("code", {}, step.step), " ", step.type, " ", chip(step.decision), step.needs_person ? " needs a person" : "", step.expected ? " expected " + step.expected.result : ""))) },
+      { label: "Notes", get: (row) => (row.notes || []).join("; ") },
+    ], data.tests, { sort: 0, dir: -1, empty: "No test yet ('crane resident test ID --event EVENT.json').", name: "foxx-resident-tests" })); }),
+    panel("Build a test event", { span: 6 }, async (body) => put(body, residentFixture(data))),
+    panel("What can run today", { span: 6, flush: true }, async (body) => put(body, h("div", {},
+      dataTable([{ label: "Step type", get: (row) => row.type, render: (row) => h("code", {}, row.type) }, { label: "Effect", get: (row) => row.effect, render: (row) => chip(row.effect) }, { label: "Available", get: (row) => (row.available ? "yes" : "no"), render: (row) => chip(row.available ? "ALLOW" : "UNAVAILABLE") }, { label: "Adapter or reason", get: (row) => row.available ? row.adapter : row.unavailable_reason }], data.catalog.steps || [], { noColumns: true, pageSize: 12 }),
+      dataTable([{ label: "Trigger source", get: (row) => row.source, render: (row) => h("code", {}, row.source) }, { label: "Supported", get: (row) => (row.supported ? "yes" : "no"), render: (row) => chip(row.supported ? "ALLOW" : "UNSUPPORTED") }, { label: "How it arrives", get: (row) => row.delivery || "no connector" }], data.catalog.triggers || [], { noColumns: true, pageSize: 12 }))))));
+  main.append(zone("res-create", "Create", "", panel("Creation wizard", { span: 12 }, async (body) => put(body, residentWizard(data, bricks)))));
+}
+
+Object.assign(window.FOXX_PAGES, { alerting, credits, audit, governance: governanceView, bricks: bricksView, residents: residentsView, compliance, repositories, settings });
 
 // ---------------------------------------------------------------- start
 

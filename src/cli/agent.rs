@@ -168,6 +168,8 @@ fn sync() -> Result<(), String> {
     if !crate::telemetry::sync::configured() {
         // Brick monitors still run locally (they need no service)
         crate::brick::runtime::sync_monitors(&workspace, &stores);
+        // Resident agents too: a tick reads triggers and timers without a model (resident/worker.rs)
+        crate::resident::worker::sync(&workspace, &stores);
         return Err("uploads are off (CRANE_INGEST_URL is 'off')".into());
     }
     // Hooks and commands start background syncs (marked by the trigger); a person runs a manual one

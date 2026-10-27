@@ -12,6 +12,7 @@ import { busiest, layout } from "../core/graph";
 import { contextLabel, guidanceLines, liveFresh } from "../core/live";
 import { parsePolicies } from "../core/policies";
 import { checkName, confirmation, ownerKey, repoArgs } from "../core/setup";
+import { assignmentDraft, checkAssignmentId, packMarkdown, residentMarkdown, ResidentRow, residentsByTarget, residentTone } from "../core/residents";
 
 test("parses policies and commands", () => {
   const policies = parsePolicies(".crane/policies/p.crane", "# c\npolicy default {\n}\npolicy Payments {\n    preserve K7M2P9RX; // keep\n    target ABCD2345 change_type logical_bn;\n}\n");
@@ -300,4 +301,41 @@ test("offers every command family with the arguments the CLI requires", () => {
   assert.deepEqual(controlArgs(byId("selection.validate"), [""]), ["selection", "validate", "--format", "json"], "a skipped optional value is left out");
   assert.ok(byId("approval.approve").changes && !byId("scope.inspect").changes);
   assert.equal(new Set(CONTROLS.map((item) => item.id)).size, CONTROLS.length, "ids are unique");
+});
+
+/** An assignment as 'crane resident list' reports it. */
+function residentRow(id: string, target: string, status: string): ResidentRow {
+  return { assignment_id: id, definition: "ci-watch@1", agent: "claude", target, lifecycle: status === "DRAFT" ? "draft" : "active", status, health: { decision: "ALLOW", reasons: [], generation: 7 }, subscriptions: [{ source: "ci", kinds: ["ci.failed"] }], model_calls: 0 };
+}
+
+test("resident agents group by the workspace's targets first", () => {
+  const rows = [residentRow("b", "flow:refund", "ACTIVE_IDLE"), residentRow("a", "flow:checkout", "AWAITING_APPROVAL"), residentRow("c", "zone:other", "DEGRADED")];
+  const groups = residentsByTarget(rows, ["flow:checkout", "flow:refund"]);
+  assert.deepEqual(groups.map(([target, , local]) => [target, local]), [["flow:checkout", true], ["flow:refund", true], ["zone:other", false]]);
+  assert.equal(residentTone("ACTIVE_IDLE"), "ok");
+  assert.equal(residentTone("AWAITING_APPROVAL"), "attention");
+  assert.equal(residentTone("DEGRADED"), "bad");
+  assert.equal(residentTone("PAUSED"), "off");
+});
+
+test("resident drafts name explicit kinds and stay within the lifetime ceiling", () => {
+  const draft = assignmentDraft({ id: "ci-checkout", definition: "ci-watch@2", agent: "claude", target: "flow:checkout", kinds: "ci.failed, *, ci.cancelled", lifetimeDays: 400 });
+  assert.equal(draft.definition_id, "ci-watch");
+  assert.equal(draft.definition_version, 2);
+  assert.deepEqual((draft.subscriptions as { kinds: string[] }[])[0].kinds, ["ci.failed", "ci.cancelled"], "a bare * is never written");
+  assert.equal(draft.lifetime_days, 90);
+  assert.deepEqual(assignmentDraft({ id: "x", definition: "d@1", agent: "a", target: "flow:f", kinds: "*" }).subscriptions, []);
+  assert.equal(checkAssignmentId("ci-checkout"), undefined);
+  assert.ok(checkAssignmentId("9bad"));
+});
+
+test("resident previews show versions and never claim authority", () => {
+  const text = residentMarkdown(residentRow("a", "flow:checkout", "ACTIVE_IDLE"));
+  assert.match(text, /flow:checkout/);
+  assert.match(text, /none: idle until a trigger arrives/);
+  assert.match(text, /Crane decides every step/);
+  const pack = packMarkdown("a", { pack: { key: "k1", sections: [{ kind: "brick_common", source: "brick:idem@1", reference: "idem@1 (abc)", digest: "d", bytes: 40 }], missing: [["RCA_MISSING", "graph g@1 is not in the store"]], dependencies: {} }, cache: { cache: "INVALIDATED", changed: ["context"] } });
+  assert.match(pack, /INVALIDATED \(changed: context\)/);
+  assert.match(pack, /\| brick_common \| `brick:idem@1` \| idem@1 \(abc\) \| 40 \|/);
+  assert.match(pack, /RCA_MISSING/);
 });

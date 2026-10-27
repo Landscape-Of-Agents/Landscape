@@ -10,6 +10,7 @@
 // DataSea ingestion service, which stores every installation's uploads in MongoDB. capture is Work
 // Capture & Evidence Ingestion, which reads those layers as evidence sources and never writes them;
 // insight finds patterns across what capture kept and turns them into proposals people review.
+// resident keeps long-lived agent assignments that wake only on triggers and act through Crane.
 
 mod brick;
 mod capability;
@@ -27,6 +28,7 @@ mod insight;
 mod integrations;
 mod invocation;
 mod platform;
+mod resident;
 mod runbook;
 mod scope;
 mod selection;

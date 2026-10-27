@@ -39,7 +39,13 @@ trusted workspace.
   runbook, brick) from a searchable list. It asks for the arguments each command requires, asks
   for confirmation before commands that change state, and shows Crane's result.
 
-These need a Crane with `crane brick`; with an older Crane the view says so.
+- **Resident agents** (in the Bricks view): assignments by Zone or Flow with their status and
+  Crane's answer now; show one with its latest activations, preview the context pack it would
+  receive, create a draft (Crane's `--dry-run` validation first, then confirmation), and
+  validate it. Activation stays an admin's step. See [resident agents](../features/resident-agents.md).
+
+These need a Crane with `crane brick` (and `crane resident` for resident agents); with an older
+Crane the view says so.
 
 ## While agents work
 

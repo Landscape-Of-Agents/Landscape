@@ -222,6 +222,30 @@
         "icon": "$(preview)"
       },
       {
+        "command": "foxx.residents.show",
+        "title": "Show Resident Agent",
+        "category": "Landscape",
+        "icon": "$(watch)"
+      },
+      {
+        "command": "foxx.residents.context",
+        "title": "Preview Resident Context",
+        "category": "Landscape",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "foxx.residents.create",
+        "title": "Create Resident Agent Draft",
+        "category": "Landscape",
+        "icon": "$(add)"
+      },
+      {
+        "command": "foxx.residents.validate",
+        "title": "Validate Resident Agent",
+        "category": "Landscape",
+        "icon": "$(check)"
+      },
+      {
         "command": "foxx.runControl",
         "title": "Run a Crane Control",
         "category": "Landscape",
@@ -348,6 +372,21 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "foxx.residents.context",
+          "when": "view == foxx.bricks && viewItem =~ /^resident-/ && viewItem != resident-target && viewItem != resident-group",
+          "group": "1_check@1"
+        },
+        {
+          "command": "foxx.residents.validate",
+          "when": "view == foxx.bricks && viewItem =~ /^resident-(draft|validated|active|paused|expired)$/",
+          "group": "1_check@2"
+        },
+        {
+          "command": "foxx.residents.create",
+          "when": "view == foxx.bricks && viewItem =~ /^resident-(target|group)$/",
+          "group": "inline"
+        },
         {
           "command": "foxx.bricks.validate",
           "when": "view == foxx.bricks && viewItem =~ /^(brick-draft|brick-active|brick-deprecated)$/",

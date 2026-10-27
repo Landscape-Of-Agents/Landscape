@@ -75,6 +75,44 @@ pub(super) fn bricks(context: &Context) -> Answer {
     (200, view, None)
 }
 
+/** The Resident Agents view, as last reported by a member's machine: definitions, assignments
+ * with their derived status and health, recent activations with timelines, the review inbox, idle
+ * cost and health, test reports, and the catalogs (identifiers, states, digests, and counts only)
+ * Input
+    - context: &Context - repository data
+ * Output
+    - Answer
+*/
+pub(super) fn residents(context: &Context) -> Answer {
+    let Some(status) = context.latest_status() else {
+        return error(
+            404,
+            "no member has reported the repository's resident agents yet; they are sent with the next upload".into(),
+        );
+    };
+    let mut view = status["residents"].clone();
+    if view.is_null() {
+        return error(
+            404,
+            "the reporting machine runs a Crane without resident agents; update Crane on that machine"
+                .into(),
+        );
+    }
+    if view.get("error").is_some() {
+        return error(
+            500,
+            format!(
+                "the reporting machine could not read its resident store: {}",
+                view["error"]
+            ),
+        );
+    }
+    view["reported_by"] =
+        context.member(status["installation"].as_str().map(String::from).as_ref());
+    view["reported_at"] = status["collected_at"].clone();
+    (200, view, None)
+}
+
 /** The ledger view of one session or all sessions: entries, balances, and whether every member's
  * ledger reconciles
  * Input

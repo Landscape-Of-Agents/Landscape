@@ -117,13 +117,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
    */
   register(context: vscode.ExtensionContext): void {
     const register = (command: string, callback: (...args: unknown[]) => unknown) => context.subscriptions.push(vscode.commands.registerCommand(command, callback));
-    const view = vscode.window.createTreeView("foxx.bricks", { treeDataProvider: this });
-    // Showing the Bricks view opens the Bricks panel beside the editor
-    context.subscriptions.push(view, this.diagnostics, view.onDidChangeVisibility((event) => {
-      if (event.visible) void vscode.commands.executeCommand("foxx.bricks.openPanel");
-    }));
-    // Opening the view can be what started the extension: no change of visibility follows then
-    if (view.visible) setTimeout(() => void vscode.commands.executeCommand("foxx.bricks.openPanel"), 0);
+    context.subscriptions.push(vscode.window.registerTreeDataProvider("foxx.bricks", this), this.diagnostics);
     register("foxx.bricks.refresh", () => this.load());
     register("foxx.bricks.create", () => this.create());
     register("foxx.bricks.edit", (node) => this.edit(node as BrickNode | undefined));
@@ -249,8 +243,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     const agents = new BrickNode("Assigned agents", this.agents.map((row) => new BrickNode(String(row.agent), [], { description: `${String(row.assignment_status)} · ${String(row.runtime_status)}`, tooltip: `${(row.targets as string[] | undefined)?.join(", ") ?? ""}\n${((row.problems as string[] | undefined) ?? []).join("\n")}\nInference while idle: none (monitors are deterministic); tokens are not measured.`, icon: icon("robot", String(row.runtime_status)), data: row })), { description: String(this.agents.length), icon: new vscode.ThemeIcon("robot") });
     const store = new BrickNode("Signed store", [], { description: `${list.store.trust} · generation ${list.store.generation}`, icon: icon("shield", list.store.trust === "verified" || list.store.trust === "absent" ? "active" : "failed") });
     const residents = this.residentGroup();
-    const panel = new BrickNode("Open the Bricks panel", [], { icon: new vscode.ThemeIcon("window"), command: { command: "foxx.bricks.openPanel", title: "Open" } });
-    return [panel, library, stacks, attachments, agents, residents, store];
+    return [library, stacks, attachments, agents, residents, store];
   }
 
   /**

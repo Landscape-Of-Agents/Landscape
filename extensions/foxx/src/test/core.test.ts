@@ -250,7 +250,7 @@ test("shows an agent's live context only while it is fresh, with its guidance", 
   assert.ok(contextLabel({ ...context, text: "x".repeat(400) }).length <= 140);
 });
 
-import { attachArgs, BRICK_TEMPLATES, BRICK_TYPES, CONTROLS, controlArgs, describePreview, draftFile, envelopeLine, parseEnvelope, snapshotMarkdown, subjectOf, succeeded } from "../core/bricks";
+import { attachArgs, BRICK_GUIDE, BRICK_TEMPLATES, BRICK_TYPES, CONTROLS, controlArgs, describePreview, draftFile, envelopeLine, parseEnvelope, snapshotMarkdown, subjectOf, succeeded } from "../core/bricks";
 
 test("reads the shared envelope of family commands and nothing else", () => {
   const envelope = parseEnvelope('{"schema_version":1,"command":"brick.list","request_id":"req_1","status":"ok","reason_codes":[],"summary":"2 Bricks","refs":{},"data":{"bricks":[]},"created_at":1}');
@@ -396,4 +396,14 @@ test("builds resident definitions and assignments from the forms", () => {
   assert.equal(draft.lifetime_days, 90);
   assert.deepEqual(mergeTargets([{ kind: "zone", id: "cart" }, "flow:checkout"], "zone:cart"), ["zone:cart", "flow:checkout"]);
   assert.deepEqual(mergeTargets([], "zone:pay"), ["zone:pay"]);
+});
+
+test("explains every Brick kind, with examples that use only its documented settings", () => {
+  for (const type of BRICK_TYPES) {
+    const guide = BRICK_GUIDE[type];
+    assert.ok(guide.what && guide.useWhen && guide.example.story, `${type} lacks an explanation`);
+    const documented = guide.settings.map((setting) => setting.name);
+    assert.deepEqual(Object.keys(guide.example.config).filter((key) => !documented.includes(key)), [], `${type}'s example uses an undocumented setting`);
+    assert.deepEqual(Object.keys(BRICK_TEMPLATES[type]).filter((key) => !documented.includes(key)), [], `${type}'s template uses an undocumented setting`);
+  }
 });

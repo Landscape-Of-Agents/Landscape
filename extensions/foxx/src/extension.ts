@@ -22,7 +22,7 @@ import { FoxxGraph, GraphHost, Positions } from "./graphView";
 import { FoxxSidebar, SidebarHost, SidebarState } from "./sidebar";
 import { Bricks } from "./bricksView";
 import { AGENTS_PAGE, AGENTS_PANEL, agentsHost, AgentsTree } from "./agentsPanel";
-import { BRICKS_PAGE, BRICKS_PANEL, bricksHost } from "./bricksPanel";
+import { BRICKS_PAGE, BRICKS_PANEL, bricksHost, BricksLauncher } from "./bricksPanel";
 import { PanelDeps, Workbench } from "./workbench";
 
 /** A registry record as stored in .crane/registry.json (only the fields Landscape shows). */
@@ -1533,6 +1533,7 @@ export function activate(context: vscode.ExtensionContext): void {
   register("foxx.bricks.openPanel", (target) => Workbench.show(extensionUri, BRICKS_PAGE, brickPanel, typeof target === "string" ? target : undefined));
   register("foxx.agents.openPanel", (target) => Workbench.show(extensionUri, AGENTS_PAGE, agentPanel, typeof target === "string" ? target : undefined));
   register("foxx.agents.refresh", () => agents.load());
+  context.subscriptions.push(vscode.window.registerWebviewViewProvider(BricksLauncher.id, new BricksLauncher()));
   const agentsView = vscode.window.createTreeView("foxx.agents", { treeDataProvider: agents });
   // Showing the Agents view opens the Resident Agents panel beside the editor
   context.subscriptions.push(agentsView, agentsView.onDidChangeVisibility((event) => {

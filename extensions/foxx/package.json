@@ -526,12 +526,16 @@
           "id": "foxx.governance",
           "name": "Governance",
           "icon": "images/activity.svg"
-        }
-      ],
-      "foxx-bricks": [
+        },
         {
           "id": "foxx.bricks",
           "name": "Bricks",
+          "icon": "images/bricks.svg"
+        },
+        {
+          "type": "webview",
+          "id": "foxx.bricksLauncher",
+          "name": "Bricks Panel",
           "icon": "images/bricks.svg"
         }
       ],
@@ -588,11 +592,6 @@
           "id": "foxx",
           "title": "Landscape",
           "icon": "images/activity.svg"
-        },
-        {
-          "id": "foxx-bricks",
-          "title": "Landscape Bricks",
-          "icon": "images/bricks.svg"
         },
         {
           "id": "foxx-agents",

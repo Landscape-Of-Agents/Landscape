@@ -5,12 +5,66 @@
 // authority: every signing step is previewed with '--dry-run' and signed only after the person
 // confirms, and whatever Crane refuses is shown in plain words with its own reasons.
 
-import { AttachmentRow, BRICK_TEMPLATES, BRICK_TYPES, BrickList, BrickRow, draftFile, SnapshotData, snapshotMarkdown, succeeded, TypeInfo } from "./core/bricks";
+import * as vscode from "vscode";
+
+import { AttachmentRow, BRICK_GUIDE, BRICK_TEMPLATES, BRICK_TYPES, BrickList, BrickRow, draftFile, SnapshotData, snapshotMarkdown, succeeded, TypeInfo } from "./core/bricks";
 import { friendlyError, OverlayItem, overlayGraph, problemLines } from "./core/workbench";
 import { askReason, call, CANCELLED, confirm, OpResult, PanelDeps, refused, scratch, showMarkdown, signed, WorkbenchHost, WorkbenchPage } from "./workbench";
 
 /** The panel's view type. */
 export const BRICKS_PANEL = "foxx.bricksPanel";
+
+/** The section under the Bricks view with the button that opens the Bricks panel (a tree view
+ * cannot show a styled button). */
+export class BricksLauncher implements vscode.WebviewViewProvider {
+  static readonly id = "foxx.bricksLauncher";
+
+  /**
+   * Draw the button.
+   * @param view the webview view
+   */
+  resolveWebviewView(view: vscode.WebviewView): void {
+    const nonce = Array.from({ length: 32 }, () => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 62)]).join("");
+    view.webview.options = { enableScripts: true };
+    view.webview.html = launcherHtml(view.webview.cspSource, nonce);
+    view.webview.onDidReceiveMessage((message: { type: string }) => {
+      if (message.type === "open") void vscode.commands.executeCommand("foxx.bricks.openPanel");
+    });
+  }
+}
+
+/**
+ * Build the launcher's page: one button in the fox colors and a line on what it opens.
+ * @param cspSource the webview's source for styles
+ * @param nonce the script's nonce
+ * @returns HTML
+ */
+export function launcherHtml(cspSource: string, nonce: string): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body { margin: 0; padding: 10px 12px 12px; color: var(--vscode-foreground); background: transparent; font: var(--vscode-font-size) / 1.45 var(--vscode-font-family); }
+button { width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 7px 12px; border: 0; border-radius: 7px; cursor: pointer; font: inherit; font-weight: 700; color: #1a0d05; background: linear-gradient(90deg, #ff7a1a, #ffb347); box-shadow: 0 2px 10px rgba(255, 122, 26, .3); }
+button:hover { filter: brightness(1.07); }
+button:focus-visible { outline: 2px solid #ffb347; outline-offset: 2px; }
+p { margin: 7px 0 0; font-size: 11.5px; color: var(--vscode-descriptionForeground); text-align: center; }
+</style>
+</head>
+<body>
+<button id="open" title="Open the Bricks panel beside the editor"><span aria-hidden="true">▦</span>Open Bricks Panel</button>
+<p>The graph of Zones and Flows with their Bricks: create, attach, and edit context.</p>
+<script nonce="${nonce}">
+"use strict";
+const vscode = acquireVsCodeApi();
+document.getElementById("open").addEventListener("click", () => vscode.postMessage({ type: "open" }));
+</script>
+</body>
+</html>`;
+}
 
 /**
  * Read a text value the page sent.
@@ -65,6 +119,7 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
         store: list?.store,
         types: types.length ? types : BRICK_TYPES.map((type) => ({ type, label: type, purpose: "", support: "declared", runtime: "", fields: [] })),
         templates: BRICK_TEMPLATES,
+        guide: BRICK_GUIDE,
       };
     },
 
@@ -232,7 +287,24 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
 export const BRICKS_PAGE: WorkbenchPage = {
   viewType: BRICKS_PANEL,
   title: "Landscape Bricks",
-  styles: ``,
+  styles: `
+.create-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(260px, 1fr); grid-template-areas: "form guide"; gap: 16px; align-items: start; }
+.create-grid > form { grid-area: form; }
+.guide { grid-area: guide; position: sticky; top: 64px; border: 1px solid color-mix(in srgb, var(--fox) 40%, transparent); border-radius: var(--radius); background: var(--bg); overflow: hidden; }
+@media (max-width: 820px) { .create-grid { grid-template-columns: 1fr; grid-template-areas: "guide" "form"; } .guide { position: static; } }
+.guide .top { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--fox-soft); border-bottom: 1px solid var(--line); }
+.guide .top b { font-size: 13.5px; text-transform: capitalize; }
+.guide .part { padding: 9px 12px; border-bottom: 1px solid var(--line); }
+.guide .part:last-child { border-bottom: 0; }
+.guide h4 { margin: 0 0 3px; font-size: 10.5px; letter-spacing: .8px; text-transform: uppercase; color: var(--muted); }
+.guide p { margin: 0; }
+.guide .story { padding: 7px 9px; border-left: 3px solid var(--fox); background: var(--raised); border-radius: 0 6px 6px 0; }
+.guide pre { margin: 6px 0 0; padding: 7px 9px; border-radius: 6px; background: var(--raised); font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.guide dl { margin: 0; display: grid; gap: 7px; }
+.guide dt { font-family: var(--mono); font-size: 12px; font-weight: 700; }
+.guide dd { margin: 1px 0 0; }
+.guide dd small { display: block; color: var(--muted); font-size: 11px; }
+`,
   body: `<div class="shell">
 <header class="top"><span class="mark" aria-hidden="true">▦</span><div class="grow"><b>Bricks</b><div class="muted small" id="summary">Loading…</div></div><button class="btn" id="refresh" title="Ask Crane again">Refresh</button></header>
 <div id="notice" aria-live="polite"></div>
@@ -249,9 +321,11 @@ export const BRICKS_PAGE: WorkbenchPage = {
     <button data-tab="library" role="tab">Library<span class="count" id="count-library"></span></button>
   </div>
   <div class="body">
-    <form data-panel="create" id="create-form" novalidate>
+    <div data-panel="create" class="create-grid">
+    <aside class="guide" id="guide" aria-live="polite" aria-label="About this kind of Brick"></aside>
+    <form id="create-form" novalidate>
       <div class="grid2">
-        <div class="field" data-field="type"><label for="c-type">Kind of Brick</label><select id="c-type"></select><div class="help" id="c-type-help"></div></div>
+        <div class="field" data-field="type"><label for="c-type">Kind of Brick</label><select id="c-type"></select><div class="help">The guide explains each kind, with an example.</div></div>
         <div class="field" data-field="name"><label for="c-name">Name</label><input type="text" id="c-name" placeholder="Production config guard"></div>
       </div>
       <div class="field" data-field="intent"><label for="c-intent">What it solves</label><input type="text" id="c-intent" placeholder="Agents must not change production settings without a person"></div>
@@ -267,6 +341,7 @@ export const BRICKS_PAGE: WorkbenchPage = {
       </div>
       <div class="row" style="margin-top:12px"><button class="btn primary" id="c-submit" type="submit">Create Brick</button><span class="muted small">It starts as a draft and changes nothing until it is activated and attached.</span></div>
     </form>
+    </div>
 
     <form data-panel="attach" id="attach-form" novalidate hidden>
       <div id="a-empty" class="empty-note" hidden>No Brick is activated yet. Create one, then activate it from the Library.</div>
@@ -345,9 +420,43 @@ function onState(state) {
 }
 function onFocus(id) { graph.pick(id); }
 
+// How far Crane acts on a kind today, in words and a tone
+const SUPPORT = { enforced: ["ok", "Enforced at every tool call"], checked: ["busy", "Checked by tests and monitors"], delivered: ["fox", "Given to agents as context"], declared: ["warn", "Recorded; not enforced yet"] };
+function renderGuide() {
+  const type = $("c-type").value;
+  const guide = (S.guide || {})[type];
+  const info = S.types.find((item) => item.type === type) || {};
+  if (!guide) { $("guide").innerHTML = '<div class="part muted">Choose a kind to see what it does.</div>'; return; }
+  const support = SUPPORT[info.support] || ["", ""];
+  $("guide").innerHTML = '<div class="top"><span aria-hidden="true">◆</span><b class="grow">' + esc(info.label || type) + " Brick</b>" + (support[1] ? '<span class="tag ' + support[0] + '">' + esc(support[1]) + "</span>" : "") + "</div>" +
+    '<div class="part"><h4>What it is</h4><p>' + esc(guide.what) + "</p></div>" +
+    '<div class="part"><h4>Use it when</h4><p>' + esc(guide.useWhen) + "</p></div>" +
+    '<div class="part"><h4>Example</h4><p class="story">' + esc(guide.example.story) + "</p><pre>" + esc(JSON.stringify(guide.example.config, null, 2)) + '</pre><div class="row" style="margin-top:8px"><button type="button" class="btn small primary" id="g-use">Fill the form with this example</button></div></div>' +
+    '<div class="part"><h4>Settings you can configure</h4><dl>' + guide.settings.map((item) => "<div><dt>" + esc(item.name) + "</dt><dd>" + esc(item.meaning) + "<small>Values: " + esc(item.values) + "</small></dd></div>").join("") + "</dl></div>" +
+    (info.runtime ? '<div class="part"><h4>What Crane does with it today</h4><p class="muted">' + esc(info.runtime[0].toUpperCase() + info.runtime.slice(1)) + ".</p></div>" : "");
+}
+function showKind(type) {
+  selectTab("create");
+  $("c-type").value = type;
+  applyType();
+  $("guide").scrollIntoView({ block: "nearest" });
+}
+document.addEventListener("click", (event) => {
+  if (event.target.id === "g-use") {
+    const guide = S.guide[$("c-type").value];
+    $("c-name").value = guide.example.name;
+    $("c-intent").value = guide.example.intent;
+    $("c-config").value = JSON.stringify(guide.example.config, null, 2);
+    configTouched = true;
+    $("create-form").querySelector("details.more").open = true;
+    notice("info", "The form now holds the example. Adjust the name, context, and configuration to your case before creating it.");
+    $("c-name").focus();
+  }
+  const kind = event.target.closest("[data-kind]");
+  if (kind) { event.preventDefault(); showKind(kind.dataset.kind); }
+});
 function applyType() {
-  const info = S.types.find((item) => item.type === $("c-type").value);
-  $("c-type-help").textContent = info ? (info.purpose ? info.purpose + " " : "") + (info.support ? "Crane " + (info.support === "enforced" ? "enforces it at every tool call." : info.support === "checked" ? "checks it." : info.support === "delivered" ? "delivers it to agents as context." : "records it; it is not enforced yet.") : "") : "";
+  renderGuide();
   if (!configTouched) $("c-config").value = JSON.stringify(S.templates[$("c-type").value] || {}, null, 2);
 }
 $("c-type").addEventListener("change", applyType);
@@ -358,7 +467,8 @@ $("refresh").addEventListener("click", () => { notice(); vscode.postMessage({ ty
 
 // ---------------------------------------------------------------- the selected Zone, Flow, or attachment
 function attachmentCard(row) {
-  return '<div class="item"><div class="title"><b>' + esc(subjectName(row.subject)) + '</b><span class="tag">' + esc(brickRef(row.subject)) + '</span><span class="tag ' + (row.issues.length ? "bad" : row.state === "enabled" ? "ok" : "") + '">' + esc(row.issues.length ? "fails closed" : row.state) + "</span></div>" +
+  const brick = S.bricks.find((item) => "brick:" + item.ref === row.subject || item.ref === row.subject);
+  return '<div class="item"><div class="title"><b>' + esc(subjectName(row.subject)) + '</b><span class="tag">' + esc(brickRef(row.subject)) + "</span>" + (brick ? '<a href="#" class="small" data-kind="' + esc(brick.type) + '" title="What this kind of Brick does">' + esc(brick.type) + " ?</a>" : "") + '<span class="tag ' + (row.issues.length ? "bad" : row.state === "enabled" ? "ok" : "") + '">' + esc(row.issues.length ? "fails closed" : row.state) + "</span></div>" +
     (row.issues.length ? '<div class="error-text">' + esc(row.issues.join("; ")) + "</div>" : "") +
     '<div class="quote">' + (row.current_context ? esc(row.current_context) : "<i>No volatile context</i>") + "</div>" +
     '<div class="actions"><button class="btn small" data-volatile="' + esc(row.attachment_id) + '">Edit volatile context</button><button class="btn small" data-common="' + esc(brickRef(row.subject)) + '">Edit common context</button><button class="btn small danger" data-detach="' + esc(row.attachment_id) + '">Detach</button></div></div>';
@@ -394,6 +504,7 @@ function renderLibrary() {
         : row.state === "active" ? '<button class="btn small primary" data-attach-brick="' + esc(row.ref) + '">Attach…</button><button class="btn small" data-common="' + esc(id) + '">Edit common context</button>' : "";
       return '<div class="item"><div class="title"><b>' + esc(row.name) + '</b><span class="tag">' + esc(row.type) + '</span><span class="tag ' + stateTone(row.state) + '">' + esc(row.state) + "</span>" + (row.validation && row.validation !== "passed" ? '<span class="tag bad">' + esc(row.validation) + "</span>" : "") + '<span class="muted small mono">' + esc(id) + "</span></div>" +
         (row.intent ? '<div class="muted small" style="margin-top:4px">' + esc(row.intent) + "</div>" : "") +
+        '<div class="small" style="margin-top:4px"><a href="#" data-kind="' + esc(row.type) + '">What is a ' + esc(row.type) + " Brick?</a></div>" +
         (where.length ? '<div class="small" style="margin-top:4px">Attached to ' + where.map((key) => '<a href="#" data-goto="' + esc(key) + '">' + esc(key) + "</a>").join(", ") + "</div>" : "") +
         (actions ? '<div class="actions">' + actions + "</div>" : "") + "</div>";
     }).join("") + "</div>";

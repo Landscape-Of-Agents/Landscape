@@ -122,6 +122,8 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     context.subscriptions.push(view, this.diagnostics, view.onDidChangeVisibility((event) => {
       if (event.visible) void vscode.commands.executeCommand("foxx.bricks.openPanel");
     }));
+    // Opening the view can be what started the extension: no change of visibility follows then
+    if (view.visible) setTimeout(() => void vscode.commands.executeCommand("foxx.bricks.openPanel"), 0);
     register("foxx.bricks.refresh", () => this.load());
     register("foxx.bricks.create", () => this.create());
     register("foxx.bricks.edit", (node) => this.edit(node as BrickNode | undefined));

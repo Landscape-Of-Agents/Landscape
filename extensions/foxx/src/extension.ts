@@ -1538,6 +1538,8 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(agentsView, agentsView.onDidChangeVisibility((event) => {
     if (event.visible) void vscode.commands.executeCommand("foxx.agents.openPanel");
   }));
+  // Opening the view can be what started the extension: no change of visibility follows then
+  if (agentsView.visible) setTimeout(() => void vscode.commands.executeCommand("foxx.agents.openPanel"), 0);
   if (root()) void agents.load();
   // The sidebar passes one "path#Lline" argument
   register("foxx.revealContext", (target) => {

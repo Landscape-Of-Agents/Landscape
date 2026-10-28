@@ -354,6 +354,25 @@ pub(super) fn edit(args: &[String]) -> Result<(), String> {
             }
         }
     };
+    // A former kind can no longer be activated, so its next version is written in the kind that
+    // replaced it (one that splits into two kinds is left to 'crane brick migrate')
+    if brick.brick_type.is_legacy() {
+        let parts = crate::brick::legacy::convert(brick.brick_type, &brick.config)
+            .map_err(|problem| format!("{id}: {}", problem.message))?;
+        let [(kind, config)] = parts.as_slice() else {
+            return Err(format!(
+                "{id} is a former {} Brick that becomes {} Bricks; run 'crane brick migrate' first, then edit the new drafts",
+                brick.brick_type.name(),
+                parts
+                    .iter()
+                    .map(|(kind, _)| kind.name())
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            ));
+        };
+        brick.brick_type = *kind;
+        brick.config = config.clone();
+    }
     if let Some(text) = args.value("type") {
         if BrickType::parse(&text)? != brick.brick_type {
             return Err(format!(

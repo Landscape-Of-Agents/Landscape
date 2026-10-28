@@ -191,130 +191,18 @@ pub(super) fn test(args: &[String]) -> Result<(), String> {
     match config::parse(brick.brick_type, &brick.config) {
         Err(problem) => cases.push(case("configuration", "FAIL", problem.message)),
         Ok(parsed) => {
-            match &parsed {
-                Config::Scope(_)
-                | Config::Constraint(_)
-                | Config::Permission(_)
-                | Config::Approval(_)
-                | Config::Isolation(_)
-                | Config::Precondition(_) => {
-                    if on.is_empty() {
-                        cases.push(case(
-                            "enforcement",
-                            "NOT_RUN",
-                            "give --target flow:ID or zone:ID to simulate it on real files",
-                        ));
-                    }
-                    for target in &on {
-                        let preview = simulate(&repo, &brick, target)?;
-                        let restricted = preview["files"].as_array().map_or(0, Vec::len);
-                        let resolved = preview["scope_resolved"].as_bool().unwrap_or(true);
-                        for gap in preview["controls"]["gaps"].as_array().into_iter().flatten() {
-                            cases.push(case(
-                                "gap",
-                                "UNKNOWN",
-                                gap["message"].as_str().unwrap_or_default(),
-                            ));
-                        }
-                        cases.push(case(
-                        &format!("enforcement on {target}"),
-                        if resolved { "PASS" } else { "FAIL" },
-                        if !resolved {
-                            "the scope matches no file of the target, so the whole target becomes observe-only (fail closed)".to_string()
-                        } else {
-                            format!("{restricted} file(s) of {target} restricted by the guard")
-                        },
-                    ));
-                        effects.push(preview);
-                    }
-                }
-                Config::Verification(checks) => {
-                    for (check, outcome, detail) in run_checks(&repo.workspace, &checks.checks) {
-                        cases.push(case(&check, outcome_word(outcome), detail));
-                    }
-                }
-                Config::Provenance(provenance) => {
-                    for item in &provenance.require {
-                        let (status, detail) = match item {
-                            ProvenanceItem::SignedState => {
-                                let outcome =
-                                    run_checks(&repo.workspace, &[config::Check::SignedState]);
-                                (outcome_word(outcome[0].1), outcome[0].2.clone())
-                            }
-                            ProvenanceItem::AuditChain => {
-                                match crate::governance::audit::verify(&repo.state.audit) {
-                                    Ok(()) => (
-                                        "PASS",
-                                        format!(
-                                            "{} entries chain to the signed head",
-                                            repo.state.audit.len()
-                                        ),
-                                    ),
-                                    Err(error) => ("FAIL", error),
-                                }
-                            }
-                        };
-                        cases.push(case(&config::serial(item), status, detail));
-                    }
-                }
-                Config::Action(action) => {
-                    let registered = validate::registered_operations(&repo.workspace.root)
-                        .iter()
-                        .any(|(adapter, operation)| {
-                            *adapter == action.adapter && *operation == action.operation
-                        });
-                    cases.push(case(
-                        "registered operation",
-                        if registered { "PASS" } else { "FAIL" },
-                        format!(
-                            "{}/{}; a Brick never executes it, 'crane skill invoke' does",
-                            action.adapter, action.operation
-                        ),
-                    ));
-                }
-                Config::Identity(identity) => {
-                    for target in &on {
-                        for assignment in repo.store.assignments.iter().filter(|assignment| {
-                            assignment.targets.iter().any(|item| item.key() == *target)
-                        }) {
-                            let admitted = identity.agents.contains(&assignment.agent);
-                            cases.push(case(
-                                &format!("assignment {} on {target}", assignment.agent),
-                                if admitted { "PASS" } else { "FAIL" },
-                                if admitted {
-                                    "admitted".to_string()
-                                } else {
-                                    "assigned but not admitted by this identity Brick".to_string()
-                                },
-                            ));
-                        }
-                    }
-                    cases.push(case("enforcement", "UNKNOWN", "the guard does not decide per agent yet; identity is checked here and shown per assignment"));
-                }
-                Config::Monitoring(monitoring) => {
-                    for signal in &monitoring.signals {
-                        cases.push(case(
-                        &config::serial(&signal.source),
-                        if signal.source.supported() { "PASS" } else { "UNKNOWN" },
-                        if signal.source.supported() {
-                            format!("checked every {} minutes by the background sync, without a model", signal.every_minutes)
-                        } else {
-                            "no connector exists; reported as a coverage gap".to_string()
-                        },
-                    ));
-                    }
-                }
-                Config::Context(context) => {
-                    for file in &context.files {
-                        let readable = repo.workspace.root.join(file).is_file();
-                        cases.push(case(
-                            file,
-                            if readable { "PASS" } else { "FAIL" },
-                            if readable { "readable" } else { "missing" },
-                        ));
-                    }
-                }
-                _ => cases.push(case("runtime", "DECLARED", info.runtime)),
+            if brick.brick_type.is_legacy() {
+                cases.push(case(
+                    "former kind",
+                    "UNKNOWN",
+                    format!(
+                        "read as {}; 'crane brick migrate' rewrites it",
+                        parsed.iter().map(kind_of).collect::<Vec<_>>().join(" and ")
+                    ),
+                ));
+            }
+            for config in &parsed {
+                test_config(&repo, &brick, config, &on, &mut cases, &mut effects)?;
             }
         }
     }
@@ -355,6 +243,465 @@ pub(super) fn test(args: &[String]) -> Result<(), String> {
     .reference("brick_ref", brick.reference().to_string())
     .data(json!({"cases": cases, "effects": effects, "support": info.support, "runtime": info.runtime}));
     finish(&args, response, &detail)
+}
+
+/** The kind a configuration belongs to, such as "access"
+ * Input
+    - config: &Config - configuration
+ * Output
+    - &'static str
+*/
+fn kind_of(config: &Config) -> &'static str {
+    match config {
+        Config::Knowledge(_) => "knowledge",
+        Config::Identity(_) => "identity",
+        Config::Access(_) => "access",
+        Config::Approval(_) => "approval",
+        Config::Limits(_) => "limits",
+        Config::Environment(_) => "environment",
+        Config::Precondition(_) => "precondition",
+        Config::Verification(_) => "verification",
+        Config::Action(_) => "action",
+        Config::Recovery(_) => "recovery",
+        Config::Provenance(_) => "provenance",
+        Config::Watch(_) => "watch",
+    }
+}
+
+/** The test cases of one configuration
+ * Input
+    - repo: &Repo - repository
+    - brick: &Brick - the Brick tested
+    - config: &Config - one of its configurations
+    - on: &[String] - targets to simulate on
+    - cases: &mut Vec<Value> - cases found
+    - effects: &mut Vec<Value> - enforcement previews
+ * Output
+    - Result<(), String>
+*/
+fn test_config(
+    repo: &Repo,
+    brick: &Brick,
+    config: &Config,
+    on: &[String],
+    cases: &mut Vec<Value>,
+    effects: &mut Vec<Value>,
+) -> Result<(), String> {
+    let per_call = matches!(
+        config,
+        Config::Identity(_)
+            | Config::Approval(_)
+            | Config::Environment(_)
+            | Config::Recovery(_)
+            | Config::Watch(_)
+    ) || matches!(config, Config::Limits(limits) if limits.max_ceiling.is_none() && limits.min_criticality.is_none())
+        || matches!(config, Config::Action(action) if action.deny_direct);
+    let per_file = matches!(
+        config,
+        Config::Access(_) | Config::Limits(_) | Config::Precondition(_) | Config::Environment(_)
+    );
+    if per_file || per_call {
+        if on.is_empty() {
+            cases.push(case(
+                "enforcement",
+                "NOT_RUN",
+                "give --target flow:ID or zone:ID to simulate it on real files",
+            ));
+        }
+        for target in on {
+            let preview = simulate(repo, brick, target)?;
+            for gap in preview["controls"]["gaps"].as_array().into_iter().flatten() {
+                cases.push(case(
+                    "gap",
+                    "UNKNOWN",
+                    gap["message"].as_str().unwrap_or_default(),
+                ));
+            }
+            if per_file {
+                let restricted = preview["files"].as_array().map_or(0, Vec::len);
+                let resolved = preview["scope_resolved"].as_bool().unwrap_or(true);
+                cases.push(case(
+                    &format!("per-file limits on {target}"),
+                    if resolved { "PASS" } else { "FAIL" },
+                    if resolved {
+                        format!("{restricted} file(s) of {target} restricted by the guard")
+                    } else {
+                        "the scope matches no file of the target, so the whole target becomes observe-only (fail closed)".to_string()
+                    },
+                ));
+            }
+            if per_call {
+                cases.push(case(
+                    &format!("per-call rules on {target}"),
+                    "PASS",
+                    format!(
+                        "decided before every tool call touching {target}: {}",
+                        brick.brick_type.catalog().runtime
+                    ),
+                ));
+            }
+            effects.push(preview);
+        }
+    }
+    match config {
+        Config::Precondition(precondition) => {
+            for (check, outcome, detail) in run_checks(
+                &repo.workspace,
+                &precondition.checks,
+                on.first().map(String::as_str),
+                true,
+            ) {
+                let holds = outcome == CheckOutcome::Proven;
+                cases.push(case(
+                    &format!("gate: {check}"),
+                    if holds { "PASS" } else { "UNKNOWN" },
+                    if holds {
+                        "holds now".to_string()
+                    } else {
+                        format!(
+                            "failing now: changes would {} ({detail})",
+                            if precondition.on_fail == config::Mode::Deny {
+                                "stop"
+                            } else {
+                                "need a person"
+                            }
+                        )
+                    },
+                ));
+            }
+        }
+        Config::Verification(verification) => {
+            let mut checks = verification.checks.clone();
+            if let Some(source) = &verification.checks_from {
+                let shared = repo
+                    .store
+                    .bricks
+                    .iter()
+                    .filter(|entry| {
+                        entry.brick.brick_id == *source && entry.state == VersionState::Active
+                    })
+                    .filter_map(|entry| {
+                        config::parse(entry.brick.brick_type, &entry.brick.config).ok()
+                    })
+                    .flatten()
+                    .filter_map(|parsed| match parsed {
+                        Config::Precondition(precondition) => Some(precondition.checks),
+                        _ => None,
+                    })
+                    .next_back();
+                match shared {
+                    Some(found) => checks.extend(found),
+                    None => cases.push(case(
+                        "checks_from",
+                        "FAIL",
+                        format!("'{source}' is not an active precondition Brick"),
+                    )),
+                }
+            }
+            for (check, outcome, detail) in run_checks(
+                &repo.workspace,
+                &checks,
+                on.first().map(String::as_str),
+                true,
+            ) {
+                cases.push(case(&check, outcome_word(outcome), detail));
+            }
+        }
+        Config::Provenance(provenance) => {
+            for item in &provenance.require {
+                let (status, detail) = match item {
+                    ProvenanceItem::SignedState => {
+                        let outcome =
+                            run_checks(&repo.workspace, &[config::Check::SignedState], None, true);
+                        (outcome_word(outcome[0].1), outcome[0].2.clone())
+                    }
+                    ProvenanceItem::AuditChain => {
+                        match crate::governance::audit::verify(&repo.state.audit) {
+                            Ok(()) => (
+                                "PASS",
+                                format!(
+                                    "{} entries chain to the signed head",
+                                    repo.state.audit.len()
+                                ),
+                            ),
+                            Err(error) => ("FAIL", error),
+                        }
+                    }
+                    ProvenanceItem::DecisionsRecorded
+                    | ProvenanceItem::CommitTrailer
+                    | ProvenanceItem::LinkedIssue => provenance_case(repo, provenance, *item, on),
+                };
+                cases.push(case(&config::serial(item), status, detail));
+            }
+        }
+        Config::Action(action) => {
+            let registered = validate::registered_operations(&repo.workspace.root);
+            for rule in action.rules() {
+                let known = registered.iter().any(|(adapter, operation)| {
+                    *adapter == rule.adapter && *operation == rule.operation
+                });
+                let direct = crate::brick::guard::DIRECT
+                    .iter()
+                    .any(|(adapter, operation, _)| {
+                        *adapter == rule.adapter && *operation == rule.operation
+                    });
+                cases.push(case(
+                    &format!("{}/{}", rule.adapter, rule.operation),
+                    if known || direct { "PASS" } else { "FAIL" },
+                    if known {
+                        "a registered operation Crane runs ('crane skill invoke', resident steps)"
+                            .to_string()
+                    } else if direct {
+                        format!(
+                            "a direct operation; {}",
+                            if action.deny_direct {
+                                "agents may not do it themselves"
+                            } else {
+                                "set deny_direct to keep agents from doing it themselves"
+                            }
+                        )
+                    } else {
+                        "neither registered nor a known direct operation".to_string()
+                    },
+                ));
+            }
+        }
+        Config::Identity(identity) => {
+            for target in on {
+                for assignment in repo.store.assignments.iter().filter(|assignment| {
+                    assignment.targets.iter().any(|item| item.key() == *target)
+                }) {
+                    let admitted = identity
+                        .agents
+                        .iter()
+                        .any(|agent| agent.eq_ignore_ascii_case(&assignment.agent));
+                    cases.push(case(
+                        &format!("assignment {} on {target}", assignment.agent),
+                        if admitted { "PASS" } else { "FAIL" },
+                        if admitted { "admitted".to_string() } else { "assigned but not admitted by this identity Brick; its tool calls would be refused".to_string() },
+                    ));
+                }
+            }
+        }
+        Config::Environment(environment) => {
+            for credential in &environment.credentials {
+                let present = crate::trust::vault::exists(&repo.workspace, &credential.name);
+                cases.push(case(
+                    &format!("credential {}", credential.name),
+                    if present { "PASS" } else { "UNKNOWN" },
+                    if present {
+                        "in this machine's vault".to_string()
+                    } else {
+                        format!(
+                            "not in this machine's vault; a person runs 'crane secret set {}'",
+                            credential.name
+                        )
+                    },
+                ));
+            }
+            for name in &environment.require_env {
+                let set = std::env::var_os(name).is_some_and(|value| !value.is_empty());
+                cases.push(case(
+                    &format!("variable {name}"),
+                    if set { "PASS" } else { "UNKNOWN" },
+                    if set {
+                        "set here"
+                    } else {
+                        "not set here; changes would need a person"
+                    },
+                ));
+            }
+        }
+        Config::Watch(watch) => {
+            for signal in &watch.signals {
+                cases.push(case(
+                    &config::serial(&signal.source),
+                    if signal.source.supported() {
+                        "PASS"
+                    } else {
+                        "UNKNOWN"
+                    },
+                    if signal.source.supported() {
+                        format!(
+                            "checked every {} minutes by the background sync, without a model",
+                            signal.every_minutes
+                        )
+                    } else {
+                        "no connector exists; reported as a coverage gap".to_string()
+                    },
+                ));
+            }
+        }
+        Config::Knowledge(knowledge) => {
+            for file in &knowledge.files {
+                let readable = repo.workspace.root.join(file).is_file();
+                cases.push(case(
+                    file,
+                    if readable { "PASS" } else { "FAIL" },
+                    if readable { "readable" } else { "missing" },
+                ));
+            }
+        }
+        _ => {}
+    }
+    if !per_file
+        && !per_call
+        && !matches!(
+            config,
+            Config::Precondition(_)
+                | Config::Verification(_)
+                | Config::Provenance(_)
+                | Config::Action(_)
+                | Config::Identity(_)
+                | Config::Watch(_)
+                | Config::Knowledge(_)
+        )
+    {
+        cases.push(case(
+            "runtime",
+            "DECLARED",
+            brick.brick_type.catalog().runtime,
+        ));
+    }
+    Ok(())
+}
+
+/** Check a lineage requirement against the recent commits touching a target's files
+ * Input
+    - repo: &Repo - repository
+    - provenance: &config::ProvenanceConfig - the requirement
+    - item: ProvenanceItem - DecisionsRecorded, CommitTrailer, or LinkedIssue
+    - on: &[String] - targets
+ * Output
+    - (&'static str, String) status and detail
+*/
+fn provenance_case(
+    repo: &Repo,
+    provenance: &config::ProvenanceConfig,
+    item: ProvenanceItem,
+    on: &[String],
+) -> (&'static str, String) {
+    let Some(target) = on.first() else {
+        return (
+            "NOT_RUN",
+            "give --target flow:ID or zone:ID to check its commits".into(),
+        );
+    };
+    let Ok(all) = targets(repo) else {
+        return ("UNKNOWN", "the targets could not be resolved".into());
+    };
+    let Some(info) = all.get(target) else {
+        return ("UNKNOWN", format!("{target} is not a Zone or Flow"));
+    };
+    // A shared scope narrows the files whose commits are checked
+    let scope = provenance.scope_from.as_ref().and_then(|id| {
+        let (configs, _) = crate::brick::compose::configs_of(&repo.store, target);
+        configs
+            .into_iter()
+            .find_map(|(_, brick_id, config)| match config {
+                Config::Access(access) if brick_id == *id => Some(crate::brick::compose::PathSet {
+                    include: access.include,
+                    exclude: access.exclude,
+                }),
+                _ => None,
+            })
+    });
+    let files = info
+        .files
+        .iter()
+        .filter(|file| scope.as_ref().is_none_or(|scope| scope.contains(file)))
+        .cloned()
+        .collect::<Vec<_>>();
+    if files.is_empty() {
+        return ("UNKNOWN", format!("no file of {target} is in scope"));
+    }
+    if item == ProvenanceItem::DecisionsRecorded {
+        let Ok(trust) = repo.workspace.trust() else {
+            return ("UNKNOWN", "the trust directory is not available".into());
+        };
+        let events = crate::telemetry::Stores::open(&trust.runtime())
+            .events
+            .read_all()
+            .unwrap_or_default();
+        let decided = events
+            .iter()
+            .filter(|event| {
+                event.decision.is_some() && event.bindings.zones.iter().any(|zone| zone == target)
+            })
+            .count();
+        return if decided > 0 {
+            (
+                "PASS",
+                format!("{decided} recorded decision(s) bound to {target}"),
+            )
+        } else {
+            (
+                "UNKNOWN",
+                format!("no recorded decision is bound to {target} on this machine"),
+            )
+        };
+    }
+    let mut command = vec![
+        "log".to_string(),
+        format!("-n{}", provenance.commits),
+        "--format=%H%x1f%B%x1e".to_string(),
+        "--".to_string(),
+    ];
+    command.extend(files.iter().take(200).cloned());
+    let words = command.iter().map(String::as_str).collect::<Vec<_>>();
+    let Ok(log) = crate::platform::git::git_in(&repo.workspace.root, &words) else {
+        return ("UNKNOWN", "git log could not run".into());
+    };
+    let commits = log
+        .split('\u{1e}')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| entry.split_once('\u{1f}'))
+        .collect::<Vec<_>>();
+    if commits.is_empty() {
+        return ("UNKNOWN", format!("no commit touches {target} yet"));
+    }
+    let missing = commits
+        .iter()
+        .filter(|(_, message)| match item {
+            ProvenanceItem::CommitTrailer => {
+                let key = provenance
+                    .trailer
+                    .clone()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                !message
+                    .lines()
+                    .any(|line| line.to_ascii_lowercase().starts_with(&format!("{key}:")))
+            }
+            _ => {
+                let pattern = provenance.issue_pattern.clone().unwrap_or_default();
+                !message
+                    .split(|c: char| c.is_whitespace() || "()[],;:".contains(c))
+                    .any(|word| crate::platform::glob::matches(&pattern, word))
+            }
+        })
+        .map(|(hash, _)| hash.chars().take(10).collect::<String>())
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        (
+            "PASS",
+            format!(
+                "all {} recent commit(s) touching {target} comply",
+                commits.len()
+            ),
+        )
+    } else {
+        (
+            "FAIL",
+            format!(
+                "{} of {} recent commit(s) touching {target} do not: {}",
+                missing.len(),
+                commits.len(),
+                missing.join(", ")
+            ),
+        )
+    }
 }
 
 /** The case word of a check outcome

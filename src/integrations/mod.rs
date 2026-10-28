@@ -351,10 +351,15 @@ pub(crate) fn secrets(workspace: &Workspace, name: &str) -> Map<String, Value> {
     let Ok((_, secrets)) = paths(workspace, name) else {
         return Map::new();
     };
-    fs::read_to_string(secrets)
+    let mut found: Map<String, Value> = fs::read_to_string(secrets)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // A credential an Environment Brick names for this integration, from this machine's vault
+    if let Some(token) = crate::trust::vault::for_operation(workspace, name) {
+        found.insert("token".into(), Value::String(token));
+    }
+    found
 }
 
 /** List the configured integrations (non-secret settings)

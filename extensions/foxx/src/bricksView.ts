@@ -15,6 +15,7 @@ import * as vscode from "vscode";
 import { CraneResult } from "./core/crane";
 import {
   AttachmentRow,
+  BRICK_GUIDE,
   BRICK_TEMPLATES,
   BRICK_TYPES,
   BrickList,
@@ -26,6 +27,7 @@ import {
   describePreview,
   draftFile,
   Envelope,
+  LEGACY_TYPES,
   envelopeLine,
   parseEnvelope,
   SnapshotData,
@@ -93,9 +95,11 @@ function icon(name: string, state: string | undefined): vscode.ThemeIcon {
 
 /** Codicons per Brick type. */
 const TYPE_ICONS: Record<BrickType, string> = {
-  context: "book", identity: "person", scope: "list-tree", permission: "key", constraint: "lock", precondition: "checklist", approval: "verified",
-  isolation: "vm", budget: "dashboard", action: "zap", verification: "pass", provenance: "history", recovery: "debug-restart", revocation: "circle-slash",
-  monitoring: "pulse", intelligence: "lightbulb",
+  knowledge: "book", identity: "person", access: "key", approval: "verified", limits: "dashboard", environment: "vm", precondition: "checklist",
+  verification: "pass", action: "zap", recovery: "debug-restart", provenance: "history", watch: "pulse",
+  // Former kinds, read as the kinds that replaced them
+  context: "book", scope: "key", permission: "key", constraint: "dashboard", isolation: "vm", budget: "dashboard", revocation: "pulse",
+  monitoring: "pulse", intelligence: "pulse",
 };
 
 /** The Bricks view and its commands. */
@@ -232,7 +236,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
       const tooltip = new vscode.MarkdownString(`**${row.name}** · \`${row.ref}\` · ${row.type}\n\n${row.intent ?? ""}\n\nState **${row.state}**${row.validation ? ` · validation **${row.validation}**` : ""}`);
       return new BrickNode(row.name, [], { description: `${row.state === "draft" ? row.brick_id + " draft" : row.ref} · ${row.validation ?? ""}`, tooltip, icon: icon(TYPE_ICONS[row.type] ?? "package", row.state === "draft" ? "draft" : row.state), contextValue: `brick-${row.state}`, data: row, command: { command: "foxx.bricks.show", title: "Show", arguments: [undefined, row.ref] } });
     };
-    const byType = BRICK_TYPES.map((type) => ({ type, rows: list.bricks.filter((row) => row.type === type) })).filter((entry) => entry.rows.length);
+    const byType = [...BRICK_TYPES, ...(Object.keys(LEGACY_TYPES) as BrickType[])].map((type) => ({ type, rows: list.bricks.filter((row) => row.type === type) })).filter((entry) => entry.rows.length);
     const library = new BrickNode("Library", byType.map((entry) => new BrickNode(entry.type, entry.rows.map(brickNode), { description: String(entry.rows.length), icon: new vscode.ThemeIcon(TYPE_ICONS[entry.type]) })), { description: `${list.bricks.length}`, icon: new vscode.ThemeIcon("library") });
     const stacks = new BrickNode("Stacks", list.stacks.map((row: StackRow) => new BrickNode(row.name, [], { description: `${row.ref} · ${row.members.length} member(s)`, tooltip: row.members.join(", "), icon: icon("layers", row.state), contextValue: `stack-${row.state}`, data: row })), { description: String(list.stacks.length), icon: new vscode.ThemeIcon("layers") });
     const targets = [...new Set(list.attachments.map((row) => row.target))].sort();
@@ -513,7 +517,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
   /** Create a Brick draft: fixed type, plain-language intent, Common Context, and configuration. */
   async create(): Promise<void> {
     if (!this.types.length) await this.load();
-    const types = this.types.length ? this.types : BRICK_TYPES.map((type) => ({ type, label: type, purpose: "", support: "declared", runtime: "", fields: [] }) as TypeInfo);
+    const types = this.types.length ? this.types : BRICK_TYPES.map((type) => ({ type, label: type, purpose: BRICK_GUIDE[type].purpose, support: "checked", runtime: "", fields: [] }) as TypeInfo);
     const type = await vscode.window.showQuickPick(types.map((info) => ({ label: info.label, description: info.support, detail: `${info.purpose} — ${info.runtime}`, type: info.type })), { placeHolder: "Which kind of Brick? (the types are fixed)", matchOnDetail: true });
     if (!type) return;
     const name = await vscode.window.showInputBox({ prompt: "Name", placeHolder: "Production config guard", validateInput: (value) => (value.trim() ? undefined : "A name is required") });

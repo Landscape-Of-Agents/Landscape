@@ -4,6 +4,8 @@
 // validates or decides; it only shapes what Crane reported and what Crane will be asked.
 // Editor-independent, so it is unit-tested.
 
+import { parse as parseYaml } from "yaml";
+
 import { GraphData } from "./graph";
 
 /** A node of a panel's graph: a Zone, a Flow, or something attached to one. */
@@ -251,4 +253,45 @@ export function assignmentFile(input: AssignInput): Record<string, unknown> {
 export function mergeTargets(current: (string | { kind: string; id: string })[], target: string): string[] {
   const keys = current.map((item) => (typeof item === "string" ? item : `${item.kind}:${item.id}`));
   return [...new Set([...keys, target])];
+}
+
+/** The most context one attachment can hold (Crane's MAX_CONTEXT_BYTES). */
+export const MAX_CONTEXT_BYTES = 16 * 1024;
+
+/** Where a volatile context comes from. */
+export type ContextFormat = "text" | "yaml" | "json";
+
+/** The fields a YAML or JSON file may hold its context in, checked in order. */
+const CONTEXT_FIELDS = ["volatile_context", "context", "text"];
+
+/**
+ * Turn a file a person chose into volatile context text. A text file is used as written. A YAML or
+ * JSON file must parse; a string document, or a "volatile_context", "context", or "text" field,
+ * becomes the text; any other document is kept whole in a fenced block, so agents read it as data.
+ * @param name file name, for messages
+ * @param format how to read it
+ * @param content file content
+ * @returns the text, or why the file cannot be used
+ */
+export function contextFromFile(name: string, format: ContextFormat, content: string): { text?: string; error?: string } {
+  if (content.includes("\u0000")) return { error: `${name} looks like a binary file. Choose a text, YAML, or JSON file.` };
+  const raw = content.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").trim();
+  let text = raw;
+  if (format !== "text") {
+    let value: unknown;
+    try {
+      value = format === "json" ? JSON.parse(raw) : parseYaml(raw);
+    } catch (error) {
+      return { error: `${name} is not valid ${format === "json" ? "JSON" : "YAML"}: ${(error as Error).message.split("\n")[0]}` };
+    }
+    const field = value && typeof value === "object" && !Array.isArray(value) ? CONTEXT_FIELDS.map((key) => (value as Record<string, unknown>)[key]).find((item) => typeof item === "string") : undefined;
+    if (typeof value === "string") text = value.trim();
+    else if (typeof field === "string") text = field.trim();
+    else if (value === null || value === undefined) text = "";
+    else text = "```" + format + "\n" + (format === "json" ? JSON.stringify(value, null, 2) : raw) + "\n```";
+  }
+  if (!text) return { error: `${name} holds no text to use as context.` };
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes > MAX_CONTEXT_BYTES) return { error: `${name} gives ${Math.ceil(bytes / 1024)} KB of context; one attachment holds at most ${MAX_CONTEXT_BYTES / 1024} KB. Shorten it, or put the long part in a Context Brick's files.` };
+  return { text };
 }

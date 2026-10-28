@@ -275,7 +275,7 @@ fn passphrase(prompt: &str, confirm: bool) -> Result<String, String> {
 
 /** The Windows Data Protection API, scoped to the current user */
 #[cfg(windows)]
-mod dpapi {
+pub(super) mod dpapi {
     use std::ffi::c_void;
     use std::ptr::{null, null_mut};
 
@@ -384,7 +384,7 @@ mod dpapi {
      * Output
         - Result<Vec<u8>, String>
     */
-    pub(super) fn protect(data: &[u8]) -> Result<Vec<u8>, String> {
+    pub(crate) fn protect(data: &[u8]) -> Result<Vec<u8>, String> {
         call(data, true)
     }
 
@@ -394,21 +394,21 @@ mod dpapi {
      * Output
         - Result<Vec<u8>, String>
     */
-    pub(super) fn unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
+    pub(crate) fn unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
         call(data, false)
     }
 }
 
 /** Without the Windows Data Protection API, sealing with it is refused */
 #[cfg(not(windows))]
-mod dpapi {
+pub(super) mod dpapi {
     /** Refuse: not available here
      * Input
         - _data: &[u8] - data
      * Output
         - Result<Vec<u8>, String> always an error
     */
-    pub(super) fn protect(_data: &[u8]) -> Result<Vec<u8>, String> {
+    pub(crate) fn protect(_data: &[u8]) -> Result<Vec<u8>, String> {
         Err("the Windows Data Protection API is only available on Windows".into())
     }
 
@@ -418,7 +418,7 @@ mod dpapi {
      * Output
         - Result<Vec<u8>, String> always an error
     */
-    pub(super) fn unprotect(_data: &[u8]) -> Result<Vec<u8>, String> {
+    pub(crate) fn unprotect(_data: &[u8]) -> Result<Vec<u8>, String> {
         Err("this key was sealed on Windows and can only be used there".into())
     }
 }

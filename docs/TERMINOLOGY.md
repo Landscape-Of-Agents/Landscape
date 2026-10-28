@@ -134,8 +134,9 @@ without evidence.
 
 | Term | Meaning |
 |---|---|
-| **Brick** | A reusable, versioned module of one fixed type (context, identity, scope, permission, constraint, precondition, approval, isolation, budget, action, verification, provenance, recovery, revocation, monitoring, intelligence). It can only tighten what agents may do. |
-| **Brick type** | One of the sixteen fixed kinds. People make Bricks; they never make new types. |
+| **Brick** | A reusable, versioned module of one fixed kind (knowledge, identity, access, approval, limits, environment, precondition, verification, action, recovery, provenance, watch). Each kind answers one question no other kind answers. It can only tighten what agents may do. |
+| **Brick type** | One of the twelve fixed kinds. People make Bricks; they never make new kinds. Nine former kinds stay readable and are rewritten by `crane brick migrate`. |
+| **Credential** | A secret an Environment Brick names. Only the name is shared; the value stays in each machine's vault (`crane secret set`) and reaches only Crane-run operations. |
 | **Brick Stack** | A named set of exact Brick versions for a bigger scenario. It is not a type and cannot loosen its members. |
 | **Draft** | An unsigned Brick or Stack in `.crane/drafts/`. It grants nothing until an admin activates it. |
 | **Attachment** | A Brick or Stack version pinned to a Flow, Zone, or Runbook, signed into `.crane/bricks.json`. |

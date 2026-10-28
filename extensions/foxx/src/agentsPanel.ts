@@ -12,7 +12,7 @@ import * as vscode from "vscode";
 import { BrickList, succeeded } from "./core/bricks";
 import { checkAssignmentId, PackData, packMarkdown, RESIDENT_CHANGES, ResidentList, residentMarkdown, ResidentRow, residentTone } from "./core/residents";
 import { assignmentFile, checkDefinition, DefinitionInput, definitionFile, friendlyError, LIMITS, mergeTargets, OverlayItem, overlayGraph, problemLines, TRIGGER_DEFAULTS } from "./core/workbench";
-import { askReason, call, CANCELLED, confirm, OpResult, PanelDeps, refused, scratch, showMarkdown, WorkbenchHost, WorkbenchPage } from "./workbench";
+import { call, CANCELLED, Dialogs, OpResult, PanelDeps, refused, scratch, showMarkdown, WorkbenchHost, WorkbenchPage } from "./workbench";
 
 /** The panel's view type. */
 export const AGENTS_PANEL = "foxx.agentsPanel";
@@ -70,6 +70,9 @@ export function agentsHost(deps: PanelDeps, changed: () => void): WorkbenchHost 
 
   const definitions = () => (residents?.definitions ?? []) as unknown as DefinitionFull[];
 
+  /** The panel's dialogs, for the operation running now. */
+  let dialogs: Dialogs;
+
   return {
     async state(refresh) {
       const problem = await load();
@@ -92,7 +95,8 @@ export function agentsHost(deps: PanelDeps, changed: () => void): WorkbenchHost 
       };
     },
 
-    async run(op, values, progress) {
+    async run(op, values, progress, asked) {
+      dialogs = asked;
       const result = await operate(op, values, progress);
       if (!op.startsWith("load:") && (result.ok || result.problems)) {
         await deps.refresh();
@@ -118,7 +122,7 @@ export function agentsHost(deps: PanelDeps, changed: () => void): WorkbenchHost 
     if (op === "saveDefinition") return saveDefinition(values, progress);
     if (op === "activateDefinition") {
       const ref = text(values.ref);
-      const reason = await askReason(`Why activate the agent ${ref}? Activation is signed with an admin key.`);
+      const reason = await dialogs.reason(`Why activate the agent ${ref}? Activation is signed with an admin key.`);
       if (!reason) return CANCELLED;
       progress(`Activating ${ref}`);
       return outcome(await call(deps, ["resident", "definition", "activate", ref, "--reason", reason]));
@@ -126,7 +130,7 @@ export function agentsHost(deps: PanelDeps, changed: () => void): WorkbenchHost 
     if (op === "assign") return assign(values, progress);
     if (op === "activateAssignment") {
       const id = text(values.id);
-      const reason = await askReason(`Why activate ${id}? Activation is signed with an admin key.`);
+      const reason = await dialogs.reason(`Why activate ${id}? Activation is signed with an admin key.`);
       if (!reason) return CANCELLED;
       progress(`Checking ${id} against the signed rules`);
       const checked = await call<{ validation?: { problems?: unknown } }>(deps, ["resident", "validate", id]);
@@ -139,9 +143,9 @@ export function agentsHost(deps: PanelDeps, changed: () => void): WorkbenchHost 
       const id = text(values.id), action = text(values.action) as keyof typeof RESIDENT_CHANGES | "renew";
       if (!["pause", "resume", "revoke", "renew"].includes(action)) return { ok: false, message: `Landscape does not know the change '${action}'.` };
       const label = action === "renew" ? "Renew" : RESIDENT_CHANGES[action].label;
-      const reason = await askReason(`Why ${label.toLowerCase()} ${id}?${action === "renew" ? " Renewing is signed with an admin key." : ""}`);
+      const reason = await dialogs.reason(`Why ${label.toLowerCase()} ${id}?${action === "renew" ? " Renewing is signed with an admin key." : ""}`);
       if (!reason) return CANCELLED;
-      if (action === "revoke" && !(await confirm(`revoke ${id}?`, RESIDENT_CHANGES.revoke.detail, "Revoke"))) return CANCELLED;
+      if (action === "revoke" && !(await dialogs.confirm(`revoke ${id}?`, RESIDENT_CHANGES.revoke.detail, "Revoke", "danger"))) return CANCELLED;
       progress(`${label} ${id}`);
       return outcome(await call(deps, ["resident", action, id, "--reason", reason]));
     }
@@ -251,7 +255,7 @@ export function agentsHost(deps: PanelDeps, changed: () => void): WorkbenchHost 
         `Create the assignment ${id} and have Crane check it.`,
         `Activate it for ${lifetime} days (admin key). It stays idle until something wakes it; no model runs while idle. Renew it before it ends to keep it running.`,
       ];
-      if (!(await confirm(`put ${definition.name} to work on ${target}?`, steps.map((step, index) => `${index + 1}. ${step}`).join("\n"), "Put to work"))) return CANCELLED;
+      if (!(await dialogs.confirm(`put ${definition.name} to work on ${target}?`, steps.map((step, index) => `${index + 1}. ${step}`).join("\n"), "Put to work"))) return CANCELLED;
 
       if (definition.state === "draft") {
         progress(`Activating the definition ${ref}`);

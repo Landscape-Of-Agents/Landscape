@@ -91,7 +91,7 @@ pub(crate) const KINDS: &[(&str, &str, &str)] = &[
     (
         "BRICK_IDENTITY_MISMATCH",
         "BRICK_IDENTITY",
-        "Agent not admitted by an identity Brick (checked, not enforced).",
+        "Agent not admitted by an identity Brick; its calls there are refused or need a person.",
     ),
     (
         "BRICK_ASSIGNED",
@@ -107,6 +107,16 @@ pub(crate) const KINDS: &[(&str, &str, &str)] = &[
         "BRICK_MONITOR_EVALUATED",
         "BRICK_MONITOR",
         "Brick monitor evaluated without a model.",
+    ),
+    (
+        "BRICK_WATCH_REACTED",
+        "BRICK_MONITOR",
+        "A watch signal started firing and its reaction ran.",
+    ),
+    (
+        "BRICK_MIGRATION_DRAFTED",
+        "BRICK_MIGRATE",
+        "Bricks of former kinds rewritten as drafts of current kinds.",
     ),
 ];
 

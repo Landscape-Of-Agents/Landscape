@@ -5,11 +5,13 @@
 // authority: every signing step is previewed with '--dry-run' and signed only after the person
 // confirms, and whatever Crane refuses is shown in plain words with its own reasons.
 
+import * as fs from "fs";
+import * as path from "path";
 import * as vscode from "vscode";
 
-import { AttachmentRow, BRICK_GUIDE, BRICK_TEMPLATES, BRICK_TYPES, BrickList, BrickRow, draftFile, SnapshotData, snapshotMarkdown, succeeded, TypeInfo } from "./core/bricks";
-import { friendlyError, OverlayItem, overlayGraph, problemLines } from "./core/workbench";
-import { askReason, call, CANCELLED, confirm, OpResult, PanelDeps, refused, scratch, showMarkdown, signed, WorkbenchHost, WorkbenchPage } from "./workbench";
+import { AttachmentRow, BRICK_GUIDE, BRICK_TEMPLATES, BRICK_TYPES, BrickList, BrickRow, draftFile, LEGACY_TYPES, SnapshotData, succeeded, TypeInfo } from "./core/bricks";
+import { ContextFormat, contextFromFile, friendlyError, OverlayItem, overlayGraph, problemLines } from "./core/workbench";
+import { call, CANCELLED, Dialogs, OpResult, PanelDeps, refused, scratch, signed, WorkbenchHost, WorkbenchPage } from "./workbench";
 
 /** The panel's view type. */
 export const BRICKS_PANEL = "foxx.bricksPanel";
@@ -97,6 +99,9 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
    */
   const brickOf = (row: AttachmentRow): BrickRow | undefined => list?.bricks.find((brick) => `brick:${brick.ref}` === row.subject || brick.ref === row.subject);
 
+  /** The panel's dialogs, for the operation running now. */
+  let dialogs: Dialogs;
+
   return {
     async state(refresh) {
       const problem = await load();
@@ -117,13 +122,15 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
         stacks: list?.stacks ?? [],
         attachments: list?.attachments ?? [],
         store: list?.store,
-        types: types.length ? types : BRICK_TYPES.map((type) => ({ type, label: type, purpose: "", support: "declared", runtime: "", fields: [] })),
+        types: types.length ? types : BRICK_TYPES.map((type) => ({ type, label: type, purpose: BRICK_GUIDE[type].purpose, unique: BRICK_GUIDE[type].unique, support: "checked", runtime: "", fields: [] })),
         templates: BRICK_TEMPLATES,
         guide: BRICK_GUIDE,
+        legacy: LEGACY_TYPES,
       };
     },
 
-    async run(op, values, progress) {
+    async run(op, values, progress, asked) {
+      dialogs = asked;
       const result = await operate(op, values, progress);
       if (result.ok && !op.startsWith("load:")) await deps.refresh();
       return result;
@@ -155,7 +162,7 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
       if (!attachment) return { ok: false, message: "Choose the attachment whose volatile context you want to change.", fields: { attachment: "Choose an attachment." } };
       const file = scratch("current-context.md", text(values.text));
       try {
-        return await signed(deps, ["brick", "context", "set", attachment, "--file", file.file], "Update the volatile context", progress);
+        return await signed(deps, ["brick", "context", "set", attachment, "--file", file.file], "Update the volatile context", progress, dialogs);
       } finally {
         file.dispose();
       }
@@ -163,15 +170,15 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
     if (op === "detach") {
       const row = list?.attachments.find((item) => item.attachment_id === text(values.attachment));
       if (!row) return { ok: false, message: "That attachment is gone; refresh the panel." };
-      const reason = await askReason(`Why detach ${row.subject} from ${row.target}?`);
+      const reason = await dialogs.reason(`Why detach ${row.subject} from ${row.target}?`);
       if (!reason) return CANCELLED;
-      return signed(deps, ["brick", "detach", row.attachment_id, "--reason", reason], `Detach ${row.subject} from ${row.target}`, progress);
+      return signed(deps, ["brick", "detach", row.attachment_id, "--reason", reason], `Detach ${row.subject} from ${row.target}`, progress, dialogs);
     }
     if (op === "activate") {
       const id = text(values.id);
-      const reason = await askReason(`Why activate ${id}? Activation is signed with an admin key.`);
+      const reason = await dialogs.reason(`Why activate ${id}? Activation is signed with an admin key.`);
       if (!reason) return CANCELLED;
-      return signed(deps, ["brick", "activate", id, "--reason", reason], `Activate ${id}`, progress);
+      return signed(deps, ["brick", "activate", id, "--reason", reason], `Activate ${id}`, progress, dialogs);
     }
     if (op === "validate") {
       progress("Validating");
@@ -180,13 +187,47 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
       const problems = problemLines(result.envelope.data?.validation?.problems);
       return succeeded(result.envelope.status) && !problems.length ? { ok: true, message: result.envelope.summary } : { ok: false, message: friendlyError(result.envelope.summary), problems };
     }
-    if (op === "preview") {
+    if (op === "load:preview") {
       const result = await call<SnapshotData>(deps, ["brick", "context", "preview", "--targets", text(values.target)]);
       if (!result.envelope) return { ok: false, message: result.error ?? "Crane printed no result." };
-      await showMarkdown(snapshotMarkdown(result.envelope.data));
-      return { ok: true, message: `Opened what agents in ${text(values.target)} receive.` };
+      if (!result.envelope.data?.snapshot) return refused(result.envelope);
+      return { ok: true, message: "", data: result.envelope.data };
+    }
+    if (op === "load:file") return contextFile(text(values.format) as ContextFormat);
+    if (op === "load:brick") {
+      const shown = await call<{ definition: Record<string, unknown> }>(deps, ["brick", "show", text(values.ref)]);
+      if (!shown.envelope) return { ok: false, message: shown.error ?? "Crane printed no result." };
+      return { ok: true, message: "", data: shown.envelope.data };
+    }
+    if (op === "migrate") {
+      progress("Rewriting former kinds as drafts");
+      const migrated = await call<{ next?: string[] }>(deps, ["brick", "migrate"]);
+      if (!migrated.envelope) return { ok: false, message: migrated.error ?? "Crane printed no result." };
+      if (!succeeded(migrated.envelope.status)) return refused(migrated.envelope);
+      const next = migrated.envelope.data?.next ?? [];
+      return { ok: true, message: `${migrated.envelope.summary}${next.length ? " Activate each new draft from the Library, then move its attachments to it:" : ""}`, problems: next };
     }
     return { ok: false, message: `Landscape does not know the operation '${op}'.` };
+  }
+
+  /**
+   * Let the person choose a text, YAML, or JSON file and read it as volatile context.
+   * @param format how to read it
+   * @returns the text and the file's name, for the page to show before anything is saved
+   */
+  async function contextFile(format: ContextFormat): Promise<OpResult> {
+    const filters: Record<ContextFormat, Record<string, string[]>> = { text: { "Text files": ["txt", "md", "markdown", "text"] }, yaml: { "YAML files": ["yaml", "yml"] }, json: { "JSON files": ["json"] } };
+    const picked = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: "Use as volatile context", filters: filters[format] ?? filters.text, defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri });
+    if (!picked?.[0]) return CANCELLED;
+    const file = picked[0].fsPath;
+    const name = path.basename(file);
+    try {
+      if (fs.statSync(file).size > 1024 * 1024) return { ok: false, message: `${name} is larger than 1 MB; volatile context holds at most 16 KB.` };
+      const read = contextFromFile(name, format, fs.readFileSync(file, "utf8"));
+      return read.error ? { ok: false, message: read.error } : { ok: true, message: "", data: { text: read.text, name } };
+    } catch (error) {
+      return { ok: false, message: `Landscape could not read ${name}: ${(error as Error).message}` };
+    }
   }
 
   /**
@@ -202,7 +243,7 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
     const file = volatile.trim() ? scratch("current-context.md", volatile) : undefined;
     if (file) args.push("--context-file", file.file);
     try {
-      return await signed(deps, args, `Attach ${subject} to ${target}`, progress);
+      return await signed(deps, args, `Attach ${subject} to ${target}`, progress, dialogs);
     } finally {
       file?.dispose();
     }
@@ -237,7 +278,7 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
     if (problems.length) return { ok: false, message: `Saved the draft ${reference}, but it does not validate yet. Fix these in the Library (Edit), then activate it.`, problems };
     if (!values.now) return { ok: true, message: `Created the draft ${reference}. Activate it from the Library to attach it.` };
     const id = reference.split("@")[0];
-    const activated = await signed(deps, ["brick", "activate", id, "--reason", text(values.reason)], `Activate ${reference}`, progress);
+    const activated = await signed(deps, ["brick", "activate", id, "--reason", text(values.reason)], `Activate ${reference}`, progress, dialogs);
     if (!activated.ok) return { ...activated, message: `Created the draft ${reference}; activating it did not finish. ${activated.message}` };
     const target = text(values.target);
     if (!target) return { ok: true, message: `Created and activated ${reference}.` };
@@ -268,11 +309,11 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
     const reference = edited.envelope.refs.brick_ref ?? brick.brick_id;
     if (brick.state === "draft") return { ok: true, message: `Saved the common context of the draft ${reference}.` };
     if (!values.promote) return { ok: true, message: `Saved as ${reference}, a new draft version: ${brick.ref} stays in force until ${reference} is activated and its attachments are moved to it.` };
-    const activated = await signed(deps, ["brick", "activate", brick.brick_id, "--reason", text(values.reason)], `Activate ${reference}`, progress);
+    const activated = await signed(deps, ["brick", "activate", brick.brick_id, "--reason", text(values.reason)], `Activate ${reference}`, progress, dialogs);
     if (!activated.ok) return { ...activated, message: `Saved ${reference} as a draft; activating it did not finish. ${activated.message}` };
     const moving = (list?.attachments ?? []).filter((row) => row.subject.replace(/^brick:/, "").split("@")[0] === brick.brick_id && !row.subject.endsWith(`@${reference.split("@")[1]}`));
     if (!moving.length) return { ok: true, message: `Activated ${reference}; nothing was attached to move.` };
-    if (!(await confirm(`move ${moving.length} attachment(s) to ${reference}?`, moving.map((row) => `${row.target}: ${row.subject} → ${reference}`).join("\n") + "\n\nEach move is signed; volatile contexts stay as they are.", "Move them"))) return { ok: true, message: `Activated ${reference}; the attachments still use the older version.` };
+    if (!(await dialogs.confirm(`move ${moving.length} attachment(s) to ${reference}?`, moving.map((row) => `${row.target}: ${row.subject} → ${reference}`).join("\n") + "\n\nEach move is signed; volatile contexts stay as they are.", "Move them"))) return { ok: true, message: `Activated ${reference}; the attachments still use the older version.` };
     const failed: string[] = [];
     for (const row of moving) {
       progress(`Moving ${row.target} to ${reference}`);
@@ -304,6 +345,34 @@ export const BRICKS_PAGE: WorkbenchPage = {
 .guide dt { font-family: var(--mono); font-size: 12px; font-weight: 700; }
 .guide dd { margin: 1px 0 0; }
 .guide dd small { display: block; color: var(--muted); font-size: 11px; }
+.ctx { margin-bottom: 7px; border: 1px solid var(--line); border-left: 3px solid var(--tone, var(--line)); border-radius: 6px; background: var(--bg); }
+.ctx.mine { box-shadow: 0 0 0 2px var(--fox-soft); border-color: var(--fox); border-left-color: var(--tone); }
+.ctx summary { display: flex; gap: 8px; align-items: center; padding: 6px 9px; cursor: pointer; }
+.ctx summary b { flex: 1; min-width: 0; font-size: 12.5px; overflow-wrap: anywhere; }
+.ctx pre { margin: 0; padding: 7px 10px 9px; border-top: 1px solid var(--line); max-height: 200px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 11.5px; }
+.legend-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 2px 0 10px; font-size: 11px; color: var(--muted); }
+.legend-row i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+.sources { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; margin-bottom: 6px; }
+.loaded { margin: -2px 0 6px; padding: 3px 8px; border-radius: 6px; background: var(--fox-soft); color: var(--fg); }
+.guide .part.unique, .info-line.unique { background: color-mix(in srgb, var(--fox) 7%, transparent); }
+.guide .part.unique h4, .info-line.unique h4 { color: var(--fox); }
+.info-btn { display: inline-grid; place-items: center; width: 18px; height: 18px; padding: 0; border-radius: 50%; border: 1px solid color-mix(in srgb, var(--fox) 55%, var(--line)); background: var(--bg); color: var(--fox); font: italic 700 11px/1 Georgia, serif; cursor: pointer; flex: none; }
+.info-btn:hover, .info-btn:focus-visible { background: var(--fox); color: #1a0d05; }
+.info-modal { width: min(640px, 100%); }
+.info-modal .m-head .mark { font: italic 700 14px/1 Georgia, serif; }
+.info-line { margin: 0 0 8px; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line); }
+.info-line h4, .props-title { margin: 0 0 3px; font-size: 10.5px; letter-spacing: .8px; text-transform: uppercase; color: var(--muted); }
+.info-line p { margin: 0; }
+.props-title { margin: 12px 0 6px; }
+.props { display: grid; gap: 6px; }
+.prop { display: grid; grid-template-columns: minmax(110px, .8fr) minmax(0, 1fr); gap: 2px 12px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--raised); }
+.prop-name { font-family: var(--mono); font-size: 12px; font-weight: 700; overflow-wrap: anywhere; }
+.prop-value pre, .context-text { margin: 0; padding: 5px 7px; border-radius: 5px; background: var(--bg); font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
+.prop-value code { font-size: 12px; }
+.prop-value .sub-key { margin-top: 3px; font-size: 11px; color: var(--muted); }
+.prop-help { grid-column: 1 / -1; color: var(--muted); font-size: 11.5px; }
+.prop-help small { display: block; font-size: 11px; }
+@media (max-width: 520px) { .prop { grid-template-columns: 1fr; } }
 `,
   body: `<div class="shell">
 <header class="top"><span class="mark" aria-hidden="true">▦</span><div class="grow"><b>Bricks</b><div class="muted small" id="summary">Loading…</div></div><button class="btn" id="refresh" title="Ask Crane again">Refresh</button></header>
@@ -311,7 +380,7 @@ export const BRICKS_PAGE: WorkbenchPage = {
 <div id="problem"></div>
 <div class="layout">
   <section class="card"><div class="head"><b class="grow">Landscape</b><span class="muted small">Click a Zone or Flow to work on it</span></div><div class="graph" id="graph" data-item="Brick" data-glyph="◆"></div></section>
-  <section class="card"><div class="head"><b class="grow" id="selected-title">Selected</b></div><div class="body" id="selected"></div></section>
+  <section class="card"><div class="head"><b class="grow" id="selected-title">What agents receive</b></div><div class="body" id="selected"></div></section>
 </div>
 <section class="card">
   <div class="tabs" role="tablist">
@@ -337,7 +406,7 @@ export const BRICKS_PAGE: WorkbenchPage = {
           <div class="field" data-field="target"><label for="c-target">Attach to</label><select id="c-target" data-targets></select><div class="help">Or click a Zone or Flow in the graph.</div></div>
           <div class="field" data-field="reason"><label for="c-reason">Why activate it?</label><input type="text" id="c-reason" placeholder="Recorded in the signed audit"></div>
         </div>
-        <div class="field" data-field="volatile"><label for="c-volatile">Volatile context there <span class="muted">(optional)</span></label><textarea id="c-volatile" placeholder="What is true there right now, e.g. a release freeze until Friday…"></textarea><div class="help">Only this Zone or Flow gets it. Change it any time without a new version.</div></div>
+        <div class="field" data-field="volatile"><label for="c-volatile">Volatile context there <span class="muted">(optional)</span></label><div class="sources" data-into="c-volatile" role="group" aria-label="Where the volatile context comes from"><span class="muted small">Add it from:</span><button type="button" class="btn small" data-src="write">✎ Write text</button><button type="button" class="btn small" data-src="text">Text file</button><button type="button" class="btn small" data-src="yaml">YAML file</button><button type="button" class="btn small" data-src="json">JSON file</button></div><div class="loaded small" hidden></div><textarea id="c-volatile" placeholder="What is true there right now, e.g. a release freeze until Friday…"></textarea><div class="help">Only this Zone or Flow gets it. Change it any time without a new version.</div></div>
       </div>
       <div class="row" style="margin-top:12px"><button class="btn primary" id="c-submit" type="submit">Create Brick</button><span class="muted small">It starts as a draft and changes nothing until it is activated and attached.</span></div>
     </form>
@@ -349,7 +418,7 @@ export const BRICKS_PAGE: WorkbenchPage = {
         <div class="field" data-field="subject"><label for="a-subject">Brick</label><select id="a-subject"></select><div class="help">Only activated Bricks and Stacks can be attached.</div></div>
         <div class="field" data-field="target"><label for="a-target">Zone or Flow</label><select id="a-target" data-targets></select><div class="help">Or click one in the graph.</div></div>
       </div>
-      <div class="field" data-field="volatile"><label for="a-volatile">Volatile context <span class="muted">(optional)</span></label><textarea id="a-volatile" placeholder="What agents should know about this Zone or Flow right now…"></textarea><div class="help">This attachment only. It can add guidance but never relaxes a control.</div></div>
+      <div class="field" data-field="volatile"><label for="a-volatile">Volatile context <span class="muted">(optional)</span></label><div class="sources" data-into="a-volatile" role="group" aria-label="Where the volatile context comes from"><span class="muted small">Add it from:</span><button type="button" class="btn small" data-src="write">✎ Write text</button><button type="button" class="btn small" data-src="text">Text file</button><button type="button" class="btn small" data-src="yaml">YAML file</button><button type="button" class="btn small" data-src="json">JSON file</button></div><div class="loaded small" hidden></div><textarea id="a-volatile" placeholder="What agents should know about this Zone or Flow right now…"></textarea><div class="help">This attachment only. It can add guidance but never relaxes a control.</div></div>
       <div class="row"><button class="btn primary" id="a-submit" type="submit">Attach</button><span class="muted small">You see what changes before Crane signs it.</span></div>
     </form>
 
@@ -369,8 +438,8 @@ export const BRICKS_PAGE: WorkbenchPage = {
         <form id="volatile-form" novalidate>
           <h3 style="margin:0 0 4px">Volatile context</h3><p class="muted small" style="margin:0 0 10px">For one attachment: what is true on that Zone or Flow right now.</p>
           <div class="field" data-field="attachment"><label for="v-attachment">Attachment</label><select id="v-attachment"></select></div>
-          <div class="field" data-field="text"><label for="v-text">Text</label><textarea id="v-text" style="min-height:120px" placeholder="Choose an attachment to load its volatile context"></textarea></div>
-          <div class="row" style="margin-top:10px"><button class="btn primary" id="v-submit" type="submit">Save volatile context</button><span class="muted small">Signed in place; no new version.</span></div>
+          <div class="field" data-field="text"><label for="v-text">Text</label><div class="sources" data-into="v-text" role="group" aria-label="Where the volatile context comes from"><span class="muted small">Add it from:</span><button type="button" class="btn small" data-src="write">✎ Write text</button><button type="button" class="btn small" data-src="text">Text file</button><button type="button" class="btn small" data-src="yaml">YAML file</button><button type="button" class="btn small" data-src="json">JSON file</button></div><div class="loaded small" hidden></div><textarea id="v-text" style="min-height:120px" placeholder="Choose an attachment to load its volatile context"></textarea></div>
+          <div class="row" style="margin-top:10px"><button class="btn primary" id="v-submit" type="submit">Save volatile context</button><button class="btn danger" id="v-detach" type="button" title="Remove this Brick from its Zone or Flow">Detach this Brick</button><span class="muted small">Signed in place; no new version.</span></div>
         </form>
       </div>
     </div>
@@ -383,7 +452,7 @@ export const BRICKS_PAGE: WorkbenchPage = {
 let S = { graph: { nodes: [], edges: [] }, targets: [], bricks: [], stacks: [], attachments: [], types: [], templates: {} };
 let configTouched = false;
 let commonLoaded = "";
-const graph = Graph($("graph"), (node) => { renderSelected(node); if (node && node.kind !== "item") setTarget(node.id); });
+const graph = Graph($("graph"), (node) => { showPreview(node); if (node && node.kind !== "item") setTarget(node.id); });
 const subjectName = (subject) => { const brick = S.bricks.find((row) => "brick:" + row.ref === subject || row.ref === subject); return brick ? brick.name : subject.replace(/^(brick|stack):/, ""); };
 const brickRef = (subject) => subject.replace(/^brick:/, "");
 const stateTone = (state) => state === "active" ? "ok" : state === "draft" ? "warn" : state === "revoked" ? "bad" : "";
@@ -416,7 +485,9 @@ function onState(state) {
   options($("v-attachment"), S.attachments.map((row) => ({ value: row.attachment_id, label: row.target + " · " + subjectName(row.subject) + " (" + brickRef(row.subject) + ")" })), "Choose an attachment");
   renderLibrary();
   const picked = graph.picked();
-  renderSelected(picked ? S.graph.nodes.find((node) => node.id === picked) : null);
+  // Crane's state changed: what agents receive may have changed too
+  for (const key of Object.keys(previews)) delete previews[key];
+  showPreview(picked ? S.graph.nodes.find((node) => node.id === picked) : null);
 }
 function onFocus(id) { graph.pick(id); }
 
@@ -429,7 +500,8 @@ function renderGuide() {
   if (!guide) { $("guide").innerHTML = '<div class="part muted">Choose a kind to see what it does.</div>'; return; }
   const support = SUPPORT[info.support] || ["", ""];
   $("guide").innerHTML = '<div class="top"><span aria-hidden="true">◆</span><b class="grow">' + esc(info.label || type) + " Brick</b>" + (support[1] ? '<span class="tag ' + support[0] + '">' + esc(support[1]) + "</span>" : "") + "</div>" +
-    '<div class="part"><h4>What it is</h4><p>' + esc(guide.what) + "</p></div>" +
+    '<div class="part"><h4>Purpose</h4><p>' + esc(guide.purpose) + "</p></div>" +
+    '<div class="part unique"><h4>Only this kind</h4><p>' + esc(guide.unique) + "</p></div>" +
     '<div class="part"><h4>Use it when</h4><p>' + esc(guide.useWhen) + "</p></div>" +
     '<div class="part"><h4>Example</h4><p class="story">' + esc(guide.example.story) + "</p><pre>" + esc(JSON.stringify(guide.example.config, null, 2)) + '</pre><div class="row" style="margin-top:8px"><button type="button" class="btn small primary" id="g-use">Fill the form with this example</button></div></div>' +
     '<div class="part"><h4>Settings you can configure</h4><dl>' + guide.settings.map((item) => "<div><dt>" + esc(item.name) + "</dt><dd>" + esc(item.meaning) + "<small>Values: " + esc(item.values) + "</small></dd></div>").join("") + "</dl></div>" +
@@ -465,30 +537,138 @@ $("c-reset").addEventListener("click", (event) => { event.preventDefault(); conf
 $("c-now").addEventListener("change", () => { $("c-now-fields").hidden = !$("c-now").checked; });
 $("refresh").addEventListener("click", () => { notice(); vscode.postMessage({ type: "refresh" }); });
 
-// ---------------------------------------------------------------- the selected Zone, Flow, or attachment
-function attachmentCard(row) {
-  const brick = S.bricks.find((item) => "brick:" + item.ref === row.subject || item.ref === row.subject);
-  return '<div class="item"><div class="title"><b>' + esc(subjectName(row.subject)) + '</b><span class="tag">' + esc(brickRef(row.subject)) + "</span>" + (brick ? '<a href="#" class="small" data-kind="' + esc(brick.type) + '" title="What this kind of Brick does">' + esc(brick.type) + " ?</a>" : "") + '<span class="tag ' + (row.issues.length ? "bad" : row.state === "enabled" ? "ok" : "") + '">' + esc(row.issues.length ? "fails closed" : row.state) + "</span></div>" +
-    (row.issues.length ? '<div class="error-text">' + esc(row.issues.join("; ")) + "</div>" : "") +
-    '<div class="quote">' + (row.current_context ? esc(row.current_context) : "<i>No volatile context</i>") + "</div>" +
-    '<div class="actions"><button class="btn small" data-volatile="' + esc(row.attachment_id) + '">Edit volatile context</button><button class="btn small" data-common="' + esc(brickRef(row.subject)) + '">Edit common context</button><button class="btn small danger" data-detach="' + esc(row.attachment_id) + '">Detach</button></div></div>';
+// ---------------------------------------------------------------- what the picked Zone or Flow receives
+const previews = {};
+let previewFor = null;
+const SECTION = { enforcement: "var(--muted)", zone: "var(--zone)", flow: "var(--flow)", brick_common: "var(--ok)", brick_current: "var(--warn)" };
+const size = (bytes) => bytes < 1024 ? bytes + " B" : (bytes / 1024).toFixed(1) + " KB";
+function sectionTitle(section) {
+  if (section.kind === "enforcement") return "Rules Crane enforces";
+  if (section.kind === "zone" || section.kind === "flow") return (section.kind === "zone" ? "Zone" : "Flow") + " context · " + section.source.replace(/^[a-z]+:/, "");
+  if (section.kind === "brick_common") { const ref = section.source.replace(/^brick:/, ""); return "Common context · " + subjectName("brick:" + ref) + " (" + ref + ")"; }
+  if (section.kind === "brick_current") { const subject = section.reference.split(" on ")[0]; return "Volatile context · " + subjectName(subject) + " (" + brickRef(subject) + ")"; }
+  return section.kind;
 }
-function renderSelected(node) {
+async function showPreview(node) {
   const box = $("selected");
-  if (!node) { $("selected-title").textContent = "Selected"; box.innerHTML = '<div class="empty-note">Click a Zone or Flow in the graph to see its Bricks and attach new ones.</div>'; return; }
-  if (node.kind === "item") {
-    const row = S.attachments.find((item) => "item:" + item.attachment_id === node.id);
-    $("selected-title").textContent = "Attachment";
-    box.innerHTML = row ? '<div class="muted small" style="margin-bottom:6px">on <b>' + esc(row.target) + "</b></div>" + attachmentCard(row) : '<div class="empty-note">This attachment is gone.</div>';
+  if (!node) {
+    previewFor = null;
+    $("selected-title").textContent = "What agents receive";
+    box.innerHTML = '<div class="empty-note">Click a Zone or Flow in the graph to preview every context agents get there: its own context, and the common and volatile context of each attached Brick.</div>';
     return;
   }
-  const rows = S.attachments.filter((row) => row.target === node.id);
-  $("selected-title").textContent = (node.kind === "flow" ? "Flow " : "Zone ") + node.name;
-  box.innerHTML = '<div class="row" style="margin-bottom:10px"><span class="tag ' + (node.kind === "flow" ? "fox" : "busy") + '">' + esc(node.kind) + '</span><span class="muted small grow">' + esc(node.sub) + "</span></div>" +
-    (node.missing ? '<div class="banner"><span class="icon">⚠</span><div class="grow small">Bricks are attached to this ' + esc(node.kind) + ", but it is not in the signed governance. Detach them, or create the " + esc(node.kind) + " again.</div></div>" : "") +
-    '<div class="list">' + (rows.length ? rows.map(attachmentCard).join("") : '<div class="empty-note">No Brick attached yet.</div>') + "</div>" +
-    '<div class="row" style="margin-top:10px"><button class="btn primary" data-attach-here="' + esc(node.id) + '">Attach a Brick here</button><button class="btn" data-preview="' + esc(node.id) + '">Preview what agents receive</button></div>';
+  const row = node.kind === "item" ? S.attachments.find((item) => "item:" + item.attachment_id === node.id) : null;
+  const target = row ? row.target : node.kind === "item" ? null : node.id;
+  if (!target) return;
+  previewFor = { target, row };
+  $("selected-title").textContent = "What agents receive in " + (target.split(":")[1] || target);
+  if (!previews[target]) {
+    box.innerHTML = '<div class="muted"><span class="spin" aria-hidden="true"></span> Asking Crane what agents receive…</div>';
+    const result = await ask("load:preview", { target });
+    previews[target] = result.ok ? { data: result.data } : { error: result.message };
+    if (!previewFor || previewFor.target !== target) return;
+  }
+  renderPreview(previews[target], target, previewFor.row);
 }
+function renderPreview(entry, target, row) {
+  const box = $("selected");
+  if (entry.error) { box.innerHTML = '<div class="banner"><span class="icon">⚠</span><div class="grow small"><b>Crane could not build the preview</b>' + esc(entry.error) + "</div></div>"; return; }
+  const snapshot = entry.data.snapshot;
+  const kind = target.split(":")[0];
+  const own = snapshot.sections.filter((section) => section.kind !== "enforcement");
+  const mine = (section) => row && (section.source === "attachment:" + row.attachment_id || section.source === "brick:" + brickRef(row.subject));
+  const block = (section) => '<details class="ctx' + (mine(section) ? " mine" : "") + '"' + (section.kind === "enforcement" ? "" : " open") + ' style="--tone:' + (SECTION[section.kind] || "var(--line)") + '"><summary><b>' + esc(sectionTitle(section)) + "</b>" + (section.kind === "brick_common" ? infoButton(section.source.replace(/^brick:/, ""), sectionTitle(section)) : section.kind === "brick_current" ? infoButton(brickRef(section.reference.split(" on ")[0]), sectionTitle(section)) : "") + '<span class="muted small">' + esc(size(section.bytes)) + "</span></summary><pre>" + esc(section.text) + "</pre></details>";
+  box.innerHTML = '<div class="row small" style="margin-bottom:6px"><span class="tag ' + (kind === "flow" ? "fox" : "busy") + '">' + esc(kind) + '</span><span class="muted grow">' + own.length + " context section(s)</span></div>" +
+    '<div class="legend-row"><span><i style="background:var(--' + (kind === "flow" ? "flow" : "zone") + ')"></i>' + (kind === "flow" ? "Flow" : "Zone") + ' context</span><span><i style="background:var(--ok)"></i>Common</span><span><i style="background:var(--warn)"></i>Volatile</span><span><i style="background:var(--muted)"></i>Crane rules</span></div>' +
+    snapshot.conflicts.map((item) => '<div class="banner"><span class="icon">⚠</span><div class="grow small"><b>Conflict</b>' + esc(item.message) + "</div></div>").join("") +
+    snapshot.gaps.map((item) => '<div class="banner info"><span class="icon">ℹ</span><div class="grow small">' + esc(item.message) + "</div></div>").join("") +
+    (own.length ? "" : '<div class="empty-note" style="margin-bottom:8px">No context yet: this ' + esc(kind) + " has no context of its own and no Brick attached. Attach one from the Attach tab.</div>") +
+    snapshot.sections.map(block).join("") +
+    (entry.data.truncated ? '<div class="small muted">Agents receive this cut at the delivery limit.</div>' : "") +
+    '<div class="small muted" style="margin-top:6px">Context guides agents; it never grants anything. Crane still checks every action.</div>';
+}
+
+// ---------------------------------------------------------------- where a volatile context comes from
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-src]");
+  if (!button) return;
+  const group = button.closest(".sources");
+  const area = $(group.dataset.into);
+  const loaded = group.nextElementSibling;
+  if (button.dataset.src === "write") { loaded.hidden = true; area.focus(); return; }
+  const result = await ask("load:file", { format: button.dataset.src });
+  if (result.cancelled) return;
+  if (!result.ok) { notice("bad", result.message); return; }
+  area.value = result.data.text;
+  loaded.hidden = false;
+  loaded.textContent = "Loaded from " + result.data.name + ". Review or edit it below; nothing is saved until you confirm.";
+  area.focus();
+});
+$("v-detach").addEventListener("click", (event) => {
+  const attachment = $("v-attachment").value;
+  if (!attachment) { fieldError("attachment", "Choose the attachment to detach."); return; }
+  perform(event.currentTarget, "detach", { attachment });
+});
+
+// ---------------------------------------------------------------- a Brick's configuration, in a pop-up
+const infoButton = (ref, name) => '<button type="button" class="info-btn" data-info="' + esc(ref) + '" title="Configuration and properties of ' + esc(name) + '" aria-label="Configuration and properties of ' + esc(name) + '">i</button>';
+// The value of a setting in a stored configuration ("network.allow" reads a nested field)
+function valueOf(config, key) {
+  return key.split(".").reduce((value, part) => (value && typeof value === "object" ? value[part] : undefined), config);
+}
+function shown(value) {
+  if (value === undefined || value === null) return '<span class="muted">not set (default)</span>';
+  if (Array.isArray(value) && !value.length) return '<span class="muted">none</span>';
+  if (typeof value === "object") return "<pre>" + esc(JSON.stringify(value, null, 2)) + "</pre>";
+  return "<code>" + esc(String(value)) + "</code>";
+}
+async function showInfo(ref) {
+  const result = await ask("load:brick", { ref });
+  if (!result.ok) { notice("bad", result.message); return; }
+  const definition = result.data.definition || {};
+  const row = S.bricks.find((item) => item.ref === ref || item.brick_id === ref) || {};
+  const stored = definition.type || row.type;
+  const kind = (S.legacy || {})[stored] ? String(S.legacy[stored]).split(" ")[0] : stored;
+  const guide = (S.guide || {})[kind] || { settings: [] };
+  const config = definition.config || {};
+  const covered = new Set();
+  const settings = guide.settings.map((setting) => {
+    const keys = setting.name.split(" / ");
+    keys.forEach((key) => covered.add(key.split(".")[0]));
+    const values = keys.map((key) => (keys.length > 1 ? '<div class="sub-key"><code>' + esc(key) + "</code></div>" : "") + shown(valueOf(config, key))).join("");
+    return '<div class="prop"><div class="prop-name">' + esc(setting.name) + '</div><div class="prop-value">' + values + '</div><div class="prop-help">' + esc(setting.meaning) + "<small>Allowed: " + esc(setting.values) + "</small></div></div>";
+  }).join("");
+  const others = Object.keys(config).filter((key) => !covered.has(key));
+  const context = (definition.common_context && definition.common_context.text) || "";
+  const back = document.createElement("div");
+  back.className = "modal-back";
+  back.innerHTML = '<div class="modal info-modal" role="dialog" aria-modal="true" aria-labelledby="i-title"><div class="m-head"><span class="mark" aria-hidden="true">i</span><div class="grow"><b id="i-title">' + esc(definition.name || ref) + '</b><div class="row small" style="margin-top:3px"><span class="tag">' + esc(kind) + "</span>" + (row.state ? '<span class="tag ' + stateTone(row.state) + '">' + esc(row.state) + "</span>" : "") + '<span class="muted mono">' + esc(ref) + "</span></div></div></div>" +
+    '<div class="m-body">' +
+    ((S.legacy || {})[stored] ? '<div class="banner info"><span class="icon">ℹ</span><div class="grow small">Stored as the former kind <b>' + esc(stored) + "</b> and read as " + esc(S.legacy[stored]) + ". Its settings are shown as stored; 'Rewrite as current kinds' in the Library converts it.</div></div>" : "") +
+    (guide.purpose ? '<div class="info-line"><h4>Purpose</h4><p>' + esc(guide.purpose) + "</p></div>" : "") +
+    (guide.unique ? '<div class="info-line unique"><h4>Only this kind</h4><p>' + esc(guide.unique) + "</p></div>" : "") +
+    (definition.intent ? '<div class="info-line"><h4>What this Brick solves</h4><p>' + esc(definition.intent) + "</p></div>" : "") +
+    '<h4 class="props-title">Configuration</h4><div class="props">' + (settings || '<div class="muted">This kind has no settings.</div>') +
+    others.map((key) => '<div class="prop"><div class="prop-name">' + esc(key) + '</div><div class="prop-value">' + shown(config[key]) + '</div><div class="prop-help">A setting of the former kind.</div></div>').join("") + "</div>" +
+    '<h4 class="props-title">Common context</h4>' + (context ? '<pre class="context-text">' + esc(context.length > 2000 ? context.slice(0, 2000) + " …" : context) + "</pre>" : '<p class="muted">None.</p>') +
+    ((definition.dependencies || []).length ? '<h4 class="props-title">Needs alongside it</h4><p>' + definition.dependencies.map((item) => "<code>" + esc(item.brick_id + "@" + item.version) + "</code>").join(", ") + "</p>" : "") +
+    '</div><div class="m-foot"><button class="btn" data-i="kind">What is a ' + esc(kind) + ' Brick?</button><span class="grow"></span><button class="btn primary" data-i="close">Close</button></div></div>';
+  document.body.appendChild(back);
+  const close = () => back.remove();
+  back.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-i]");
+    if (event.target === back || (button && button.dataset.i === "close")) close();
+    else if (button && button.dataset.i === "kind") { close(); showKind(kind); }
+  });
+  back.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); close(); } });
+  back.querySelector('[data-i="close"]').focus();
+}
+document.addEventListener("click", (event) => {
+  const info = event.target.closest("[data-info]");
+  if (info) { event.preventDefault(); event.stopPropagation(); showInfo(info.dataset.info); return; }
+  const migrate = event.target.closest("[data-migrate]");
+  if (migrate) { event.preventDefault(); perform(migrate, "migrate", {}); }
+}, true);
 
 // ---------------------------------------------------------------- the library
 function renderLibrary() {
@@ -502,27 +682,27 @@ function renderLibrary() {
       const actions = row.state === "draft"
         ? '<button class="btn small primary" data-activate="' + esc(row.brick_id) + '">Activate</button><button class="btn small" data-validate="' + esc(row.brick_id) + '">Check for problems</button><button class="btn small" data-common="' + esc(id) + '">Edit common context</button>'
         : row.state === "active" ? '<button class="btn small primary" data-attach-brick="' + esc(row.ref) + '">Attach…</button><button class="btn small" data-common="' + esc(id) + '">Edit common context</button>' : "";
-      return '<div class="item"><div class="title"><b>' + esc(row.name) + '</b><span class="tag">' + esc(row.type) + '</span><span class="tag ' + stateTone(row.state) + '">' + esc(row.state) + "</span>" + (row.validation && row.validation !== "passed" ? '<span class="tag bad">' + esc(row.validation) + "</span>" : "") + '<span class="muted small mono">' + esc(id) + "</span></div>" +
+      const former = (S.legacy || {})[row.type];
+      return '<div class="item"><div class="title"><b>' + esc(row.name) + "</b>" + infoButton(id, row.name) + '<span class="tag">' + esc(row.type) + "</span>" + (former ? '<span class="tag warn" title="Read as ' + esc(former) + '">former kind: now ' + esc(former) + "</span>" : "") + '<span<span class="tag ' + stateTone(row.state) + '">' + esc(row.state) + "</span>" + (row.validation && row.validation !== "passed" ? '<span class="tag bad">' + esc(row.validation) + "</span>" : "") + '<span class="muted small mono">' + esc(id) + "</span></div>" +
         (row.intent ? '<div class="muted small" style="margin-top:4px">' + esc(row.intent) + "</div>" : "") +
-        '<div class="small" style="margin-top:4px"><a href="#" data-kind="' + esc(row.type) + '">What is a ' + esc(row.type) + " Brick?</a></div>" +
+        '<div class="small" style="margin-top:4px"><a href="#" data-kind="' + esc(former ? former.split(" ")[0] : row.type) + '">What is a ' + esc(former ? former.split(" ")[0] : row.type) + " Brick?</a></div>" +
         (where.length ? '<div class="small" style="margin-top:4px">Attached to ' + where.map((key) => '<a href="#" data-goto="' + esc(key) + '">' + esc(key) + "</a>").join(", ") + "</div>" : "") +
         (actions ? '<div class="actions">' + actions + "</div>" : "") + "</div>";
     }).join("") + "</div>";
   }).join("");
-  $("library").innerHTML = html || '<div class="empty-note">No Bricks yet. Create the first one in "Create a Brick".</div>';
+  const formers = S.bricks.filter((row) => row.state === "active" && (S.legacy || {})[row.type]);
+  const banner = formers.length ? '<div class="banner info"><span class="icon">ℹ</span><div class="grow small"><b>' + formers.length + " Brick(s) use a former kind</b>They keep working, read as the kinds that replaced them. Rewrite them as drafts of the current kinds, then activate the drafts and move the attachments.</div><button class='btn small primary' data-migrate>Rewrite as current kinds</button></div>" : "";
+  $("library").innerHTML = banner + (html || '<div class="empty-note">No Bricks yet. Create the first one in "Create a Brick".</div>');
 }
 
 // ---------------------------------------------------------------- buttons anywhere on the page
 document.addEventListener("click", async (event) => {
-  const el = event.target.closest("[data-volatile],[data-common],[data-detach],[data-attach-here],[data-preview],[data-activate],[data-validate],[data-attach-brick],[data-goto]");
+  const el = event.target.closest("[data-volatile],[data-common],[data-activate],[data-validate],[data-attach-brick],[data-goto]");
   if (!el) return;
   event.preventDefault();
   const d = el.dataset;
   if (d.volatile) { selectTab("context"); $("v-attachment").value = d.volatile; loadVolatile(); $("v-text").focus(); }
   else if (d.common) { selectTab("context"); const select = $("k-brick"); const match = [...select.options].find((option) => option.value === d.common || option.value.split("@")[0] === d.common.split("@")[0]); if (match) { select.value = match.value; loadCommon(); } }
-  else if (d.detach) perform(el, "detach", { attachment: d.detach });
-  else if (d.attachHere) { selectTab("attach"); setTarget(d.attachHere); $("a-subject").focus(); }
-  else if (d.preview) perform(el, "preview", { target: d.preview });
   else if (d.activate) perform(el, "activate", { id: d.activate });
   else if (d.validate) perform(el, "validate", { id: d.validate });
   else if (d.attachBrick) { selectTab("attach"); $("a-subject").value = d.attachBrick; const picked = graph.picked(); if (picked && !picked.startsWith("item:")) setTarget(picked); $("a-target").focus(); }
@@ -584,7 +764,7 @@ $("volatile-form").addEventListener("submit", (event) => {
   if (row && (row.current_context || "") === values.text) { notice("info", "Nothing changed in the volatile context."); return; }
   perform($("v-submit"), "volatile", values);
 });
-renderSelected(null);
+showPreview(null);
 vscode.postMessage({ type: "ready" });
 `,
 };

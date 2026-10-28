@@ -1,7 +1,8 @@
 // The Landscape graph: the repository's zones, flows, and selections as Crane reports them ('crane
 // governance graph'), on a canvas beside the editor. Zones can be dragged anywhere (positions are
 // remembered per workspace), and linked by dragging from one zone's connector onto another: the
-// link becomes a flow's next stage in .crane/governance.yaml, signed by Crane. Every link is
+// link becomes a flow's next stage in .crane/governance.yaml, signed by Crane. A zone or flow can
+// be removed from its × handle (a flow's zones stay as zones). Every link is
 // checked here first (no self links, no cycles, a flow stays one ordered path), then again by the
 // extension and by Crane. Hover a node for what it is and who is working there, click it to open
 // its code, filter the kinds from one menu.
@@ -29,6 +30,8 @@ export interface GraphHost {
   link(from: string, to: string): Promise<RunResult>;
   /** Remove the link between two consecutive zones of a flow. */
   unlink(from: string, to: string): Promise<RunResult>;
+  /** Remove a zone, or a flow (its zones stay). */
+  remove(kind: "zone" | "flow", id: string): Promise<RunResult>;
   /** Run a command of the extension (fix Crane, open output). */
   command(id: string): Promise<void>;
 }
@@ -82,7 +85,7 @@ export class FoxxGraph {
   private constructor(private readonly panel: vscode.WebviewPanel, private readonly host: GraphHost, connect: boolean) {
     panel.webview.html = html(panel.webview.cspSource);
     panel.onDidDispose(() => (FoxxGraph.current = undefined));
-    panel.webview.onDidReceiveMessage(async (message: { type: string; id?: string; from?: string; to?: string; positions?: Positions }) => {
+    panel.webview.onDidReceiveMessage(async (message: { type: string; id?: string; from?: string; to?: string; kind?: string; positions?: Positions }) => {
       if (message.type === "ready" || message.type === "refresh") {
         if (message.type === "ready" && connect) void panel.webview.postMessage({ type: "hint" });
         const { data, error } = await this.host.load(message.type === "refresh");
@@ -90,6 +93,12 @@ export class FoxxGraph {
       } else if (message.type === "open" && message.id) await this.host.open(message.id);
       else if (message.type === "positions" && message.positions) this.host.savePositions(message.positions);
       else if (message.type === "command" && message.id) await this.host.command(message.id);
+      else if (message.type === "remove" && message.id && (message.kind === "zone" || message.kind === "flow")) {
+        const result = await this.host.remove(message.kind, message.id);
+        void panel.webview.postMessage({ type: "result", op: "remove", from: message.id, to: "", result });
+        const { data, error } = await this.host.load(true);
+        FoxxGraph.update(data, error);
+      }
       else if ((message.type === "link" || message.type === "unlink") && message.from && message.to) {
         const result = await (message.type === "link" ? this.host.link(message.from, message.to) : this.host.unlink(message.from, message.to));
         void panel.webview.postMessage({ type: "result", op: message.type, from: message.from, to: message.to, result });
@@ -193,6 +202,11 @@ svg#canvas.linking { cursor: crosshair; }
 .node.source rect.box { stroke: var(--fox); stroke-width: 2.6; }
 .port { fill: var(--bg); stroke: var(--zone); stroke-width: 2; cursor: crosshair; transition: r .12s; }
 .port.in { pointer-events: none; opacity: .55; }
+.remove { opacity: 0; cursor: pointer; transition: opacity .12s; }
+.remove circle { fill: var(--bg); stroke: var(--bad); stroke-width: 1.4; }
+.remove path { stroke: var(--bad); stroke-width: 1.6; stroke-linecap: round; }
+.node:hover .remove, .node.focus .remove, .remove:focus { opacity: 1; }
+.remove:hover circle { fill: var(--bad); } .remove:hover path { stroke: #fff; }
 .node:hover .port.out, .port.out:focus { r: 7.5; fill: var(--zone); }
 svg.linking .port.in { opacity: 1; }
 .pulse { fill: var(--ok); animation: pulse 1.6s ease-in-out infinite; }
@@ -233,7 +247,7 @@ svg.dim .edge-g:not(.lit) { opacity: .15; }
   <button class="btn" id="arrange" title="Lay the graph out again, left to right">Arrange</button>
   <button class="btn" id="refresh" title="Ask Crane for the graph again">Refresh</button>
 </div>
-<div class="hint" id="hint"><span class="dot" aria-hidden="true"></span><span id="hint-text">Drag from a zone's right handle onto another zone to link them into a flow. Click a link to delete it. Drag zones to move them.</span></div>
+<div class="hint" id="hint"><span class="dot" aria-hidden="true"></span><span id="hint-text">Drag from a zone's right handle onto another zone to link them into a flow. Click a link to delete it. Hover a zone or flow and press × (or Delete) to remove it. Drag zones to move them.</span></div>
 <div id="stage">
   <div class="notices" id="notices" aria-live="polite"></div>
   <svg id="canvas" role="application" aria-label="Governance graph canvas"><defs>
@@ -355,7 +369,8 @@ function draw() {
       '<rect class="box" width="' + W + '" height="' + H + '"></rect><rect x="0" y="6" width="3.5" height="' + (H - 12) + '" rx="1.75" fill="' + color(node) + '"></rect>' +
       '<text x="14" y="19">' + esc(glyph(node) + " " + clip(node.name, 21)) + '</text><text class="sub" x="14" y="34">' + esc(clip(sub, 30)) + "</text>" +
       (busy && busy.active ? '<circle class="pulse" cx="' + (W - 14) + '" cy="12" r="4"><title>agent active now</title></circle>' : "") +
-      (node.kind === "zone" ? '<circle class="port in" cx="0" cy="' + H / 2 + '" r="6"></circle><circle class="port out" tabindex="-1" data-port="' + esc(node.name) + '" cx="' + W + '" cy="' + H / 2 + '" r="6"><title>Drag onto another zone to link</title></circle>' : "") + "</g>";
+      (node.kind === "zone" ? '<circle class="port in" cx="0" cy="' + H / 2 + '" r="6"></circle><circle class="port out" tabindex="-1" data-port="' + esc(node.name) + '" cx="' + W + '" cy="' + H / 2 + '" r="6"><title>Drag onto another zone to link</title></circle>' : "") +
+      (node.kind === "zone" || node.kind === "flow" ? '<g class="remove" data-remove="' + esc(node.id) + '" transform="translate(' + (W - 10) + ' -6)"><title>Remove this ' + node.kind + '</title><circle r="7.5"></circle><path d="M-3 -3L3 3M3 -3L-3 3"></path></g>' : "") + "</g>";
   }).join("");
   apply();
 }
@@ -385,6 +400,25 @@ function openEdgeMenu(edge, x, y) {
   (remove || $("edge-close")).focus();
 }
 function closeEdgeMenu() { $("edge-menu").hidden = true; }
+// What removing a zone or flow does, said before it is done
+function openRemoveMenu(node, x, y) {
+  const menu = $("edge-menu");
+  const where = node.kind === "zone" ? placeOf(node.name) : null;
+  const text = node.kind === "flow"
+    ? "Its " + (node.stages || []).length + " zone(s) stay as zones of their own. Bricks and resident agents attached to the flow stop applying. Crane validates and signs the change; you can undo it."
+    : (where && where.flow ? "Flow " + where.flow + " splits at this zone; the zones around it stay. " : "") + "Its own context pack goes with it. Bricks and resident agents attached to the zone stop applying. Crane validates and signs the change; you can undo it.";
+  menu.innerHTML = '<div class="kind">Remove ' + esc(node.kind) + '</div><b id="edge-menu-title">' + esc(node.name) + "</b><p>" + esc(text) + '</p><div class="row"><button class="btn danger" id="node-remove">' + TRASH + "Remove " + esc(node.kind) + '</button><button class="btn" id="node-cancel">Cancel</button></div>';
+  menu.hidden = false;
+  menu.style.left = Math.max(8, Math.min(window.innerWidth - menu.offsetWidth - 8, x + 10)) + "px";
+  menu.style.top = Math.max(8, Math.min(window.innerHeight - menu.offsetHeight - 8, y + 10)) + "px";
+  $("node-remove").addEventListener("click", () => {
+    closeEdgeMenu();
+    say("ok", "Removing " + node.kind + " " + node.name + "…", 2500);
+    vscode.postMessage({ type: "remove", kind: node.kind, id: node.name });
+  });
+  $("node-cancel").addEventListener("click", closeEdgeMenu);
+  $("node-cancel").focus();
+}
 // Move one node without redrawing everything: its transform and the edges that touch it
 function moveNode(id) {
   const group = document.querySelector('.node[data-id="' + CSS.escape(id) + '"]');
@@ -486,6 +520,8 @@ const nodeOf = (target) => { const group = target && target.closest && target.cl
 canvas.addEventListener("pointerdown", (event) => {
   if (event.button !== 0 || !data) return;
   hideTip();
+  const removing = event.target.closest("[data-remove]");
+  if (removing) { closeEdgeMenu(); const node = nodeById(removing.dataset.remove); if (node) openRemoveMenu(node, event.clientX, event.clientY); return; }
   const port = event.target.closest("[data-port]");
   const node = nodeOf(event.target);
   closeEdgeMenu();
@@ -577,6 +613,7 @@ canvas.addEventListener("keydown", (event) => {
   if (event.key === "Escape") { closeEdgeMenu(); keyLink = null; selectedEdge = null; if (gesture && gesture.kind === "link") endGesture(null); setHint(DEFAULT_HINT, false); draw(); return; }
   if ((event.key === "Delete" || event.key === "Backspace") && selectedEdge && selectedEdge.kind === "next") { event.preventDefault(); closeEdgeMenu(); unlink(selectedEdge); return; }
   if (!node) return;
+  if ((event.key === "Delete" || event.key === "Backspace") && (node.kind === "zone" || node.kind === "flow")) { event.preventDefault(); const box = event.target.getBoundingClientRect(); openRemoveMenu(node, box.left, box.bottom); return; }
   if ((event.key === "c" || event.key === "C") && node.kind === "zone") { keyLink = node.name; setHint("Linking from " + node.name + ": focus another zone and press Enter. Esc cancels.", true); draw(); focusAgain(node.id); return; }
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();

@@ -172,7 +172,7 @@ pub(crate) fn assemble(
     for target in targets {
         let combined = controls(store, target, &workspace.root);
         gaps.extend(combined.gaps.iter().cloned());
-        if combined.restricts() {
+        if combined.restricts() || combined.decides_calls() {
             let mut parts = Vec::new();
             if let Some(ceiling) = combined.ceiling {
                 parts.push(format!("autonomy ceiling at most {}", ceiling.name()));
@@ -180,17 +180,102 @@ pub(crate) fn assemble(
             if let Some(criticality) = combined.criticality {
                 parts.push(format!("criticality at least {criticality:?}").to_ascii_lowercase());
             }
-            if !combined.protected.is_empty() {
-                parts.push(format!("protected paths {}", combined.protected.join(", ")));
+            for rule in &combined.identities {
+                parts.push(format!("only {} may work here", rule.agents.join(", ")));
             }
-            for set in &combined.scopes {
-                parts.push(format!("changes only inside {}", set.join(", ")));
+            if !combined.read_only.is_empty() {
+                parts.push(format!("read-only: {}", combined.read_only.join(", ")));
             }
-            if combined.read_only {
-                parts.push("read-only".into());
+            if !combined.deny_read.is_empty() {
+                parts.push(format!("never read: {}", combined.deny_read.join(", ")));
             }
-            if combined.approval {
-                parts.push("changes need a person's approval".into());
+            for set in combined.scopes.iter().filter(|set| set.restricts()) {
+                parts.push(format!(
+                    "changes only inside {}{}",
+                    if set.include.is_empty() {
+                        "the target".to_string()
+                    } else {
+                        set.include.join(", ")
+                    },
+                    if set.exclude.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" except {}", set.exclude.join(", "))
+                    }
+                ));
+            }
+            for (label, class) in [
+                ("create", super::config::ChangeClass::Create),
+                ("update", super::config::ChangeClass::Update),
+                ("delete", super::config::ChangeClass::Delete),
+                ("commands", super::config::ChangeClass::Execute),
+                ("network", super::config::ChangeClass::Network),
+            ] {
+                if let Some(mode) = combined
+                    .mode(class)
+                    .filter(|mode| *mode != super::config::Mode::Auto)
+                {
+                    parts.push(format!("{label}: {}", super::config::serial(&mode)));
+                }
+            }
+            for rule in &combined.approvals {
+                parts.push(format!(
+                    "a person approves {}",
+                    rule.classes
+                        .iter()
+                        .map(|class| super::config::serial(class).replace('_', " "))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            for cap in &combined.caps {
+                let limits = &cap.limits;
+                let caps = [
+                    ("tool calls", limits.max_tool_calls),
+                    ("minutes", limits.max_runtime_minutes),
+                    ("files changed", limits.max_files_changed),
+                    ("lines changed", limits.max_lines_changed),
+                    ("commands", limits.max_commands),
+                    ("network calls", limits.max_network_calls),
+                    ("denials", limits.max_denials),
+                ]
+                .into_iter()
+                .filter_map(|(label, value)| value.map(|value| format!("{value} {label}")))
+                .collect::<Vec<_>>();
+                parts.push(format!("per session at most {}", caps.join(", ")));
+            }
+            if !combined.hide_env.is_empty() {
+                parts.push(format!(
+                    "hidden variables: {}",
+                    combined.hide_env.join(", ")
+                ));
+            }
+            if !combined.network_allow.is_empty() || !combined.network_deny.is_empty() {
+                parts.push(format!(
+                    "network: {}{}",
+                    combined
+                        .network_allow
+                        .iter()
+                        .map(|hosts| format!("only {}", hosts.join(", ")))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                    if combined.network_deny.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" never {}", combined.network_deny.join(", "))
+                    }
+                ));
+            }
+            if !combined.direct.is_empty() {
+                parts.push(format!(
+                    "done through Crane only: {}",
+                    combined
+                        .direct
+                        .iter()
+                        .map(|(_, operation)| operation.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
             }
             if !combined.isolation.is_empty() {
                 parts.push(format!(
@@ -291,9 +376,20 @@ pub(crate) fn assemble(
                     text.push_str(entry.brick.common_context.text.trim_end());
                     text.push('\n');
                 }
-                if let Ok(config::Config::Context(context)) =
-                    config::parse(entry.brick.brick_type, &entry.brick.config)
-                {
+                let knowledge = config::parse(entry.brick.brick_type, &entry.brick.config)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find_map(|parsed| match parsed {
+                        config::Config::Knowledge(knowledge) => Some(knowledge),
+                        _ => None,
+                    });
+                if let Some(context) = knowledge {
+                    for (term, meaning) in &context.glossary {
+                        text.push_str(&format!("- {term}: {meaning}\n"));
+                    }
+                    for reference in &context.references {
+                        text.push_str(&format!("- see {reference}\n"));
+                    }
                     for file in &context.files {
                         match fs::read_to_string(workspace.root.join(file)) {
                             Ok(content) => {

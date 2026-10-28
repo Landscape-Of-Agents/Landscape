@@ -16,6 +16,7 @@ mod check;
 mod context;
 mod draft;
 mod lifecycle;
+mod migrate;
 mod stack;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -38,6 +39,7 @@ const USAGE: &str = "usage: crane brick types
                           [--context TEXT | --context-file FILE] [--sensitivity internal|restricted]
                           [--depends ID@N,ID@N])
        crane brick edit ID [the options of create, without --type]
+       crane brick migrate [--dry-run]
        crane brick validate ID
        crane brick test ID[@N] [--target flow:ID|zone:ID]
        crane brick activate ID --reason TEXT [--dry-run]
@@ -76,6 +78,7 @@ pub(crate) fn brick(args: &[String]) -> Result<(), String> {
         ["history", ..] => catalog::history(rest(1)),
         ["create", ..] => draft::create(rest(1)),
         ["edit", ..] => draft::edit(rest(1)),
+        ["migrate", ..] => migrate::migrate(rest(1)),
         ["validate", ..] => check::validate(rest(1)),
         ["test", ..] => check::test(rest(1)),
         ["activate", ..] => lifecycle::activate(rest(1)),

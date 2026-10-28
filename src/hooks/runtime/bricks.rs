@@ -73,7 +73,8 @@ impl Hook {
                 snapshot.targets.join(", ")
             ),
         };
-        // Identity is checked, not enforced: say so to the agent rather than stay silent
+        // Identity is enforced by the guard (brick::guard); a call that reaches this point was only
+        // held for a person (on_other: ask), so say why to the agent rather than stay silent
         for target in &targets {
             let admitted = identity_admits(&store, target, &session.provider)
                 .filter(|(admitted, _)| !admitted)
@@ -83,7 +84,7 @@ impl Hook {
                 });
             if let Some((_, deciding)) = admitted {
                 text.push_str(&format!(
-                    "\nIdentity: {} is not admitted in {target} by {}; leave changes there to an admitted agent or ask a person.",
+                    "\nIdentity: {} is not admitted in {target} by {}; its calls there need a person, so leave the work to an admitted agent.",
                     session.provider,
                     deciding.join(", ")
                 ));

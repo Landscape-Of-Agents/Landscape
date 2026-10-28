@@ -83,27 +83,6 @@ export function scratch(name: string, text: string): { file: string; dispose(): 
   return { file, dispose: () => fs.rmSync(directory, { recursive: true, force: true }) };
 }
 
-/**
- * Ask the person to confirm a change in a modal dialog.
- * @param title question
- * @param detail what will happen
- * @param button the confirming button
- * @returns whether they confirmed
- */
-export async function confirm(title: string, detail: string, button: string): Promise<boolean> {
-  return (await vscode.window.showWarningMessage(`Landscape: ${title}`, { modal: true, detail }, button)) === button;
-}
-
-/**
- * Ask for the reason a change is recorded with.
- * @param prompt question
- * @returns the reason, or undefined when cancelled
- */
-export async function askReason(prompt: string): Promise<string | undefined> {
-  const reason = await vscode.window.showInputBox({ prompt, placeHolder: "Recorded in the signed audit", ignoreFocusOut: true, validateInput: (value) => (value.trim() ? undefined : "A reason is required") });
-  return reason?.trim() || undefined;
-}
-
 /** The result of a change the person cancelled. */
 export const CANCELLED: OpResult = { ok: false, cancelled: true, message: "Cancelled. Nothing was changed." };
 
@@ -114,15 +93,16 @@ export const CANCELLED: OpResult = { ok: false, cancelled: true, message: "Cance
  * @param args the command's arguments (without --dry-run and --format)
  * @param label what it does, for the confirmation
  * @param progress step reporter
+ * @param dialogs asks the person to confirm
  * @returns result
  */
-export async function signed(deps: PanelDeps, args: string[], label: string, progress: (text: string) => void): Promise<OpResult> {
+export async function signed(deps: PanelDeps, args: string[], label: string, progress: (text: string) => void, dialogs: Dialogs): Promise<OpResult> {
   progress(`Checking what "${label}" would change`);
   const preview = await call<{ preview?: ChangePreview; validation?: { problems?: unknown } }>(deps, args.concat(["--dry-run"]));
   if (!preview.envelope) return { ok: false, message: preview.error ?? "Crane printed no result." };
   if (!succeeded(preview.envelope.status)) return refused(preview.envelope, preview.envelope.data?.validation?.problems);
   const detail = [preview.envelope.summary, ...describePreview(preview.envelope.data?.preview), "", "Crane signs this into .crane/bricks.json with your admin key; commit .crane afterwards so the team shares it."].join("\n");
-  if (!(await confirm(`${label}?`, detail, "Sign and apply"))) return CANCELLED;
+  if (!(await dialogs.confirm(`${label}?`, detail, "Sign and apply"))) return CANCELLED;
   progress(`Signing "${label}"`);
   const result = await call(deps, args);
   if (!result.envelope) return { ok: false, message: result.error ?? "Crane printed no result." };
@@ -140,12 +120,20 @@ export async function showMarkdown(text: string): Promise<void> {
   await vscode.commands.executeCommand("markdown.showPreviewToSide", document.uri).then(undefined, () => vscode.window.showTextDocument(document, { preview: true }));
 }
 
+/** Questions an operation asks the person, shown as dialogs inside the panel. */
+export interface Dialogs {
+  /** Ask to confirm a change; tone "danger" for one that cannot be undone. */
+  confirm(title: string, detail: string, button: string, tone?: "primary" | "danger"): Promise<boolean>;
+  /** Ask for the reason a change is recorded with (undefined when cancelled). */
+  reason(title: string): Promise<string | undefined>;
+}
+
 /** The extension side of a panel. */
 export interface WorkbenchHost {
   /** What the page shows; refresh asks Crane again. */
   state(refresh: boolean): Promise<unknown>;
   /** Run an operation the page asked for, reporting steps as they go. */
-  run(op: string, values: Record<string, unknown>, progress: (text: string) => void): Promise<OpResult>;
+  run(op: string, values: Record<string, unknown>, progress: (text: string) => void, dialogs: Dialogs): Promise<OpResult>;
 }
 
 /** A panel kind: its view type, title, and page. */
@@ -207,9 +195,17 @@ export class Workbench {
    */
   private constructor(private readonly panel: vscode.WebviewPanel, page: WorkbenchPage, private readonly host: WorkbenchHost, focus: string | undefined) {
     panel.webview.html = html(panel.webview.cspSource, page);
-    panel.onDidDispose(() => Workbench.open.delete(page.viewType));
-    panel.webview.onDidReceiveMessage(async (message: { type: string; op?: string; values?: Record<string, unknown>; request?: number }) => {
-      if (message.type === "ready" || message.type === "refresh") {
+    panel.onDidDispose(() => {
+      Workbench.open.delete(page.viewType);
+      // A closed panel answers every open question with "no"
+      for (const answer of this.questions.values()) answer({ ok: false });
+      this.questions.clear();
+    });
+    panel.webview.onDidReceiveMessage(async (message: { type: string; op?: string; values?: Record<string, unknown>; request?: number; dialog?: number; ok?: boolean; value?: string }) => {
+      if (message.type === "dialogResult" && message.dialog !== undefined) {
+        this.questions.get(message.dialog)?.({ ok: Boolean(message.ok), value: message.value });
+        this.questions.delete(message.dialog);
+      } else if (message.type === "ready" || message.type === "refresh") {
         await this.send(message.type === "refresh");
         if (message.type === "ready" && focus) void panel.webview.postMessage({ type: "focus", id: focus });
       } else if (message.type === "run" && message.op) {
@@ -217,7 +213,7 @@ export class Workbench {
         const progress = (text: string) => void panel.webview.postMessage({ type: "progress", request, text });
         let result: OpResult;
         try {
-          result = await this.host.run(message.op, message.values ?? {}, progress);
+          result = await this.host.run(message.op, message.values ?? {}, progress, this.dialogs);
         } catch (error) {
           result = { ok: false, message: `Something went wrong in Landscape: ${(error as Error).message}. Open the Landscape output for details.` };
         }
@@ -247,6 +243,32 @@ export class Workbench {
 
   /** State is being read for the page. */
   private sending = false;
+
+  /** Dialogs waiting for the person's answer, by id. */
+  private readonly questions = new Map<number, (answer: { ok: boolean; value?: string }) => void>();
+  private asked = 0;
+
+  /**
+   * Show a dialog in the page and wait for the answer.
+   * @param dialog what to show
+   * @returns the answer
+   */
+  private ask(dialog: { kind: "confirm" | "reason"; title: string; detail?: string; button: string; tone?: string }): Promise<{ ok: boolean; value?: string }> {
+    const id = ++this.asked;
+    return new Promise((resolve) => {
+      this.questions.set(id, resolve);
+      void this.panel.webview.postMessage({ type: "dialog", id, ...dialog });
+    });
+  }
+
+  /** The dialogs operations ask through. */
+  private readonly dialogs: Dialogs = {
+    confirm: async (title, detail, button, tone = "primary") => (await this.ask({ kind: "confirm", title, detail, button, tone })).ok,
+    reason: async (title) => {
+      const answer = await this.ask({ kind: "reason", title, button: "Continue" });
+      return answer.ok && answer.value?.trim() ? answer.value.trim() : undefined;
+    },
+  };
 }
 
 /**
@@ -386,6 +408,23 @@ details.more summary { cursor: pointer; font-weight: 600; }
 .graph .zoom button + button { border-top: 1px solid var(--line); }
 .graph .placeholder { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 20px; pointer-events: none; }
 .graph .placeholder b { display: block; color: var(--fg); }
+/* Dialogs: the panel's own confirmations and questions */
+.modal-back { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, .45); backdrop-filter: blur(2px); animation: fade .12s ease-out; }
+.modal { width: min(520px, 100%); max-height: calc(100vh - 32px); display: flex; flex-direction: column; border: 1px solid color-mix(in srgb, var(--fox) 45%, var(--line)); border-radius: 12px; background: var(--vscode-editorWidget-background, var(--bg)); box-shadow: 0 18px 48px rgba(0, 0, 0, .45); overflow: hidden; animation: rise .14s ease-out; }
+.modal .m-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); background: linear-gradient(90deg, var(--fox-soft), transparent); }
+.modal .m-head .mark { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; background: linear-gradient(135deg, var(--fox), var(--fox-2)); color: #1a0d05; font-weight: 800; flex: none; }
+.modal.danger .m-head { background: linear-gradient(90deg, color-mix(in srgb, var(--bad) 14%, transparent), transparent); }
+.modal.danger .m-head .mark { background: var(--bad); color: #fff; }
+.modal .m-head b { font-size: 13.5px; overflow-wrap: anywhere; }
+.modal .m-body { padding: 12px 14px; overflow: auto; }
+.modal .m-detail { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; line-height: 1.55; }
+.modal .m-detail .sub { display: block; padding-left: 12px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.modal .m-detail .note { display: block; margin-top: 8px; color: var(--muted); }
+.modal .m-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--raised); }
+.modal .btn.danger-fill { border-color: transparent; background: var(--bad); color: #fff; font-weight: 700; }
+@keyframes fade { from { opacity: 0; } }
+@keyframes rise { from { transform: translateY(8px); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .modal-back, .modal { animation: none; } }
 `;
 
 /** The page side every panel shares: messaging, notices, tabs, and the graph. */
@@ -526,8 +565,39 @@ function Graph(host, onPick) {
   return { set, pick, fit, picked: () => picked };
 }
 
+// ---------------------------------------------------------------- dialogs the extension asks for
+function dialog(message) {
+  const back = document.createElement("div");
+  back.className = "modal-back";
+  const lines = String(message.detail || "").split("\\n").map((line) => {
+    if (!line.trim()) return "";
+    if (/^ {2}/.test(line)) return '<span class="sub">' + esc(line.trim()) + "</span>";
+    if (/^Crane signs|^Each move|^It stays idle/.test(line)) return '<span class="note">' + esc(line) + "</span>";
+    return esc(line);
+  }).join("\\n");
+  back.innerHTML = '<div class="modal' + (message.tone === "danger" ? " danger" : "") + '" role="dialog" aria-modal="true" aria-labelledby="m-title"><div class="m-head"><span class="mark" aria-hidden="true">' + (message.tone === "danger" ? "!" : "▦") + '</span><b id="m-title" class="grow">' + esc(message.title.charAt(0).toUpperCase() + message.title.slice(1)) + "</b></div>" +
+    '<div class="m-body">' + (lines ? '<p class="m-detail">' + lines + "</p>" : "") +
+    (message.kind === "reason" ? '<div class="field" style="margin:' + (lines ? "10px" : "0") + ' 0 0"><label for="m-input">Reason</label><input type="text" id="m-input" placeholder="Recorded in the signed audit"><div class="help">Required. It is kept with the change.</div></div>' : "") + "</div>" +
+    '<div class="m-foot"><button class="btn" data-m="no">Cancel</button><button class="btn ' + (message.tone === "danger" ? "danger-fill" : "primary") + '" data-m="yes">' + esc(message.button) + "</button></div></div>";
+  document.body.appendChild(back);
+  const input = back.querySelector("#m-input");
+  const answer = (ok) => {
+    if (ok && input && !input.value.trim()) { input.closest(".field").classList.add("error"); input.focus(); return; }
+    back.remove();
+    vscode.postMessage({ type: "dialogResult", dialog: message.id, ok, value: input ? input.value : undefined });
+  };
+  back.addEventListener("click", (event) => { const button = event.target.closest("[data-m]"); if (button) answer(button.dataset.m === "yes"); else if (event.target === back) answer(false); });
+  back.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") { event.preventDefault(); answer(false); }
+    else if (event.key === "Enter" && event.target === input) { event.preventDefault(); answer(true); }
+    else if (event.key === "Tab") { const items = [...back.querySelectorAll("input, button")]; const at = items.indexOf(document.activeElement); if (event.shiftKey && at <= 0) { event.preventDefault(); items[items.length - 1].focus(); } else if (!event.shiftKey && at === items.length - 1) { event.preventDefault(); items[0].focus(); } }
+  });
+  (input || back.querySelector('[data-m="yes"]')).focus();
+}
+
 window.addEventListener("message", (event) => {
   const message = event.data;
+  if (message.type === "dialog") { dialog(message); return; }
   if (message.type === "progress" && waiting.has(message.request)) { const entry = waiting.get(message.request); if (entry.onProgress) entry.onProgress(message.text); }
   else if (message.type === "result" && waiting.has(message.request)) { const entry = waiting.get(message.request); waiting.delete(message.request); entry.resolve(message.result); }
   else if (message.type === "state" && typeof onState === "function") onState(message.state || {});

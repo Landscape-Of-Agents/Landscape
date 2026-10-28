@@ -34,6 +34,7 @@ mod revocation;
 mod runbook;
 mod runtime;
 mod scope;
+mod secret;
 mod selection;
 mod skill;
 mod verification;
@@ -126,6 +127,7 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["skill", ..] => skill::skill(&rest(1)),
         ["runbook", ..] => runbook::runbook(&rest(1)),
         ["brick", ..] => brick::brick(&rest(1)),
+        ["secret", ..] => secret::secret(&rest(1)),
         ["resident", ..] => resident::resident(&rest(1)),
         ["permission", ..] => permission::permission(&rest(1)),
         ["precondition", ..] => precondition::precondition(&rest(1)),

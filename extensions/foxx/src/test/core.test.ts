@@ -12,7 +12,7 @@ import { busiest, layout } from "../core/graph";
 import { contextLabel, guidanceLines, liveFresh } from "../core/live";
 import { parsePolicies } from "../core/policies";
 import { checkName, confirmation, ownerKey, repoArgs } from "../core/setup";
-import { assignmentFile, checkDefinition, definitionFile, friendlyError, mergeTargets, overlayGraph, problemLines } from "../core/workbench";
+import { assignmentFile, checkDefinition, contextFromFile, definitionFile, friendlyError, mergeTargets, overlayGraph, problemLines } from "../core/workbench";
 import { assignmentDraft, checkAssignmentId, packMarkdown, residentChanges, residentMarkdown, ResidentRow, residentsByTarget, residentTone } from "../core/residents";
 
 test("parses policies and commands", () => {
@@ -263,10 +263,10 @@ test("reads the shared envelope of family commands and nothing else", () => {
 });
 
 test("builds Brick drafts and attachment arguments without deciding anything", () => {
-  assert.equal(BRICK_TYPES.length, 16, "the type set is fixed");
+  assert.equal(BRICK_TYPES.length, 12, "the kind set is fixed");
   assert.deepEqual(Object.keys(BRICK_TEMPLATES).sort(), [...BRICK_TYPES].sort(), "a template per fixed type");
-  const draft = JSON.parse(draftFile({ type: "constraint", name: " Prod guard ", intent: "No prod edits", context: "Ask ops", config: { max_ceiling: "assisted" }, departments: ["eng"] }));
-  assert.deepEqual(draft, { type: "constraint", name: "Prod guard", intent: "No prod edits", owner: null, departments: ["eng"], config: { max_ceiling: "assisted" }, common_context: { text: "Ask ops", sensitivity: "internal" } });
+  const draft = JSON.parse(draftFile({ type: "limits", name: " Prod guard ", intent: "No prod edits", context: "Ask ops", config: { max_ceiling: "assisted" }, departments: ["eng"] }));
+  assert.deepEqual(draft, { type: "limits", name: "Prod guard", intent: "No prod edits", owner: null, departments: ["eng"], config: { max_ceiling: "assisted" }, common_context: { text: "Ask ops", sensitivity: "internal" } });
   assert.equal(subjectOf({ ref: "g@2", brick_id: "g", version: 2, type: "scope", name: "G", state: "active" }), "g@2");
   assert.equal(subjectOf({ ref: "stack:s@1", stack_id: "s", version: 1, name: "S", state: "active", members: [] }), "stack:s@1");
   assert.equal(subjectOf({ ref: "g", brick_id: "g", version: 3, type: "scope", name: "G", state: "draft" }), undefined, "drafts cannot be attached");
@@ -401,9 +401,24 @@ test("builds resident definitions and assignments from the forms", () => {
 test("explains every Brick kind, with examples that use only its documented settings", () => {
   for (const type of BRICK_TYPES) {
     const guide = BRICK_GUIDE[type];
-    assert.ok(guide.what && guide.useWhen && guide.example.story, `${type} lacks an explanation`);
-    const documented = guide.settings.map((setting) => setting.name);
+    assert.ok(guide.purpose && guide.unique && guide.useWhen && guide.example.story, `${type} lacks an explanation`);
+    assert.ok(!/\n/.test(guide.purpose) && !/\n/.test(guide.unique), `${type}: purpose and unique property are one line each`);
+    // "create / update / delete" documents three settings, "network.allow" the network setting
+    const documented = guide.settings.flatMap((setting) => setting.name.split(" / ").map((name) => name.split(".")[0]));
     assert.deepEqual(Object.keys(guide.example.config).filter((key) => !documented.includes(key)), [], `${type}'s example uses an undocumented setting`);
     assert.deepEqual(Object.keys(BRICK_TEMPLATES[type]).filter((key) => !documented.includes(key)), [], `${type}'s template uses an undocumented setting`);
   }
+  const uniques = BRICK_TYPES.map((type) => BRICK_GUIDE[type].unique);
+  assert.equal(new Set(uniques).size, BRICK_TYPES.length, "no two kinds share a unique property");
+});
+
+test("reads volatile context from text, YAML, and JSON files", () => {
+  assert.deepEqual(contextFromFile("a.md", "text", "Freeze until Friday.\r\n"), { text: "Freeze until Friday." });
+  assert.deepEqual(contextFromFile("a.yaml", "yaml", "context: |\n  Release freeze.\n"), { text: "Release freeze." });
+  assert.deepEqual(contextFromFile("a.json", "json", '{"volatile_context": "On call: Ana"}'), { text: "On call: Ana" });
+  assert.equal(contextFromFile("a.json", "json", '{"owner":"team","freeze":true}').text, '```json\n{\n  "owner": "team",\n  "freeze": true\n}\n```');
+  assert.match(contextFromFile("a.json", "json", "{oops").error ?? "", /^a\.json is not valid JSON/);
+  assert.match(contextFromFile("a.yaml", "yaml", "a: [1").error ?? "", /^a\.yaml is not valid YAML/);
+  assert.match(contextFromFile("a.txt", "text", "   ").error ?? "", /holds no text/);
+  assert.match(contextFromFile("big.txt", "text", "x".repeat(17 * 1024)).error ?? "", /at most 16 KB/);
 });

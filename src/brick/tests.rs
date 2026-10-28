@@ -1,5 +1,5 @@
 // Unit tests of the Brick module: the closed type set, typed configuration and its validation,
-// Stack validation, monotonic composition (nothing loosens, unhonorable pins fail closed), folding
+// Stack validation, monotonic composition (nothing loosens, pins Crane cannot honor fail closed), folding
 // controls into the guard's limits (tighten only), deterministic context snapshots with their
 // sources, and the per-session delivery ledger.
 
@@ -114,7 +114,9 @@ fn workspace(root: &Path) -> Workspace {
     }
 }
 
-/** The type set is closed: 16 types whose names round-trip through serde, unknown names refused
+/** The type set is closed: 12 current kinds whose names round-trip through serde, each with one
+ * purpose and one unique property; former kinds stay readable but cannot be created; unknown names
+ * are refused
  * Input
     - None
  * Output
@@ -122,8 +124,26 @@ fn workspace(root: &Path) -> Workspace {
 */
 #[test]
 fn the_type_set_is_closed() {
-    assert_eq!(BrickType::ALL.len(), 16);
+    assert_eq!(BrickType::ALL.len(), 12);
+    for former in BrickType::LEGACY {
+        assert_eq!(json!(former), json!(former.name()), "{former:?}");
+        assert!(BrickType::parse(former.name())
+            .unwrap_err()
+            .contains("former"));
+        assert_eq!(BrickType::parse_any(former.name()).unwrap(), former);
+        assert!(former.successors().iter().all(|kind| !kind.is_legacy()));
+    }
+    let mut purposes = std::collections::BTreeSet::new();
     for brick_type in BrickType::ALL {
+        let info = brick_type.catalog();
+        assert!(
+            !info.purpose.contains('\n') && !info.unique.contains('\n'),
+            "{brick_type:?}: one line each"
+        );
+        assert!(
+            purposes.insert(info.unique),
+            "{brick_type:?}: its unique property is shared"
+        );
         assert_eq!(
             json!(brick_type),
             json!(brick_type.name()),
@@ -141,7 +161,7 @@ fn the_type_set_is_closed() {
     assert!(serde_json::from_value::<BrickType>(json!("custom")).is_err());
     // A definition of an unknown type does not even parse
     let mut value =
-        serde_json::to_value(brick("a", 1, BrickType::Context, json!({}), "x")).unwrap();
+        serde_json::to_value(brick("a", 1, BrickType::Knowledge, json!({}), "x")).unwrap();
     value["type"] = json!("data_protection");
     assert!(serde_json::from_value::<Brick>(value).is_err());
 }
@@ -163,8 +183,9 @@ fn configurations_are_typed_and_validated() {
     let codes = |brick_type: BrickType, value: serde_json::Value| -> Vec<String> {
         match config::parse(brick_type, &value) {
             Err(problem) => vec![problem.code],
-            Ok(parsed) => config::validate(&parsed, &adapters, &profiles)
-                .into_iter()
+            Ok(parsed) => parsed
+                .iter()
+                .flat_map(|config| config::validate(config, &adapters, &profiles))
                 .map(|problem| problem.code)
                 .collect(),
         }
@@ -267,15 +288,24 @@ fn configurations_are_typed_and_validated() {
     );
     assert_eq!(
         codes(BrickType::Budget, json!({"max_tool_calls": 0})),
-        ["BUDGET_ZERO"]
+        ["LIMITS_ZERO"]
     );
     assert_eq!(
         codes(BrickType::Constraint, json!({})),
         ["CONSTRAINT_EMPTY"]
     );
+    // A former constraint is read as limits (and access, for protected paths)
     assert!(matches!(
-        config::parse(BrickType::Constraint, &json!({"max_ceiling": "observe"})),
-        Ok(Config::Constraint(_))
+        config::parse(BrickType::Constraint, &json!({"max_ceiling": "observe"})).as_deref(),
+        Ok([Config::Limits(_)])
+    ));
+    assert!(matches!(
+        config::parse(
+            BrickType::Constraint,
+            &json!({"max_ceiling": "observe", "protected_paths": ["db/**"]})
+        )
+        .as_deref(),
+        Ok([Config::Limits(_), Config::Access(_)])
     ));
 }
 
@@ -290,14 +320,14 @@ fn validation_refuses_secrets_and_bad_dependencies() {
     let directory = tempfile::tempdir().unwrap();
     let mut store = BrickStore::default();
     store.bricks.push(entry(
-        brick("old", 1, BrickType::Context, json!({}), "x"),
+        brick("old", 1, BrickType::Knowledge, json!({}), "x"),
         VersionState::Revoked,
     ));
     let ok = validate::brick(
         &brick(
             "guide",
             1,
-            BrickType::Context,
+            BrickType::Knowledge,
             json!({}),
             "Payments are idempotent.",
         ),
@@ -309,7 +339,7 @@ fn validation_refuses_secrets_and_bad_dependencies() {
         &brick(
             "guide",
             1,
-            BrickType::Context,
+            BrickType::Knowledge,
             json!({}),
             "token ghp_abcdefghijklmnopqrstuvwxyz0123456789",
         ),
@@ -320,7 +350,7 @@ fn validation_refuses_secrets_and_bad_dependencies() {
         .problems
         .iter()
         .any(|problem| problem.code == "CONTEXT_HOLDS_SECRET"));
-    let mut dependent = brick("guide", 1, BrickType::Context, json!({}), "x");
+    let mut dependent = brick("guide", 1, BrickType::Knowledge, json!({}), "x");
     dependent.dependencies = vec![
         BrickRef {
             brick_id: "old".into(),
@@ -355,7 +385,7 @@ fn validation_refuses_secrets_and_bad_dependencies() {
         &brick(
             "iso",
             1,
-            BrickType::Isolation,
+            BrickType::Environment,
             json!({"profile": "sandbox"}),
             "",
         ),
@@ -388,11 +418,11 @@ fn stacks_validate_their_members() {
     }];
     store.bricks.push(entry(needs, VersionState::Active));
     store.bricks.push(entry(
-        brick("base", 1, BrickType::Context, json!({}), "x"),
+        brick("base", 1, BrickType::Knowledge, json!({}), "x"),
         VersionState::Active,
     ));
     store.bricks.push(entry(
-        brick("base", 2, BrickType::Context, json!({}), "y"),
+        brick("base", 2, BrickType::Knowledge, json!({}), "y"),
         VersionState::Active,
     ));
     store.bricks.push(entry(
@@ -623,7 +653,7 @@ fn controls_only_tighten_and_fail_closed() {
     }
     // Context and declared types restrict nothing
     store.bricks.push(entry(
-        brick("note", 1, BrickType::Context, json!({}), "x"),
+        brick("note", 1, BrickType::Knowledge, json!({}), "x"),
         VersionState::Active,
     ));
     store.attachments = vec![attached("a6", "zone:z", "note@1", "")];
@@ -731,7 +761,7 @@ fn snapshots_are_deterministic_and_sourced() {
         brick(
             "idem",
             1,
-            BrickType::Context,
+            BrickType::Knowledge,
             json!({}),
             "Charges are idempotent.",
         ),
@@ -741,7 +771,7 @@ fn snapshots_are_deterministic_and_sourced() {
         brick(
             "idem",
             2,
-            BrickType::Context,
+            BrickType::Knowledge,
             json!({}),
             "Charges are idempotent; refunds too.",
         ),
@@ -845,7 +875,7 @@ fn delivery_is_once_per_session_while_unchanged() {
     let workspace = workspace(directory.path());
     let mut store = BrickStore::default();
     store.bricks.push(entry(
-        brick("idem", 1, BrickType::Context, json!({}), "Idempotent."),
+        brick("idem", 1, BrickType::Knowledge, json!({}), "Idempotent."),
         VersionState::Active,
     ));
     store.attachments = vec![attached("a1", "zone:pay", "idem@1", "")];
@@ -895,4 +925,392 @@ fn references_are_exact() {
     );
     assert!(Target::parse("policy:x").is_err());
     assert!(Target::parse("flow:../x").is_err());
+}
+
+/** The rules decided per call: identity, unreadable files, operation modes, kinds of change, caps,
+ * hidden variables, network reach, and direct operations; each only makes a decision stricter
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn per_call_rules_only_tighten() {
+    use super::guard::{decide, Call, Change, Rules};
+    use super::usage::{TargetUsage, Usage};
+    use crate::hooks::action::Operation;
+    use crate::telemetry::model::Decision;
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let mut store = BrickStore::default();
+    for (id, kind, config) in [
+        ("who", BrickType::Identity, json!({"agents": ["claude"]})),
+        (
+            "files",
+            BrickType::Access,
+            json!({"deny_read": ["app/secrets/**"], "delete": "deny", "create": "ask"}),
+        ),
+        (
+            "human",
+            BrickType::Approval,
+            json!({"operations": ["dependency_change", "git_push"], "reason": "release owners decide"}),
+        ),
+        ("caps", BrickType::Limits, json!({"max_tool_calls": 2})),
+        (
+            "env",
+            BrickType::Environment,
+            json!({"hide_env": ["AWS_*"], "network": {"allow": ["api.example.com"]}}),
+        ),
+        (
+            "ops",
+            BrickType::Action,
+            json!({"operations": [{"adapter": "git", "operation": "git.push"}], "deny_direct": true}),
+        ),
+    ] {
+        store
+            .bricks
+            .push(entry(brick(id, 1, kind, config, ""), VersionState::Active));
+    }
+    store.attachments = ["who", "files", "human", "caps", "env", "ops"]
+        .iter()
+        .enumerate()
+        .map(|(index, id)| attached(&format!("a{index}"), "zone:pay", &format!("{id}@1"), ""))
+        .collect();
+    let rules = Rules {
+        targets: std::collections::BTreeMap::from([(
+            "zone:pay".to_string(),
+            controls(&store, "zone:pay", root),
+        )]),
+        paused: BTreeSet::new(),
+    };
+    let mut limits = Limits::new();
+    for file in ["app/pay.py", "app/package.json", "app/secrets/key.txt"] {
+        limits.insert(
+            file.into(),
+            Limit {
+                ceiling: Ceiling::Delegated,
+                criticality: Criticality::Routine,
+                entities: vec!["zone:pay".into()],
+                scopes: Vec::new(),
+                bricks: Vec::new(),
+            },
+        );
+    }
+    let workspace = workspace(root);
+    let no_args: Vec<String> = Vec::new();
+    let no_hosts: Vec<String> = Vec::new();
+    let call = |operation,
+                reads: &[&str],
+                changes: Vec<Change>,
+                command: Option<&'static str>,
+                agent: &'static str| Call {
+        operation,
+        reads: reads.iter().map(|read| read.to_string()).collect(),
+        changes,
+        named: Vec::new(),
+        command,
+        arguments: &no_args,
+        network: &no_hosts,
+        agent: Some(agent),
+        agent_id: None,
+        model: None,
+        started_at: None,
+        usage: None,
+        now: 0,
+    };
+    let rules_of = |outcome: &super::guard::Outcome| {
+        outcome
+            .findings
+            .iter()
+            .map(|finding| (finding.rule, finding.decision))
+            .collect::<Vec<_>>()
+    };
+    let change = |path: &str, existed, deleted| Change {
+        path: path.into(),
+        existed,
+        deleted,
+        lines: 1,
+    };
+    // Identity: only claude works in zone:pay
+    let read = call(Operation::Read, &["app/pay.py"], Vec::new(), None, "codex");
+    assert_eq!(
+        rules_of(&decide(&rules, &limits, &workspace, &read)),
+        [("BRICK_IDENTITY", Decision::Deny)]
+    );
+    let read = call(Operation::Read, &["app/pay.py"], Vec::new(), None, "claude");
+    assert!(decide(&rules, &limits, &workspace, &read)
+        .findings
+        .is_empty());
+    // Access: unreadable files, deletes denied, new files (attributed by their folder) asked
+    let secret = call(
+        Operation::Read,
+        &["app/secrets/key.txt"],
+        Vec::new(),
+        None,
+        "claude",
+    );
+    assert_eq!(
+        rules_of(&decide(&rules, &limits, &workspace, &secret)),
+        [("BRICK_DENY_READ", Decision::Deny)]
+    );
+    let delete = call(
+        Operation::Write,
+        &[],
+        vec![change("app/pay.py", true, true)],
+        None,
+        "claude",
+    );
+    assert_eq!(
+        rules_of(&decide(&rules, &limits, &workspace, &delete)),
+        [("BRICK_ACCESS_MODE", Decision::Deny)]
+    );
+    let create = call(
+        Operation::Write,
+        &[],
+        vec![change("app/new.py", false, false)],
+        None,
+        "claude",
+    );
+    assert_eq!(
+        rules_of(&decide(&rules, &limits, &workspace, &create)),
+        [("BRICK_ACCESS_MODE", Decision::RequireApproval)]
+    );
+    // Approval: a kind of change, wherever access allows it
+    let manifest = call(
+        Operation::Write,
+        &[],
+        vec![change("app/package.json", true, false)],
+        None,
+        "claude",
+    );
+    assert_eq!(
+        rules_of(&decide(&rules, &limits, &workspace, &manifest)),
+        [("BRICK_APPROVAL", Decision::RequireApproval)]
+    );
+    // A push names no file: the approval and the direct operation apply repository-wide
+    let push = call(
+        Operation::Execute,
+        &[],
+        Vec::new(),
+        Some("git push origin main"),
+        "claude",
+    );
+    assert_eq!(
+        rules_of(&decide(&rules, &limits, &workspace, &push)),
+        [
+            ("BRICK_APPROVAL", Decision::RequireApproval),
+            ("BRICK_ACTION_DIRECT", Decision::Deny)
+        ]
+    );
+    // Hidden variables and network reach apply where the session works
+    let worked = Usage {
+        session: "s".into(),
+        targets: std::collections::BTreeMap::from([(
+            "zone:pay".to_string(),
+            TargetUsage::default(),
+        )]),
+        ..Usage::default()
+    };
+    let mut reveal = call(
+        Operation::Execute,
+        &[],
+        Vec::new(),
+        Some("echo $AWS_SECRET_ACCESS_KEY"),
+        "claude",
+    );
+    assert!(
+        decide(&rules, &limits, &workspace, &reveal)
+            .findings
+            .is_empty(),
+        "the session never worked in zone:pay"
+    );
+    reveal.usage = Some(&worked);
+    assert_eq!(
+        rules_of(&decide(&rules, &limits, &workspace, &reveal)),
+        [("BRICK_HIDDEN_ENV", Decision::Deny)]
+    );
+    let hosts = vec!["https://evil.example.org/upload".to_string()];
+    let mut fetch = call(Operation::Other, &[], Vec::new(), None, "claude");
+    fetch.network = &hosts;
+    fetch.usage = Some(&worked);
+    assert_eq!(
+        rules_of(&decide(&rules, &limits, &workspace, &fetch)),
+        [("BRICK_NETWORK", Decision::Deny)]
+    );
+    let allowed = vec!["https://api.example.com/v1".to_string()];
+    fetch.network = &allowed;
+    assert!(decide(&rules, &limits, &workspace, &fetch)
+        .findings
+        .is_empty());
+    // Limits: the third call touching zone:pay in one session stops
+    let busy = Usage {
+        session: "s".into(),
+        targets: std::collections::BTreeMap::from([(
+            "zone:pay".to_string(),
+            TargetUsage {
+                calls: 2,
+                ..TargetUsage::default()
+            },
+        )]),
+        ..Usage::default()
+    };
+    let mut third = call(Operation::Read, &["app/pay.py"], Vec::new(), None, "claude");
+    third.usage = Some(&busy);
+    let decided = decide(&rules, &limits, &workspace, &third);
+    assert_eq!(rules_of(&decided), [("BRICK_LIMIT", Decision::Deny)]);
+    assert!(decided
+        .findings
+        .iter()
+        .all(|finding| finding.decision != Decision::Allow));
+    assert_eq!(
+        decided.counted.targets,
+        BTreeSet::from(["zone:pay".to_string()])
+    );
+}
+
+/** Former kinds are read as the current ones, and a share that does not resolve fails closed
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn former_kinds_and_shares() {
+    let kinds = |kind: BrickType, value: serde_json::Value| {
+        config::parse(kind, &value)
+            .unwrap()
+            .iter()
+            .map(|config| serde_json::to_value(config).unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        kinds(BrickType::Scope, json!({"include": ["app/**"]}))[0]["include"],
+        json!(["app/**"])
+    );
+    assert_eq!(
+        kinds(BrickType::Constraint, json!({"protected_paths": ["db/**"]}))[0]["read_only"],
+        json!(["db/**"])
+    );
+    assert_eq!(
+        kinds(
+            BrickType::Monitoring,
+            json!({"signals": [{"source": "policy_tests", "every_minutes": 30}]})
+        )[0]["signals"][0]["source"],
+        json!("policy_tests")
+    );
+    assert!(matches!(
+        config::parse(BrickType::Isolation, &json!({"profile": "agent-hooks"})).as_deref(),
+        Ok([Config::Environment(_)])
+    ));
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = BrickStore::default();
+    store.bricks.push(entry(
+        brick(
+            "count",
+            1,
+            BrickType::Limits,
+            json!({"max_files_changed": 3, "scope_from": "edits"}),
+            "",
+        ),
+        VersionState::Active,
+    ));
+    store.attachments = vec![attached("a1", "zone:z", "count@1", "")];
+    let alone = controls(&store, "zone:z", directory.path());
+    assert!(
+        alone
+            .fail_closed
+            .iter()
+            .any(|reason| reason.contains("SHARE_UNRESOLVED")),
+        "{:?}",
+        alone.fail_closed
+    );
+    store.bricks.push(entry(
+        brick(
+            "edits",
+            1,
+            BrickType::Access,
+            json!({"include": ["app/**"], "exclude": ["app/generated/**"]}),
+            "",
+        ),
+        VersionState::Active,
+    ));
+    store
+        .attachments
+        .push(attached("a2", "zone:z", "edits@1", ""));
+    let shared = controls(&store, "zone:z", directory.path());
+    assert!(shared.fail_closed.is_empty());
+    assert!(
+        shared.caps[0].paths.contains("app/pay.py")
+            && !shared.caps[0].paths.contains("app/generated/api.py")
+    );
+}
+
+/** Kinds of change, gates in time, and changed lines are recognized as documented
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn kinds_of_change_and_gates() {
+    use super::config::ChangeClass;
+    use super::guard::{command_classes, file_classes, lines_changed, Change};
+    let classes = |path: &str| {
+        file_classes(&Change {
+            path: path.into(),
+            existed: true,
+            deleted: false,
+            lines: 1,
+        })
+    };
+    assert!(classes("db/migrations/001_init.sql").contains(&ChangeClass::MigrationChange));
+    assert!(classes("config/app.yaml").contains(&ChangeClass::ConfigChange));
+    assert!(classes("Cargo.lock").contains(&ChangeClass::DependencyChange));
+    assert!(classes("web/cart.test.ts").contains(&ChangeClass::TestChange));
+    assert!(!classes("src/main.rs").contains(&ChangeClass::ConfigChange));
+    let words = |text: &str| {
+        crate::hooks::shell::words(text)
+            .into_iter()
+            .map(|word| word.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+    };
+    assert!(command_classes(&words("npm install left-pad")).contains(&ChangeClass::PackageInstall));
+    assert!(command_classes(&words("git commit -m x && git push")).contains(&ChangeClass::GitPush));
+    assert_eq!(lines_changed(Some("a\nb\nc\n"), Some("a\nB\nc\nd\n")), 3);
+    // 2026-10-28 was a Wednesday; 10:00 UTC is 15:30 in UTC+5:30
+    let wednesday_ten = 1_793_181_600_000;
+    let days = |list: &[&str]| list.iter().map(|day| day.to_string()).collect::<Vec<_>>();
+    assert!(super::runtime::in_window(
+        wednesday_ten,
+        &days(&["wed"]),
+        "09:00",
+        "17:00",
+        0
+    ));
+    assert!(!super::runtime::in_window(
+        wednesday_ten,
+        &days(&["sat", "sun"]),
+        "09:00",
+        "17:00",
+        0
+    ));
+    assert!(!super::runtime::in_window(
+        wednesday_ten,
+        &[],
+        "16:00",
+        "18:00",
+        330
+    ));
+    assert!(super::runtime::in_window(
+        wednesday_ten,
+        &[],
+        "15:00",
+        "16:00",
+        330
+    ));
+    assert!(
+        super::runtime::in_window(wednesday_ten, &[], "22:00", "11:00", 0),
+        "a window over midnight"
+    );
 }

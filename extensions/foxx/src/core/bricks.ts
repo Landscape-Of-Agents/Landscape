@@ -44,40 +44,53 @@ export function succeeded(status: EnvelopeStatus): boolean {
   return status === "ok" || status === "passed";
 }
 
-/** The fixed Brick types, as 'crane brick types' lists them. */
-export const BRICK_TYPES = ["context", "identity", "scope", "permission", "constraint", "precondition", "approval", "isolation", "budget", "action", "verification", "provenance", "recovery", "revocation", "monitoring", "intelligence"] as const;
+/** The fixed Brick kinds, as 'crane brick types' lists them: each answers one question no other kind answers. */
+export const BRICK_TYPES = ["knowledge", "identity", "access", "approval", "limits", "environment", "precondition", "verification", "action", "recovery", "provenance", "watch"] as const;
 
-/** A fixed Brick type. */
-export type BrickType = (typeof BRICK_TYPES)[number];
+/** Former kinds: still read from signed stores (as the kind that replaced them), never created. */
+export const LEGACY_TYPES: Record<string, string> = {
+  context: "knowledge",
+  scope: "access",
+  permission: "access",
+  constraint: "limits and access",
+  isolation: "environment",
+  budget: "limits",
+  revocation: "watch",
+  monitoring: "watch",
+  intelligence: "watch",
+};
 
-/** One type of the catalog. */
+/** A current Brick kind. */
+export type CurrentType = (typeof BRICK_TYPES)[number];
+
+/** A stored Brick kind: current, or former. */
+export type BrickType = CurrentType | keyof typeof LEGACY_TYPES;
+
+/** One kind of the catalog. */
 export interface TypeInfo {
-  type: BrickType;
+  type: CurrentType;
   label: string;
   purpose: string;
-  support: "enforced" | "checked" | "delivered" | "declared";
+  unique?: string;
+  support: "enforced" | "checked" | "delivered";
   runtime: string;
   fields: string[];
 }
 
 /** Starting configurations offered when a person creates a Brick; Crane validates whatever is kept. */
-export const BRICK_TEMPLATES: Record<BrickType, Record<string, unknown>> = {
-  context: { files: [] },
-  identity: { agents: ["claude"] },
-  scope: { include: ["src/**"] },
-  permission: { allow: ["read", "write"] },
-  constraint: { max_ceiling: "assisted", protected_paths: [] },
-  precondition: { checks: [{ kind: "file_exists", path: "README.md" }] },
-  approval: { operations: ["write", "delete"], reason: "" },
-  isolation: { profile: "agent-hooks" },
-  budget: { max_tool_calls: 200, on_exhausted: "escalate" },
-  action: { adapter: "git", operation: "git.commit" },
+export const BRICK_TEMPLATES: Record<CurrentType, Record<string, unknown>> = {
+  knowledge: { files: [], glossary: {}, references: [] },
+  identity: { agents: ["claude"], models: [], on_other: "deny" },
+  access: { include: ["src/**"], exclude: [], read_only: [], deny_read: [".env*"], write: "auto", delete: "ask" },
+  approval: { operations: ["dependency_change", "git_push"], paths: [], reason: "" },
+  limits: { max_tool_calls: 200, max_runtime_minutes: 60, on_exhausted: "escalate" },
+  environment: { profile: "agent-hooks", require_env: [], hide_env: ["*_TOKEN", "*_SECRET"], credentials: [], network: { allow: [], deny: [] } },
+  precondition: { checks: [{ kind: "branch_not", patterns: ["main"] }], on_fail: "ask" },
   verification: { checks: [{ kind: "policy_tests_pass" }] },
-  provenance: { require: ["signed_state", "audit_chain"] },
-  recovery: { on_failure: "escalate", max_retries: 0, reconcile_before_retry: true },
-  revocation: { triggers: ["verification_contradicted"] },
-  monitoring: { signals: [{ source: "policy_tests", every_minutes: 60 }] },
-  intelligence: { analyses: ["denial_patterns"], advisory_only: true },
+  action: { operations: [{ adapter: "git", operation: "git.push" }], deny_direct: true },
+  recovery: { on_failure: "escalate", max_retries: 1, reconcile_before_retry: true, max_consecutive_failures: 3 },
+  provenance: { require: ["signed_state", "audit_chain"], commits: 20 },
+  watch: { signals: [{ source: "policy_tests", every_minutes: 60 }], on_fire: ["alert"] },
 };
 
 /** One configurable setting of a Brick kind, explained. */
@@ -87,138 +100,176 @@ export interface GuideSetting {
   values: string;
 }
 
-/** A Brick kind explained for people choosing one: what it is, when to use it, a worked example,
- * and its settings. The values follow Crane's schema (src/brick/config.rs); Crane validates. */
+/** A Brick kind explained for people choosing one: its purpose and what only it does (one line
+ * each), when to use it, a worked example, and its settings. The values follow Crane's schema
+ * (src/brick/config.rs); Crane validates. */
 export interface BrickGuide {
-  what: string;
+  purpose: string;
+  unique: string;
   useWhen: string;
   example: { story: string; name: string; intent: string; config: Record<string, unknown> };
   settings: GuideSetting[];
 }
 
-/** Action classes, as several kinds name them. */
-const CLASSES = "read, write, delete, execute, network";
-/** Deterministic checks, as preconditions and verifications name them. */
-const CHECKS = 'list of {"kind": "file_exists" | "file_absent", "path": "…"}, {"kind": "selections_resolved"}, {"kind": "policy_tests_pass"}, {"kind": "signed_state"}';
+/** A mode of an operation. */
+const MODES = "auto (allowed), ask (a person approves), deny (refused)";
+/** Gate checks, which a precondition runs before every change. */
+const GATES = 'file_exists / file_absent {path}, file_contains {path, text}, env_set {name}, branch_is / branch_not {patterns}, git_clean, time_window {days, from, to, utc_offset_minutes}, command_available {name}, credential_present {name}, signed_state';
+/** Checks a verification may also run. */
+const PROOFS = 'every gate check, plus policy_tests_pass, selections_resolved, http_ok {url, status}, json_value {path, pointer, op: at_least|at_most|equals, value}, local_metric {metric: denials|tool_calls, window_hours, max}, command_succeeds {program, args} (run only by a person)';
+/** The field that shares an Access Brick's scope. */
+const SCOPE_FROM: GuideSetting = { name: "scope_from", meaning: "Take the files from an Access Brick attached to the same Zone or Flow (its id): one scope, defined once.", values: "a Brick id (optional)" };
 
-/** The guide of every Brick kind. */
-export const BRICK_GUIDE: Record<BrickType, BrickGuide> = {
-  context: {
-    what: "Reviewed knowledge agents read before they act: domain facts, procedures, terms. It guides; it never grants anything.",
-    useWhen: "Agents keep making the same mistakes in an area because they lack background they cannot see in the code.",
-    example: { story: "The payments Zone has rules about rounding and currencies. Attach a Context Brick listing docs/payments.md so every agent working there reads it first.", name: "Payments domain notes", intent: "Agents should know our rounding and currency rules before editing payments", config: { files: ["docs/payments.md"] } },
-    settings: [{ name: "files", meaning: "Repository files delivered with the common context.", values: "list of repository-relative paths" }],
+/** The guide of every current Brick kind. */
+export const BRICK_GUIDE: Record<CurrentType, BrickGuide> = {
+  knowledge: {
+    purpose: "Gives agents the reviewed documents, terms, and references they need in this Zone or Flow.",
+    unique: "The only kind that puts repository documents into an agent's context; it informs and never restricts.",
+    useWhen: "Agents keep making mistakes in an area because they lack background the code does not show.",
+    example: { story: "The payments Zone has rounding and currency rules. A Knowledge Brick delivers docs/payments.md and the team's terms to every agent before it acts there.", name: "Payments domain notes", intent: "Agents should know our rounding and currency rules before editing payments", config: { files: ["docs/payments.md"], glossary: { "minor units": "amounts are integers in cents, never floats" }, references: ["Runbook: wiki/payments/refunds"] } },
+    settings: [
+      { name: "files", meaning: "Repository files delivered with the common context.", values: "list of repository-relative paths" },
+      { name: "glossary", meaning: "Terms and what they mean in this target.", values: "map of term → meaning" },
+      { name: "references", meaning: "Other sources agents should know about, one line each.", values: "list of text lines" },
+    ],
   },
   identity: {
-    what: "Which agents may work in the Zone or Flow, by provider or exact agent id.",
-    useWhen: "Only some agents should touch an area, e.g. only Claude on infrastructure code.",
-    example: { story: "Only Claude agents should work on the deployment Flow; Codex is used elsewhere.", name: "Claude only on deployment", intent: "Keep deployment work to one reviewed agent", config: { agents: ["claude"] } },
-    settings: [{ name: "agents", meaning: "Agents admitted to the target.", values: "list of providers (claude, codex, copilot, gemini) or exact agent ids" }],
-  },
-  scope: {
-    what: "The files inside the Zone or Flow agents may change. Everything else there becomes read-only.",
-    useWhen: "A Zone is broad, but agents should only edit part of it (say, source but not generated files).",
-    example: { story: "The API Zone includes generated clients. Agents may change src/api/** but never the generated code.", name: "API source only", intent: "Agents edit handwritten API code, never generated clients", config: { include: ["src/api/**"] } },
-    settings: [{ name: "include", meaning: "Glob patterns of the files agents may change. If none matches, the whole target becomes read-only.", values: "list of repository-relative globs" }],
-  },
-  permission: {
-    what: "The kinds of actions allowed in the target: read, write, delete, run commands, use the network.",
-    useWhen: "An area should be readable by agents but not editable, or should allow edits but no deletions.",
-    example: { story: "Agents may read and edit the docs Flow, but never delete files or run commands there.", name: "Docs: read and write only", intent: "No deletions or commands while agents edit docs", config: { allow: ["read", "write"] } },
-    settings: [{ name: "allow", meaning: "Allowed action classes. Without write or delete, the files become read-only.", values: CLASSES }],
-  },
-  constraint: {
-    what: "Hard limits no context or instruction can relax: how autonomous agents may be, how critical the area is, and paths that must never change.",
-    useWhen: "Some files must never be changed by an agent, or an area must always keep a person in the loop.",
-    example: { story: "In the billing Zone agents may only propose changes a person accepts, and the migrations folder is untouchable.", name: "Billing hard limits", intent: "A person accepts every billing change; migrations never change", config: { max_ceiling: "assisted", min_criticality: "critical", protected_paths: ["db/migrations/**"] } },
+    purpose: "Says which agent providers and models may work in this Zone or Flow at all.",
+    unique: "The only kind that decides by who is calling, whatever they try to do.",
+    useWhen: "Only some agents (or some models) should touch an area, e.g. only Claude Opus on infrastructure.",
+    example: { story: "Only Claude agents on an Opus model may work in the deployment Flow; any other agent's tool calls there are refused.", name: "Claude Opus only on deployment", intent: "Keep deployment work to one reviewed agent and model", config: { agents: ["claude"], models: ["claude-opus-*"], on_other: "deny" } },
     settings: [
-      { name: "max_ceiling", meaning: "The highest autonomy agents get.", values: "observe, assisted, delegated, autonomous (strictest first)" },
-      { name: "min_criticality", meaning: "The lowest criticality the target is treated with.", values: "routine, sensitive, critical, restricted" },
-      { name: "protected_paths", meaning: "Glob patterns agents may never change.", values: "list of repository-relative globs" },
+      { name: "agents", meaning: "Providers or exact agent ids admitted.", values: "claude, codex, copilot, gemini, or an agent id" },
+      { name: "models", meaning: "Model name patterns admitted (empty: any model).", values: "list such as claude-opus-*" },
+      { name: "on_other", meaning: "What anyone else's calls get.", values: "deny (refused) or ask (a person approves)" },
+    ],
+  },
+  access: {
+    purpose: "Says which files agents may read or change here, and how each operation is treated.",
+    unique: "The only kind with per-path, per-operation rules: in or out of scope, read-only, unreadable, and auto/ask/deny per operation.",
+    useWhen: "An area is broad but agents should edit only part of it, never read secrets, or ask before deleting.",
+    example: { story: "In the API Zone agents edit src/api/** but not the generated clients, never read .env files, need a person to delete, and may not run commands on these files.", name: "API source only", intent: "Agents edit handwritten API code, never generated clients or secrets", config: { include: ["src/api/**"], exclude: ["src/api/generated/**"], deny_read: [".env*", "secrets/**"], write: "auto", delete: "ask", execute: "deny" } },
+    settings: [
+      { name: "include", meaning: "Files agents may change (empty: the whole target); the rest is read-only.", values: "list of globs" },
+      { name: "exclude", meaning: "Files carved out of include; they stay read-only.", values: "list of globs" },
+      { name: "read_only", meaning: "Files agents may read but never change.", values: "list of globs" },
+      { name: "deny_read", meaning: "Files agents may not even read.", values: "list of globs" },
+      { name: "write", meaning: "Creating and updating files (shorthand for create + update).", values: MODES },
+      { name: "create / update / delete", meaning: "Each operation on its own.", values: MODES },
+      { name: "execute", meaning: "Shell commands that name this target's files.", values: MODES },
+      { name: "network", meaning: "Network calls while working in this target.", values: MODES },
+    ],
+  },
+  approval: {
+    purpose: "Names the kinds of change a person must approve, even where access allows them.",
+    unique: "The only kind that recognizes kinds of change (dependency, config, migration, push, package install, large diff) instead of files or operations.",
+    useWhen: "Most work is fine for agents, but some kinds of change always need a person's eyes.",
+    example: { story: "Agents work freely in the checkout Flow, but dependency or migration changes, pushes, and any edit over 200 lines wait for a person.", name: "Human checks on risky changes", intent: "A person sees dependency, migration, push, and large changes first", config: { operations: ["dependency_change", "migration_change", "git_push", "large_change"], min_lines_changed: 200, reason: "Release owners review these" } },
+    settings: [
+      { name: "operations", meaning: "Kinds of change that need a person.", values: "write, create, update, delete, execute, network, dependency_change, config_change, migration_change, test_change, git_commit, git_push, package_install, large_change" },
+      { name: "paths / except", meaning: "Only changes to these files, minus the exceptions (empty: the whole target).", values: "lists of globs" },
+      { name: "min_lines_changed", meaning: "From how many changed lines a change is a large_change.", values: "whole number" },
+      { name: "reason", meaning: "Shown to the person who approves.", values: "text" },
+      { name: "approvers / min_approvals / distinct_approver / expires_minutes", meaning: "Who approves, how many, not the requester, and how long an approval lasts (resident agents).", values: "list of logins, 0-5, true/false, minutes" },
+      SCOPE_FROM,
+    ],
+  },
+  limits: {
+    purpose: "Caps how much and how long agents work in this Zone or Flow in one session.",
+    unique: "The only kind that counts: tool calls, minutes, files and lines changed, commands, network calls, denials, and the autonomy ceiling.",
+    useWhen: "Agents in an area should not run away with long sessions, sweeping edits, or endless retries.",
+    example: { story: "In the experiments Zone a session gets 200 tool calls, 30 minutes, and 10 changed files; after 5 denials it stops; a person decides whether to go on.", name: "Experiments budget", intent: "Keep experiment sessions small and short", config: { max_tool_calls: 200, max_runtime_minutes: 30, max_files_changed: 10, max_denials: 5, on_exhausted: "escalate" } },
+    settings: [
+      { name: "max_tool_calls / max_commands / max_network_calls", meaning: "Calls touching the target per session.", values: "whole numbers" },
+      { name: "max_runtime_minutes", meaning: "Minutes since the session started.", values: "whole number" },
+      { name: "max_files_changed / max_lines_changed", meaning: "Distinct files and total lines changed per session.", values: "whole numbers" },
+      { name: "max_denials", meaning: "Denied calls before the session stops in the target.", values: "whole number" },
+      { name: "max_retries", meaning: "Retries of a failed step (resident agents and skills).", values: "whole number" },
+      { name: "max_ceiling / min_criticality", meaning: "The highest autonomy, and the lowest criticality, of the target.", values: "observe|assisted|delegated|autonomous; routine|sensitive|critical|restricted" },
+      { name: "on_exhausted", meaning: "What happens at a cap.", values: "stop (refused) or escalate (a person approves)" },
+      SCOPE_FROM,
+    ],
+  },
+  environment: {
+    purpose: "Defines what the work runs with: environment variables, credentials, and network reach.",
+    unique: "The only kind that governs the surroundings of the work: variables that must exist or stay hidden, credentials by name, and reachable hosts.",
+    useWhen: "Work needs certain variables or credentials, must not leak secrets, or may only call certain hosts.",
+    example: { story: "Agents in the billing Zone may call only api.stripe.com, never read AWS_* variables, and need STRIPE_MODE set; Crane-run Jira steps use the jira-billing credential from each machine's vault.", name: "Billing environment", intent: "Billing work reaches only Stripe and never sees cloud secrets", config: { require_env: ["STRIPE_MODE"], hide_env: ["AWS_*", "*_SECRET"], credentials: [{ name: "jira-billing", for: ["jira"] }], network: { allow: ["api.stripe.com"], deny: [] } } },
+    settings: [
+      { name: "profile", meaning: "The isolation profile ('crane isolation profiles').", values: "agent-hooks (default)" },
+      { name: "require_env", meaning: "Variables that must be set where agents run; if missing, changes need a person.", values: "list of names" },
+      { name: "hide_env", meaning: "Variables agents may not read ($NAME, printenv, env dumps are refused).", values: "list of names or patterns such as AWS_*" },
+      { name: "credentials", meaning: "Credentials Crane-run operations use, by vault name; values stay on each machine ('crane secret set NAME').", values: "list of {name, for: [integrations or operations]}" },
+      { name: "network.allow / network.deny", meaning: "Hosts calls may reach while working here, and hosts never reached.", values: "host names such as api.example.com or *.example.com" },
     ],
   },
   precondition: {
-    what: "Facts that must hold before agents may change the target. While one fails, every change needs a person's approval.",
-    useWhen: "Work is only safe once something is in place, e.g. a feature flag file exists or a lock file is absent.",
-    example: { story: "Agents may change the release Flow only while no release.lock file exists.", name: "No release in progress", intent: "Pause agent changes while a release is running", config: { checks: [{ kind: "file_absent", path: "release.lock" }] } },
-    settings: [{ name: "checks", meaning: "Checks that must all pass.", values: CHECKS }],
-  },
-  approval: {
-    what: "When a person must approve agent changes in the target.",
-    useWhen: "Agents may work in an area, but a person should confirm edits or deletions there.",
-    example: { story: "Every edit or deletion in the auth Zone is approved by a person, with the reason shown to them.", name: "Approve auth changes", intent: "A person confirms every change to authentication code", config: { operations: ["write", "delete"], reason: "Authentication changes need a second pair of eyes" } },
+    purpose: "Gates changes on facts that must hold first: files, branch, clean tree, time window, variables.",
+    unique: "The only kind evaluated before every change; while a gate fails, changes need a person or stop.",
+    useWhen: "Work is only safe at certain times or states: not on main, during business hours, with no release lock.",
+    example: { story: "Agents may change the release Flow only off main, on weekdays 09:00-18:00 IST, with a clean tree and no release.lock file.", name: "Safe release window", intent: "No agent changes on main, after hours, or during a release", config: { checks: [{ kind: "branch_not", patterns: ["main", "release/*"] }, { kind: "time_window", days: ["mon", "tue", "wed", "thu", "fri"], from: "09:00", to: "18:00", utc_offset_minutes: 330 }, { kind: "git_clean" }, { kind: "file_absent", path: "release.lock" }], on_fail: "ask" } },
     settings: [
-      { name: "operations", meaning: "Action classes that need approval.", values: CLASSES },
-      { name: "reason", meaning: "Shown to the person who approves.", values: "text" },
-    ],
-  },
-  isolation: {
-    what: "The execution boundary agent work in the target requires.",
-    useWhen: "Work must run under a specific confinement profile; if it is unavailable, direct changes stop (fail closed).",
-    example: { story: "Agent work in the infra Zone must go through the agent-hooks profile, so every tool call is checked.", name: "Infra through hooks", intent: "Every agent action in infra is checked by Crane's hooks", config: { profile: "agent-hooks" } },
-    settings: [{ name: "profile", meaning: "The isolation profile id. 'crane isolation profiles' lists them.", values: "a profile id, e.g. agent-hooks" }],
-  },
-  budget: {
-    what: "Caps on tool calls, retries, and running time, and what happens at the cap.",
-    useWhen: "Agents in an area should not run away with long sessions or endless retries.",
-    example: { story: "In the experiments Zone a session gets at most 200 tool calls and 30 minutes, then a person is asked.", name: "Experiments budget", intent: "Keep experiment sessions short and ask before going on", config: { max_tool_calls: 200, max_retries: 1, max_runtime_minutes: 30, on_exhausted: "escalate" } },
-    settings: [
-      { name: "max_tool_calls", meaning: "Tool calls per session in the target.", values: "whole number (optional)" },
-      { name: "max_retries", meaning: "Retries of a failed step.", values: "whole number (optional)" },
-      { name: "max_runtime_minutes", meaning: "Running time per task.", values: "whole number (optional)" },
-      { name: "on_exhausted", meaning: "What happens at the cap.", values: "stop, escalate (ask a person)" },
-    ],
-  },
-  action: {
-    what: "Binds work to one registered, typed operation (for example a git commit). The Brick runs nothing itself.",
-    useWhen: "Work in an area should go through a known operation instead of free-form commands.",
-    example: { story: "The changelog Flow ends with a git commit made through the registered git adapter.", name: "Commit through git adapter", intent: "Changelog updates are committed through a known operation", config: { adapter: "git", operation: "git.commit" } },
-    settings: [
-      { name: "adapter", meaning: "A registered adapter id.", values: "e.g. git" },
-      { name: "operation", meaning: "An operation of that adapter.", values: "e.g. git.commit" },
+      { name: "checks", meaning: "Gates that must all hold before a change.", values: GATES },
+      { name: "on_fail", meaning: "What a failing gate does.", values: "ask (changes need a person) or deny (changes stop)" },
     ],
   },
   verification: {
-    what: "Objective checks that prove an outcome, with the evidence for each: proven, contradicted, unknown, or not run.",
-    useWhen: "You want proof the area is still healthy after agents work, such as all policy tests passing.",
-    example: { story: "After agents change the checkout Flow, every policy test and selection must still pass.", name: "Checkout stays green", intent: "Prove checkout still meets its rules after agent work", config: { checks: [{ kind: "policy_tests_pass" }, { kind: "selections_resolved" }] } },
-    settings: [{ name: "checks", meaning: "Checks that prove the outcome.", values: CHECKS }],
-  },
-  provenance: {
-    what: "The records every outcome must be traceable to: the signed state and the audit chain.",
-    useWhen: "Auditors need to trace each change in an area back to signed rules and recorded decisions.",
-    example: { story: "Changes in the compliance Zone must trace back to the signed manifest and the audit chain.", name: "Traceable compliance work", intent: "Every compliance change is traceable for audits", config: { require: ["signed_state", "audit_chain"] } },
-    settings: [{ name: "require", meaning: "Records an outcome must be traceable to.", values: "signed_state, audit_chain" }],
-  },
-  recovery: {
-    what: "What happens after a failed, partial, or uncertain outcome. Uncertain effects are always reconciled before a retry.",
-    useWhen: "Failures in an area must not be retried blindly, for example steps that touch external systems.",
-    example: { story: "If a step in the deploy Flow fails, retry once after checking what really happened, then ask a person.", name: "Careful deploy retries", intent: "Never retry a deploy step blindly", config: { on_failure: "escalate", max_retries: 1, reconcile_before_retry: true } },
+    purpose: "Proves the outcome after work: policy tests, files, endpoints, metrics, and commands.",
+    unique: "The only kind that produces evidence after the fact: proven, contradicted, unknown, or not run.",
+    useWhen: "You want proof the area still works after agents changed it, not just that rules were followed.",
+    example: { story: "After agents change the checkout Flow: policy tests pass, coverage stays at least 80 %, the health endpoint answers 200, the test suite succeeds, and the release gates still hold.", name: "Checkout stays healthy", intent: "Prove checkout still works after agent work", config: { checks: [{ kind: "policy_tests_pass" }, { kind: "json_value", path: "coverage/coverage-summary.json", pointer: "/total/lines/pct", op: "at_least", value: 80 }, { kind: "http_ok", url: "https://staging.example.com/health", status: 200 }, { kind: "command_succeeds", program: "npm", args: ["test"] }], checks_from: "safe-release-window" } },
     settings: [
-      { name: "on_failure", meaning: "What happens after a failure.", values: "stop, escalate (ask a person)" },
-      { name: "max_retries", meaning: "Retries allowed.", values: "0 to 3" },
-      { name: "reconcile_before_retry", meaning: "Check what really happened before retrying.", values: "must be true" },
+      { name: "checks", meaning: "Checks that prove the outcome.", values: PROOFS },
+      { name: "checks_from", meaning: "Also re-run a Precondition Brick's gates after the work (its id), so the facts are proven afterwards too.", values: "a Brick id (optional)" },
     ],
   },
-  revocation: {
-    what: "Conditions under which attachments in the target should be withdrawn. Monitors report it; an admin withdraws.",
-    useWhen: "You want to know at once when an area's protections can no longer be trusted.",
-    example: { story: "If the signed state stops verifying or verification is contradicted, the monitors flag the attachments for withdrawal.", name: "Withdraw on broken trust", intent: "Flag attachments when the area's guarantees break", config: { triggers: ["integrity_failure", "verification_contradicted"] } },
-    settings: [{ name: "triggers", meaning: "Conditions the monitors report.", values: "integrity_failure, verification_contradicted, repeated_denials" }],
-  },
-  monitoring: {
-    what: "Deterministic checks that keep running while agents are idle, without any model.",
-    useWhen: "You want an area watched continuously, such as policy tests every hour or a burst of denials.",
-    example: { story: "Check the payments Zone's policy tests every hour, and raise an alert after 5 denied agent actions.", name: "Watch payments", intent: "Notice broken rules or repeated denials in payments", config: { signals: [{ source: "policy_tests", every_minutes: 60 }, { source: "denials", every_minutes: 15, threshold: 5 }] } },
-    settings: [{ name: "signals", meaning: "What is watched, how often (at least every 5 minutes), and for denials the count that raises it.", values: "source: governance_integrity, selections_resolved, policy_tests, denials (ci, metrics, external have no connector yet); every_minutes; threshold" }],
-  },
-  intelligence: {
-    what: "Advisory analysis of local events that proposes improvements and never applies them.",
-    useWhen: "You want hints, such as rules agents keep hitting or context that went stale while the code changed.",
-    example: { story: "Spot rules agents are repeatedly denied by in the API Zone, and context that no longer matches the code.", name: "API rule hints", intent: "Suggest rule and context improvements for the API Zone", config: { analyses: ["denial_patterns", "stale_context"], advisory_only: true } },
+  action: {
+    purpose: "Lists the side-effecting operations Crane may run here, and keeps agents from doing them directly.",
+    unique: "The only kind about operations in other systems: an allow-list with daily caps, dry runs first, and no direct agent shortcut.",
+    useWhen: "Pushes, releases, deployments, or tickets must go through a reviewed path, never an agent's shell.",
+    example: { story: "In the release Flow, agents may not run git push or gh release create themselves; resident agents may only create tickets, at most 5 a day.", name: "Releases through Crane", intent: "Pushes and releases never come straight from an agent", config: { operations: [{ adapter: "git", operation: "git.push" }, { adapter: "github", operation: "github.release_create" }, { adapter: "resident", operation: "create_ticket", max_per_day: 5, dry_run_first: true }], deny_direct: true } },
     settings: [
-      { name: "analyses", meaning: "Analyses to run.", values: "denial_patterns, stale_context" },
-      { name: "advisory_only", meaning: "It proposes, never applies.", values: "must be true" },
+      { name: "operations", meaning: "Operations Crane may run for the target.", values: "list of {adapter, operation, max_per_day, dry_run_first, approval}; resident steps are resident/STEP, direct ones git.commit|push|tag|merge|rebase|reset, github.pr_create|pr_merge|release_create|workflow_run, packages.install, kubectl.apply, terraform.apply, docker.push" },
+      { name: "deny_direct", meaning: "Agents may not do these operations themselves (their shell commands are refused).", values: "true or false" },
+    ],
+  },
+  recovery: {
+    purpose: "Decides what happens after a failed, partial, or uncertain outcome.",
+    unique: "The only kind that reacts to failure: retries with reconciliation first, and a pause after repeated agent failures.",
+    useWhen: "Failures must not be retried blindly, or an agent stuck failing should stop and get help.",
+    example: { story: "In the deploy Flow, a failed step is retried once after checking what really happened; after 3 failed agent tool calls in a row, changes wait for a person.", name: "Careful deploy recovery", intent: "Never retry blindly; stop a struggling agent", config: { on_failure: "retry", max_retries: 1, backoff_seconds: 30, reconcile_before_retry: true, max_consecutive_failures: 3, on_uncertain: "reconcile" } },
+    settings: [
+      { name: "on_failure", meaning: "What a failure leads to.", values: "stop, escalate, or retry (within max_retries)" },
+      { name: "max_retries / backoff_seconds", meaning: "How often and how far apart retries happen.", values: "0-3; 0-3600 seconds" },
+      { name: "reconcile_before_retry", meaning: "Check what really happened before a retry.", values: "must be true" },
+      { name: "max_consecutive_failures", meaning: "Failed agent tool calls in a row before changes need a person.", values: "whole number" },
+      { name: "on_uncertain", meaning: "An outcome that may or may not have happened.", values: "reconcile or escalate" },
+    ],
+  },
+  provenance: {
+    purpose: "Requires every outcome to be traceable: signed state, audit chain, commit trailers, linked issues.",
+    unique: "The only kind about lineage: it checks where changes came from, not whether they work.",
+    useWhen: "Auditors or reviewers need each change traced to signed rules, a recorded decision, and an issue.",
+    example: { story: "The last 20 commits touching the compliance Zone's in-scope files must carry an Agent-Session trailer and name a COMP-* issue; each change must have a recorded guard decision.", name: "Traceable compliance work", intent: "Every compliance change is traceable for audits", config: { require: ["signed_state", "audit_chain", "decisions_recorded", "commit_trailer", "linked_issue"], trailer: "Agent-Session", issue_pattern: "COMP-*", commits: 20, scope_from: "compliance-access" } },
+    settings: [
+      { name: "require", meaning: "Records every outcome must trace to.", values: "signed_state, audit_chain, decisions_recorded, commit_trailer, linked_issue" },
+      { name: "trailer", meaning: "The commit trailer key commit_trailer looks for.", values: "e.g. Agent-Session" },
+      { name: "issue_pattern", meaning: "The issue id linked_issue looks for in commit messages.", values: "e.g. PROJ-*" },
+      { name: "commits", meaning: "How many recent commits touching the target are checked.", values: "1-500" },
+      SCOPE_FROM,
+    ],
+  },
+  watch: {
+    purpose: "Keeps checking this Zone or Flow while agents are idle, and reacts when a signal fires.",
+    unique: "The only kind that runs on its own schedule: signals with reactions (alert, pause, revoke due) and advisory analyses.",
+    useWhen: "You want an area watched continuously and want to hear about it, or stop agents, when something breaks.",
+    example: { story: "Every hour Crane checks the payments Zone's policy tests and preconditions, and every 15 minutes counts denials; when one fires it alerts on Slack and pauses agent changes until it clears.", name: "Watch payments", intent: "Notice broken rules fast and stop agents until fixed", config: { signals: [{ source: "policy_tests", every_minutes: 60 }, { source: "preconditions", every_minutes: 60 }, { source: "denials", every_minutes: 15, threshold: 5 }], on_fire: ["alert", "pause"], triggers: ["integrity_failure"], analyses: ["denial_patterns"] } },
+    settings: [
+      { name: "signals", meaning: "What is checked, how often (at least every 5 minutes), and for denials the count that fires.", values: "source: governance_integrity, selections_resolved, policy_tests, denials, preconditions, verification (ci, metrics, external have no connector yet); every_minutes; threshold" },
+      { name: "on_fire", meaning: "What a firing signal does.", values: "alert (integrations), pause (changes need a person while it fires), revoke_due, propose" },
+      { name: "triggers", meaning: "When attachments are due for withdrawal.", values: "integrity_failure, verification_contradicted, repeated_denials" },
+      { name: "analyses", meaning: "Advisory analyses that only propose.", values: "denial_patterns, stale_context" },
+      SCOPE_FROM,
     ],
   },
 };

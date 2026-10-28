@@ -62,6 +62,19 @@ impl Hook {
         } = crate::scope::enforcement(&self.workspace, &self.state, &trust, &self.stores.directory);
         let integrity_ok = integrity.is_empty();
         let available = self.available(session)?;
+        // The Brick rules decided per call, and what this session already did in each target
+        let bricks = crate::brick::guard::Rules::load(
+            &self.workspace,
+            &self.state,
+            Some(&self.stores.directory),
+        );
+        let usage = crate::brick::usage::load(&self.stores.directory, &session.foxx_session_id);
+        let agent_id = session.agent_id.clone();
+        let model = self
+            .provider
+            .model
+            .clone()
+            .or_else(|| session.model.clone());
         let guard = Guard {
             workspace: &self.workspace,
             state: &self.state,
@@ -75,6 +88,14 @@ impl Hook {
             costs: self.state.config.autonomy.costs.clone(),
             limits: Some(&limits),
             zone_error,
+            caller: crate::hooks::enforce::Caller {
+                agent: Some(self.adapter.kind().name()),
+                agent_id: Some(&agent_id),
+                model: model.as_deref(),
+                started_at: Some(session.started_at),
+                usage: Some(&usage),
+            },
+            bricks: Some(&bricks),
         };
         let mut decided: Decided = guard.decide(&action);
         if let Some((quarantine_id, reason)) = remote_quarantine {
@@ -85,6 +106,17 @@ impl Hook {
             ));
             decided.rules.push("DASHBOARD_AGENT_QUARANTINE");
         }
+        // The call counts in the session's Brick usage (caps, failures in a row); best effort
+        decided.counted.denied |= matches!(
+            decided.verdict.decision,
+            Decision::Deny | Decision::Quarantine
+        );
+        let _ = crate::brick::usage::record(
+            &self.stores.directory,
+            &session.foxx_session_id,
+            &call,
+            &decided.counted,
+        );
         // Guidance of the active zones and flows covering the files this call reads or writes
         let mut path_candidates = action
             .files
@@ -605,6 +637,15 @@ impl Hook {
         let (call, provided) = self.tool_call_id(session, &action);
         let record = self.with_calls(session, |calls| calls.calls.get(&call).cloned())?;
         let failed = self.provider.tool_failed;
+        // Failures in a row per target, for Recovery Bricks; best effort
+        if let Some(failed) = failed {
+            let _ = crate::brick::usage::outcome(
+                &self.stores.directory,
+                &session.foxx_session_id,
+                &call,
+                failed,
+            );
+        }
         let mut attributed_files = None;
         if let Some(before) = record.as_ref().and_then(|record| record.before.as_ref()) {
             if let Ok(after) = tree(&self.workspace) {

@@ -476,21 +476,24 @@ Object.assign(TONES, { active: "ok", passed: "ok", draft: "info", not_run: "warn
   FIRST_ASSEMBLY: "info", BRICK_STORE_CHANGED: "warn", GOVERNANCE_CHANGED: "warn", CONTEXT_CHANGED: "info",
   enforced: "ok", checked: "info", delivered: "info", declared: "warn", paused: "warn" });
 
-/** Starting configurations per type for the draft builder; Crane validates whatever is written */
+/** Starting configurations per kind for the draft builder; Crane validates whatever is written */
 const BRICK_TEMPLATES = {
-  context: { files: [] }, identity: { agents: ["claude"] }, scope: { include: ["src/**"] }, permission: { allow: ["read", "write"] },
-  constraint: { max_ceiling: "assisted", protected_paths: [] }, precondition: { checks: [{ kind: "file_exists", path: "README.md" }] },
-  approval: { operations: ["write", "delete"], reason: "" }, isolation: { profile: "agent-hooks" }, budget: { max_tool_calls: 200, on_exhausted: "escalate" },
-  action: { adapter: "git", operation: "git.commit" }, verification: { checks: [{ kind: "policy_tests_pass" }] }, provenance: { require: ["signed_state", "audit_chain"] },
-  recovery: { on_failure: "escalate", max_retries: 0, reconcile_before_retry: true }, revocation: { triggers: ["verification_contradicted"] },
-  monitoring: { signals: [{ source: "policy_tests", every_minutes: 60 }] }, intelligence: { analyses: ["denial_patterns"], advisory_only: true },
+  knowledge: { files: [], glossary: {}, references: [] }, identity: { agents: ["claude"], models: [], on_other: "deny" },
+  access: { include: ["src/**"], exclude: [], read_only: [], deny_read: [".env*"], write: "auto", delete: "ask" },
+  approval: { operations: ["dependency_change", "git_push"], paths: [], reason: "" }, limits: { max_tool_calls: 200, max_runtime_minutes: 60, on_exhausted: "escalate" },
+  environment: { profile: "agent-hooks", require_env: [], hide_env: ["*_TOKEN", "*_SECRET"], credentials: [], network: { allow: [], deny: [] } },
+  precondition: { checks: [{ kind: "branch_not", patterns: ["main"] }], on_fail: "ask" }, verification: { checks: [{ kind: "policy_tests_pass" }] },
+  action: { operations: [{ adapter: "git", operation: "git.push" }], deny_direct: true },
+  recovery: { on_failure: "escalate", max_retries: 1, reconcile_before_retry: true, max_consecutive_failures: 3 },
+  provenance: { require: ["signed_state", "audit_chain"], commits: 20 }, watch: { signals: [{ source: "policy_tests", every_minutes: 60 }], on_fire: ["alert"] },
 };
 
 /** The draft builder: a fixed type, plain-language intent, Common Context, and the type's
  * configuration, written as the JSON 'crane brick create --file' imports. The dashboard holds no
  * signing key and does not validate: Crane does, on a member's machine. */
 function brickBuilder(types) {
-  const state = { type: (types[0] || {}).type || "context", name: "", intent: "", owner: "", departments: "", context: "", config: JSON.stringify(BRICK_TEMPLATES.context, null, 2) };
+  const first = (types[0] || {}).type || "knowledge";
+  const state = { type: first, name: "", intent: "", owner: "", departments: "", context: "", config: JSON.stringify(BRICK_TEMPLATES[first] || {}, null, 2) };
   const out = h("pre", { class: "mono", style: "white-space:pre-wrap;max-height:260px;overflow:auto" });
   const help = h("div", { class: "muted" });
   const draft = () => {
@@ -555,9 +558,9 @@ async function bricksView(main) {
       { label: "Digest", get: (row) => row.digest, render: (row) => h("code", { class: "muted" }, String(row.digest || "").slice(0, 12)) },
       { label: "Activated by", get: (row) => row.activated_by || row.updated_by || "", render: (row) => (row.activated_by || row.updated_by || "—") + (row.self_reviewed ? " (self-reviewed)" : "") },
     ], data.bricks, { sort: 0, dir: 1, empty: "No Bricks yet. Build a draft below, or run 'crane brick create' on a member's machine.", name: "foxx-bricks" })); }),
-    panel("Fixed types and what each does today", { span: 12, flush: true }, async (body, big, ctx) => { ctx.record("rows", data.types); put(body, dataTable([
-      { label: "Type", get: (row) => row.label }, { label: "Support", get: (row) => row.support, render: (row) => chip(row.support), filter: true },
-      { label: "Purpose", get: (row) => row.purpose }, { label: "What really happens", get: (row) => row.runtime }, { label: "Fields", get: (row) => (row.fields || []).join(", ") },
+    panel("The fixed kinds and what each does today", { span: 12, flush: true }, async (body, big, ctx) => { ctx.record("rows", data.types); put(body, dataTable([
+      { label: "Kind", get: (row) => row.label }, { label: "Support", get: (row) => row.support, render: (row) => chip(row.support), filter: true },
+      { label: "Purpose", get: (row) => row.purpose }, { label: "Only this kind", get: (row) => row.unique || "" }, { label: "What really happens", get: (row) => row.runtime }, { label: "Fields", get: (row) => (row.fields || []).join(", ") },
     ], data.types, { noColumns: true, pageSize: 16 })); })));
   main.append(zone("brick-attachments", "Attachments and Stacks", "Where each Brick applies. Current Context belongs to one attachment and changes nothing else; only its digest and size leave the machine.",
     panel("Attachments", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.attachments); put(body, dataTable([

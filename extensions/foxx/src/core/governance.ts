@@ -558,6 +558,92 @@ export function unlinkZones(text: string, from: string, to: string): GraphEdit {
 }
 
 /**
+ * Remove a zone. A stage of a flow is first unlinked from the zones before and after it (the flow
+ * splits there as unlinking does), then the zone, now on its own, is removed. Its context pack, when
+ * nothing else uses it, goes with it.
+ * @param text current content
+ * @param id zone id
+ * @returns the new content and what changed
+ */
+export function removeZone(text: string, id: string): GraphEdit {
+  const parts: string[] = [];
+  let current = text;
+  let where = placement(load(current), id);
+  if (!where) throw new Error(`no zone '${id}'`);
+  if (where.flow && where.stages) {
+    const name = (index: number) => String((where?.stages?.items[index] as YAMLMap | undefined)?.get("id"));
+    if (where.index > 0) {
+      const edit = unlinkZones(current, name(where.index - 1), id);
+      current = edit.text;
+      parts.push(edit.summary);
+      where = placement(load(current), id);
+    }
+    if (where?.flow && where.stages && where.index < where.stages.items.length - 1) {
+      const edit = unlinkZones(current, id, name(where.index + 1));
+      current = edit.text;
+      parts.push(edit.summary);
+      where = placement(load(current), id);
+    }
+  }
+  const document = load(current);
+  where = placement(document, id);
+  if (!where) throw new Error(`no zone '${id}'`);
+  if (where.flow) {
+    // A flow kept for its own entry points: the zone leaves it, the flow stays
+    where.stages?.items.splice(where.index, 1);
+    where.flow.set("version", Number(where.flow.get("version") ?? 0) + 1);
+  } else {
+    removeFrom(document, "zones", where.zone);
+  }
+  dropUnusedPack(document, contextPackOf(id));
+  parts.push(`zone ${id} removed`);
+  return { text: document.toString(), summary: parts.join("; ") };
+}
+
+/**
+ * Remove a flow. Its zones are kept as zones of their own, so removing a flow never removes code
+ * protection by accident; its own context pack, when nothing else uses it, goes with it.
+ * @param text current content
+ * @param id flow id
+ * @returns the new content and what changed
+ */
+export function removeFlow(text: string, id: string): GraphEdit {
+  const document = load(text);
+  const flows = document.get("flows", true);
+  const flow = isSeq(flows) ? flows.items.find((item): item is YAMLMap => isMap(item) && item.get("id") === id) : undefined;
+  if (!flow) throw new Error(`no flow '${id}'`);
+  const stages = flow.get("stages", true);
+  const kept = isSeq(stages) ? stages.items.filter(isMap) : [];
+  for (const stage of kept) sequence(document, "zones").add(document.createNode(stage.toJSON()));
+  removeFrom(document, "flows", flow);
+  dropUnusedPack(document, contextPackOf(id));
+  const names = kept.map((stage) => String(stage.get("id")));
+  return { text: document.toString(), summary: `flow ${id} removed${names.length ? `; ${names.join(", ")} stay${names.length === 1 ? "s" : ""} as zone${names.length === 1 ? "" : "s"}` : ""}` };
+}
+
+/**
+ * Remove a context pack nothing names any more.
+ * @param document YAML document
+ * @param pack pack id
+ */
+function dropUnusedPack(document: Document, pack: string): void {
+  const packs = document.get("context_packs", true);
+  if (!isSeq(packs)) return;
+  const named = (map: unknown) => {
+    const list = isMap(map) ? map.get("context_packs", true) : undefined;
+    return isSeq(list) ? list.items.map((item) => String((item as { value?: unknown }).value ?? item)) : [];
+  };
+  const users = [document.get("zones", true), document.get("flows", true)]
+    .flatMap((list) => (isSeq(list) ? list.items : []))
+    .flatMap((item) => {
+      const stages = isMap(item) ? item.get("stages", true) : undefined;
+      return [named(item), ...(isSeq(stages) ? stages.items.map(named) : [])].flat();
+    });
+  if (users.includes(pack)) return;
+  packs.items = packs.items.filter((item) => !(isMap(item) && item.get("id") === pack));
+}
+
+/**
  * List repository-relative source paths covered by a zone or a flow's linked stages.
  * @param text governance YAML
  * @param kind entity kind

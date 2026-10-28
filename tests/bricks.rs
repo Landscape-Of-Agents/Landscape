@@ -68,7 +68,12 @@ fn bricks_are_drafted_activated_attached_enforced_and_revoked() {
 
     let (code, types) = envelope(&fixture, &["brick", "types"]);
     assert_eq!(code, Some(0), "{types}");
-    assert_eq!(types["data"]["types"].as_array().unwrap().len(), 16);
+    assert_eq!(types["data"]["types"].as_array().unwrap().len(), 12);
+    // A former kind can no longer be created; the error names the kind that replaced it
+    assert!(
+        text(&fixture.run(&["brick", "create", "--type", "constraint", "--name", "x"]))
+            .contains("use limits and access instead")
+    );
     assert_eq!(types["data"]["custom_types"], false);
     assert!(text(&fixture.run(&[
         "brick",
@@ -87,7 +92,7 @@ fn bricks_are_drafted_activated_attached_enforced_and_revoked() {
             "brick",
             "create",
             "--type",
-            "constraint",
+            "limits",
             "--name",
             "Payments guard",
             "--intent",

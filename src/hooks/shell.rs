@@ -156,7 +156,7 @@ pub(super) fn names_crane_directory(text: &str) -> bool {
  * Output
     - Vec<String> lowercase words
 */
-pub(super) fn words(command: &str) -> Vec<String> {
+pub(crate) fn words(command: &str) -> Vec<String> {
     command
         .split(|character: char| character.is_whitespace() || "&|;()`\"'<>{}".contains(character))
         .filter(|word| !word.is_empty())

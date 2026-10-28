@@ -8,7 +8,6 @@ use std::rc::Rc;
 use super::config::{self, problem, Problem};
 use super::model::{Brick, BrickRef, Stack, Validation, ValidationStatus, VersionState};
 use super::store::BrickStore;
-use super::types::BrickType;
 use crate::capture::resources::local::GitConnector;
 use crate::invocation::adapter::{AdapterRegistry, GitReadAdapter};
 
@@ -32,6 +31,12 @@ pub(crate) fn registered_operations(root: &Path) -> Vec<(String, String)> {
         .operations()
         .into_iter()
         .map(|spec| (spec.adapter_id, spec.operation_id))
+        // Resident agents' steps are operations Crane runs for a target too
+        .chain(
+            crate::resident::plan::StepType::ALL
+                .iter()
+                .map(|step| ("resident".to_string(), step.name())),
+        )
         .collect()
 }
 
@@ -103,30 +108,47 @@ pub(crate) fn brick(brick: &Brick, store: &BrickStore, root: &Path) -> Validatio
             "state the outcome it solves in plain words (intent)",
         ));
     }
+    if brick.brick_type.is_legacy() {
+        problems.push(problem(
+            "TYPE_REPLACED",
+            format!(
+                "{} is a former kind; 'crane brick migrate' rewrites it as {}",
+                brick.brick_type.name(),
+                brick
+                    .brick_type
+                    .successors()
+                    .iter()
+                    .map(|kind| kind.name())
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            ),
+        ));
+    }
     let mut blocked = false;
     match config::parse(brick.brick_type, &brick.config) {
         Err(error) => problems.push(error),
         Ok(parsed) => {
-            let found =
-                config::validate(&parsed, &registered_operations(root), &isolation_profiles());
-            blocked = found
-                .iter()
-                .any(|item| item.code == "ISOLATION_UNAVAILABLE");
-            problems.extend(found);
+            let operations = registered_operations(root);
+            let profiles = isolation_profiles();
+            for config in &parsed {
+                let found = config::validate(config, &operations, &profiles);
+                blocked |= found
+                    .iter()
+                    .any(|item| item.code == "ISOLATION_UNAVAILABLE");
+                problems.extend(found);
+                if let config::Config::Knowledge(knowledge) = config {
+                    let empty = knowledge.files.is_empty()
+                        && knowledge.glossary.is_empty()
+                        && knowledge.references.is_empty();
+                    if empty && brick.common_context.text.trim().is_empty() {
+                        problems.push(problem(
+                            "CONTEXT_EMPTY",
+                            "a knowledge Brick needs common context text, files, glossary terms, or references",
+                        ));
+                    }
+                }
+            }
         }
-    }
-    if brick.brick_type == BrickType::Context
-        && brick.common_context.text.trim().is_empty()
-        && config::parse(brick.brick_type, &brick.config)
-            .ok()
-            .is_some_and(
-                |parsed| matches!(parsed, config::Config::Context(c) if c.files.is_empty()),
-            )
-    {
-        problems.push(problem(
-            "CONTEXT_EMPTY",
-            "a context Brick needs common context text or files",
-        ));
     }
     problems.extend(context_problems(
         "common_context",
@@ -230,12 +252,12 @@ pub(crate) fn stack(stack: &Stack, store: &BrickStore) -> Validation {
         .members
         .iter()
         .filter_map(|member| store.brick(member))
-        .filter_map(
-            |entry| match config::parse(entry.brick.brick_type, &entry.brick.config) {
-                Ok(config::Config::Isolation(isolation)) => Some(isolation.profile),
-                _ => None,
-            },
-        )
+        .filter_map(|entry| config::parse(entry.brick.brick_type, &entry.brick.config).ok())
+        .flatten()
+        .filter_map(|config| match config {
+            config::Config::Environment(environment) => Some(environment.profile),
+            _ => None,
+        })
         .collect::<std::collections::BTreeSet<_>>();
     if profiles.len() > 1 {
         problems.push(problem(

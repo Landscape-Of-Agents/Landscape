@@ -12,7 +12,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 import { CommandResult, CraneStatus, craneStatus, Finding, parseJson, RELEASES_URL, runCrane, selectionArgs, selectionIdFrom, Span, TestReport, ValidateReport } from "./core/crane";
-import { activate as activateEntity, addContext, addFlow, addZone, attachToZone, entities, linkZones, sourcePaths, unlinkZones, ZoneInput } from "./core/governance";
+import { activate as activateEntity, addContext, addFlow, addZone, attachToZone, entities, linkZones, removeFlow, removeZone, sourcePaths, unlinkZones, ZoneInput } from "./core/governance";
 import { busiest, GraphData } from "./core/graph";
 import { parsePolicies, Policy } from "./core/policies";
 import { checkName, confirmation, ownerKey, repoArgs } from "./core/setup";
@@ -357,6 +357,7 @@ const graphHost: GraphHost = {
   savePositions: (positions) => void extensionContext?.workspaceState.update("foxx.graph.positions", positions),
   link: (from, to) => editGraph("link zones", (text) => linkZones(text, from, to)),
   unlink: (from, to) => editGraph("unlink zones", (text) => unlinkZones(text, from, to)),
+  remove: (kind, id) => editGraph(`remove ${kind}`, (text) => (kind === "zone" ? removeZone(text, id) : removeFlow(text, id))),
   command: (id) => panelHost.command(id),
 };
 

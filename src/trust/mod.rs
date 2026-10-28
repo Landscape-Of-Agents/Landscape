@@ -10,6 +10,7 @@
 
 pub(crate) mod crypto;
 pub(crate) mod keys;
+pub(crate) mod vault;
 
 use std::env;
 use std::fs;

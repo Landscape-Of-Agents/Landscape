@@ -51,6 +51,10 @@ pub(crate) enum Trust {
     - approval: bool - a Brick requires approval for changes
     - read_only: bool - a Brick makes it read-only
     - fail_closed: Vec<String> - pins Crane cannot honor
+    - operations: Vec<String> - the step types Action Bricks allow ("resident/STEP"; empty: no
+      Action Brick)
+    - missing_credentials: Vec<String> - credentials Environment Bricks name that this machine's
+      vault does not hold
 */
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TargetFacts {
@@ -60,6 +64,11 @@ pub(crate) struct TargetFacts {
     pub(crate) approval: bool,
     pub(crate) read_only: bool,
     pub(crate) fail_closed: Vec<String>,
+    // Omitted when empty, so the digests of views computed before these fields do not change
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) operations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) missing_credentials: Vec<String>,
 }
 
 /** A signed Brick assignment as the resident runtime needs it
@@ -374,6 +383,21 @@ pub(crate) fn authorize(
                     format!("pins Crane cannot honor: {}", facts.fail_closed.join("; ")),
                 );
             }
+            let wanted = format!("resident/{}", step.step_type.name());
+            if !facts.operations.is_empty() && !facts.operations.contains(&wanted) {
+                answer.tighten(
+                    Decision::Deny,
+                    "BRICK_ACTION_NOT_LISTED",
+                    format!("the Action Bricks of {target} allow {}, not {wanted}", facts.operations.join(", ")),
+                );
+            }
+            if !facts.missing_credentials.is_empty() {
+                answer.tighten(
+                    Decision::Unavailable,
+                    "CREDENTIAL_MISSING",
+                    format!("this machine's vault lacks {} ('crane secret set NAME')", facts.missing_credentials.join(", ")),
+                );
+            }
         }
     }
     if policy.is_some_and(|policy| !policy.auto) {
@@ -423,8 +447,22 @@ pub(crate) fn load(
                             status: entity.status,
                             ceiling,
                             criticality,
-                            approval: controls.approval,
-                            read_only: controls.read_only,
+                            approval: !controls.approvals.is_empty(),
+                            read_only: controls.mode(crate::brick::config::ChangeClass::Update)
+                                == Some(crate::brick::config::Mode::Deny)
+                                && controls.mode(crate::brick::config::ChangeClass::Create)
+                                    == Some(crate::brick::config::Mode::Deny),
+                            operations: controls
+                                .operations
+                                .iter()
+                                .map(|(adapter, operation)| format!("{adapter}/{operation}"))
+                                .collect(),
+                            missing_credentials: controls
+                                .credentials
+                                .iter()
+                                .filter(|name| !crate::trust::vault::exists(workspace, name))
+                                .cloned()
+                                .collect(),
                             fail_closed: controls.fail_closed,
                         },
                     );

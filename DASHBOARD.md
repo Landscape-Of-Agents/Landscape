@@ -3060,9 +3060,10 @@ A tool from an external (MCP) server or a tool Crane does not know.
 
 ### F37. Bricks
 
-Bricks are reusable modules of one fixed type (context, identity, scope, permission, constraint,
-precondition, approval, isolation, budget, action, verification, provenance, recovery, revocation,
-monitoring, intelligence) attached to Flows and Zones. Their lifecycle commands (`crane brick ...`),
+Bricks are reusable modules of one fixed kind (knowledge, identity, access, approval, limits,
+environment, precondition, verification, action, recovery, provenance, watch; the former kinds
+context, scope, permission, constraint, isolation, budget, revocation, monitoring, and intelligence
+are read as the kinds that replaced them) attached to Flows and Zones. Their lifecycle commands (`crane brick ...`),
 the context the hooks deliver before an action, and the monitors the background sync runs are each
 noted on the event they belong to (the command's F13 event, the tool call's F05 event, or the sync's
 `brick.monitors_evaluated` event), and every note becomes one F37 event. Fields are identifiers,
@@ -3070,7 +3071,7 @@ digests, counts, and states; context text is never recorded. A decision the guar
 Brick also carries `brick:ID@N` in Bindings (zones), next to the Zones and Flows.
 
 Common attributes
-- Action [action_type (BRICK_DRAFT, BRICK_VALIDATE, BRICK_TEST, BRICK_ACTIVATE, BRICK_DEPRECATE, BRICK_REVOKE, BRICK_STACK_DRAFT, BRICK_STACK_RESOLVE, BRICK_STACK_ACTIVATE, BRICK_STACK_REVOKE, BRICK_ATTACH, BRICK_DETACH, BRICK_UPGRADE, BRICK_CONTEXT, SUPPLY_CONTEXT, BRICK_IDENTITY, BRICK_ASSIGN, BRICK_MONITOR) (enum), action_source (CLI, EXTENSION, HOOK, SYNC), action_user (string), action_email (string, null), action_id (id of the carrying event)]
+- Action [action_type (BRICK_DRAFT, BRICK_VALIDATE, BRICK_TEST, BRICK_ACTIVATE, BRICK_DEPRECATE, BRICK_REVOKE, BRICK_STACK_DRAFT, BRICK_STACK_RESOLVE, BRICK_STACK_ACTIVATE, BRICK_STACK_REVOKE, BRICK_ATTACH, BRICK_DETACH, BRICK_UPGRADE, BRICK_CONTEXT, SUPPLY_CONTEXT, BRICK_IDENTITY, BRICK_ASSIGN, BRICK_MONITOR, BRICK_MIGRATE) (enum), action_source (CLI, EXTENSION, HOOK, SYNC), action_user (string), action_email (string, null), action_id (id of the carrying event)]
 - Repository [(as F13)]
 - Session [(as F13 for commands; as F05 for delivered context)]
 - Agent [(as F13 for commands; as F05 for delivered context)]
@@ -3107,8 +3108,9 @@ reference was sent instead). Provider-side prompt caching is not observed.
 - Other [targets, snapshot, bytes, snapshot_bytes, bricks, refresh_reason, truncated, conflicts, gaps]
 
 #### F37.6 `BRICK_IDENTITY_MISMATCH`
-The acting agent is not admitted by an identity Brick of the target it touched. Checked and reported
-to the agent; the guard does not decide per agent yet.
+The acting agent is not admitted by an identity Brick of the target it touched. The guard refuses its
+calls there (rule `BRICK_IDENTITY`), or holds them for a person when the Brick says `on_other: ask`;
+this note is the explanation sent to the agent in the second case.
 - Other [target, agent, bricks]
 
 #### F37.7 `BRICK_ASSIGNED`, `BRICK_UNASSIGNED`
@@ -3120,6 +3122,18 @@ A monitoring signal, revocation trigger, or advisory analysis of an attached Bri
 deterministically (no model). Sources without a connector (ci, metrics, external) are UNSUPPORTED.
 - Response [response_status (OK, FIRING, FAILING, UNSUPPORTED, REVOCATION_DUE, PROPOSAL, ERROR)]
 - Other [target, brick, monitor (signal, trigger, analysis), source, inference (NONE)]
+
+#### F37.9 `BRICK_WATCH_REACTED`
+A watch signal of an attached Brick started firing (or failing) and one of its reactions ran: an
+alert through the configured integrations, a pause (changes in the target need a person while it
+fires, rule `BRICK_WATCH_PAUSE`), a revocation due, or a proposal. Noted once per start of firing.
+- Response [response_status (FIRING, FAILING)]
+- Other [target, brick, source, reaction (alert, pause, revoke_due, propose)]
+
+#### F37.10 `BRICK_MIGRATION_DRAFTED`
+A person ran `crane brick migrate`: active Bricks of former kinds were rewritten as drafts of the
+current kinds (nothing is signed; an admin activates the drafts and moves the attachments).
+- Other [bricks (count), dry_run]
 
 ### F38. Resident agents
 

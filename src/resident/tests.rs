@@ -84,6 +84,8 @@ fn authority() -> Authority {
                 approval: false,
                 read_only: false,
                 fail_closed: Vec::new(),
+                operations: Vec::new(),
+                missing_credentials: Vec::new(),
             },
         )]),
         connectors: BTreeMap::from([("slack".to_string(), true)]),

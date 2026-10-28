@@ -1,9 +1,11 @@
 # Bricks
 
-A **Brick** is a reusable module that solves one problem: a piece of reviewed context, a hard limit,
-an approval rule, a monitor. You build it once and attach it to the Flows and Zones where it
-applies. Every Brick has exactly one of a **fixed set of types**. You can make as many Bricks as you
-like, but you cannot invent a new type. To solve a bigger problem, combine Bricks into a **Stack**.
+A **Brick** is a reusable module that solves one problem: reviewed knowledge, who may work in an
+area, which files and operations are allowed, when a person decides, how much work a session may do.
+You build it once and attach it to the Flows and Zones where it applies. Every Brick has exactly one
+of **twelve fixed kinds**, and each kind answers one question no other kind answers. You can make as
+many Bricks as you like, but you cannot invent a new kind. To solve a bigger problem, combine Bricks
+into a **Stack**, or let one Brick share its configuration with another (below).
 
 A Brick is never a source of authority. When a Brick restricts something, Crane folds the
 restriction into the decision it already makes before every agent action, and it can only tighten
@@ -11,47 +13,92 @@ that decision. A Brick's context is guidance the agent receives; it never author
 
 | | What it is | Where it lives |
 |---|---|---|
-| **Brick** | One fixed type, typed settings, Common Context, intent, owner | drafts: `.crane/drafts/bricks/ID.json` (unsigned, grants nothing); active versions: `.crane/bricks.json` (signed) |
+| **Brick** | One fixed kind, typed settings, Common Context, intent, owner | drafts: `.crane/drafts/bricks/ID.json` (unsigned, grants nothing); active versions: `.crane/bricks.json` (signed) |
 | **Brick Stack** | A named set of exact Brick versions, such as "Production code change" | `.crane/bricks.json` (signed) |
 | **Attachment** | A Brick or Stack version pinned to a Flow, Zone, or Runbook, with its own **Current Context** | `.crane/bricks.json` (signed) |
 | **Assignment** | An agent (provider or agent id) assigned to Flows and Zones | `.crane/bricks.json` (signed) |
 | **Snapshot** | The assembled context agents receive for some targets, with a digest per source | trust directory (runtime) |
+| **Credential** | A secret an Environment Brick names; only its name is shared | each machine's vault in the trust directory |
 
-## The fixed types and what each does today
+## The twelve kinds
 
-Support levels: **enforced** (the guard decides with it before every action), **checked** (evaluated
-by `crane brick test` and the monitors), **delivered** (agents receive it as context), **declared**
-(validated and recorded; nothing acts on it yet).
+Support levels: **enforced** (the guard decides with it before every agent tool call), **checked**
+(evaluated by `crane brick test` and the monitors), **delivered** (agents receive it as context).
 
-| Type | Settings | Support | What really happens |
+| Kind | Purpose | Only this kind | Support |
 |---|---|---|---|
-| Context | `files` | delivered | Common Context and files are delivered before the agent acts in the target |
-| Identity | `agents` | checked | Not admitting the acting agent is reported to it and noted (F37); the guard does not decide per agent yet |
-| Scope | `include` | enforced | Files of the target outside the scope become read-only. A scope that matches nothing makes the whole target read-only |
-| Permission | `allow` | enforced | Without `write`, the target becomes read-only. `execute` and `network` limits are delivered, not enforced per file |
-| Constraint | `max_ceiling`, `min_criticality`, `protected_paths` | enforced | Lowers the ceiling, raises the criticality, makes protected paths read-only |
-| Precondition | `checks` (file_exists, file_absent, signed_state) | enforced | While a check fails, every change in the target needs approval |
-| Approval | `operations`, `reason` | enforced | Write or delete approval makes the target "assisted". The agent tool's own prompt answers it, so it is not bound to the exact change |
-| Isolation | `profile` | enforced | Agent tools run under `agent-hooks`. Requiring another or an unavailable profile (`sandbox`) makes direct changes read-only. No sandbox exists |
-| Budget | `max_tool_calls`, `max_retries`, `max_runtime_minutes`, `on_exhausted` | declared | Validated and delivered; only the existing autonomy credits limit agents |
-| Action | `adapter`, `operation` | checked | Must name a registered operation (today `git/git.commit`). A Brick never executes anything |
-| Verification | `checks` | checked | Proven, contradicted, unknown, or not run (policy tests, selections, files, signed state) |
-| Provenance | `require` (signed_state, audit_chain) | checked | Verified against the signed manifest and the audit chain |
-| Recovery | `on_failure`, `max_retries` (≤3), `reconcile_before_retry` | declared | Retries require reconciliation first; the skill invocation engine applies it |
-| Revocation | `triggers` | checked | Monitors report a revocation as due. Revoking is always a signed command by a person |
-| Monitoring | `signals` (source, every_minutes ≥ 5, threshold) | checked | Deterministic checks on every background sync. `ci`, `metrics`, and `external` are reported as coverage gaps |
-| Intelligence | `analyses`, `advisory_only` (must be true) | checked | Denial patterns and stale context produce proposals only |
+| Knowledge | Gives agents the reviewed documents, terms, and references they need | Puts repository documents into an agent's context; informs, never restricts | delivered |
+| Identity | Says which providers and models may work in the target at all | Decides by who is calling, whatever they try to do | enforced |
+| Access | Says which files agents may read or change, and how each operation is treated | Per-path, per-operation rules: scope, read-only, unreadable, auto/ask/deny | enforced |
+| Approval | Names the kinds of change a person must approve, even where access allows them | Recognizes kinds of change (dependency, config, migration, push, install, large diff) | enforced |
+| Limits | Caps how much and how long agents work in one session | Counts: tool calls, minutes, files and lines changed, commands, network calls, denials, ceiling | enforced |
+| Environment | Defines what the work runs with: variables, credentials, network reach | Governs the surroundings: required and hidden variables, credentials by name, hosts | enforced |
+| Precondition | Gates changes on facts that must hold first | Evaluated before every change; a failing gate asks a person or stops | enforced |
+| Verification | Proves the outcome after work | Evidence after the fact: proven, contradicted, unknown, not run | checked |
+| Action | Lists the side-effecting operations Crane may run, and keeps agents from doing them directly | Operations in other systems: allow-list, daily caps, dry runs, no direct shortcut | enforced |
+| Recovery | Decides what happens after a failed, partial, or uncertain outcome | Reacts to failure: retries with reconciliation first, pause after repeated failures | enforced |
+| Provenance | Requires every outcome to be traceable | Lineage: where changes came from, not whether they work | checked |
+| Watch | Keeps checking the target while agents are idle, and reacts | Runs on its own schedule: signals with reactions and advisory analyses | checked |
 
-Settings are checked against the type's schema. Unknown fields, commands, scripts, paths outside
-the repository, and context that looks like it contains a secret are refused.
+### Settings and what really happens
+
+| Kind | Settings | What really happens |
+|---|---|---|
+| Knowledge | `files`, `glossary`, `references` | Delivered with the Common Context before the agent acts in the target |
+| Identity | `agents`, `models` (patterns), `on_other` (deny or ask) | Every tool call touching the target's files from another provider or model is refused (or held for a person). `crane scope` questions, which have no agent, are not decided by identity |
+| Access | `include`, `exclude`, `read_only`, `deny_read`, `write`, `create`, `update`, `delete`, `execute`, `network` (each auto, ask, deny) | Unreadable files refuse reads; read-only and out-of-scope files refuse changes; each operation is allowed, held for a person, or refused. `execute` applies to commands naming the target's files, `network` while the session works in the target |
+| Approval | `operations` (write, create, update, delete, execute, network, dependency_change, config_change, migration_change, test_change, git_commit, git_push, package_install, large_change), `paths`, `except`, `min_lines_changed`, `reason`, `approvers`, `min_approvals`, `distinct_approver`, `expires_minutes`, `scope_from` | A matching change needs a person. Commits, pushes, and package installs name no file, so they are held in every target whose Approval Bricks name them. The agent tool's own prompt answers; approvers and quorum apply to resident agents |
+| Limits | `max_tool_calls`, `max_runtime_minutes`, `max_files_changed`, `max_lines_changed`, `max_commands`, `max_network_calls`, `max_denials`, `max_retries`, `max_ceiling`, `min_criticality`, `on_exhausted`, `scope_from` | Counted per agent session and target before every call (`runtime/bricks/usage/`); at a cap the call is refused (stop) or held for a person (escalate). The ceiling and criticality fold into the per-file limits |
+| Environment | `profile`, `require_env`, `hide_env`, `credentials` (name, for), `network.allow`, `network.deny` | Commands that read a hidden variable (`$NAME`, `printenv`, environment dumps) and calls to unlisted or denied hosts are refused while the session works in the target; a missing required variable holds changes for a person; credentials reach only Crane-run operations |
+| Precondition | `checks` (file_exists, file_absent, file_contains, env_set, branch_is, branch_not, git_clean, time_window, command_available, credential_present, signed_state), `on_fail` (ask or deny) | File checks fold into the per-file limits; the others run before every change. While one fails, changes need a person or stop |
+| Verification | `checks` (every gate, plus policy_tests_pass, selections_resolved, http_ok, json_value, local_metric, command_succeeds), `checks_from` | Evaluated by `crane brick test` and the monitors. Endpoints and programs run only when a person runs `crane brick test` |
+| Action | `operations` (adapter, operation, max_per_day, dry_run_first, approval), `deny_direct` | Resident agents may only plan the steps an Action Brick lists. With `deny_direct`, agent shell commands that do the same operation (git commit/push/tag/merge/rebase/reset, gh pr/release/workflow, package installs, kubectl/terraform apply, docker push) are refused |
+| Recovery | `on_failure` (stop, escalate, retry), `max_retries` (≤3), `reconcile_before_retry`, `backoff_seconds`, `max_consecutive_failures`, `on_uncertain` | After that many failed agent tool calls in a row in the target, changes need a person. Retries and reconciliation apply to resident agents and skills |
+| Provenance | `require` (signed_state, audit_chain, decisions_recorded, commit_trailer, linked_issue), `trailer`, `issue_pattern`, `commits`, `scope_from` | Verified against the signed manifest, the audit chain, the local decisions, and the recent commits touching the target |
+| Watch | `signals` (governance_integrity, selections_resolved, policy_tests, denials, preconditions, verification), `on_fire` (alert, pause, revoke_due, propose), `triggers`, `analyses`, `scope_from` | Deterministic checks on every background sync. When a signal starts firing it alerts through the integrations once; `pause` holds changes in the target for a person while it fires. `ci`, `metrics`, and `external` are reported as coverage gaps |
+
+Settings are checked against the kind's schema. Unknown fields, commands outside verification
+checks, paths outside the repository, and context that looks like it contains a secret are refused.
+
+## Sharing configuration between Bricks
+
+Two Bricks attached to the same Flow or Zone can work as one. **`scope_from`** (Approval, Limits,
+Provenance, Watch) takes the files from an Access Brick on the same target, so a scope is defined
+once: an Access Brick scopes the agent to `src/api/**`, and a Provenance Brick with
+`scope_from: api-access` proves the lineage of exactly those files afterwards. **`checks_from`**
+(Verification) re-runs a Precondition Brick's gates after the work, so the facts that had to hold
+before are proven to hold after. A share that names no such Brick on the same target cannot be
+honored and fails closed: changes there need a person until an admin fixes it.
+
+## Credentials
+
+An Environment Brick names credentials (`credentials: [{name: jira-billing, for: [jira]}]`); the
+name is shared through the signed store, the value never is. A person stores the value on each
+machine with `crane secret set jira-billing` (read from standard input or a hidden prompt, never an
+argument). On Windows it is sealed with the Data Protection API, elsewhere it is kept owner-only, in
+the repository's trust directory, which agents cannot read. Crane-run operations use it: a Jira
+integration named in `for` uses that credential as its token, and resident steps on a target whose
+Environment Brick names a credential the vault lacks are unavailable until it is set. AI agents'
+tool calls never receive credentials.
+
+## Former kinds
+
+Repositories made before the twelve kinds may hold Bricks of the former kinds (context, scope,
+permission, constraint, isolation, budget, revocation, monitoring, intelligence). They keep working:
+signed versions are never rewritten (their digests stay valid) and are read as the kinds that
+replaced them (context as knowledge; scope and permission as access; constraint as limits, plus
+access for protected paths; isolation as environment; budget as limits; revocation, monitoring, and
+intelligence as watch). New Bricks cannot use them. `crane brick migrate` writes drafts of the
+current kinds (the next version of each Brick, plus `ID-access` for a constraint's protected paths)
+and lists what an admin then signs: activating each draft and moving the attachments to it.
 
 ## How it fits together
 
-1. **Draft.** `crane brick create`, the VS Code Bricks view, or a dashboard draft file. A draft
+1. **Draft.** `crane brick create`, the Bricks panel in VS Code, or a dashboard draft file. A draft
    grants nothing.
 2. **Validate and test.** `crane brick validate ID` checks the schema. `crane brick test ID --target
-   flow:ID` simulates the Brick on a real Flow and lists exactly which files the guard would
-   restrict.
+   flow:ID` simulates the Brick on a real Flow, lists the files the guard would restrict and the
+   rules it decides per call, evaluates gates and verification checks, and checks provenance.
 3. **Activate.** An admin signs the version into `.crane/bricks.json` (`crane brick activate ID
    --reason TEXT`). Activation always validates again. The author cannot activate their own Brick
    while another admin can review it; a repository with one signer may, and the version records
@@ -59,9 +106,11 @@ the repository, and context that looks like it contains a secret are refused.
    version.
 4. **Attach.** `crane brick attach ID@N --target flow:ID --context TEXT` pins an exact version to a
    target with that attachment's Current Context. Use `--dry-run` to see the before and after first.
-5. **Agents work.** Before every tool call, the guard applies the Bricks' limits to the files of
-   attached Flows and Zones. The first tool call that touches a target delivers its snapshot;
-   later calls get a one-line reference while nothing changed.
+5. **Agents work.** Before every tool call, the guard applies the Bricks' per-file limits to the
+   files of attached Flows and Zones, then decides the per-call rules (identity, access, approval,
+   limits, environment, gates, direct operations, recovery, watch pauses). A finding can only make
+   the decision stricter, and the decision carries `brick:ID@N`. The first tool call that touches a
+   target delivers its snapshot; later calls get a one-line reference while nothing changed.
 6. **Change or withdraw.** `upgrade`, `context set`, `detach`, `deprecate`, and `revoke` are all
    signed. Detaching keeps the history in the audit trail. Revoking a version makes attachments
    pinned to it **fail closed**: changes in the target need approval until an admin detaches or
@@ -77,10 +126,11 @@ the repository, and context that looks like it contains a secret are refused.
 
 A snapshot always has the same order: first the enforced controls, stated as facts so no context
 can be read as relaxing them; then Flow and Zone context (in previews; the hooks already send it
-with each tool call); then each Brick's Common Context, once per version; then each attachment's
-Current Context. Every section carries its source, reference, digest, and size. Conflicts, such as
-one Brick pinned at two versions or a pin Crane cannot honor, are reported, never resolved by a
-guess. `crane brick context preview --targets flow:ID` shows exactly what agents receive.
+with each tool call); then each Brick's Common Context (with a Knowledge Brick's files, glossary,
+and references), once per version; then each attachment's Current Context. Every section carries
+its source, reference, digest, and size. Conflicts, such as one Brick pinned at two versions or a
+pin Crane cannot honor, are reported, never resolved by a guess. `crane brick context preview
+--targets flow:ID` shows exactly what agents receive.
 
 **Caching.** The hooks remember which snapshot digest each agent session received for each set of
 targets. An unchanged snapshot is not sent again. Any change to the signed store, governance, a
@@ -105,13 +155,14 @@ Scheduler. There is no Crane daemon. Model tokens are not observed, so inference
 ```
 crane brick types | list | show ID[@N] | history [ID]
 crane brick create --type TYPE --name NAME [--intent ...] [--config JSON] [--context TEXT]   (or --file DRAFT.json)
-crane brick edit ID [...] | validate ID | test ID[@N] [--target flow:ID]
+crane brick edit ID [...] | validate ID | test ID[@N] [--target flow:ID] | migrate [--dry-run]
 crane brick activate ID --reason TEXT [--dry-run] | deprecate ID@N | revoke ID[@N] --reason TEXT
 crane brick stack create --name NAME --members ID@N,ID@N | stack show ID | stack activate ID | stack revoke ID@N
 crane brick attach ID@N|stack:ID@N --target flow:ID [--context TEXT] [--dry-run]
 crane brick detach ATTACHMENT | upgrade ATTACHMENT --to ID@N | context set ATTACHMENT --text TEXT
 crane brick context preview --targets flow:ID,zone:ID | context status
 crane brick assign AGENT --targets flow:ID | unassign AGENT | agents | monitor run | monitor status
+crane secret set NAME | list | remove NAME
 ```
 
 Every command takes `--format json` and returns the shared envelope. Exit codes: 0 ok or passed;
@@ -120,24 +171,28 @@ of them.
 
 ## Where to see it
 
-- **Landscape for VS Code**: the Bricks view, with create, validate, test, activate, attach,
-  Current Context, detach, upgrade, revoke, and preview. Signing changes are previewed with
-  `--dry-run` and need your confirmation. See [surfaces/vscode.md](../surfaces/vscode.md).
-- **Dashboard**: the Bricks page (Govern), with the library, types, attachments, Stacks, agents,
+- **Landscape for VS Code**: the Bricks view and panel (graph with what each Zone and Flow
+  receives, a guide per kind, the configuration pop-up of each Brick, create, attach, contexts,
+  migrate). Signing changes are previewed with `--dry-run` and need your confirmation. See
+  [surfaces/vscode.md](../surfaces/vscode.md).
+- **Dashboard**: the Bricks page (Govern), with the library, kinds, attachments, Stacks, agents,
   monitors, snapshots, signed history, F37 events, and a draft builder. See
   [surfaces/dashboard.md](../surfaces/dashboard.md).
 - **Events**: F37 in [DASHBOARD.md](../../DASHBOARD.md). A decision the guard made because of a
-  Brick carries `brick:ID@N` next to its Zones and Flows.
+  Brick carries `brick:ID@N` next to its Zones and Flows, and its rule (`BRICK_IDENTITY`,
+  `BRICK_DENY_READ`, `BRICK_ACCESS_MODE`, `BRICK_APPROVAL`, `BRICK_LIMIT`, `BRICK_NETWORK`,
+  `BRICK_HIDDEN_ENV`, `BRICK_ENV_MISSING`, `BRICK_PRECONDITION`, `BRICK_ACTION_DIRECT`,
+  `BRICK_RECOVERY_PAUSE`, `BRICK_WATCH_PAUSE`).
 
 ## Limits today
 
 | Gap | Status |
 |---|---|
-| Identity is not decided per agent by the guard | partial: checked, reported to the agent, noted |
-| `execute`, `network`, and separate `delete` permissions are not enforced per Flow or Zone | partial: delivered and reported as gaps |
-| Approval Bricks use the agent tool's prompt (not bound to the exact change, F7) | partial |
-| No sandbox; Isolation Bricks can only make targets stricter | blocked by the missing sandbox |
-| Budget and Recovery have no per-Brick meters | declared |
+| Approval uses the agent tool's prompt (not bound to the exact change, F7); approvers and quorum apply to resident agents only | partial |
+| A command that names no file is attributed to a target only for commits, pushes, installs, deployments, network, and hidden variables | partial |
+| A new file belongs to the targets of the files in its folder | partial |
+| No sandbox; an Environment profile other than agent-hooks only makes targets stricter | blocked by the missing sandbox |
+| Credentials reach integrations by name (`for`), not per target; agents never receive them | by design |
 | Runbook attachments are recorded, not applied by the runbook runtime | to build |
 | The dashboard cannot sign or validate; its builder produces a draft file a member imports | partial |
 | Monitors only run when a sync or command runs (no daemon); ci, metrics, external have no connector | partial |

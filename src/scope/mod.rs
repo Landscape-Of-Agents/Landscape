@@ -255,6 +255,7 @@ pub(crate) struct Outcome {
     - trust_home: Option<PathBuf> - the trust directory
     - runtime: PathBuf - the repository's runtime directory in the trust directory
     - protected: Vec<&'static str> - hook settings files of every supported agent tool
+    - bricks: Rules - the Brick rules decided per call (identity is not decided without an agent)
 */
 pub(crate) struct Boundary {
     pub(crate) workspace: Workspace,
@@ -263,6 +264,7 @@ pub(crate) struct Boundary {
     pub(crate) trust_home: Option<PathBuf>,
     pub(crate) runtime: PathBuf,
     pub(crate) protected: Vec<&'static str>,
+    pub(crate) bricks: crate::brick::guard::Rules,
 }
 
 /** The hook settings files of every supported agent tool, which no agent may change
@@ -299,6 +301,7 @@ impl Boundary {
         let state = State::load(&workspace)?;
         let runtime = trust.runtime();
         let enforcement = enforcement(&workspace, &state, &trust, &runtime);
+        let bricks = crate::brick::guard::Rules::load(&workspace, &state, Some(&runtime));
         Ok(Self {
             workspace,
             state,
@@ -306,6 +309,7 @@ impl Boundary {
             trust_home: Some(trust.home),
             runtime,
             protected: protected_paths(),
+            bricks,
         })
     }
 
@@ -350,6 +354,8 @@ impl Boundary {
             costs: self.state.config.autonomy.costs.clone(),
             limits: Some(&self.enforcement.limits),
             zone_error: self.enforcement.zone_error.clone(),
+            caller: crate::hooks::enforce::Caller::default(),
+            bricks: Some(&self.bricks),
         }
     }
 

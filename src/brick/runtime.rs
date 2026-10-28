@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::compose::{attachments_of, cheap_check, check_text, controls, members};
-use super::config::{self, Check, Config, SignalSource};
+use super::config::{self, Check, Config, Reaction, SignalSource};
 use super::context::folder;
 use super::model::{AssignmentState, BrickRef};
 use super::store::{BrickStore, Trust};
@@ -43,36 +43,183 @@ pub(crate) enum CheckOutcome {
     NotRun,
 }
 
-/** Evaluate checks against the working tree and the signed state; the policy evaluation is run at
- * most once and only when a check needs it
+/** Evaluate a gate check (a precondition): cheap, local, and deterministic
+ * Input
+    - workspace: &Workspace - repository
+    - check: &Check - check
+    - now: u64 - Unix milliseconds
+ * Output
+    - Option<bool> - None for a check that is not a gate
+*/
+pub(crate) fn gate_holds(workspace: &Workspace, check: &Check, now: u64) -> Option<bool> {
+    if let Some(holds) = cheap_check(&workspace.root, check) {
+        return Some(holds);
+    }
+    let matches_any = |patterns: &[String], name: &str| {
+        patterns
+            .iter()
+            .any(|pattern| crate::platform::glob::matches(pattern, name))
+    };
+    Some(match check {
+        Check::EnvSet { name } => std::env::var_os(name).is_some_and(|value| !value.is_empty()),
+        Check::BranchIs { patterns } => {
+            matches_any(patterns, &crate::platform::git::branch(&workspace.root))
+        }
+        Check::BranchNot { patterns } => {
+            !matches_any(patterns, &crate::platform::git::branch(&workspace.root))
+        }
+        Check::GitClean => {
+            crate::platform::git::changed_files(&workspace.root).is_ok_and(|files| files.is_empty())
+        }
+        Check::TimeWindow {
+            days,
+            from,
+            to,
+            utc_offset_minutes,
+        } => in_window(now, days, from, to, *utc_offset_minutes),
+        Check::CommandAvailable { name } => on_path(name),
+        Check::CredentialPresent { name } => crate::trust::vault::exists(workspace, name),
+        _ => return None,
+    })
+}
+
+/** Report whether a time is inside a weekly window ("from" after "to" spans midnight)
+ * Input
+    - now: u64 - Unix milliseconds
+    - days: &[String] - weekdays (empty: every day)
+    - from: &str - "HH:MM"
+    - to: &str - "HH:MM"
+    - offset: i32 - minutes east of UTC
+ * Output
+    - bool
+*/
+pub(crate) fn in_window(now: u64, days: &[String], from: &str, to: &str, offset: i32) -> bool {
+    let (Some(start), Some(end)) = (config::minutes_of(from), config::minutes_of(to)) else {
+        return false;
+    };
+    let local = (now / 60_000) as i64 + i64::from(offset);
+    let minute = local.rem_euclid(1440) as u32;
+    // 1970-01-01 was a Thursday (3 when Monday is 0)
+    let weekday = (local.div_euclid(1440) + 3).rem_euclid(7) as u32;
+    let day_ok = days.is_empty()
+        || days
+            .iter()
+            .filter_map(|day| config::weekday(day))
+            .any(|day| day == weekday);
+    let time_ok = if start <= end {
+        minute >= start && minute < end
+    } else {
+        minute >= start || minute < end
+    };
+    day_ok && time_ok
+}
+
+/** Report whether a program is on PATH
+ * Input
+    - name: &str - program name
+ * Output
+    - bool
+*/
+fn on_path(name: &str) -> bool {
+    let suffixes: &[&str] = if cfg!(windows) {
+        &["", ".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
+    std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|directory| {
+            suffixes
+                .iter()
+                .any(|suffix| directory.join(format!("{name}{suffix}")).is_file())
+        })
+    })
+}
+
+/** Run a program and wait at most a timeout (never through a shell)
+ * Input
+    - root: &Path - working directory
+    - program: &str - program on PATH
+    - args: &[String] - arguments
+    - timeout: u64 - seconds
+ * Output
+    - Result<i32, String> exit code
+*/
+fn run_program(root: &Path, program: &str, args: &[String], timeout: u64) -> Result<i32, String> {
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| format!("could not run {program}: {error}"))?;
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+            return Ok(status.code().unwrap_or(-1));
+        }
+        if started.elapsed().as_secs() >= timeout {
+            let _ = child.kill();
+            return Err(format!("{program} ran longer than {timeout} seconds"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/** Count local events of a target within a window
+ * Input
+    - runtime: &Path - runtime directory
+    - target: &str - target key
+    - metric: config::LocalMetric - what is counted
+    - since: u64 - window start, Unix milliseconds
+ * Output
+    - u64
+*/
+fn count_events(runtime: &Path, target: &str, metric: config::LocalMetric, since: u64) -> u64 {
+    let events = Stores::open(runtime).events.read_all().unwrap_or_default();
+    match metric {
+        config::LocalMetric::Denials => denials(&events, target, since).0,
+        config::LocalMetric::ToolCalls => events
+            .iter()
+            .filter(|event| {
+                event.occurred_at >= since
+                    && event.decision.is_some()
+                    && event.bindings.zones.iter().any(|entity| entity == target)
+            })
+            .count() as u64,
+    }
+}
+
+/** Evaluate checks against the working tree, the signed state, local events, and (when a person
+ * asked) endpoints and programs; the policy evaluation is run at most once and only when needed
  * Input
     - workspace: &Workspace - repository
     - checks: &[Check] - checks
+    - target: Option<&str> - the target the checks are for (local metrics)
+    - person: bool - a person asked (programs and endpoints run only then)
  * Output
     - Vec<(String, CheckOutcome, String)> check, outcome, detail
 */
 pub(crate) fn run_checks(
     workspace: &Workspace,
     checks: &[Check],
+    target: Option<&str>,
+    person: bool,
 ) -> Vec<(String, CheckOutcome, String)> {
     let mut report = None;
+    let now = crate::platform::now_millis();
+    let outcome = |holds: bool| {
+        if holds {
+            CheckOutcome::Proven
+        } else {
+            CheckOutcome::Contradicted
+        }
+    };
     checks
         .iter()
         .map(|check| {
             let text = check_text(check);
             match check {
-                Check::FileExists { .. } | Check::FileAbsent { .. } => {
-                    let holds = cheap_check(&workspace.root, check) == Some(true);
-                    (
-                        text,
-                        if holds {
-                            CheckOutcome::Proven
-                        } else {
-                            CheckOutcome::Contradicted
-                        },
-                        String::new(),
-                    )
-                }
                 Check::SignedState => match super::store::load(workspace) {
                     Ok((state, _, _)) => match super::store::trust_of(workspace, &state) {
                         Trust::Unverified(reason) => (text, CheckOutcome::Contradicted, reason),
@@ -134,6 +281,99 @@ pub(crate) fn run_checks(
                         None => (text, CheckOutcome::NotRun, String::new()),
                     }
                 }
+                Check::HttpOk { url, status, .. } if person => {
+                    match crate::platform::http::request("GET", url, &[], None) {
+                        Ok((code, _)) => {
+                            let holds =
+                                status.map_or((200..300).contains(&code), |wanted| wanted == code);
+                            (text, outcome(holds), format!("answered {code}"))
+                        }
+                        Err(error) => (text, CheckOutcome::Contradicted, error),
+                    }
+                }
+                Check::HttpOk { .. } => (
+                    text,
+                    CheckOutcome::NotRun,
+                    "endpoints are checked by 'crane brick test', run by a person".into(),
+                ),
+                Check::JsonValue {
+                    path,
+                    pointer,
+                    op,
+                    value,
+                } => {
+                    let found = std::fs::read_to_string(workspace.root.join(path))
+                        .map_err(|error| format!("{path}: {error}"))
+                        .and_then(|text| {
+                            serde_json::from_str::<Value>(&text)
+                                .map_err(|error| format!("{path}: {error}"))
+                        })
+                        .and_then(|json| {
+                            json.pointer(pointer)
+                                .and_then(Value::as_f64)
+                                .ok_or_else(|| format!("{path} has no number at {pointer}"))
+                        });
+                    match (found, value.as_f64()) {
+                        (Ok(actual), Some(expected)) => {
+                            let holds = match op {
+                                config::Comparison::AtLeast => actual >= expected,
+                                config::Comparison::AtMost => actual <= expected,
+                                config::Comparison::Equals => {
+                                    (actual - expected).abs() < f64::EPSILON
+                                }
+                            };
+                            (text, outcome(holds), format!("found {actual}"))
+                        }
+                        (Err(error), _) => (text, CheckOutcome::Unknown, error),
+                        (_, None) => (
+                            text,
+                            CheckOutcome::Unknown,
+                            "the expected value is not a number".into(),
+                        ),
+                    }
+                }
+                Check::LocalMetric {
+                    metric,
+                    window_hours,
+                    max,
+                } => match (target, workspace.trust()) {
+                    (Some(target), Ok(trust)) => {
+                        let since = now.saturating_sub(u64::from(*window_hours) * 3_600_000);
+                        let count = count_events(&trust.runtime(), target, *metric, since);
+                        (
+                            text,
+                            outcome(count <= *max),
+                            format!("{count} in {window_hours} h"),
+                        )
+                    }
+                    (None, _) => (
+                        text,
+                        CheckOutcome::NotRun,
+                        "local metrics are measured for a target ('crane brick test --target')"
+                            .into(),
+                    ),
+                    (_, Err(error)) => (text, CheckOutcome::Unknown, error),
+                },
+                Check::CommandSucceeds {
+                    program,
+                    args,
+                    timeout_seconds,
+                } if person => {
+                    let timeout = u64::from(timeout_seconds.unwrap_or(120));
+                    match run_program(&workspace.root, program, args, timeout) {
+                        Ok(code) => (text, outcome(code == 0), format!("exit code {code}")),
+                        Err(error) => (text, CheckOutcome::Contradicted, error),
+                    }
+                }
+                Check::CommandSucceeds { .. } => (
+                    text,
+                    CheckOutcome::NotRun,
+                    "programs run only in 'crane brick test', run by a person".into(),
+                ),
+                gate => match gate_holds(workspace, gate, now) {
+                    Some(holds) => (text, outcome(holds), String::new()),
+                    None => (text, CheckOutcome::NotRun, String::new()),
+                },
             }
         })
         .collect()
@@ -174,6 +414,7 @@ fn read_states(runtime: &Path) -> BTreeMap<String, MonitorState> {
     - name: String - source, trigger, or analysis name
     - every_minutes: u32 - interval
     - threshold: Option<u64> - count threshold
+    - reactions: Vec<Reaction> - what a firing signal does
 */
 #[derive(Debug, Clone)]
 struct Item {
@@ -184,10 +425,36 @@ struct Item {
     name: String,
     every_minutes: u32,
     threshold: Option<u64>,
+    reactions: Vec<Reaction>,
 }
 
-/** Every monitored item of the enabled attachments: monitoring signals, revocation triggers, and
- * intelligence analyses (the last two on the interval of the target's first monitor, or hourly)
+/** The readable configurations of a target, with the reference of the Brick each came from
+ * Input
+    - store: &BrickStore - signed store
+    - target: &str - target key
+ * Output
+    - Vec<(BrickRef, Config)>
+*/
+fn target_configs(store: &BrickStore, target: &str) -> Vec<(BrickRef, Config)> {
+    let mut parsed = Vec::new();
+    for attachment in attachments_of(store, target) {
+        for member in members(store, &attachment.subject) {
+            if let Some(entry) = member.entry {
+                if let Ok(configs) = config::parse(entry.brick.brick_type, &entry.brick.config) {
+                    parsed.extend(
+                        configs
+                            .into_iter()
+                            .map(|config| (entry.brick.reference(), config)),
+                    );
+                }
+            }
+        }
+    }
+    parsed
+}
+
+/** Every monitored item of the enabled attachments: watch signals, triggers, and analyses (the
+ * last two on the interval of the Brick's first signal, or hourly)
  * Input
     - store: &BrickStore - signed store
  * Output
@@ -203,89 +470,87 @@ fn items(store: &BrickStore) -> Vec<Item> {
     targets.sort();
     targets.dedup();
     for target in targets {
-        let mut parsed = Vec::new();
-        for attachment in attachments_of(store, &target) {
-            for member in members(store, &attachment.subject) {
-                if let Some(entry) = member.entry {
-                    if let Ok(config) = config::parse(entry.brick.brick_type, &entry.brick.config) {
-                        parsed.push((entry.brick.reference(), config));
-                    }
-                }
-            }
-        }
-        let interval = parsed
+        let parsed = target_configs(store, &target);
+        let watches = parsed
             .iter()
-            .find_map(|(_, config)| match config {
-                Config::Monitoring(monitoring) => monitoring
-                    .signals
-                    .first()
-                    .map(|signal| signal.every_minutes),
+            .filter_map(|(reference, config)| match config {
+                Config::Watch(watch) => Some((reference, watch)),
                 _ => None,
             })
+            .collect::<Vec<_>>();
+        let interval = watches
+            .iter()
+            .find_map(|(_, watch)| watch.signals.first().map(|signal| signal.every_minutes))
             .unwrap_or(60);
-        let threshold = parsed.iter().find_map(|(_, config)| match config {
-            Config::Monitoring(monitoring) => monitoring
+        let threshold = watches.iter().find_map(|(_, watch)| {
+            watch
                 .signals
                 .iter()
                 .find(|signal| signal.source == SignalSource::Denials)
-                .and_then(|signal| signal.threshold),
-            _ => None,
+                .and_then(|signal| signal.threshold)
         });
-        let mut push = |reference: &BrickRef,
-                        kind: &'static str,
-                        name: String,
-                        every: u32,
-                        limit: Option<u64>| {
-            items.push(Item {
-                key: format!("{target}|{reference}|{kind}|{name}"),
-                target: target.clone(),
-                brick: reference.to_string(),
-                kind,
-                name,
-                every_minutes: every,
-                threshold: limit,
-            });
-        };
-        for (reference, config) in &parsed {
-            match config {
-                Config::Monitoring(monitoring) => {
-                    for signal in &monitoring.signals {
-                        push(
-                            reference,
-                            "signal",
-                            super::config::serial(&signal.source),
-                            signal.every_minutes,
-                            signal.threshold,
-                        );
-                    }
-                }
-                Config::Revocation(revocation) => {
-                    for trigger in &revocation.triggers {
-                        push(
-                            reference,
-                            "trigger",
-                            super::config::serial(trigger),
-                            interval,
-                            threshold.or(Some(5)),
-                        );
-                    }
-                }
-                Config::Intelligence(intelligence) => {
-                    for analysis in &intelligence.analyses {
-                        push(
-                            reference,
-                            "analysis",
-                            super::config::serial(analysis),
-                            interval.max(60),
-                            Some(3),
-                        );
-                    }
-                }
-                _ => {}
+        for (reference, watch) in watches {
+            let mut push = |kind: &'static str, name: String, every: u32, limit: Option<u64>| {
+                items.push(Item {
+                    key: format!("{target}|{reference}|{kind}|{name}"),
+                    target: target.clone(),
+                    brick: reference.to_string(),
+                    kind,
+                    name,
+                    every_minutes: every,
+                    threshold: limit,
+                    reactions: if kind == "signal" {
+                        watch.on_fire.clone()
+                    } else {
+                        Vec::new()
+                    },
+                });
+            };
+            for signal in &watch.signals {
+                push(
+                    "signal",
+                    config::serial(&signal.source),
+                    signal.every_minutes,
+                    signal.threshold,
+                );
+            }
+            for trigger in &watch.triggers {
+                push(
+                    "trigger",
+                    config::serial(trigger),
+                    interval,
+                    threshold.or(Some(5)),
+                );
+            }
+            for analysis in &watch.analyses {
+                push(
+                    "analysis",
+                    config::serial(analysis),
+                    interval.max(60),
+                    Some(3),
+                );
             }
         }
     }
     items
+}
+
+/** The Watch Bricks whose signals fire now, by target (what 'pause' acts on)
+ * Input
+    - runtime: &Path - runtime directory
+ * Output
+    - BTreeSet<(String, String)> (target, Brick reference) pairs
+*/
+pub(crate) fn firing(runtime: &Path) -> std::collections::BTreeSet<(String, String)> {
+    read_states(runtime)
+        .into_iter()
+        .filter(|(_, state)| matches!(state.result.as_str(), "FIRING" | "FAILING"))
+        .filter_map(|(key, _)| {
+            let mut parts = key.split('|');
+            let (target, brick, kind) = (parts.next()?, parts.next()?, parts.next()?);
+            (kind == "signal").then(|| (target.to_string(), brick.to_string()))
+        })
+        .collect()
 }
 
 /** Count denied agent actions bound to a target within a window
@@ -360,6 +625,8 @@ pub(crate) fn evaluate_monitors(
                 run_checks(
                     workspace,
                     &[Check::SelectionsResolved, Check::PolicyTestsPass],
+                    None,
+                    false,
                 )
             });
             let index = usize::from(check == Check::PolicyTestsPass);
@@ -403,38 +670,49 @@ pub(crate) fn evaluate_monitors(
                     None => ("ERROR", "not evaluated".into()),
                 }
             }
-            ("trigger", "verification_contradicted") => {
-                let checks = attachments_of(&store, &item.target)
-                    .into_iter()
-                    .flat_map(|attachment| members(&store, &attachment.subject))
-                    .filter_map(|member| member.entry)
-                    .filter_map(|entry| {
-                        match config::parse(entry.brick.brick_type, &entry.brick.config) {
-                            Ok(Config::Verification(checks)) => Some(checks.checks),
-                            _ => None,
-                        }
-                    })
-                    .flatten()
-                    .collect::<Vec<_>>();
+            ("trigger", "verification_contradicted") | ("signal", "verification") => {
+                let checks = verification_checks(&store, &item.target);
                 if checks.is_empty() {
                     (
                         "UNSUPPORTED",
                         "no verification Brick is attached to the target".into(),
                     )
                 } else {
-                    let contradicted = run_checks(workspace, &checks)
+                    let contradicted = run_checks(workspace, &checks, Some(&item.target), false)
                         .into_iter()
                         .filter(|(_, outcome, _)| *outcome == CheckOutcome::Contradicted)
                         .map(|(check, _, _)| check)
                         .collect::<Vec<_>>();
                     if contradicted.is_empty() {
                         ("OK", "every verification check holds".into())
-                    } else {
+                    } else if item.kind == "trigger" {
                         (
                             "REVOCATION_DUE",
                             format!("contradicted: {}", contradicted.join("; ")),
                         )
+                    } else {
+                        (
+                            "FAILING",
+                            format!("contradicted: {}", contradicted.join("; ")),
+                        )
                     }
+                }
+            }
+            ("signal", "preconditions") => {
+                let failing = target_configs(&store, &item.target)
+                    .into_iter()
+                    .filter_map(|(_, config)| match config {
+                        Config::Precondition(precondition) => Some(precondition.checks),
+                        _ => None,
+                    })
+                    .flatten()
+                    .filter(|check| gate_holds(workspace, check, now) == Some(false))
+                    .map(|check| check_text(&check))
+                    .collect::<Vec<_>>();
+                if failing.is_empty() {
+                    ("OK", "every precondition holds".into())
+                } else {
+                    ("FAILING", format!("failing: {}", failing.join("; ")))
                 }
             }
             ("signal", "denials") | ("trigger", "repeated_denials") => {
@@ -497,6 +775,35 @@ pub(crate) fn evaluate_monitors(
             "BRICK_MONITOR_EVALUATED",
             json!({"target": item.target, "brick": item.brick, "monitor": item.kind, "source": item.name, "result": result, "inference": "NONE"}),
         );
+        // A signal that starts firing reacts once (alert, revoke due, propose); pause is read by
+        // the guard for as long as it fires
+        let fires = matches!(result, "FIRING" | "FAILING");
+        let fired_before = matches!(previous.result.as_str(), "FIRING" | "FAILING");
+        if fires && !fired_before {
+            for reaction in &item.reactions {
+                let text = format!(
+                    "Crane watch {} on {}: {} {}: {}",
+                    item.brick, item.target, item.name, result, detail
+                );
+                match reaction {
+                    Reaction::Alert => {
+                        crate::integrations::deliver(
+                            workspace,
+                            &crate::integrations::Alert {
+                                text: &text,
+                                severity: 2,
+                                issue: None,
+                            },
+                        );
+                    }
+                    Reaction::RevokeDue | Reaction::Propose | Reaction::Pause => {}
+                }
+                crate::platform::notes::note(
+                    "BRICK_WATCH_REACTED",
+                    json!({"target": item.target, "brick": item.brick, "source": item.name, "reaction": config::serial(reaction), "result": result}),
+                );
+            }
+        }
         states.insert(
             item.key.clone(),
             MonitorState {
@@ -707,16 +1014,45 @@ pub(crate) fn identity_admits(
 ) -> Option<(bool, Vec<String>)> {
     let mut deciding = Vec::new();
     let mut admitted = true;
-    for attachment in attachments_of(store, target_key) {
-        for member in members(store, &attachment.subject) {
-            let Some(entry) = member.entry else { continue };
-            if let Ok(Config::Identity(identity)) =
-                config::parse(entry.brick.brick_type, &entry.brick.config)
-            {
-                deciding.push(entry.brick.reference().to_string());
-                admitted &= identity.agents.iter().any(|allowed| allowed == agent);
-            }
+    for (reference, config) in target_configs(store, target_key) {
+        if let Config::Identity(identity) = config {
+            deciding.push(reference.to_string());
+            admitted &= identity
+                .agents
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(agent));
         }
     }
     (!deciding.is_empty()).then_some((admitted, deciding))
+}
+
+/** The verification checks of a target: each Verification Brick's own checks, and the checks of
+ * the Precondition Brick it re-runs after the work (checks_from)
+ * Input
+    - store: &BrickStore - signed store
+    - target: &str - target key
+ * Output
+    - Vec<Check>
+*/
+pub(crate) fn verification_checks(store: &BrickStore, target: &str) -> Vec<Check> {
+    let configs = target_configs(store, target);
+    let mut checks = Vec::new();
+    for (_, config) in &configs {
+        if let Config::Verification(verification) = config {
+            checks.extend(verification.checks.iter().cloned());
+            if let Some(source) = &verification.checks_from {
+                checks.extend(
+                    configs
+                        .iter()
+                        .filter(|(reference, _)| reference.brick_id == *source)
+                        .filter_map(|(_, config)| match config {
+                            Config::Precondition(precondition) => Some(precondition.checks.clone()),
+                            _ => None,
+                        })
+                        .flatten(),
+                );
+            }
+        }
+    }
+    checks
 }

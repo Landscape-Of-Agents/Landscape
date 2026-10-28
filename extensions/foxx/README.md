@@ -28,11 +28,14 @@ Install: search for **Landscape** in the Extensions view, or
   policy context, create a policy, and more.
 - **Landscape sidebar → Bricks:** the Bricks list, with the orange **Open Bricks Panel** button under it.
   The panel opens beside the editor and shows the Zones and Flows with the Bricks attached to each. You can create a Brick, attach it to a Zone or Flow, and edit its
-  common context (shared by every attachment) or the volatile context of one attachment.
+  common context (shared by every attachment) or the volatile context of one attachment. A guide
+  explains each of the twelve kinds, and the **i** button next to a Brick opens its configuration.
 - **The Resident Agents icon in the activity bar:** opens the Resident Agents panel. It has the same
   graph, with the agents working on each Zone and Flow. You can create an agent and set all its
   properties. Saved agents are listed under "Not working yet" until you put one to work on a Zone or
   Flow, for 30 to 90 days per period, renewable.
+- **Governance graph:** drag a zone onto another to link them into a flow. Hover a zone or flow
+  and press **×** (or Delete) to remove it; a removed flow keeps its zones.
 - **Status bar:** the **Landscape** item (bottom left) shows the repository's state.
 - **Command palette (Ctrl+Shift+P):** type "Landscape".
 

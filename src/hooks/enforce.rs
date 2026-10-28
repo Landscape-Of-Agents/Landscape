@@ -19,6 +19,8 @@ use super::shell::{
     crane_invocation, names_crane_directory, network_destinations, normal, words, MUTATING_GIT,
     MUTATING_WORDS, NETWORK_WORDS,
 };
+use crate::brick::guard::{self as brick_guard, Call, Change as BrickChange, Rules};
+use crate::brick::usage::{Counted, Usage};
 use crate::governance::config::Costs;
 use crate::governance::state::State;
 use crate::governance::workspace::Workspace;
@@ -42,6 +44,7 @@ use crate::telemetry::model::{Decision, Safety};
       and flows (or the script pre-check) require, with the reason and its rule code
     - rules: Vec<&'static str> - rule codes of every reason, in order (DASHBOARD.md decision_rule)
     - scripts: Vec<String> - scripts and inline code the script pre-check read
+    - counted: Counted - what the call counts in the session's Brick usage
 */
 #[derive(Debug, Clone)]
 pub(crate) struct Decided {
@@ -54,6 +57,7 @@ pub(crate) struct Decided {
     pub(crate) zone_floor: Option<(Decision, String, &'static str)>,
     pub(crate) rules: Vec<&'static str>,
     pub(crate) scripts: Vec<String>,
+    pub(crate) counted: Counted,
 }
 
 /** Everything a decision depends on
@@ -71,6 +75,8 @@ pub(crate) struct Decided {
     - limits: Option<&'a Limits> - zone and flow limits by file
     - zone_error: Option<String> - why the zone configuration could not be resolved (changes then
       fail closed)
+    - caller: Caller<'a> - who is calling and what the session did (Brick rules)
+    - bricks: Option<&'a Rules> - the Brick rules decided per call
 */
 pub(crate) struct Guard<'a> {
     pub(crate) workspace: &'a Workspace,
@@ -85,6 +91,26 @@ pub(crate) struct Guard<'a> {
     pub(crate) costs: Costs,
     pub(crate) limits: Option<&'a Limits>,
     pub(crate) zone_error: Option<String>,
+    pub(crate) caller: Caller<'a>,
+    pub(crate) bricks: Option<&'a Rules>,
+}
+
+/** Who is calling, as the Brick rules see it
+ * Fields
+    - agent: Option<&'a str> - provider (claude, codex, copilot, gemini); None when no agent calls
+      (a person's 'crane scope' question), which identity rules then do not decide
+    - agent_id: Option<&'a str> - the agent's id
+    - model: Option<&'a str> - model
+    - started_at: Option<u64> - session start, Unix milliseconds
+    - usage: Option<&'a Usage> - what the session did so far
+*/
+#[derive(Default, Clone, Copy)]
+pub(crate) struct Caller<'a> {
+    pub(crate) agent: Option<&'a str>,
+    pub(crate) agent_id: Option<&'a str>,
+    pub(crate) model: Option<&'a str>,
+    pub(crate) started_at: Option<u64>,
+    pub(crate) usage: Option<&'a Usage>,
 }
 
 impl Guard<'_> {
@@ -247,6 +273,7 @@ impl Guard<'_> {
             zone_floor: None,
             rules: Vec::new(),
             scripts: Vec::new(),
+            counted: Counted::default(),
         };
         let deny = |decided: &mut Decided, rule: &'static str, reason: String, bypass: bool| {
             decided.verdict.decision = Decision::Deny;
@@ -354,7 +381,106 @@ impl Guard<'_> {
             .into_iter()
             .collect();
         self.gate(action.operation, &mut decided);
+        self.apply_bricks(action, &mut decided);
         decided
+    }
+
+    /** Apply the Brick rules decided per call; each finding can only make the decision stricter
+     * (a quarantine stays a quarantine)
+     * Input
+        - action: &AgentAction - tool call
+        - decided: &mut Decided - decision so far
+     * Output
+        - None (updates decided)
+    */
+    fn apply_bricks(&self, action: &AgentAction, decided: &mut Decided) {
+        let (Some(rules), Some(limits)) = (self.bricks, self.limits) else {
+            return;
+        };
+        if rules.targets.is_empty() {
+            return;
+        }
+        let reads = action
+            .reads
+            .iter()
+            .filter(|read| !read.contains("://"))
+            .filter_map(|read| self.relative(read))
+            .collect::<Vec<_>>();
+        let changes = action
+            .files
+            .iter()
+            .filter_map(|change| {
+                let path = self.relative(&change.path)?;
+                let full = self.workspace.root.join(&path);
+                let before = fs::read(&full)
+                    .ok()
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+                let after = apply(&change.proposed, before.as_deref()).ok().flatten();
+                let deleted = matches!(change.proposed, Proposed::Delete)
+                    || (before.as_deref().is_some_and(|text| !text.is_empty())
+                        && after.as_deref() == Some(""));
+                Some(BrickChange {
+                    existed: full.exists(),
+                    deleted,
+                    lines: brick_guard::lines_changed(before.as_deref(), after.as_deref()),
+                    path,
+                })
+            })
+            .collect::<Vec<_>>();
+        let named = action
+            .command
+            .as_deref()
+            .map(words)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|word| self.relative(word))
+            .filter(|path| self.workspace.root.join(path).is_file())
+            .collect::<Vec<_>>();
+        let call = Call {
+            operation: action.operation,
+            reads,
+            changes,
+            named,
+            command: action.command.as_deref(),
+            arguments: &action.arguments,
+            network: &decided.network,
+            agent: self.caller.agent,
+            agent_id: self.caller.agent_id,
+            model: self.caller.model,
+            started_at: self.caller.started_at,
+            usage: self.caller.usage,
+            now: crate::platform::now_millis(),
+        };
+        let outcome = brick_guard::decide(rules, limits, self.workspace, &call);
+        for finding in outcome.findings {
+            match (decided.verdict.decision, finding.decision) {
+                (Decision::Quarantine, _) => {}
+                (_, Decision::Deny) => decided.verdict.decision = Decision::Deny,
+                (Decision::Allow, Decision::RequireApproval) => {
+                    decided.verdict.decision = Decision::RequireApproval;
+                }
+                _ => {}
+            }
+            decided
+                .verdict
+                .reasons
+                .push(format!("{} (Brick {})", finding.reason, finding.brick));
+            decided.rules.push(finding.rule);
+            decided.zones.extend(
+                finding
+                    .brick
+                    .split(", ")
+                    .filter(|brick| !brick.is_empty())
+                    .map(|brick| format!("brick:{brick}")),
+            );
+        }
+        decided.zones.sort();
+        decided.zones.dedup();
+        decided.counted = outcome.counted;
+        decided.counted.denied = matches!(
+            decided.verdict.decision,
+            Decision::Deny | Decision::Quarantine
+        );
     }
 
     /** Apply integrity, autonomy mode, safety state, and credits to a decision; each can only
@@ -896,6 +1022,8 @@ pub(crate) fn self_test(
         costs: Costs::default(),
         limits: None,
         zone_error: None,
+        caller: Caller::default(),
+        bricks: None,
     };
     let action = |operation: Operation,
                   files: Vec<FileChange>,

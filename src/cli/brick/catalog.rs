@@ -98,7 +98,7 @@ pub(super) fn list(args: &[String]) -> Result<(), String> {
     )?;
     let wanted_type = args
         .value("type")
-        .map(|text| BrickType::parse(&text))
+        .map(|text| BrickType::parse_any(&text))
         .transpose()?;
     let wanted_state = args.value("state");
     let wanted_target = target_option(&args)?.map(|target| target.key());

@@ -37,6 +37,7 @@ import {
   succeeded,
   TypeInfo,
 } from "./core/bricks";
+import { Dialogs } from "./workbench";
 import { assignmentDraft, checkAssignmentId, PackData, packMarkdown, RESIDENT_CHANGES, residentChanges, ResidentList, residentMarkdown, ResidentRow, residentsByTarget, residentTone } from "./core/residents";
 
 /** What the Bricks view needs from the rest of Landscape. */
@@ -53,7 +54,12 @@ export interface BricksHost {
   refresh(): Promise<void>;
   /** The Landscape output channel. */
   output: vscode.OutputChannel;
+  /** Landscape dialogs (never native pop-ups). */
+  ui(): Dialogs;
 }
+
+/** An item a pick offers (the shape VS Code quick picks use). */
+type QuickItem = { label: string; description?: string; detail?: string };
 
 /** One node of the Bricks view. */
 class BrickNode extends vscode.TreeItem {
@@ -236,8 +242,21 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
       const tooltip = new vscode.MarkdownString(`**${row.name}** · \`${row.ref}\` · ${row.type}\n\n${row.intent ?? ""}\n\nState **${row.state}**${row.validation ? ` · validation **${row.validation}**` : ""}`);
       return new BrickNode(row.name, [], { description: `${row.state === "draft" ? row.brick_id + " draft" : row.ref} · ${row.validation ?? ""}`, tooltip, icon: icon(TYPE_ICONS[row.type] ?? "package", row.state === "draft" ? "draft" : row.state), contextValue: `brick-${row.state}`, data: row, command: { command: "foxx.bricks.show", title: "Show", arguments: [undefined, row.ref] } });
     };
-    const byType = [...BRICK_TYPES, ...(Object.keys(LEGACY_TYPES) as BrickType[])].map((type) => ({ type, rows: list.bricks.filter((row) => row.type === type) })).filter((entry) => entry.rows.length);
-    const library = new BrickNode("Library", byType.map((entry) => new BrickNode(entry.type, entry.rows.map(brickNode), { description: String(entry.rows.length), icon: new vscode.ThemeIcon(TYPE_ICONS[entry.type]) })), { description: `${list.bricks.length}`, icon: new vscode.ThemeIcon("library") });
+    // Every current kind has a folder that explains it, even before a Brick of it exists; former
+    // kinds show only while Bricks of them do
+    const byType = [...BRICK_TYPES, ...(Object.keys(LEGACY_TYPES) as BrickType[])]
+      .map((type) => ({ type, rows: list.bricks.filter((row) => row.type === type) }))
+      .filter((entry) => entry.rows.length || (BRICK_TYPES as readonly string[]).includes(entry.type));
+    const kindNode = (entry: { type: BrickType; rows: BrickRow[] }) => {
+      const guide = BRICK_GUIDE[entry.type as keyof typeof BRICK_GUIDE] ?? BRICK_GUIDE[(LEGACY_TYPES[entry.type] ?? "").split(" ")[0] as keyof typeof BRICK_GUIDE];
+      const former = LEGACY_TYPES[entry.type];
+      const tooltip = new vscode.MarkdownString(`**${entry.type}${former ? ` (former kind, now ${former})` : ""}**\n\n${guide?.purpose ?? ""}\n\n_Only this kind:_ ${guide?.unique ?? ""}`);
+      const children = entry.rows.length
+        ? entry.rows.map(brickNode)
+        : [new BrickNode(`No ${entry.type} Bricks yet`, [], { description: guide?.purpose, tooltip, icon: new vscode.ThemeIcon("add"), command: { command: "foxx.bricks.openPanel", title: "Create one in the Bricks panel" } })];
+      return new BrickNode(entry.type, children, { description: entry.rows.length ? `${entry.rows.length} · ${guide?.purpose ?? ""}` : guide?.purpose, tooltip, icon: new vscode.ThemeIcon(TYPE_ICONS[entry.type]) });
+    };
+    const library = new BrickNode("Library", byType.map(kindNode), { description: `${list.bricks.length}`, icon: new vscode.ThemeIcon("library") });
     const stacks = new BrickNode("Stacks", list.stacks.map((row: StackRow) => new BrickNode(row.name, [], { description: `${row.ref} · ${row.members.length} member(s)`, tooltip: row.members.join(", "), icon: icon("layers", row.state), contextValue: `stack-${row.state}`, data: row })), { description: String(list.stacks.length), icon: new vscode.ThemeIcon("layers") });
     const targets = [...new Set(list.attachments.map((row) => row.target))].sort();
     const attachments = new BrickNode("Attachments", targets.map((target) => new BrickNode(target, list.attachments.filter((row) => row.target === target).map((row: AttachmentRow) => {
@@ -287,7 +306,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
       vscode.window.showInformationMessage("Landscape: there is no resident assignment yet.");
       return undefined;
     }
-    const chosen = await vscode.window.showQuickPick(rows.map((item) => ({ label: item.assignment_id, description: `${item.status} · ${item.target}`, item })), { placeHolder: "Which resident assignment?" });
+    const chosen = await this.quickPick(rows.map((item) => ({ label: item.assignment_id, description: `${item.status} · ${item.target}`, item })), { placeHolder: "Which resident assignment?" });
     return chosen?.item;
   }
 
@@ -334,15 +353,15 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     }
     const fromNode = typeof node?.data === "string" ? node.data : undefined;
     const targets = this.host.targets().filter((target) => target.status === "active").map((target) => `${target.kind}:${target.id}`);
-    const target = fromNode ?? (await vscode.window.showQuickPick(targets, { placeHolder: "Which active Zone or Flow is it responsible for?" }));
+    const target = fromNode ?? (await this.quickPick(targets, { placeHolder: "Which active Zone or Flow is it responsible for?" }));
     if (!target) return;
-    const definition = await vscode.window.showQuickPick(definitions.map((row) => ({ label: row.ref, description: row.name })), { placeHolder: "Which definition version?" });
+    const definition = await this.quickPick(definitions.map((row) => ({ label: row.ref, description: row.name })), { placeHolder: "Which definition version?" });
     if (!definition) return;
-    const id = await vscode.window.showInputBox({ prompt: "Assignment id", value: `${definition.label.split("@")[0]}-${target.split(":")[1]}`, validateInput: checkAssignmentId });
+    const id = await this.inputBox({ prompt: "Assignment id", value: `${definition.label.split("@")[0]}-${target.split(":")[1]}`, validateInput: checkAssignmentId });
     if (!id) return;
-    const agent = await vscode.window.showInputBox({ prompt: "Agent of the signed Brick assignment (provider or agent id)", value: "claude" });
+    const agent = await this.inputBox({ prompt: "Agent of the signed Brick assignment (provider or agent id)", value: "claude" });
     if (!agent) return;
-    const kinds = await vscode.window.showInputBox({ prompt: "CI trigger kinds it wakes on (comma separated; no bare *)", value: "ci.failed" });
+    const kinds = await this.inputBox({ prompt: "CI trigger kinds it wakes on (comma separated; no bare *)", value: "ci.failed" });
     if (kinds === undefined) return;
     const text = await this.writeInEditor("resident assignment draft (JSON; Crane validates it)", JSON.stringify(assignmentDraft({ id, definition: definition.label, agent, target, kinds }), null, 2), "json");
     if (text === undefined) return;
@@ -359,7 +378,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
       const problems = (preview.data.validation?.problems ?? []).map(([code, message]) => `problem ${code}: ${message}`);
       const warnings = (preview.data.validation?.warnings ?? []).map(([code, message]) => `warning ${code}: ${message}`);
       const detail = [preview.summary, ...problems, ...warnings, "", "It is created as a draft: it receives no trigger until it is validated and an admin activates it."].join("\n");
-      const go = await vscode.window.showWarningMessage(`Landscape: create resident ${id} on ${target}?`, { modal: true, detail }, "Create draft");
+      const go = await this.modal(`Landscape: create resident ${id} on ${target}?`, { modal: true, detail }, "Create draft");
       if (go !== "Create draft") return;
       const result = await this.envelope(["resident", "create", "--file", file]);
       if (result) await this.report(result, "Create resident", false);
@@ -381,11 +400,11 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
       vscode.window.showInformationMessage(`Landscape: ${row.assignment_id} is ${row.lifecycle}; it cannot be paused, resumed, or revoked now.`);
       return;
     }
-    const chosen = await vscode.window.showQuickPick(changes.map((name) => ({ label: RESIDENT_CHANGES[name].label, detail: RESIDENT_CHANGES[name].detail, name })), { placeHolder: `Change ${row.assignment_id} (${row.lifecycle})` });
+    const chosen = await this.quickPick(changes.map((name) => ({ label: RESIDENT_CHANGES[name].label, detail: RESIDENT_CHANGES[name].detail, name })), { placeHolder: `Change ${row.assignment_id} (${row.lifecycle})` });
     if (!chosen) return;
-    const reason = await vscode.window.showInputBox({ prompt: `Why ${chosen.label.toLowerCase()} ${row.assignment_id}? (recorded)`, validateInput: (value) => (value.trim() ? undefined : "A reason is required") });
+    const reason = await this.inputBox({ prompt: `Why ${chosen.label.toLowerCase()} ${row.assignment_id}? (recorded)`, validateInput: (value) => (value.trim() ? undefined : "A reason is required") });
     if (!reason) return;
-    const go = await vscode.window.showWarningMessage(`Landscape: ${chosen.label.toLowerCase()} ${row.assignment_id}?`, { modal: true, detail: chosen.detail }, chosen.label);
+    const go = await this.modal(`Landscape: ${chosen.label.toLowerCase()} ${row.assignment_id}?`, { modal: true, detail: chosen.detail }, chosen.label);
     if (go !== chosen.label) return;
     const result = await this.envelope(["resident", chosen.name, row.assignment_id, "--reason", reason]);
     if (result) await this.report(result, `${chosen.label} resident`, false);
@@ -418,7 +437,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
       vscode.window.showInformationMessage("Landscape: no Brick qualifies; create one first.");
       return undefined;
     }
-    const chosen = await vscode.window.showQuickPick(rows.map((row) => ({ label: row.name, description: `${row.ref} · ${row.type} · ${row.state}`, row })), { placeHolder });
+    const chosen = await this.quickPick(rows.map((row) => ({ label: row.name, description: `${row.ref} · ${row.type} · ${row.state}`, row })), { placeHolder });
     return chosen?.row;
   }
 
@@ -446,7 +465,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
       vscode.window.showInformationMessage("Landscape: there are no Zones or Flows yet; create one from the Landscape panel first.");
       return undefined;
     }
-    const chosen = await vscode.window.showQuickPick(targets.map((target) => ({ label: `${target.kind}:${target.id}`, description: target.status })), { placeHolder });
+    const chosen = await this.quickPick(targets.map((target) => ({ label: `${target.kind}:${target.id}`, description: target.status })), { placeHolder });
     return chosen?.label;
   }
 
@@ -464,20 +483,55 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
   }
 
   /**
-   * Let the person write multi-line text in an editor, then continue or cancel.
+   * Let the person write multi-line text in a Landscape dialog.
    * @param title what is written
    * @param initial starting text
-   * @param language editor language
-   * @returns the saved text, or undefined when cancelled
+   * @param language "json" for a configuration
+   * @returns the text, or undefined when cancelled
    */
   private async writeInEditor(title: string, initial: string, language = "markdown"): Promise<string | undefined> {
-    const document = await vscode.workspace.openTextDocument({ content: initial, language });
-    await vscode.window.showTextDocument(document, { preview: false });
-    const choice = await vscode.window.showInformationMessage(`Landscape: write the ${title} in the editor that opened, then continue. It is guidance for agents, never authorization; never put secrets in it.`, { modal: false }, "Continue", "Cancel");
-    const text = document.getText();
-    // Close only this scratch document, never another editor the person switched to
-    if (vscode.window.activeTextEditor?.document === document) await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
-    return choice === "Continue" ? text : undefined;
+    return this.host.ui().text({
+      title: `Write the ${title}`,
+      value: initial,
+      help: language === "json" ? "JSON; Crane checks it against the kind's schema." : "Guidance for agents, never authorization. Never put secrets in it. Ctrl+Enter saves.",
+      button: "Continue",
+    });
+  }
+
+  /**
+   * Choose from a list in a Landscape dialog (the call shape of vscode.window.showQuickPick).
+   * @param items strings or items with a label
+   * @param options what is asked, and whether several may be chosen
+   * @returns the chosen item(s), or undefined when cancelled
+   */
+  private quickPick<T extends string | QuickItem>(items: T[], options: { placeHolder?: string; canPickMany: true; matchOnDetail?: boolean }): Promise<T[] | undefined>;
+  private quickPick<T extends string | QuickItem>(items: T[], options?: { placeHolder?: string; canPickMany?: false; matchOnDetail?: boolean }): Promise<T | undefined>;
+  private quickPick<T extends string | QuickItem>(items: T[], options: { placeHolder?: string; canPickMany?: boolean } = {}): Promise<T | T[] | undefined> {
+    const choices = items.map((item) => (typeof item === "string" ? { label: item, value: item } : { label: item.label, description: item.description, detail: item.detail, value: item }));
+    const title = options.placeHolder ?? "Choose";
+    return options.canPickMany ? this.host.ui().pickMany({ title, items: choices }) : this.host.ui().pick({ title, items: choices });
+  }
+
+  /**
+   * Ask for one line in a Landscape dialog (the call shape of vscode.window.showInputBox).
+   * @param options prompt, value, placeholder, and validation
+   * @returns the value, or undefined when cancelled
+   */
+  private inputBox(options: { prompt?: string; value?: string; placeHolder?: string; validateInput?: (value: string) => string | undefined | null }): Promise<string | undefined> {
+    const validate = options.validateInput;
+    return this.host.ui().input({ title: options.prompt ?? "Landscape", value: options.value, placeholder: options.placeHolder, validate: validate ? (value) => validate(value) ?? undefined : undefined });
+  }
+
+  /**
+   * Ask to confirm in a Landscape dialog (the call shape of a modal vscode.window.showWarningMessage).
+   * @param title question
+   * @param options the detail
+   * @param button the confirming button
+   * @returns the button, or undefined when cancelled
+   */
+  private async modal(title: string, options: { modal: true; detail?: string }, button: string): Promise<string | undefined> {
+    const tone = /^(revoke|detach|delete|remove)/i.test(button) ? "danger" : "primary";
+    return (await this.host.ui().confirm(title.replace(/^Landscape: /, ""), options.detail ?? "", button, tone)) ? button : undefined;
   }
 
   /**
@@ -508,7 +562,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     if (!succeeded(preview.status)) return this.report(preview, label, false);
     const lines = describePreview(preview.data.preview);
     const detail = [preview.summary, ...lines, "", "Crane signs this into .crane/bricks.json with your admin key; commit .crane afterwards so the team shares it."].join("\n");
-    const go = await vscode.window.showWarningMessage(`Landscape: ${label}?`, { modal: true, detail }, "Sign and apply");
+    const go = await this.modal(`Landscape: ${label}?`, { modal: true, detail }, "Sign and apply");
     if (go !== "Sign and apply") return;
     const result = await this.envelope(args);
     if (result) await this.report(result, label, true);
@@ -518,11 +572,11 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
   async create(): Promise<void> {
     if (!this.types.length) await this.load();
     const types = this.types.length ? this.types : BRICK_TYPES.map((type) => ({ type, label: type, purpose: BRICK_GUIDE[type].purpose, support: "checked", runtime: "", fields: [] }) as TypeInfo);
-    const type = await vscode.window.showQuickPick(types.map((info) => ({ label: info.label, description: info.support, detail: `${info.purpose} — ${info.runtime}`, type: info.type })), { placeHolder: "Which kind of Brick? (the types are fixed)", matchOnDetail: true });
+    const type = await this.quickPick(types.map((info) => ({ label: info.label, description: info.support, detail: `${info.purpose} — ${info.runtime}`, type: info.type })), { placeHolder: "Which kind of Brick? (the types are fixed)", matchOnDetail: true });
     if (!type) return;
-    const name = await vscode.window.showInputBox({ prompt: "Name", placeHolder: "Production config guard", validateInput: (value) => (value.trim() ? undefined : "A name is required") });
+    const name = await this.inputBox({ prompt: "Name", placeHolder: "Production config guard", validateInput: (value) => (value.trim() ? undefined : "A name is required") });
     if (!name) return;
-    const intent = await vscode.window.showInputBox({ prompt: "What does it solve, in plain words?", placeHolder: "Agents must not change production settings without a person" });
+    const intent = await this.inputBox({ prompt: "What does it solve, in plain words?", placeHolder: "Agents must not change production settings without a person" });
     if (intent === undefined) return;
     const context = await this.writeInEditor("Common Context (it travels with every version of this Brick)", "");
     if (context === undefined) return;
@@ -550,14 +604,14 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
   async edit(node?: BrickNode): Promise<void> {
     const row = await this.brickOf(node, (item) => item.state === "draft" || item.state === "active", "Which Brick? (editing an activated one starts its next version)");
     if (!row) return;
-    const field = await vscode.window.showQuickPick(["Intent", "Common Context", "Configuration", "Name"], { placeHolder: `Edit ${row.brick_id}` });
+    const field = await this.quickPick(["Intent", "Common Context", "Configuration", "Name"], { placeHolder: `Edit ${row.brick_id}` });
     if (!field) return;
     const show = await this.envelope<{ definition: { name: string; intent: string; config: unknown; common_context: { text: string } } }>(["brick", "show", row.state === "draft" ? row.brick_id : row.ref]);
     if (!show) return;
     const definition = show.data.definition;
     let args: string[] | undefined;
     if (field === "Intent" || field === "Name") {
-      const value = await vscode.window.showInputBox({ prompt: field, value: field === "Intent" ? definition.intent : definition.name });
+      const value = await this.inputBox({ prompt: field, value: field === "Intent" ? definition.intent : definition.name });
       if (value !== undefined) args = ["brick", "edit", row.brick_id, field === "Intent" ? "--intent" : "--name", value];
     } else {
       const text = await this.writeInEditor(field, field === "Configuration" ? JSON.stringify(definition.config ?? {}, null, 2) : definition.common_context.text, field === "Configuration" ? "json" : "markdown");
@@ -589,7 +643,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
   async test(node?: BrickNode): Promise<void> {
     const row = await this.brickOf(node, () => true, "Test which Brick?");
     if (!row) return;
-    const target = await vscode.window.showQuickPick(["(the targets it is attached to)", ...this.host.targets().map((item) => `${item.kind}:${item.id}`)], { placeHolder: "Simulate it on which Flow or Zone?" });
+    const target = await this.quickPick(["(the targets it is attached to)", ...this.host.targets().map((item) => `${item.kind}:${item.id}`)], { placeHolder: "Simulate it on which Flow or Zone?" });
     if (target === undefined) return;
     const args = ["brick", "test", row.state === "draft" ? row.brick_id : row.ref];
     if (!target.startsWith("(")) args.push("--target", target);
@@ -621,7 +675,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
   async activate(node?: BrickNode): Promise<void> {
     const row = await this.brickOf(node, (item) => item.state === "draft", "Activate which draft?");
     if (!row) return;
-    const reason = await vscode.window.showInputBox({ prompt: `Why activate ${row.brick_id}? (recorded in the signed audit)`, validateInput: (value) => (value.trim() ? undefined : "A reason is required") });
+    const reason = await this.inputBox({ prompt: `Why activate ${row.brick_id}? (recorded in the signed audit)`, validateInput: (value) => (value.trim() ? undefined : "A reason is required") });
     if (!reason) return;
     await this.signed(["brick", "activate", row.brick_id, "--reason", reason], `Activate ${row.brick_id}@${row.version}`);
   }
@@ -639,7 +693,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     if (!subject) {
       if (!this.list) await this.load();
       const choices = [...(this.list?.bricks ?? []).filter((row) => row.state === "active"), ...(this.list?.stacks ?? []).filter((row) => row.state === "active")];
-      const chosen = await vscode.window.showQuickPick(choices.map((row) => ({ label: row.name, description: subjectOf(row), subject: subjectOf(row) })), { placeHolder: "Attach which active Brick or Stack?" });
+      const chosen = await this.quickPick(choices.map((row) => ({ label: row.name, description: subjectOf(row), subject: subjectOf(row) })), { placeHolder: "Attach which active Brick or Stack?" });
       subject = chosen?.subject;
     }
     if (!subject) return;
@@ -665,7 +719,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
   private async attachmentOf(node?: BrickNode): Promise<AttachmentRow | undefined> {
     if (node?.contextValue === "attachment") return node.data as AttachmentRow;
     if (!this.list) await this.load();
-    const chosen = await vscode.window.showQuickPick((this.list?.attachments ?? []).map((row) => ({ label: row.subject, description: `${row.target} · ${row.attachment_id}`, row })), { placeHolder: "Which attachment?" });
+    const chosen = await this.quickPick((this.list?.attachments ?? []).map((row) => ({ label: row.subject, description: `${row.target} · ${row.attachment_id}`, row })), { placeHolder: "Which attachment?" });
     return chosen?.row;
   }
 
@@ -676,7 +730,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
   async detach(node?: BrickNode): Promise<void> {
     const row = await this.attachmentOf(node);
     if (!row) return;
-    const reason = await vscode.window.showInputBox({ prompt: `Why detach ${row.subject} from ${row.target}?`, validateInput: (value) => (value.trim() ? undefined : "A reason is required") });
+    const reason = await this.inputBox({ prompt: `Why detach ${row.subject} from ${row.target}?`, validateInput: (value) => (value.trim() ? undefined : "A reason is required") });
     if (!reason) return;
     await this.signed(["brick", "detach", row.attachment_id, "--reason", reason], `Detach ${row.subject} from ${row.target}`);
   }
@@ -692,9 +746,9 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     const versions = row.subject.startsWith("stack:")
       ? (this.list?.stacks ?? []).filter((item) => item.stack_id === id && item.state === "active").map((item) => `stack:${item.stack_id}@${item.version}`)
       : (this.list?.bricks ?? []).filter((item) => item.brick_id === id && item.state === "active").map((item) => `${item.brick_id}@${item.version}`);
-    const to = await vscode.window.showQuickPick(versions.filter((version) => !row.subject.endsWith(version)), { placeHolder: `Pin ${row.attachment_id} to which version?` });
+    const to = await this.quickPick(versions.filter((version) => !row.subject.endsWith(version)), { placeHolder: `Pin ${row.attachment_id} to which version?` });
     if (!to) return;
-    const reason = await vscode.window.showInputBox({ prompt: "Why?", validateInput: (value) => (value.trim() ? undefined : "A reason is required") });
+    const reason = await this.inputBox({ prompt: "Why?", validateInput: (value) => (value.trim() ? undefined : "A reason is required") });
     if (!reason) return;
     await this.signed(["brick", "upgrade", row.attachment_id, "--to", to, "--reason", reason], `Pin ${row.attachment_id} to ${to}`);
   }
@@ -720,9 +774,9 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
   async revoke(node?: BrickNode): Promise<void> {
     const row = await this.brickOf(node, (item) => item.state === "active" || item.state === "deprecated", "Revoke which version?");
     if (!row) return;
-    const reason = await vscode.window.showInputBox({ prompt: `Why revoke ${row.ref}? (attachments pinned to it fail closed until an admin detaches or upgrades them)`, validateInput: (value) => (value.trim() ? undefined : "A reason is required") });
+    const reason = await this.inputBox({ prompt: `Why revoke ${row.ref}? (attachments pinned to it fail closed until an admin detaches or upgrades them)`, validateInput: (value) => (value.trim() ? undefined : "A reason is required") });
     if (!reason) return;
-    const go = await vscode.window.showWarningMessage(`Landscape: revoke ${row.ref}?`, { modal: true, detail: "Revocation is signed and cannot be undone; activate a new version instead to replace it." }, "Revoke");
+    const go = await this.modal(`Landscape: revoke ${row.ref}?`, { modal: true, detail: "Revocation is signed and cannot be undone; activate a new version instead to replace it." }, "Revoke");
     if (go !== "Revoke") return;
     const result = await this.envelope(["brick", "revoke", row.ref, "--reason", reason]);
     if (result) await this.report(result, "Revoke Brick", true);
@@ -738,7 +792,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     if (node?.contextValue === "target") targets = [String(node.data)];
     else if (node?.contextValue === "attachment") targets = [(node.data as AttachmentRow).target];
     if (!targets.length) {
-      const chosen = await vscode.window.showQuickPick(this.host.targets().map((item) => ({ label: `${item.kind}:${item.id}`, description: item.status })), { placeHolder: "Preview the context of which Flows and Zones?", canPickMany: true });
+      const chosen = await this.quickPick(this.host.targets().map((item) => ({ label: `${item.kind}:${item.id}`, description: item.status })), { placeHolder: "Preview the context of which Flows and Zones?", canPickMany: true });
       targets = (chosen ?? []).map((item) => item.label);
     }
     if (!targets.length) return;
@@ -756,17 +810,17 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
    */
   async runControl(family?: string): Promise<void> {
     const items = CONTROLS.filter((item) => !family || item.family === family);
-    const chosen = await vscode.window.showQuickPick(items.map((item) => ({ label: `crane ${item.label}`, description: item.changes ? "changes state" : "", detail: item.detail, item })), { placeHolder: "Run which Crane control? (the same command families as the CLI)", matchOnDetail: true });
+    const chosen = await this.quickPick(items.map((item) => ({ label: `crane ${item.label}`, description: item.changes ? "changes state" : "", detail: item.detail, item })), { placeHolder: "Run which Crane control? (the same command families as the CLI)", matchOnDetail: true });
     if (!chosen) return;
     const values: string[] = [];
     for (const input of chosen.item.inputs) {
-      const value = await vscode.window.showInputBox({ prompt: input.prompt, placeHolder: input.placeholder, validateInput: (text) => (input.optional || text.trim() ? undefined : "Required") });
+      const value = await this.inputBox({ prompt: input.prompt, placeHolder: input.placeholder, validateInput: (text) => (input.optional || text.trim() ? undefined : "Required") });
       if (value === undefined) return;
       values.push(value);
     }
     const args = controlArgs(chosen.item, values);
     if (chosen.item.changes) {
-      const go = await vscode.window.showWarningMessage(`Landscape: run crane ${args.slice(0, -2).join(" ")}?`, { modal: true, detail: "This changes state; Crane records it and decides whether it is allowed." }, "Run");
+      const go = await this.modal(`Landscape: run crane ${args.slice(0, -2).join(" ")}?`, { modal: true, detail: "This changes state; Crane records it and decides whether it is allowed." }, "Run");
       if (go !== "Run") return;
     }
     const result = await this.host.crane(args);

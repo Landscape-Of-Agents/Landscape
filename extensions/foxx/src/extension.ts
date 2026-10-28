@@ -23,7 +23,7 @@ import { FoxxSidebar, SidebarHost, SidebarState } from "./sidebar";
 import { Bricks } from "./bricksView";
 import { AGENTS_PAGE, AGENTS_PANEL, agentsHost, AgentsTree } from "./agentsPanel";
 import { BRICKS_PAGE, BRICKS_PANEL, bricksHost, BricksLauncher } from "./bricksPanel";
-import { PanelDeps, Workbench } from "./workbench";
+import { Dialogs, PanelDeps, Workbench } from "./workbench";
 
 /** A registry record as stored in .crane/registry.json (only the fields Landscape shows). */
 interface RegistryRecord {
@@ -838,7 +838,7 @@ async function setUp(): Promise<void> {
       asked === "trust_owner"
         ? `This repository's rules are signed by the owner key\n\n${ownerKey(initialized.stdout) ?? "(see the Landscape output)"}\n\nTrust it only if it matches the key the owner sees with 'crane admin list'. Until it is trusted, agent changes stay blocked.`
         : "The signed rules differ from the version this machine last signed. This is expected after merging another admin's change. Accept the current signed rules?";
-    const answer = await vscode.window.showWarningMessage(message, { modal: true }, asked === "trust_owner" ? "Trust owner key" : "Accept rules");
+    const answer = await ui().confirm(asked === "trust_owner" ? "trust the owner key of this repository?" : "accept the current signed rules?", message, asked === "trust_owner" ? "Trust owner key" : "Accept rules");
     if (!answer) {
       record("FOXX_SETUP", { status: "CANCELLED", failure_state: "OWNER_DECLINED", statement: "Person declined the signed rules.", role: "MEMBER" });
       vscode.window.showInformationMessage("Landscape: nothing changed.");
@@ -887,7 +887,7 @@ async function installHooks(kind?: "claude" | "codex" | "copilot" | "gemini"): P
 
 /** Record HEAD as a trusted checkpoint. */
 async function createCheckpoint(): Promise<void> {
-  const name = await vscode.window.showInputBox({ prompt: "Checkpoint name (records the current commit as trusted)", value: `checkpoint-${new Date().toISOString().slice(0, 10)}`, validateInput: (value) => checkName(value) });
+  const name = await ui().input({ title: "Create a checkpoint", prompt: "Checkpoint name", help: "Records the current commit as trusted.", value: `checkpoint-${new Date().toISOString().slice(0, 10)}`, button: "Create checkpoint", validate: (value) => checkName(value) });
   if (!name) return;
   await change(["checkpoint", name], `checkpoint ${name} recorded.`);
 }
@@ -934,22 +934,24 @@ async function openGovernanceEntity(kind: "zone" | "flow", id: string): Promise<
 /** Create a policy in a new or existing policy file. */
 async function createPolicy(): Promise<void> {
   const existing = policies().map((policy) => policy.name.toLowerCase());
-  const name = await vscode.window.showInputBox({
+  const name = await ui().input({
+    title: "Create a policy",
     prompt: "Policy name",
-    validateInput: (value) => checkName(value) ?? (existing.includes(value.toLowerCase()) ? "a policy with this name exists" : undefined),
+    button: "Next",
+    validate: (value) => checkName(value) ?? (existing.includes(value.toLowerCase()) ? "a policy with this name exists" : undefined),
   });
   if (!name) return;
-  const file = await vscode.window.showInputBox({ prompt: "Policy file in .crane/policies (without .crane)", value: name.toLowerCase(), validateInput: (value) => checkName(value) });
+  const file = await ui().input({ title: `Create policy ${name}`, prompt: "Policy file in .crane/policies", help: "Without the .crane extension; a new file is created when it does not exist.", value: name.toLowerCase(), button: "Create policy", validate: (value) => checkName(value) });
   if (!file) return;
   await change(["create", "policy", name, file], `policy ${name} created in .crane/policies/${file}.crane. Add lines to it with 'Landscape: Create Selection Contract'.`);
 }
 
 /** Move a selection's statement to another policy. */
 async function moveToPolicy(): Promise<void> {
-  const choice = await vscode.window.showQuickPick(
-    loadRecords().map((record) => ({ label: record.id, description: `${record.operation}${record.name ? ` · ${record.name}` : ""}`, detail: `in policy ${record.policy}`, record })),
-    { placeHolder: "Selection to move" },
-  );
+  const choice = await ui().pick({
+    title: "Move which selection to another policy?",
+    items: loadRecords().map((record) => ({ label: record.id, description: `${record.operation}${record.name ? ` · ${record.name}` : ""}`, detail: `in policy ${record.policy}`, value: { label: record.id, record } })),
+  });
   if (!choice) return;
   const target = await pick(policies().map((policy) => policy.name).filter((name) => name !== choice.record.policy), `Move ${choice.label} to which policy?`);
   if (!target) return;
@@ -1309,7 +1311,15 @@ async function writeGovernance(change: (text: string) => string, summary: string
  * @returns the value, or undefined when cancelled
  */
 async function pick<T extends string>(values: readonly T[], placeHolder: string): Promise<T | undefined> {
-  return (await vscode.window.showQuickPick([...values], { placeHolder })) as T | undefined;
+  return ui().pick({ title: placeHolder, items: values.map((value) => ({ label: value, value })) });
+}
+
+/**
+ * The Landscape dialogs every command asks through (never native pop-ups).
+ * @returns dialogs
+ */
+function ui(): Dialogs {
+  return Workbench.dialogs(extensionUri);
 }
 
 // ---------------------------------------------------------------- live agent context
@@ -1514,6 +1524,7 @@ export function activate(context: vscode.ExtensionContext): void {
       await validate(true);
     },
     output,
+    ui,
   });
   bricks.register(context);
   void bricks.load();

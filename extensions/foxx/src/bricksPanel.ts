@@ -126,6 +126,7 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
         templates: BRICK_TEMPLATES,
         guide: BRICK_GUIDE,
         legacy: LEGACY_TYPES,
+        craneKinds: types.map((info) => info.type),
       };
     },
 
@@ -399,7 +400,7 @@ export const BRICKS_PAGE: WorkbenchPage = {
       </div>
       <div class="field" data-field="intent"><label for="c-intent">What it solves</label><input type="text" id="c-intent" placeholder="Agents must not change production settings without a person"></div>
       <div class="field" data-field="common"><label for="c-common">Common context</label><textarea id="c-common" placeholder="What every agent should know wherever this Brick is attached…"></textarea><div class="help">Shared by every Zone and Flow this Brick is attached to. It is guidance for agents, never permission. Never put secrets here.</div></div>
-      <details class="more"><summary>Configuration (optional)</summary><div class="field" data-field="config" style="margin-top:8px"><textarea class="code" id="c-config" spellcheck="false" aria-label="Configuration JSON"></textarea><div class="help">JSON for this kind; Crane checks it against the kind's schema. <a href="#" id="c-reset">Reset to the example</a></div></div></details>
+      <details class="more"><summary>Configuration (optional)</summary><div class="field" data-field="config" style="margin-top:8px"><textarea class="code" id="c-config" spellcheck="false" aria-label="Configuration JSON"></textarea><div class="help">JSON for this kind; Crane checks it against the kind's schema.</div><div class="chips-row"><button type="button" class="chip-btn" id="c-reset"><span aria-hidden="true">↺</span>Reset to the example</button><button type="button" class="chip-btn" id="c-settings"><span aria-hidden="true">i</span>What each setting means</button></div></div></details>
       <label class="check"><input type="checkbox" id="c-now"><span class="grow">Activate and attach it now<small>Activating is signed with an admin key. Crane shows what changes before anything is signed.</small></span></label>
       <div id="c-now-fields" hidden style="margin-top:10px">
         <div class="grid2">
@@ -473,7 +474,11 @@ function onState(state) {
   // The kinds, with what each does and how far Crane enforces it
   const type = $("c-type");
   if (!type.options.length) {
-    type.innerHTML = S.types.map((info) => '<option value="' + esc(info.type) + '">' + esc(info.label || info.type) + "</option>").join("");
+    // The kinds this Landscape knows, in catalog order; Crane's labels where it has them
+    type.innerHTML = Object.keys(S.guide || {}).map((kind) => {
+      const info = S.types.find((item) => item.type === kind);
+      return '<option value="' + esc(kind) + '">' + esc((info && info.label) || kind.charAt(0).toUpperCase() + kind.slice(1)) + "</option>";
+    }).join("");
     applyType();
   }
   const targets = S.targets.map((target) => ({ value: target.key, label: target.key + (target.status && target.status !== "active" ? " (" + target.status + ")" : "") }));
@@ -495,16 +500,18 @@ function onFocus(id) { graph.pick(id); }
 const SUPPORT = { enforced: ["ok", "Enforced at every tool call"], checked: ["busy", "Checked by tests and monitors"], delivered: ["fox", "Given to agents as context"], declared: ["warn", "Recorded; not enforced yet"] };
 function renderGuide() {
   const type = $("c-type").value;
-  const guide = (S.guide || {})[type];
+  if (!type) { $("guide").innerHTML = '<div class="part muted">Choose a kind to see what it does.</div>'; return; }
+  const guide = guideOf(type);
   const info = S.types.find((item) => item.type === type) || {};
-  if (!guide) { $("guide").innerHTML = '<div class="part muted">Choose a kind to see what it does.</div>'; return; }
+  const known = !S.craneKinds || !S.craneKinds.length || S.craneKinds.includes(type);
   const support = SUPPORT[info.support] || ["", ""];
-  $("guide").innerHTML = '<div class="top"><span aria-hidden="true">◆</span><b class="grow">' + esc(info.label || type) + " Brick</b>" + (support[1] ? '<span class="tag ' + support[0] + '">' + esc(support[1]) + "</span>" : "") + "</div>" +
+  $("guide").innerHTML = '<div class="top"><span aria-hidden="true">◆</span><b class="grow">' + esc(info.label || type.charAt(0).toUpperCase() + type.slice(1)) + " Brick</b>" + '<button type="button" class="info-btn" data-kind-info="' + esc(type) + '" title="Its settings" aria-label="Settings of the ' + esc(type) + ' kind">i</button>' + (support[1] ? '<span class="tag ' + support[0] + '">' + esc(support[1]) + "</span>" : "") + "</div>" +
+    (known ? "" : '<div class="part"><div class="banner" style="margin:0"><span class="icon">⚠</span><div class="grow small"><b>Your Crane does not know this kind yet</b>Update Crane to 0.5.8 or newer to create ' + esc(type) + " Bricks; the guide below already explains it.</div></div></div>") +
     '<div class="part"><h4>Purpose</h4><p>' + esc(guide.purpose) + "</p></div>" +
     '<div class="part unique"><h4>Only this kind</h4><p>' + esc(guide.unique) + "</p></div>" +
-    '<div class="part"><h4>Use it when</h4><p>' + esc(guide.useWhen) + "</p></div>" +
-    '<div class="part"><h4>Example</h4><p class="story">' + esc(guide.example.story) + "</p><pre>" + esc(JSON.stringify(guide.example.config, null, 2)) + '</pre><div class="row" style="margin-top:8px"><button type="button" class="btn small primary" id="g-use">Fill the form with this example</button></div></div>' +
-    '<div class="part"><h4>Settings you can configure</h4><dl>' + guide.settings.map((item) => "<div><dt>" + esc(item.name) + "</dt><dd>" + esc(item.meaning) + "<small>Values: " + esc(item.values) + "</small></dd></div>").join("") + "</dl></div>" +
+    (guide.useWhen ? '<div class="part"><h4>Use it when</h4><p>' + esc(guide.useWhen) + "</p></div>" : "") +
+    (guide.example ? '<div class="part"><h4>Example</h4><p class="story">' + esc(guide.example.story) + "</p><pre>" + esc(JSON.stringify(guide.example.config, null, 2)) + '</pre><div class="row" style="margin-top:8px"><button type="button" class="btn small primary" id="g-use">Fill the form with this example</button></div></div>' : "") +
+    '<div class="part"><h4>Settings you can configure</h4><dl>' + guide.settings.map((item) => "<div><dt>" + esc(item.name) + "</dt><dd>" + esc(item.meaning) + (item.values ? "<small>Values: " + esc(item.values) + "</small>" : "") + "</dd></div>").join("") + '</dl><div class="chips-row"><button type="button" class="chip-btn" data-kind-info="' + esc(type) + '"><span aria-hidden="true">i</span>Open the settings in a pop-up</button></div></div>' +
     (info.runtime ? '<div class="part"><h4>What Crane does with it today</h4><p class="muted">' + esc(info.runtime[0].toUpperCase() + info.runtime.slice(1)) + ".</p></div>" : "");
 }
 function showKind(type) {
@@ -534,6 +541,7 @@ function applyType() {
 $("c-type").addEventListener("change", applyType);
 $("c-config").addEventListener("input", () => { configTouched = true; });
 $("c-reset").addEventListener("click", (event) => { event.preventDefault(); configTouched = false; applyType(); });
+$("c-settings").addEventListener("click", (event) => { event.preventDefault(); showKindInfo($("c-type").value); });
 $("c-now").addEventListener("change", () => { $("c-now-fields").hidden = !$("c-now").checked; });
 $("refresh").addEventListener("click", () => { notice(); vscode.postMessage({ type: "refresh" }); });
 
@@ -670,6 +678,44 @@ document.addEventListener("click", (event) => {
   if (migrate) { event.preventDefault(); perform(migrate, "migrate", {}); }
 }, true);
 
+// ---------------------------------------------------------------- a kind's settings, in a pop-up
+// The guide of a kind: the extension's own, the one of the kind a former kind became, or what
+// Crane's catalog says about it
+function guideOf(type) {
+  const own = (S.guide || {})[type];
+  if (own) return own;
+  const now = String((S.legacy || {})[type] || "").split(" ")[0];
+  if ((S.guide || {})[now]) return S.guide[now];
+  const info = S.types.find((item) => item.type === type) || {};
+  return { purpose: info.purpose || "", unique: info.unique || "", useWhen: "", example: null, settings: (info.fields || []).map((name) => ({ name, meaning: "", values: "" })) };
+}
+function showKindInfo(type) {
+  const guide = guideOf(type);
+  const example = guide.example ? guide.example.config : (S.templates || {})[type] || {};
+  const rows = guide.settings.map((setting) => {
+    const keys = setting.name.split(" / ");
+    const values = keys.map((key) => (keys.length > 1 ? '<div class="sub-key"><code>' + esc(key) + "</code></div>" : "") + shown(valueOf(example, key))).join("");
+    return '<div class="prop"><div class="prop-name">' + esc(setting.name) + '</div><div class="prop-value"><div class="sub-key">in the example</div>' + values + '</div><div class="prop-help">' + esc(setting.meaning) + (setting.values ? "<small>Allowed: " + esc(setting.values) + "</small>" : "") + "</div></div>";
+  }).join("");
+  const back = document.createElement("div");
+  back.className = "modal-back";
+  back.innerHTML = '<div class="modal info-modal" role="dialog" aria-modal="true" aria-labelledby="k-title"><div class="m-head"><span class="mark" aria-hidden="true">i</span><div class="grow"><b id="k-title">' + esc(type.charAt(0).toUpperCase() + type.slice(1)) + ' Brick: its settings</b><div class="muted small">What you can configure, what each setting means, and the values Crane accepts.</div></div></div>' +
+    '<div class="m-body">' +
+    (guide.purpose ? '<div class="info-line"><h4>Purpose</h4><p>' + esc(guide.purpose) + "</p></div>" : "") +
+    (guide.unique ? '<div class="info-line unique"><h4>Only this kind</h4><p>' + esc(guide.unique) + "</p></div>" : "") +
+    '<h4 class="props-title">Settings</h4><div class="props">' + (rows || '<div class="muted">This kind has no settings.</div>') + "</div>" +
+    '</div><div class="m-foot"><span class="grow"></span><button class="btn primary" data-k="close">Close</button></div></div>';
+  document.body.appendChild(back);
+  const close = () => back.remove();
+  back.addEventListener("click", (event) => { if (event.target === back || event.target.closest('[data-k="close"]')) close(); });
+  back.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); close(); } });
+  back.querySelector('[data-k="close"]').focus();
+}
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-kind-info]");
+  if (button) { event.preventDefault(); event.stopPropagation(); showKindInfo(button.dataset.kindInfo); }
+}, true);
+
 // ---------------------------------------------------------------- the library
 function renderLibrary() {
   const groups = [["Drafts", (row) => row.state === "draft"], ["Active", (row) => row.state === "active"], ["Deprecated and revoked", (row) => row.state === "deprecated" || row.state === "revoked"]];
@@ -685,8 +731,8 @@ function renderLibrary() {
       const former = (S.legacy || {})[row.type];
       return '<div class="item"><div class="title"><b>' + esc(row.name) + "</b>" + infoButton(id, row.name) + '<span class="tag">' + esc(row.type) + "</span>" + (former ? '<span class="tag warn" title="Read as ' + esc(former) + '">former kind: now ' + esc(former) + "</span>" : "") + '<span<span class="tag ' + stateTone(row.state) + '">' + esc(row.state) + "</span>" + (row.validation && row.validation !== "passed" ? '<span class="tag bad">' + esc(row.validation) + "</span>" : "") + '<span class="muted small mono">' + esc(id) + "</span></div>" +
         (row.intent ? '<div class="muted small" style="margin-top:4px">' + esc(row.intent) + "</div>" : "") +
-        '<div class="small" style="margin-top:4px"><a href="#" data-kind="' + esc(former ? former.split(" ")[0] : row.type) + '">What is a ' + esc(former ? former.split(" ")[0] : row.type) + " Brick?</a></div>" +
-        (where.length ? '<div class="small" style="margin-top:4px">Attached to ' + where.map((key) => '<a href="#" data-goto="' + esc(key) + '">' + esc(key) + "</a>").join(", ") + "</div>" : "") +
+        '<div class="chips-row"><button type="button" class="chip-btn" data-kind="' + esc(former ? former.split(" ")[0] : row.type) + '"><span aria-hidden="true">?</span>What is a ' + esc(former ? former.split(" ")[0] : row.type) + " Brick?</button>" +
+        (where.length ? '<span class="muted small">Attached to</span>' + where.map((key) => '<button type="button" class="chip-btn" data-goto="' + esc(key) + '" title="Show it in the graph"><span aria-hidden="true">' + (key.startsWith("flow:") ? "⇢" : "▦") + "</span>" + esc(key.replace(/^[a-z]+:/, "")) + "</button>").join("") : "") + "</div>" +
         (actions ? '<div class="actions">' + actions + "</div>" : "") + "</div>";
     }).join("") + "</div>";
   }).join("");

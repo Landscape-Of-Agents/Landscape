@@ -120,13 +120,120 @@ export async function showMarkdown(text: string): Promise<void> {
   await vscode.commands.executeCommand("markdown.showPreviewToSide", document.uri).then(undefined, () => vscode.window.showTextDocument(document, { preview: true }));
 }
 
-/** Questions an operation asks the person, shown as dialogs inside the panel. */
+/** One choice of a pick dialog. */
+export interface PickItem<T> {
+  label: string;
+  description?: string;
+  detail?: string;
+  picked?: boolean;
+  value: T;
+}
+
+/** A one-line question. */
+export interface InputOptions {
+  title: string;
+  prompt?: string;
+  value?: string;
+  placeholder?: string;
+  help?: string;
+  button?: string;
+  /** A problem with the value (shown under the field, asked again), or undefined when valid. */
+  validate?: (value: string) => string | undefined;
+}
+
+/** Questions Landscape asks the person, shown as Landscape dialogs (never native pop-ups). */
 export interface Dialogs {
   /** Ask to confirm a change; tone "danger" for one that cannot be undone. */
   confirm(title: string, detail: string, button: string, tone?: "primary" | "danger"): Promise<boolean>;
   /** Ask for the reason a change is recorded with (undefined when cancelled). */
   reason(title: string): Promise<string | undefined>;
+  /** Ask for one line of text, validated in place (undefined when cancelled). */
+  input(options: InputOptions): Promise<string | undefined>;
+  /** Ask for several lines of text (undefined when cancelled). */
+  text(options: { title: string; prompt?: string; value?: string; help?: string; button?: string; detail?: string }): Promise<string | undefined>;
+  /** Ask to choose one item (undefined when cancelled). */
+  pick<T>(options: { title: string; items: PickItem<T>[]; detail?: string; button?: string }): Promise<T | undefined>;
+  /** Ask to choose any number of items (undefined when cancelled). */
+  pickMany<T>(options: { title: string; items: PickItem<T>[]; detail?: string; button?: string }): Promise<T[] | undefined>;
 }
+
+/** A question as the page shows it. */
+interface Question {
+  kind: "confirm" | "reason" | "input" | "text" | "pick";
+  title: string;
+  detail?: string;
+  button: string;
+  tone?: string;
+  prompt?: string;
+  value?: string;
+  placeholder?: string;
+  help?: string;
+  error?: string;
+  many?: boolean;
+  items?: { label: string; description?: string; detail?: string; picked?: boolean }[];
+}
+
+/** An answer from the page. */
+interface Answer {
+  ok: boolean;
+  value?: string;
+  picked?: number[];
+}
+
+/**
+ * Turn a way of showing one question into the dialogs operations use.
+ * @param ask show a question and wait for its answer
+ * @returns dialogs
+ */
+function dialogsOf(ask: (question: Question) => Promise<Answer>): Dialogs {
+  const list = <T>(items: PickItem<T>[]) => items.map(({ label, description, detail, picked }) => ({ label, description, detail, picked }));
+  return {
+    confirm: async (title, detail, button, tone = "primary") => (await ask({ kind: "confirm", title, detail, button, tone })).ok,
+    reason: async (title) => {
+      const answer = await ask({ kind: "reason", title, button: "Continue" });
+      return answer.ok && answer.value?.trim() ? answer.value.trim() : undefined;
+    },
+    input: async (options) => {
+      let value = options.value ?? "";
+      let error: string | undefined;
+      for (;;) {
+        const answer = await ask({ kind: "input", title: options.title, prompt: options.prompt, value, placeholder: options.placeholder, help: options.help, button: options.button ?? "OK", error });
+        if (!answer.ok) return undefined;
+        value = answer.value ?? "";
+        error = options.validate?.(value);
+        if (!error) return value;
+      }
+    },
+    text: async (options) => {
+      const answer = await ask({ kind: "text", title: options.title, prompt: options.prompt, value: options.value, help: options.help, detail: options.detail, button: options.button ?? "Save" });
+      return answer.ok ? (answer.value ?? "") : undefined;
+    },
+    pick: async (options) => {
+      const answer = await ask({ kind: "pick", title: options.title, detail: options.detail, items: list(options.items), button: options.button ?? "Choose" });
+      const index = answer.picked?.[0];
+      return answer.ok && index !== undefined ? options.items[index]?.value : undefined;
+    },
+    pickMany: async (options) => {
+      const answer = await ask({ kind: "pick", many: true, title: options.title, detail: options.detail, items: list(options.items), button: options.button ?? "Choose" });
+      return answer.ok ? (answer.picked ?? []).map((index) => options.items[index].value) : undefined;
+    },
+  };
+}
+
+/** The page that only shows a question when no Landscape panel is open. */
+const QUESTION_PAGE: WorkbenchPage = {
+  viewType: "foxx.question",
+  title: "Landscape",
+  styles: "",
+  body: '<div class="shell"><header class="top"><span class="mark" aria-hidden="true">▦</span><div class="grow"><b>Landscape</b><div class="muted small">Answer the question to go on; closing this tab cancels it.</div></div></header><div id="notice"></div></div>',
+  script: 'vscode.postMessage({ type: "ready" });',
+};
+
+/** The extension side of the question page. */
+const QUESTION_HOST: WorkbenchHost = {
+  state: async () => ({}),
+  run: async () => ({ ok: false, message: "This page only asks questions." }),
+};
 
 /** The extension side of a panel. */
 export interface WorkbenchHost {
@@ -187,13 +294,41 @@ export class Workbench {
   }
 
   /**
+   * The dialogs Landscape asks through from anywhere (a command, a tree view, a setup step): in
+   * the Landscape panel that is in front, or else in a small Landscape tab that closes once it is
+   * answered. Never a native pop-up.
+   * @param extensionUri the extension's folder
+   * @returns dialogs
+   */
+  static dialogs(extensionUri: vscode.Uri): Dialogs {
+    return dialogsOf(async (question) => {
+      const panels = [...Workbench.open.values()];
+      const shown = panels.find((item) => item.panel.active) ?? panels.find((item) => item.panel.visible && item.page.viewType !== QUESTION_PAGE.viewType);
+      if (shown) {
+        shown.panel.reveal(undefined, false);
+        await shown.ready;
+        return shown.ask(question);
+      }
+      Workbench.show(extensionUri, QUESTION_PAGE, QUESTION_HOST);
+      const asking = Workbench.open.get(QUESTION_PAGE.viewType)!;
+      await asking.ready;
+      try {
+        return await asking.ask(question);
+      } finally {
+        if (!asking.questions.size) asking.panel.dispose();
+      }
+    });
+  }
+
+  /**
    * Create the panel's controller.
    * @param panel webview panel
    * @param page the panel kind
    * @param host extension side
    * @param focus a target to select once it shows
    */
-  private constructor(private readonly panel: vscode.WebviewPanel, page: WorkbenchPage, private readonly host: WorkbenchHost, focus: string | undefined) {
+  private constructor(private readonly panel: vscode.WebviewPanel, private readonly page: WorkbenchPage, private readonly host: WorkbenchHost, focus: string | undefined) {
+    this.ready = new Promise((resolve) => (this.markReady = resolve));
     panel.webview.html = html(panel.webview.cspSource, page);
     panel.onDidDispose(() => {
       Workbench.open.delete(page.viewType);
@@ -201,11 +336,13 @@ export class Workbench {
       for (const answer of this.questions.values()) answer({ ok: false });
       this.questions.clear();
     });
-    panel.webview.onDidReceiveMessage(async (message: { type: string; op?: string; values?: Record<string, unknown>; request?: number; dialog?: number; ok?: boolean; value?: string }) => {
+    panel.webview.onDidReceiveMessage(async (message: { type: string; op?: string; values?: Record<string, unknown>; request?: number; dialog?: number; ok?: boolean; value?: string; picked?: number[] }) => {
       if (message.type === "dialogResult" && message.dialog !== undefined) {
-        this.questions.get(message.dialog)?.({ ok: Boolean(message.ok), value: message.value });
+        const answer = this.questions.get(message.dialog);
         this.questions.delete(message.dialog);
+        answer?.({ ok: Boolean(message.ok), value: message.value, picked: message.picked });
       } else if (message.type === "ready" || message.type === "refresh") {
+        if (message.type === "ready") this.markReady();
         await this.send(message.type === "refresh");
         if (message.type === "ready" && focus) void panel.webview.postMessage({ type: "focus", id: focus });
       } else if (message.type === "run" && message.op) {
@@ -245,30 +382,28 @@ export class Workbench {
   private sending = false;
 
   /** Dialogs waiting for the person's answer, by id. */
-  private readonly questions = new Map<number, (answer: { ok: boolean; value?: string }) => void>();
+  private readonly questions = new Map<number, (answer: Answer) => void>();
   private asked = 0;
+
+  /** The page has loaded and can show dialogs. */
+  private readonly ready: Promise<void>;
+  private markReady: () => void = () => undefined;
 
   /**
    * Show a dialog in the page and wait for the answer.
-   * @param dialog what to show
+   * @param question what to show
    * @returns the answer
    */
-  private ask(dialog: { kind: "confirm" | "reason"; title: string; detail?: string; button: string; tone?: string }): Promise<{ ok: boolean; value?: string }> {
+  private ask(question: Question): Promise<Answer> {
     const id = ++this.asked;
     return new Promise((resolve) => {
       this.questions.set(id, resolve);
-      void this.panel.webview.postMessage({ type: "dialog", id, ...dialog });
+      void this.panel.webview.postMessage({ type: "dialog", id, ...question });
     });
   }
 
-  /** The dialogs operations ask through. */
-  private readonly dialogs: Dialogs = {
-    confirm: async (title, detail, button, tone = "primary") => (await this.ask({ kind: "confirm", title, detail, button, tone })).ok,
-    reason: async (title) => {
-      const answer = await this.ask({ kind: "reason", title, button: "Continue" });
-      return answer.ok && answer.value?.trim() ? answer.value.trim() : undefined;
-    },
-  };
+  /** The dialogs this panel's operations ask through. */
+  private readonly dialogs: Dialogs = dialogsOf((question) => this.ask(question));
 }
 
 /**
@@ -349,6 +484,11 @@ header.top b { font-size: 14px; }
 .btn.primary { border-color: transparent; color: #1a0d05; font-weight: 700; background: linear-gradient(90deg, var(--fox), var(--fox-2)); }
 .btn.danger { color: var(--bad); }
 .btn.small { padding: 1px 8px; font-size: 11.5px; }
+/* A small rounded button where a text link would be */
+.chip-btn { display: inline-flex; align-items: center; gap: 5px; padding: 1px 9px 1px 7px; border-radius: 999px; border: 1px solid var(--line); background: var(--raised); color: var(--fg); font: inherit; font-size: 11.5px; line-height: 1.6; cursor: pointer; white-space: nowrap; vertical-align: middle; }
+.chip-btn:hover, .chip-btn:focus-visible { border-color: var(--fox); color: var(--fox); background: var(--fox-soft); }
+.chip-btn > span[aria-hidden] { color: var(--fox); font-weight: 700; }
+.chips-row { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
 .tabs { display: flex; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--line); overflow-x: auto; }
 .tabs button { border: 0; background: none; padding: 9px 12px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; white-space: nowrap; }
 .tabs button[aria-selected=true] { color: var(--fg); border-bottom-color: var(--fox); font-weight: 600; }
@@ -422,6 +562,12 @@ details.more summary { cursor: pointer; font-weight: 600; }
 .modal .m-detail .note { display: block; margin-top: 8px; color: var(--muted); }
 .modal .m-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--raised); }
 .modal .btn.danger-fill { border-color: transparent; background: var(--bad); color: #fff; font-weight: 700; }
+.modal .m-list { display: grid; gap: 4px; max-height: 46vh; overflow: auto; }
+.modal .m-item { display: flex; gap: 9px; align-items: flex-start; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); cursor: pointer; }
+.modal .m-item:hover, .modal .m-item:has(input:checked) { border-color: var(--fox); background: var(--fox-soft); }
+.modal .m-item input { margin-top: 3px; accent-color: var(--fox); }
+.modal .m-item small { display: block; color: var(--muted); font-size: 11.5px; }
+.modal textarea { width: 100%; }
 @keyframes fade { from { opacity: 0; } }
 @keyframes rise { from { transform: translateY(8px); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .modal-back, .modal { animation: none; } }
@@ -566,33 +712,65 @@ function Graph(host, onPick) {
 }
 
 // ---------------------------------------------------------------- dialogs the extension asks for
+// confirm, reason, input (one line, validated by the extension), text (several lines), and pick
+// (one or several of a list, with a search box)
+const NEWLINE = String.fromCharCode(10);
 function dialog(message) {
   const back = document.createElement("div");
   back.className = "modal-back";
-  const lines = String(message.detail || "").split("\\n").map((line) => {
+  const lines = String(message.detail || "").split(NEWLINE).map((line) => {
     if (!line.trim()) return "";
-    if (/^ {2}/.test(line)) return '<span class="sub">' + esc(line.trim()) + "</span>";
+    if (line.startsWith("  ")) return '<span class="sub">' + esc(line.trim()) + "</span>";
     if (/^Crane signs|^Each move|^It stays idle/.test(line)) return '<span class="note">' + esc(line) + "</span>";
     return esc(line);
-  }).join("\\n");
-  back.innerHTML = '<div class="modal' + (message.tone === "danger" ? " danger" : "") + '" role="dialog" aria-modal="true" aria-labelledby="m-title"><div class="m-head"><span class="mark" aria-hidden="true">' + (message.tone === "danger" ? "!" : "▦") + '</span><b id="m-title" class="grow">' + esc(message.title.charAt(0).toUpperCase() + message.title.slice(1)) + "</b></div>" +
-    '<div class="m-body">' + (lines ? '<p class="m-detail">' + lines + "</p>" : "") +
-    (message.kind === "reason" ? '<div class="field" style="margin:' + (lines ? "10px" : "0") + ' 0 0"><label for="m-input">Reason</label><input type="text" id="m-input" placeholder="Recorded in the signed audit"><div class="help">Required. It is kept with the change.</div></div>' : "") + "</div>" +
-    '<div class="m-foot"><button class="btn" data-m="no">Cancel</button><button class="btn ' + (message.tone === "danger" ? "danger-fill" : "primary") + '" data-m="yes">' + esc(message.button) + "</button></div></div>";
+  }).join(NEWLINE);
+  const kind = message.kind;
+  const items = message.items || [];
+  let field = "";
+  if (kind === "reason" || kind === "input") {
+    field = '<div class="field' + (message.error ? " error" : "") + '" style="margin:' + (lines ? "10px" : "0") + ' 0 0">' + (message.prompt || kind === "reason" ? '<label for="m-input">' + esc(message.prompt || "Reason") + "</label>" : "") +
+      '<input type="text" id="m-input" spellcheck="false" placeholder="' + esc(message.placeholder || (kind === "reason" ? "Recorded in the signed audit" : "")) + '" value="' + esc(message.value || "") + '">' +
+      (message.error ? '<div class="error-text">' + esc(message.error) + "</div>" : '<div class="help">' + (kind === "reason" ? "Required. It is kept with the change." : esc(message.help || "")) + "</div>") + "</div>";
+  } else if (kind === "text") {
+    field = '<div class="field" style="margin:' + (lines ? "10px" : "0") + ' 0 0">' + (message.prompt ? '<label for="m-text">' + esc(message.prompt) + "</label>" : "") + '<textarea id="m-text" style="min-height:180px">' + esc(message.value || "") + "</textarea>" + (message.help ? '<div class="help">' + esc(message.help) + "</div>" : "") + "</div>";
+  } else if (kind === "pick") {
+    field = (items.length > 7 ? '<input type="search" id="m-search" placeholder="Search…" aria-label="Search the list" style="margin:' + (lines ? "10px" : "0") + ' 0 8px">' : "") +
+      '<div class="m-list" role="listbox" aria-multiselectable="' + Boolean(message.many) + '">' + items.map((item, index) =>
+        '<label class="m-item" data-index="' + index + '"><input type="' + (message.many ? "checkbox" : "radio") + '" name="m-pick" value="' + index + '"' + (item.picked || (!message.many && index === 0) ? " checked" : "") + '><span class="grow"><b>' + esc(item.label) + "</b>" + (item.description ? ' <span class="muted small">' + esc(item.description) + "</span>" : "") + (item.detail ? "<small>" + esc(item.detail) + "</small>" : "") + "</span></label>").join("") +
+      (items.length ? "" : '<div class="muted">Nothing to choose from.</div>') + "</div>";
+  }
+  const tone = message.tone === "danger" ? "danger" : "";
+  back.innerHTML = '<div class="modal ' + tone + '" role="dialog" aria-modal="true" aria-labelledby="m-title"><div class="m-head"><span class="mark" aria-hidden="true">' + (tone ? "!" : "▦") + '</span><b id="m-title" class="grow">' + esc(message.title.charAt(0).toUpperCase() + message.title.slice(1)) + "</b></div>" +
+    '<div class="m-body">' + (lines ? '<p class="m-detail">' + lines + "</p>" : "") + field + "</div>" +
+    '<div class="m-foot"><button class="btn" data-m="no">Cancel</button><button class="btn ' + (tone ? "danger-fill" : "primary") + '" data-m="yes"' + (kind === "pick" && !items.length ? " disabled" : "") + ">" + esc(message.button || "OK") + "</button></div></div>";
   document.body.appendChild(back);
-  const input = back.querySelector("#m-input");
+  const input = back.querySelector("#m-input"), area = back.querySelector("#m-text"), search = back.querySelector("#m-search");
   const answer = (ok) => {
-    if (ok && input && !input.value.trim()) { input.closest(".field").classList.add("error"); input.focus(); return; }
+    if (ok && kind === "reason" && !input.value.trim()) { input.closest(".field").classList.add("error"); input.focus(); return; }
+    const picked = [...back.querySelectorAll('input[name="m-pick"]:checked')].map((box) => Number(box.value));
+    if (ok && kind === "pick" && !picked.length) return;
     back.remove();
-    vscode.postMessage({ type: "dialogResult", dialog: message.id, ok, value: input ? input.value : undefined });
+    vscode.postMessage({ type: "dialogResult", dialog: message.id, ok, value: input ? input.value : area ? area.value : undefined, picked });
   };
   back.addEventListener("click", (event) => { const button = event.target.closest("[data-m]"); if (button) answer(button.dataset.m === "yes"); else if (event.target === back) answer(false); });
+  back.addEventListener("dblclick", (event) => { if (kind === "pick" && !message.many && event.target.closest(".m-item")) answer(true); });
+  if (search) search.addEventListener("input", () => {
+    const query = search.value.trim().toLowerCase();
+    for (const row of back.querySelectorAll(".m-item")) row.hidden = Boolean(query) && !row.textContent.toLowerCase().includes(query);
+  });
   back.addEventListener("keydown", (event) => {
     if (event.key === "Escape") { event.preventDefault(); answer(false); }
-    else if (event.key === "Enter" && event.target === input) { event.preventDefault(); answer(true); }
-    else if (event.key === "Tab") { const items = [...back.querySelectorAll("input, button")]; const at = items.indexOf(document.activeElement); if (event.shiftKey && at <= 0) { event.preventDefault(); items[items.length - 1].focus(); } else if (!event.shiftKey && at === items.length - 1) { event.preventDefault(); items[0].focus(); } }
+    else if (event.key === "Enter" && (event.target === input || event.target === search || (kind === "pick" && event.target.closest(".m-item")))) {
+      event.preventDefault();
+      if (event.target === search) { const first = [...back.querySelectorAll(".m-item")].find((row) => !row.hidden); if (first && !message.many) first.querySelector("input").checked = true; }
+      answer(true);
+    }
+    else if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && event.target === area) { event.preventDefault(); answer(true); }
+    else if (event.key === "Tab") { const all = [...back.querySelectorAll("input, textarea, button")].filter((item) => !item.disabled && !item.closest("[hidden]")); const at = all.indexOf(document.activeElement); if (event.shiftKey && at <= 0) { event.preventDefault(); all[all.length - 1].focus(); } else if (!event.shiftKey && at === all.length - 1) { event.preventDefault(); all[0].focus(); } }
   });
-  (input || back.querySelector('[data-m="yes"]')).focus();
+  const first = input || area || search || back.querySelector('input[name="m-pick"]:checked') || back.querySelector('[data-m="yes"]');
+  first.focus();
+  if (input) input.select();
 }
 
 window.addEventListener("message", (event) => {

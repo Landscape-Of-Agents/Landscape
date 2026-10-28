@@ -158,6 +158,7 @@ export const BRICK_GUIDE: Record<CurrentType, BrickGuide> = {
       { name: "create / update / delete", meaning: "Each operation on its own.", values: MODES },
       { name: "execute", meaning: "Shell commands that name this target's files.", values: MODES },
       { name: "network", meaning: "Network calls while working in this target.", values: MODES },
+      { name: "allow", meaning: "The older permission list, still accepted: the operations allowed, everything else denied. Use it or the modes above, not both.", values: "list of read, write, delete, execute, network" },
     ],
   },
   approval: {
@@ -231,6 +232,7 @@ export const BRICK_GUIDE: Record<CurrentType, BrickGuide> = {
     settings: [
       { name: "operations", meaning: "Operations Crane may run for the target.", values: "list of {adapter, operation, max_per_day, dry_run_first, approval}; resident steps are resident/STEP, direct ones git.commit|push|tag|merge|rebase|reset, github.pr_create|pr_merge|release_create|workflow_run, packages.install, kubectl.apply, terraform.apply, docker.push" },
       { name: "deny_direct", meaning: "Agents may not do these operations themselves (their shell commands are refused).", values: "true or false" },
+      { name: "adapter / operation", meaning: "The short form for a single operation, instead of the operations list.", values: "an adapter and one of its operations, e.g. git and git.push" },
     ],
   },
   recovery: {
@@ -269,6 +271,7 @@ export const BRICK_GUIDE: Record<CurrentType, BrickGuide> = {
       { name: "on_fire", meaning: "What a firing signal does.", values: "alert (integrations), pause (changes need a person while it fires), revoke_due, propose" },
       { name: "triggers", meaning: "When attachments are due for withdrawal.", values: "integrity_failure, verification_contradicted, repeated_denials" },
       { name: "analyses", meaning: "Advisory analyses that only propose.", values: "denial_patterns, stale_context" },
+      { name: "advisory_only", meaning: "Analyses propose and never change rules, grant anything, or approve.", values: "must be true (the default)" },
       SCOPE_FROM,
     ],
   },

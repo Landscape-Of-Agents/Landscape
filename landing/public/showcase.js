@@ -5,7 +5,9 @@
 // its time, so it can play at any speed and in either direction. It plays at 1x while its row is on
 // screen, at 1.15x while the page scrolls down, and backwards while it scrolls up; reaching a row
 // pins the page until its animation has played (see Pinning below). At the end it
-// holds, then starts again. Under reduced motion each row shows its finished state.
+// holds, then starts again. Under each caption a segmented track shows the scene's steps: the
+// current one fills as it plays, and a click jumps to a step. Each new step sends a band of light
+// across the stage. Under reduced motion each row shows its finished state.
 (() => {
   const rowsInPage = [...document.querySelectorAll(".show-row")];
   if (!rowsInPage.length) return;
@@ -436,7 +438,27 @@
     const screen = root.querySelector(".show-screen");
     screen.innerHTML = '<div class="obj"><div class="obj-floor"></div><div class="obj-sway"><div class="obj-rig">' + scene.html() + "</div></div></div>";
     const line = timeline(screen);
-    const entry = { root, scene, line, after: scene.build(line), rig: screen.querySelector(".obj-rig"), stage: root.querySelector(".show-stage"), time: -1, hold: 0, visible: false, armed: true, step: -1, sayNode: root.querySelector(".show-say") };
+    const sayNode = root.querySelector(".show-say");
+    // The step track: one segment per step, filled by draw(); a click jumps to that step
+    const track = make("div", "show-steps");
+    track.setAttribute("role", "group");
+    track.setAttribute("aria-label", "Steps of this scene");
+    const segments = scene.steps.map(([, text], index) => {
+      const button = make("button");
+      button.type = "button";
+      button.title = text;
+      button.setAttribute("aria-label", "Step " + (index + 1) + ": " + text);
+      track.append(button);
+      return button;
+    });
+    const count = make("p", "show-count");
+    sayNode.after(track);
+    track.after(count);
+    const entry = { root, scene, line, after: scene.build(line), rig: screen.querySelector(".obj-rig"), stage: root.querySelector(".show-stage"), time: -1, hold: 0, visible: false, armed: true, step: -1, sayNode, segments, count };
+    segments.forEach((button, index) => button.addEventListener("click", () => {
+      entry.hold = 0;
+      draw(entry, (scene.steps[index][0] * DURATION) / AUTHORED + 0.001);
+    }));
     new IntersectionObserver((entries) => {
       entry.visible = entries.some((item) => item.isIntersecting);
       if (entry.visible) root.classList.add("seen");
@@ -465,12 +487,27 @@
     const steps = entry.scene.steps;
     let step = 0;
     while (step + 1 < steps.length && moment >= steps[step + 1][0]) step += 1;
+    steps.forEach(([at], index) => {
+      const end = index + 1 < steps.length ? steps[index + 1][0] : AUTHORED;
+      const filled = clamp((moment - at) / (end - at));
+      const segment = entry.segments[index];
+      if (segment.dataset.p !== filled.toFixed(3)) { segment.dataset.p = filled.toFixed(3); segment.style.setProperty("--p", segment.dataset.p); }
+      segment.classList.toggle("on", index === step);
+    });
     if (step !== entry.step) {
+      const first = entry.step === -1;
       entry.step = step;
       entry.sayNode.textContent = steps[step][1];
       entry.sayNode.classList.remove("show-say");
       void entry.sayNode.offsetWidth;
       entry.sayNode.classList.add("show-say");
+      entry.count.textContent = "Step " + (step + 1) + " of " + steps.length;
+      // A band of light crosses the stage when the scene moves on
+      if (!STILL && !first) {
+        entry.stage.classList.remove("sweep");
+        void entry.stage.offsetWidth;
+        entry.stage.classList.add("sweep");
+      }
     }
   };
 

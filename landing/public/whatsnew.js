@@ -124,29 +124,25 @@
   }
 
   // ------------------------------------------------------------------ bricks
-  // The fixed types, their support level today, and what Crane does with each
+  // The twelve kinds, how far Crane acts on each, and what only that kind does
   const TYPES = [
-    ["Context", "delivered", "Common Context and files are delivered before the agent acts in the target."],
-    ["Identity", "checked", "Reports to the agent, and records, when the acting agent is not admitted."],
-    ["Scope", "enforced", "Files of the target outside the scope become read-only."],
-    ["Permission", "enforced", "Without write, the target becomes read-only."],
-    ["Constraint", "enforced", "Lowers the ceiling, raises the criticality, and makes protected paths read-only."],
-    ["Precondition", "enforced", "While a check fails, every change in the target needs approval."],
-    ["Approval", "enforced", "Write or delete approval makes the target assisted."],
-    ["Isolation", "enforced", "Requiring an unavailable profile makes direct changes read-only."],
-    ["Budget", "declared", "Tool calls, retries, and runtime limits, validated and delivered."],
-    ["Action", "checked", "Must name a registered operation. A Brick never executes anything."],
-    ["Verification", "checked", "Proven, contradicted, unknown, or not run: tests, selections, files, signed state."],
-    ["Provenance", "checked", "Verified against the signed manifest and the audit chain."],
-    ["Recovery", "declared", "Retries require reconciliation first."],
-    ["Revocation", "checked", "Monitors report a revocation as due; a person signs it."],
-    ["Monitoring", "checked", "Deterministic checks on every background sync."],
-    ["Intelligence", "checked", "Denial patterns and stale context produce proposals only."],
+    ["Knowledge", "delivered", "Puts reviewed documents, terms, and references into the agent's context; informs, never restricts."],
+    ["Identity", "enforced", "Decides by who is calling: other providers or models are refused in the target."],
+    ["Access", "enforced", "Per-path, per-operation rules: scope, read-only, unreadable, and auto, ask, or deny."],
+    ["Approval", "enforced", "Recognizes kinds of change (dependency, migration, push, large diff) that need a person."],
+    ["Limits", "enforced", "Counts tool calls, minutes, files, and lines per session; stops or asks at a cap."],
+    ["Environment", "enforced", "Hidden and required variables, credentials by name, and the hosts calls may reach."],
+    ["Precondition", "enforced", "Gates every change: branch, clean tree, time window, files, variables."],
+    ["Verification", "checked", "Evidence after the work: tests, endpoints, coverage, metrics, commands."],
+    ["Action", "enforced", "Side effects go through Crane: agents may not push or deploy themselves."],
+    ["Recovery", "enforced", "Reconciles before any retry and pauses an agent after repeated failures."],
+    ["Provenance", "checked", "Traces changes to signed state, the audit chain, commit trailers, and issues."],
+    ["Watch", "checked", "Keeps checking while agents are idle; alerts and pauses the target when a signal fires."],
   ];
   const STACKS = [
-    { name: "Production code change", types: ["Context", "Scope", "Constraint", "Approval", "Verification"], target: "flow:checkout", effect: "guard · migrations/ read-only · writes need approval" },
-    { name: "Release watch", types: ["Monitoring", "Provenance", "Revocation", "Recovery"], target: "zone:payments", effect: "monitors · checked on every sync · revocation reported when due" },
-    { name: "Least privilege", types: ["Identity", "Permission", "Precondition", "Isolation"], target: "flow:refunds", effect: "guard · no write grant → target read-only" },
+    { name: "Production code change", types: ["Knowledge", "Access", "Approval", "Limits", "Verification"], target: "flow:checkout", effect: "every call · generated code read-only · dependency changes need a person" },
+    { name: "Release watch", types: ["Precondition", "Watch", "Provenance", "Recovery"], target: "zone:payments", effect: "off main, in hours · alerts and pauses when tests break" },
+    { name: "Least privilege", types: ["Identity", "Access", "Environment", "Action"], target: "flow:refunds", effect: "every call · only claude · secrets hidden · pushes go through Crane" },
   ];
   const bricks = $("#bricks");
   if (bricks) {

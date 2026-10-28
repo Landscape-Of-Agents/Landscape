@@ -231,23 +231,28 @@ async function playScene() {
 playScene();
 
 // ------------------------------------------------------------------ download and install
-const TARGETS = { linux: "x86_64-unknown-linux-gnu", macos: "aarch64-apple-darwin", windows: "x86_64-pc-windows-msvc" };
+// Downloads are named by platform (crane-0.5.10-windows.zip); releases before 0.5.11 used Rust's
+// target names, which the second entry still finds
+const TARGETS = { linux: ["-linux.", "x86_64-unknown-linux-gnu"], macos: ["-macos-apple-silicon.", "aarch64-apple-darwin"], windows: ["-windows.", "x86_64-pc-windows-msvc"] };
+const plain = (tag) => tag.replace(/^v/, "");
 const INSTALL = {
-  linux: (tag) => `curl -LO ${RELEASES}/download/${tag}/crane-${tag}-x86_64-unknown-linux-gnu.tar.gz
-tar -xzf crane-${tag}-x86_64-unknown-linux-gnu.tar.gz
-sudo mv crane-${tag}-x86_64-unknown-linux-gnu/crane /usr/local/bin/
+  linux: (tag) => `curl -LO ${RELEASES}/download/${tag}/crane-${plain(tag)}-linux.tar.gz
+tar -xzf crane-${plain(tag)}-linux.tar.gz
+sudo mv crane-${plain(tag)}-linux/crane /usr/local/bin/
 crane --version`,
-  macos: (tag) => `# Apple silicon; use x86_64-apple-darwin on Intel
-curl -LO ${RELEASES}/download/${tag}/crane-${tag}-aarch64-apple-darwin.tar.gz
-tar -xzf crane-${tag}-aarch64-apple-darwin.tar.gz
-xattr -d com.apple.quarantine crane-${tag}-aarch64-apple-darwin/crane
-sudo mv crane-${tag}-aarch64-apple-darwin/crane /usr/local/bin/`,
+  macos: (tag) => `# Apple silicon; on an Intel Mac use crane-${plain(tag)}-macos-intel
+curl -LO ${RELEASES}/download/${tag}/crane-${plain(tag)}-macos-apple-silicon.tar.gz
+tar -xzf crane-${plain(tag)}-macos-apple-silicon.tar.gz
+xattr -d com.apple.quarantine crane-${plain(tag)}-macos-apple-silicon/crane
+sudo mv crane-${plain(tag)}-macos-apple-silicon/crane /usr/local/bin/`,
   windows: (tag) => `# PowerShell
-Invoke-WebRequest ${RELEASES}/download/${tag}/crane-${tag}-x86_64-pc-windows-msvc.zip -OutFile crane.zip
+Invoke-WebRequest ${RELEASES}/download/${tag}/crane-${plain(tag)}-windows.zip -OutFile crane.zip
 Expand-Archive crane.zip -DestinationPath "$env:LOCALAPPDATA\\Crane"
-$bin = "$env:LOCALAPPDATA\\Crane\\crane-${tag}-x86_64-pc-windows-msvc"
+$bin = "$env:LOCALAPPDATA\\Crane\\crane-${plain(tag)}-windows"
 [Environment]::SetEnvironmentVariable("Path", "$env:Path;$bin", "User")`,
 };
+// Checksums are not downloads
+const isChecksum = (name) => name.endsWith(".sha256") || name === "checksums.txt";
 const NAMES = { linux: "Linux", macos: "macOS", windows: "Windows" };
 let latest = null;
 function detect() {
@@ -262,7 +267,7 @@ function showOs(next) {
   const tag = latest ? latest.tag_name : "vX.Y.Z";
   $("#install-code").textContent = INSTALL[os](tag);
   $("#install-caption").textContent = "Install on " + NAMES[os];
-  const asset = latest && latest.assets.find((item) => item.name.includes(TARGETS[os]) && !item.name.endsWith(".sha256"));
+  const asset = latest && latest.assets.find((item) => item.name.startsWith("crane-") && TARGETS[os].some((part) => item.name.includes(part)) && !isChecksum(item.name));
   const button = $("#download-button");
   button.href = asset ? asset.browser_download_url : RELEASES + "/latest";
   $("#download-label").textContent = "Download for " + NAMES[os] + (asset ? " · " + formatSize(asset.size) : "");
@@ -338,7 +343,7 @@ async function loadReleases() {
   if (!releases || !releases.length) { $("#release-meta").textContent = "Binaries for Linux, Windows, and macOS."; return; }
   // The newest stable release that carries binaries (a release whose build failed has none)
   const stable = releases.filter((release) => !release.draft && !release.prerelease);
-  latest = stable.find((release) => release.assets.some((asset) => !asset.name.endsWith(".sha256"))) || stable[0] || releases[0];
+  latest = stable.find((release) => release.assets.some((asset) => !isChecksum(asset.name))) || stable[0] || releases[0];
   const date = latest.published_at ? new Date(latest.published_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "";
   $("#release-meta").textContent = "Crane " + latest.tag_name + (date ? " · released " + date : "");
   $("#release-chip").textContent = "Crane " + latest.tag_name + " is out · see what's new";
@@ -346,7 +351,7 @@ async function loadReleases() {
   showOs(os);
   const published = releases.filter((release) => !release.draft);
   setStat("releases", published.length);
-  setStat("downloads", published.reduce((sum, release) => sum + release.assets.filter((asset) => !asset.name.endsWith(".sha256")).reduce((total, asset) => total + asset.download_count, 0), 0));
+  setStat("downloads", published.reduce((sum, release) => sum + release.assets.filter((asset) => !isChecksum(asset.name)).reduce((total, asset) => total + asset.download_count, 0), 0));
 }
 async function loadVisits() {
   // A visit counts once per browser session; later page views, and local previews, only read it

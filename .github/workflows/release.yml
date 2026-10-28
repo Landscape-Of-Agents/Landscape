@@ -28,15 +28,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # 'platform' names the download the way people know their machine; 'target' is Rust's
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            platform: linux
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            platform: macos-intel
           - os: macos-14
             target: aarch64-apple-darwin
+            platform: macos-apple-silicon
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            platform: windows
 
     steps:
       - name: Check out source
@@ -60,7 +65,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          name="crane-${RELEASE_TAG}-${{ matrix.target }}"
+          name="crane-${RELEASE_TAG#v}-${{ matrix.platform }}"
           mkdir "$name"
           cp "target/${{ matrix.target }}/release/crane" "$name/crane"
           cp README.md "$name/"
@@ -72,7 +77,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "crane-${env:RELEASE_TAG}-${{ matrix.target }}"
+          $name = "crane-$(${env:RELEASE_TAG}.TrimStart('v'))-${{ matrix.platform }}"
           New-Item -ItemType Directory -Path $name | Out-Null
           Copy-Item "target\${{ matrix.target }}\release\crane.exe" "$name\crane.exe"
           if (Test-Path "README.md") { Copy-Item "README.md" "$name\README.md" }
@@ -130,10 +135,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          archive="dist/crane-${RELEASE_TAG}-x86_64-unknown-linux-gnu.tar.gz"
+          archive="dist/crane-${RELEASE_TAG#v}-linux.tar.gz"
           mkdir unpacked
           tar -xzf "$archive" -C unpacked
-          CRANE_INGEST_URL=off CRANE_BIN="$PWD/unpacked/crane-${RELEASE_TAG}-x86_64-unknown-linux-gnu/crane" \
+          CRANE_INGEST_URL=off CRANE_BIN="$PWD/unpacked/crane-${RELEASE_TAG#v}-linux/crane" \
             bash scripts/smoke_test.sh
 
       - name: Install Node.js
@@ -152,7 +157,7 @@ jobs:
           npm version "${RELEASE_TAG#v}" --no-git-tag-version --allow-same-version
           npm test
           npm run package
-          mv foxx.vsix "../../dist/foxx-${RELEASE_TAG}.vsix"
+          mv foxx.vsix "../../dist/landscape-vscode-${RELEASE_TAG#v}.vsix"
           # Publish only when the extension changed since the version the Marketplace has. Comparing
           # with the previous tag instead would skip a change whose own release failed to publish
           extension_id="$(node -p 'const p = require("./package.json"); p.publisher + "." + p.name')"
@@ -196,7 +201,7 @@ jobs:
             exit 0
           fi
           cd extensions/foxx
-          npx vsce publish --packagePath "../../dist/foxx-${RELEASE_TAG}.vsix" --pat "${VSCE_PAT}"
+          npx vsce publish --packagePath "../../dist/landscape-vscode-${RELEASE_TAG#v}.vsix" --pat "${VSCE_PAT}"
 
       - name: Publish the Landscape extension to Open VSX
         id: openvsx
@@ -211,7 +216,18 @@ jobs:
             echo "skipped=NO_TOKEN" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          npx --yes ovsx@0.10.1 publish "dist/foxx-${RELEASE_TAG}.vsix" --pat "${OVSX_PAT}"
+          npx --yes ovsx@0.10.1 publish "dist/landscape-vscode-${RELEASE_TAG#v}.vsix" --pat "${OVSX_PAT}"
+
+      # One checksums file for every download instead of one file per download
+      - name: Collect the checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          cat crane-*.sha256 > checksums.txt
+          rm crane-*.sha256
+          sha256sum landscape-vscode-*.vsix >> checksums.txt
+          cat checksums.txt
 
       - name: Create release
         id: release

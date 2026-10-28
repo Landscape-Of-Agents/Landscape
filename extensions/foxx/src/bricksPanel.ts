@@ -360,6 +360,9 @@ export const BRICKS_PAGE: WorkbenchPage = {
 .info-btn { display: inline-grid; place-items: center; width: 18px; height: 18px; padding: 0; border-radius: 50%; border: 1px solid color-mix(in srgb, var(--fox) 55%, var(--line)); background: var(--bg); color: var(--fox); font: italic 700 11px/1 Georgia, serif; cursor: pointer; flex: none; }
 .info-btn:hover, .info-btn:focus-visible { background: var(--fox); color: #1a0d05; }
 .info-modal { width: min(640px, 100%); }
+.guide .settings-row { display: flex; align-items: center; gap: 6px; padding: 5px 12px; }
+.guide .settings-row span { font-size: 10px; letter-spacing: .8px; text-transform: uppercase; color: var(--muted); }
+.info-btn.tiny { width: 15px; height: 15px; font-size: 9.5px; }
 .info-modal .m-head .mark { font: italic 700 14px/1 Georgia, serif; }
 .info-line { margin: 0 0 8px; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line); }
 .info-line h4, .props-title { margin: 0 0 3px; font-size: 10.5px; letter-spacing: .8px; text-transform: uppercase; color: var(--muted); }
@@ -511,7 +514,7 @@ function renderGuide() {
     '<div class="part unique"><h4>Only this kind</h4><p>' + esc(guide.unique) + "</p></div>" +
     (guide.useWhen ? '<div class="part"><h4>Use it when</h4><p>' + esc(guide.useWhen) + "</p></div>" : "") +
     (guide.example ? '<div class="part"><h4>Example</h4><p class="story">' + esc(guide.example.story) + "</p><pre>" + esc(JSON.stringify(guide.example.config, null, 2)) + '</pre><div class="row" style="margin-top:8px"><button type="button" class="btn small primary" id="g-use">Fill the form with this example</button></div></div>' : "") +
-    '<div class="part"><h4>Settings you can configure</h4><dl>' + guide.settings.map((item) => "<div><dt>" + esc(item.name) + "</dt><dd>" + esc(item.meaning) + (item.values ? "<small>Values: " + esc(item.values) + "</small>" : "") + "</dd></div>").join("") + '</dl><div class="chips-row"><button type="button" class="chip-btn" data-kind-info="' + esc(type) + '"><span aria-hidden="true">i</span>Open the settings in a pop-up</button></div></div>' +
+    '<div class="part settings-row"><span>Settings you can configure · ' + guide.settings.length + '</span><button type="button" class="info-btn tiny" data-kind-info="' + esc(type) + '" title="Settings you can configure" aria-label="Settings you can configure for the ' + esc(type) + ' kind">i</button></div>' +
     (info.runtime ? '<div class="part"><h4>What Crane does with it today</h4><p class="muted">' + esc(info.runtime[0].toUpperCase() + info.runtime.slice(1)) + ".</p></div>" : "");
 }
 function showKind(type) {
@@ -656,7 +659,7 @@ async function showInfo(ref) {
     (guide.purpose ? '<div class="info-line"><h4>Purpose</h4><p>' + esc(guide.purpose) + "</p></div>" : "") +
     (guide.unique ? '<div class="info-line unique"><h4>Only this kind</h4><p>' + esc(guide.unique) + "</p></div>" : "") +
     (definition.intent ? '<div class="info-line"><h4>What this Brick solves</h4><p>' + esc(definition.intent) + "</p></div>" : "") +
-    '<h4 class="props-title">Configuration</h4><div class="props">' + (settings || '<div class="muted">This kind has no settings.</div>') +
+    '<h4 class="props-title">Settings you can configure</h4><div class="props">' + (settings || '<div class="muted">This kind has no settings.</div>') +
     others.map((key) => '<div class="prop"><div class="prop-name">' + esc(key) + '</div><div class="prop-value">' + shown(config[key]) + '</div><div class="prop-help">A setting of the former kind.</div></div>').join("") + "</div>" +
     '<h4 class="props-title">Common context</h4>' + (context ? '<pre class="context-text">' + esc(context.length > 2000 ? context.slice(0, 2000) + " …" : context) + "</pre>" : '<p class="muted">None.</p>') +
     ((definition.dependencies || []).length ? '<h4 class="props-title">Needs alongside it</h4><p>' + definition.dependencies.map((item) => "<code>" + esc(item.brick_id + "@" + item.version) + "</code>").join(", ") + "</p>" : "") +
@@ -703,7 +706,7 @@ function showKindInfo(type) {
     '<div class="m-body">' +
     (guide.purpose ? '<div class="info-line"><h4>Purpose</h4><p>' + esc(guide.purpose) + "</p></div>" : "") +
     (guide.unique ? '<div class="info-line unique"><h4>Only this kind</h4><p>' + esc(guide.unique) + "</p></div>" : "") +
-    '<h4 class="props-title">Settings</h4><div class="props">' + (rows || '<div class="muted">This kind has no settings.</div>') + "</div>" +
+    '<h4 class="props-title">Settings you can configure</h4><div class="props">' + (rows || '<div class="muted">This kind has no settings.</div>') + "</div>" +
     '</div><div class="m-foot"><span class="grow"></span><button class="btn primary" data-k="close">Close</button></div></div>';
   document.body.appendChild(back);
   const close = () => back.remove();

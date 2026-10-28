@@ -1,6 +1,8 @@
 // Unit tests of the editor-independent parts of Landscape (node --test).
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import { parse } from "yaml";
@@ -421,4 +423,19 @@ test("reads volatile context from text, YAML, and JSON files", () => {
   assert.match(contextFromFile("a.yaml", "yaml", "a: [1").error ?? "", /^a\.yaml is not valid YAML/);
   assert.match(contextFromFile("a.txt", "text", "   ").error ?? "", /holds no text/);
   assert.match(contextFromFile("big.txt", "text", "x".repeat(17 * 1024)).error ?? "", /at most 16 KB/);
+});
+
+test("the settings pop-up of every kind lists every setting Crane accepts for it", () => {
+  // Crane's own field list per kind (src/brick/types.rs) is the source of truth
+  const catalog = readFileSync(join(__dirname, "..", "..", "..", "..", "src", "brick", "types.rs"), "utf8");
+  const kinds = [...catalog.matchAll(/label_key: "([a-z]+)",[\s\S]*?fields: &\[([^\]]*)\]/g)];
+  assert.ok(kinds.length >= BRICK_TYPES.length, "the catalog was read");
+  for (const [, kind, list] of kinds) {
+    if (!(BRICK_TYPES as readonly string[]).includes(kind)) continue;
+    const guide = BRICK_GUIDE[kind as (typeof BRICK_TYPES)[number]];
+    const documented = guide.settings.flatMap((setting) => setting.name.split(" / ").map((name) => name.split(".")[0]));
+    const fields = [...list.matchAll(/"([a-z_]+)"/g)].map((match) => match[1]);
+    assert.deepEqual(fields.filter((field) => !documented.includes(field)), [], `${kind}: settings missing from "Settings you can configure"`);
+    for (const setting of guide.settings) assert.ok(setting.meaning && setting.values, `${kind}: ${setting.name} needs a meaning and its values`);
+  }
 });

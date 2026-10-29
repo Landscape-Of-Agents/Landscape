@@ -170,6 +170,8 @@ fn sync() -> Result<(), String> {
         crate::brick::runtime::sync_monitors(&workspace, &stores);
         // Resident agents too: a tick reads triggers and timers without a model (resident/worker.rs)
         crate::resident::worker::sync(&workspace, &stores);
+        // Flow watchers: read-only checks of the flows they watch (flow/watch.rs)
+        crate::flow::watch::sync(&workspace, &stores.directory);
         return Err("uploads are off (CRANE_INGEST_URL is 'off')".into());
     }
     // Hooks and commands start background syncs (marked by the trigger); a person runs a manual one

@@ -68,6 +68,7 @@ pub(crate) struct Access {
 
 /** Who owns a repository path by its CODEOWNERS file, and whether the viewer is one of them
  * Fields
+    - path: String - the repository path asked about
     - file: String - the CODEOWNERS file read (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")
     - rule: String - the pattern that decides the path (the last matching line, as GitHub reads it)
     - owners: Vec<String> - its owners: logins and org/team names, without "@" (e-mail entries are
@@ -76,6 +77,7 @@ pub(crate) struct Access {
 */
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Ownership {
+    pub(crate) path: String,
     pub(crate) file: String,
     pub(crate) rule: String,
     pub(crate) owners: Vec<String>,
@@ -84,6 +86,21 @@ pub(crate) struct Ownership {
 
 /** The path whose CODEOWNERS decide signed Brick changes on the dashboard */
 pub(crate) const BRICKS_PATH: &str = ".crane/bricks.json";
+
+/** The signed file a requested change writes, whose CODEOWNERS decide it
+ * Input
+    - op: &str - the requested operation
+ * Output
+    - &'static str: .crane/governance.yaml for approving a flow, .crane/flows.json for other flow
+      changes, .crane/bricks.json for Brick changes
+*/
+pub(crate) fn signed_path(op: &str) -> &'static str {
+    match op {
+        "flow-approve" => ".crane/governance.yaml",
+        flow if flow.starts_with("flow-") => ".crane/flows.json",
+        _ => BRICKS_PATH,
+    }
+}
 
 /** Lifetime of a session */
 pub(crate) const SESSION_MILLIS: u64 = 8 * 60 * 60 * 1000;
@@ -522,6 +539,7 @@ impl Auth {
                 }
             }
             return Ok(Some(Ownership {
+                path: path.to_string(),
                 file: file.to_string(),
                 rule,
                 owners,

@@ -147,6 +147,23 @@ without evidence.
 | **Assignment** | An agent assigned to Flows and Zones. Its runtime status (idle, running, waiting, degraded) is derived, never a running model. |
 | **Monitor** | A deterministic check a Brick asks for (integrity, policy tests, selections, denials), run by the background sync without a model. |
 
+## 6a2. Flow knowledge
+
+| Term | Meaning |
+|---|---|
+| **Flow knowledge** | What the repository knows about a flow besides its entry points, signed in `.crane/flows.json`: its approved trace, context, priority, people, tests, and watcher limit. |
+| **Trace** | The call graph Crane follows from a flow's starting point. The same code always gives the same trace and digest; calls it cannot resolve are listed, never guessed. |
+| **Trace draft** | An unsigned trace in `.crane/drafts/flows/`, with its revisions. Retrace adds a revision, rewind reviews an earlier one; a person approves it. |
+| **Drift** | The code changed so the trace no longer matches the approved digest. A watcher reports it. |
+| **Flow context** | Typed guidance on a flow: a query, metric, latency budget, file, note, or link. It never authorizes anything. |
+| **Priority** | P0 to P3. It routes work on the flow to the organization's model tiers (frontier, balanced, fast); when enforced, a change from another model needs a person. |
+| **Designated person** | Someone named on a flow (author, owner, reviewer, on call), linked to GitHub, Jira, or Slack. Incidents reach them. |
+| **Required test** | A flow's approved test every release must pass (`crane flow tests run --required`). |
+| **Proposal** | A test or context item an agent offers for a flow. It waits for a person to approve or reject it. |
+| **Watcher** | A monitoring subagent of one flow: read-only, run by Crane without a model, taking on its parent agent's identity and the flow's Bricks and ceiling. Agents start them only up to limits a person sets. |
+| **Incident** | What a watcher (or an agent) raises when a check starts firing. It reaches the flow's people and the parent session. |
+| **crane-request** | The command an agent runs to ask Crane about flows. The hook answers it and stops it; nothing runs. |
+
 ## 6b. Resident agents
 
 | Term | Meaning |

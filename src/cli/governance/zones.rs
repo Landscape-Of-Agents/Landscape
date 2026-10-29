@@ -1,10 +1,10 @@
 // crane governance sign: an admin approves the current .crane/governance.yaml (zones, flows, and
 // context packs) by covering it with a new signed manifest. Until then an edited file fails
 // verification, and agents cannot change code, so nobody can loosen a zone or flow unnoticed.
-use crate::governance::policy::PolicySet;
-use crate::governance::state::{commit, State, GOVERNANCE_SIGNED};
+
+use crate::governance::sign::sign_with;
 use crate::governance::workspace::Workspace;
-use crate::governance::zones::{self, Lifecycle};
+use crate::governance::zones::Lifecycle;
 use crate::trust::require_human;
 use serde_json::json;
 
@@ -25,34 +25,8 @@ pub(crate) fn governance(args: &[String]) -> Result<(), String> {
     }
     require_human("crane governance sign")?;
     let workspace = Workspace::locate()?;
-    // Refuse a file the hooks could not enforce, so broken rules are never approved
-    let governance = zones::load(&workspace)?;
-    let resolution = zones::resolve(
-        &workspace,
-        &governance,
-        &State::load(&workspace)?,
-        &PolicySet::load(&workspace)?,
-    )?;
-    // Signing is what approves added, moved, or removed zone and flow markers
-    let blocking = resolution
-        .findings
-        .iter()
-        .filter(|finding| finding.blocking())
-        .filter(|finding| {
-            !matches!(
-                finding.code.as_str(),
-                "source_marker_unsigned" | "source_marker_removed"
-            )
-        })
-        .map(|finding| finding.message.clone())
-        .collect::<Vec<_>>();
-    let markers = resolution.source_markers.clone();
-    if !blocking.is_empty() {
-        return Err(format!(
-            "not signing .crane/governance.yaml: {}",
-            blocking.join("; ")
-        ));
-    }
+    let (state, governance, markers) =
+        sign_with(&workspace, "crane governance sign", json!(null), |_| Ok(()))?;
     let active = |status: Lifecycle| status == Lifecycle::Active;
     let zones_active = governance
         .zones
@@ -64,24 +38,6 @@ pub(crate) fn governance(args: &[String]) -> Result<(), String> {
         .iter()
         .filter(|flow| active(flow.status))
         .count();
-    let state = commit(
-        &workspace,
-        "crane governance sign",
-        GOVERNANCE_SIGNED,
-        json!({
-            "zones": governance.zones.len(),
-            "flows": governance.flows.len(),
-            "context_packs": governance.context_packs.len(),
-            "source_markers": markers,
-        }),
-        |state, _| {
-            // Recorded only once there are markers, so repositories without them keep their digest
-            if !markers.is_empty() || state.config.source_markers.is_some() {
-                state.config.source_markers = Some(markers.clone());
-            }
-            Ok(())
-        },
-    )?;
     println!(
         "Signed .crane/governance.yaml at generation {}: {} zones ({zones_active} active), {} flows ({flows_active} active), {} context packs, {} zone/flow source blocks",
         state.generation(),

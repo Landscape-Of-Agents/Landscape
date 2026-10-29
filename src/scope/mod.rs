@@ -665,6 +665,8 @@ pub(crate) fn rule(code: &str) -> (&'static str, &'static str) {
         "CREDITS_EXHAUSTED" | "CREDITS_SHORT" => ("budgets", "the session's autonomy budget is used up, so a person must approve"),
         "SAFETY_QUARANTINED" => ("revocation", "the session is quarantined after a bypass; only reads are allowed"),
         "DASHBOARD_AGENT_QUARANTINE" => ("revocation", "an admin quarantined this agent or session from the dashboard"),
+        "FLOW_AGENT_REQUEST" => ("audit", "the agent asked Crane about a flow with 'crane-request'; Crane answered and nothing ran"),
+        "FLOW_MODEL_ROUTING" => ("approval", "the flow's priority routes work to other model tiers, so a change from this model needs a person's approval"),
         _ => ("unknown", "a rule this version of Crane does not describe"),
     }
 }

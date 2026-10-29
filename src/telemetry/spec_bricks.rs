@@ -114,6 +114,16 @@ pub(crate) const KINDS: &[(&str, &str, &str)] = &[
         "A watch signal started firing and its reaction ran.",
     ),
     (
+        "BRICK_PUBLISHED",
+        "BRICK_CATALOG",
+        "Activated Brick version published to the organization catalog.",
+    ),
+    (
+        "BRICK_IMPORTED",
+        "BRICK_CATALOG",
+        "Brick imported as a draft (grants nothing until activated here).",
+    ),
+    (
         "BRICK_MIGRATION_DRAFTED",
         "BRICK_MIGRATE",
         "Bricks of former kinds rewritten as drafts of current kinds.",
@@ -205,6 +215,8 @@ pub(super) fn spec(event: &Event, kind: &str, note: &Value) -> Option<Spec> {
         "members",
         "problems",
         "cases",
+        "account",
+        "stored",
     ] {
         if let Some(value) = note.get(key) {
             spec.set("other", key, value);
@@ -241,6 +253,7 @@ mod tests {
             include_str!("../cli/brick/agents.rs"),
             include_str!("../hooks/runtime/bricks.rs"),
             include_str!("../brick/runtime.rs"),
+            include_str!("../cli/brick/share.rs"),
         ]
         .concat();
         let mut used = sources

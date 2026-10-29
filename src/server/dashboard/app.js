@@ -38,6 +38,7 @@ Object.assign(G.values, {
 // ---------------------------------------------------------------- pages and their zones
 
 const ICONS = {
+  flows: "M5 6a2 2 0 1 0 0-.01M19 18a2 2 0 1 0 0-.01M12 12a2 2 0 1 0 0-.01M7 6h3l2 4M14 13l2 3h1",
   overview: "M3 3h7v7H3zM14 3h7v4h-7zM14 10h7v11h-7zM3 13h7v8H3z", explorer: "M4 5h16M4 10h16M4 15h10M4 20h7", timeline: "M4 6h10M8 12h12M4 18h7M4 3v18",
   logs: "M5 4h14v16H5zM8 8h8M8 12h8M8 16h5", traces: "M4 6h6v4H4zM10 8h4M14 6h6v4h-6zM7 10v6h6", topology: "M5 5a2 2 0 1 0 0 .1M19 5a2 2 0 1 0 0 .1M12 19a2 2 0 1 0 0 .1M6 6l5 11M18 6l-5 11",
   distributions: "M4 20V12M9 20V6M14 20V10M19 20V15M3 20h18", semantics: "M4 5h16v10H9l-5 4zM8 9h8M8 12h5", sessions: "M4 4h16v12H4zM8 20h8M12 16v4",
@@ -51,10 +52,13 @@ const NAV = [
     ["explorer", "Event explorer", [["volume", "Volume"], ["stream", "Event stream"]]],
     ["timeline", "Timeline", [["gantt", "Gantt chart"], ["swimlanes", "Event timeline"], ["rhythm", "Activity rhythm"], ["concurrency", "Concurrency"], ["latency", "Latency and tokens"]]],
   ]],
+  ["Build", [
+    ["flows", "Flows", []],
+  ]],
   ["AI agents", [
     ["agents", "Agents", [["fleet-kpis", "Fleet"], ["leaderboard", "Leaderboard"], ["agent-activity", "Activity"], ["agent-tools", "Tools per agent"], ["agent-decisions", "Decisions and risk"], ["agent-tokens", "Tokens"], ["agent-models", "Models and autonomy"], ["agent-list", "Agent identities"]]],
-    ["dashboard-agents", "Dashboard agents", [["da-agents", "Agents"], ["da-states", "Action States"], ["da-incidents", "Incidents and 3A"]]],
-    ["tools", "Tool calls", [["tool-kpis", "Summary"], ["tool-types", "Types of tool calls"], ["tool-metrics", "Metrics per tool"], ["tool-waterfall", "Waterfall"], ["tool-tokens", "Tokens per call"], ["tool-time", "Time per call"], ["tool-browser", "Browse tool calls"]]],
+    ["dashboard-agents", "Dashboard agents", [["da-agents", "Agents"], ["da-states", "Action States"], ["da-activity", "Agent activity and metrics"], ["da-incidents", "Incidents and 3A"]]],
+    ["tools", "Tool calls", [["tool-kpis", "Summary"], ["tool-types", "Types of tool calls"], ["tool-metrics", "Metrics per tool"], ["tool-waterfall", "Waterfall"], ["tool-credits", "Credit consumption"], ["tool-tokens", "Tokens per call"], ["tool-time", "Time per call"], ["tool-browser", "Browse tool calls"]]],
     ["sessions", "Sessions", [["session-kpis", "Summary"], ["session-activity", "Activity"], ["session-leaderboard", "Leaderboard"], ["session-waterfall", "Waterfall"], ["session-list", "Sessions"]]],
   ]],
   ["Investigate", [
@@ -66,12 +70,12 @@ const NAV = [
   ]],
   ["Operate", [
     ["alerting", "Alerting", [["rules", "Rules"], ["rule-values", "Rule values"], ["firings", "Firings"], ["deliveries", "Deliveries"], ["alert-events", "Alert events"], ["hook-alerts", "Hook alerts"], ["build", "Build a rule"]]],
-    ["credits", "Credits", [["credit-summary", "Summary"], ["balances", "Balances"], ["grants", "Grants"]]],
+    ["credits", "Credits", [["credit-summary", "Summary"], ["balances", "Balances"], ["consumption", "Actual consumption"], ["grants", "Grants"]]],
   ]],
   ["Govern", [
     ["audit", "Audit trail", [["audit-summary", "Summary"], ["audit-activity", "Activity"], ["audit-matrix", "Who changed what"], ["audit-timeline", "Change timeline"], ["audit-trail", "Governance changes"], ["command-events", "Commands"], ["dashboard-actions", "Dashboard actions"]]],
     ["governance", "Governance", [["gov-state", "State"], ["gov-zones", "Zones and flows"], ["gov-graphs", "Flow call graphs"], ["gov-rules", "Policies and selections"], ["gov-map", "Selection map"], ["gov-more", "Checkpoints and context"], ["gov-integrity", "Integrity"], ["gov-events", "Governance events"], ["gov-findings", "Findings"]]],
-    ["bricks", "Bricks", [["brick-state", "State"], ["brick-requests", "Requests"], ["brick-library", "Library"], ["brick-attachments", "Attachments and Stacks"], ["brick-agents", "Agents and monitors"], ["brick-context", "Context snapshots"], ["brick-history", "History and events"], ["brick-build", "Build a draft offline"]]],
+    ["bricks", "Bricks", [["brick-state", "State"], ["brick-graph", "Landscape"], ["brick-requests", "Requests"], ["brick-library", "Library"], ["brick-attachments", "Attachments and Stacks"], ["brick-catalog", "Organization catalog"], ["brick-agents", "Agents and monitors"], ["brick-context", "Context snapshots"], ["brick-history", "History and events"], ["brick-build", "Build a draft offline"]]],
     ["residents", "Resident agents", [["res-state", "State"], ["res-registry", "Registry"], ["res-inbox", "Review inbox"], ["res-timeline", "Activation timeline"], ["res-health", "Idle cost and health"], ["res-test", "Test and simulate"], ["res-create", "Create"]]],
     ["compliance", "Compliance", [["posture", "Posture"], ["frameworks", "Frameworks"], ["controls", "Controls"], ["evidence", "Evidence"], ["gaps", "Gaps and limitations"], ["inferred", "Inferred observability"], ["unobservable", "Not observable"]]],
   ]],
@@ -81,6 +85,7 @@ const NAV = [
   ]],
 ];
 const PAGE_GUIDE = {
+  flows: "The repository's flows and zones as one map, and each flow's knowledge one click away: its traced call graph and the drafts waiting for review, typed context (queries, metrics, latency, files, notes, links), priority and the model it routes to, tests with their assumptions and mock data (some required in every release), designated people, assigned agents, read-only watchers agents started within their limits, and incidents. 'For agents' shows exactly what an agent receives. Every change is a request a person applies on a machine, where Crane checks it and signs the knowledge.",
   overview: "The repository at a glance, for the time range and filter: how many tool calls Crane decided and how, what the agents did and spent, security outcomes, who was active, and the newest violations and alerts. Every number comes from the event stream of DASHBOARD.md; click one to see the events behind it.",
   explorer: "Every event, newest first, with a count for each value of each facet on the left. Tick values to filter every view (⊖ excludes a value); open an event to see all thirteen attribute groups.",
   timeline: "When things happened. The Gantt chart draws each traced action as a bar; the event timeline draws every event as a dot; the rhythm heatmap shows the days and hours agents work; concurrency counts the sessions active at once; latency and tokens follow the cost of each call over time. Drag across a time chart to zoom in.",
@@ -93,7 +98,7 @@ const PAGE_GUIDE = {
   distributions: "How numbers are spread: trace durations, gaps between a session's events, events per session, and every numeric eval attribute (hook latency, tool duration, tokens, …).",
   semantics: "The texts events carry: response statements, decision reasons and rules, failure states, assessments, end reasons, and the words used most often.",
   sessions: "Agent sessions with their status, safety, tool calls, tokens, and evals. Open one for its timeline, waterfall, Gantt chart, action graph, tasks, and downloadable report and evidence.",
-  bricks: "Bricks: reusable modules of one fixed kind, attached to Zones and Flows. See the library, attachments with their Current Context, Stacks, assigned agents, monitors, and context snapshots, and change any of them: every change is a request (drafts need write access, signed changes need a repository admin, as GitHub confirms) that a person applies on a machine with one click in Landscape or 'crane brick inbox apply', where Crane checks and signs it.",
+  bricks: "Bricks: reusable modules of one fixed kind, attached to Zones and Flows. See the library, attachments with their Current Context, Stacks, assigned agents, monitors, and context snapshots, and change any of them: see which Bricks apply where, download them, and import Bricks the organization published. Every change is a request (drafts need write access; signed changes need a code owner of .crane/bricks.json when CODEOWNERS covers it, else a repository admin, as GitHub confirms) that a person applies on a machine with one click in Landscape or 'crane brick inbox apply', where Crane checks and signs it.",
   residents: "Resident agents: assignments that stay responsible for a Flow, Zone, or Runbook for days or weeks and wake only when a trigger or timer arrives. Idle assignments make no model call. See every assignment, what waits for a person, each activation from trigger to verified outcome, idle cost and health, plan-only tests, and build drafts that a member imports and an admin activates on their machine.",
   alerting: "Alert rules are built on a member's machine with 'crane alert add' (never here): a metric, a threshold, a window, a filter, and Slack or WhatsApp. Each background sync evaluates them; this page shows every rule, its value against its threshold, every firing, and every delivery with its HTTP result.",
   credits: "Autonomy credits bound what an agent may do on its own. Admins and owners of the repository can grant credits to an agent's session here; GitHub confirms the role, and the session's machine applies the grant at its next sync.",

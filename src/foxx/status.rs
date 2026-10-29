@@ -49,6 +49,7 @@ pub(crate) fn collect(workspace: &Workspace) -> Value {
         "integrations": integrations::configured(workspace),
         "alerting": workspace.trust().map(|trust| crate::telemetry::rules::report(workspace, &crate::telemetry::Stores::open(&trust.runtime()))).unwrap_or(Value::Null),
         "bricks": crate::brick::report::collect(workspace),
+        "flows": crate::flow::report::collect(workspace),
         "residents": crate::resident::report::collect(workspace),
     })
 }

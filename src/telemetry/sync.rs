@@ -39,7 +39,8 @@ pub(crate) fn interval_seconds() -> u64 {
         .max(5)
 }
 
-/** Report whether the repository may have Brick monitors (a cheap file check; the sync decides)
+/** Report whether the repository may have Brick monitors or flow watchers (a cheap file check; the
+ * sync decides)
  * Input
     - workspace: &Workspace - repository
  * Output
@@ -49,6 +50,9 @@ fn monitored(workspace: &Workspace) -> bool {
     workspace
         .file(crate::governance::state::BRICKS_FILE)
         .exists()
+        || workspace
+            .file(crate::governance::state::FLOWS_FILE)
+            .exists()
 }
 
 /** Start a detached sync now, when uploads are on; the sync reports what started it, so the service

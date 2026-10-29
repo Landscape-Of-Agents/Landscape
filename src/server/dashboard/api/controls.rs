@@ -73,11 +73,74 @@ pub(super) fn bricks(context: &Context) -> Answer {
         context.member(status["installation"].as_str().map(String::from).as_ref());
     view["reported_at"] = status["collected_at"].clone();
     // Changes people requested here, and what may be requested with which GitHub role
-    view["requests"] = json!(context.brick_requests);
+    view["requests"] = json!(context
+        .brick_requests
+        .iter()
+        .filter(|row| !row["op"].as_str().is_some_and(|op| op.starts_with("flow-")))
+        .collect::<Vec<_>>());
     view["catalog"] = json!(context.brick_catalog);
     view["operations"] = crate::brick::requests::OPERATIONS
         .iter()
+        .filter(|(op, _, _)| !op.starts_with("flow-"))
         .map(|(op, role, label)| json!({"op": op, "role": role.name(), "label": label}))
+        .collect();
+    (200, view, None)
+}
+
+/** The Flows view, as last reported by a member's machine: every zone and flow with its knowledge,
+ * trace drafts with their current graph, agents' proposals, watchers, incidents, models and
+ * routing; the Bricks those targets carry (from the Brick report, for their names and kinds); the
+ * agents assigned; the flow requests made here; and what may be requested with which role
+ * Input
+    - context: &Context - repository data
+ * Output
+    - Answer
+*/
+pub(super) fn flows(context: &Context) -> Answer {
+    let Some(status) = context.latest_status() else {
+        return error(
+            404,
+            "no member has reported the repository's flows yet; they are sent with the next upload"
+                .into(),
+        );
+    };
+    let mut view = status["flows"].clone();
+    if view.is_null() {
+        return error(
+            404,
+            "the reporting machine runs a Crane without flow knowledge; update Crane on that machine"
+                .into(),
+        );
+    }
+    if view.get("error").is_some() {
+        return error(
+            500,
+            format!(
+                "the reporting machine could not read its flows: {}",
+                view["error"]
+            ),
+        );
+    }
+    let bricks = &status["bricks"];
+    view["bricks"] = json!(bricks["bricks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|row| json!({"ref": row["ref"], "name": row["name"], "type": row["type"], "state": row["state"], "intent": row["intent"]}))
+        .collect::<Vec<_>>());
+    view["assignments"] = bricks["assignments"].clone();
+    view["reported_by"] =
+        context.member(status["installation"].as_str().map(String::from).as_ref());
+    view["reported_at"] = status["collected_at"].clone();
+    view["requests"] = json!(context
+        .brick_requests
+        .iter()
+        .filter(|row| row["op"].as_str().is_some_and(|op| op.starts_with("flow-")))
+        .collect::<Vec<_>>());
+    view["operations"] = crate::brick::requests::OPERATIONS
+        .iter()
+        .filter(|(op, _, _)| op.starts_with("flow-"))
+        .map(|(op, role, label)| json!({"op": op, "role": role.name(), "label": label, "signed_file": super::super::auth::signed_path(op)}))
         .collect();
     (200, view, None)
 }

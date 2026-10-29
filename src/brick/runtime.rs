@@ -144,7 +144,12 @@ fn on_path(name: &str) -> bool {
  * Output
     - Result<i32, String> exit code
 */
-fn run_program(root: &Path, program: &str, args: &[String], timeout: u64) -> Result<i32, String> {
+pub(crate) fn run_program(
+    root: &Path,
+    program: &str,
+    args: &[String],
+    timeout: u64,
+) -> Result<i32, String> {
     let mut child = std::process::Command::new(program)
         .args(args)
         .current_dir(root)
@@ -561,7 +566,7 @@ pub(crate) fn firing(runtime: &Path) -> std::collections::BTreeSet<(String, Stri
  * Output
     - (u64, BTreeMap<String, u64>) denials and their count by rule
 */
-fn denials(
+pub(crate) fn denials(
     events: &[crate::telemetry::events::Event],
     target: &str,
     since: u64,

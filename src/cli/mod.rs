@@ -17,6 +17,7 @@ mod data;
 mod discover;
 mod evolution;
 mod family;
+mod flow;
 mod governance;
 mod insight;
 mod invoke;
@@ -127,6 +128,7 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["skill", ..] => skill::skill(&rest(1)),
         ["runbook", ..] => runbook::runbook(&rest(1)),
         ["brick", ..] => brick::brick(&rest(1)),
+        ["flow", ..] => flow::flow(&rest(1)),
         ["secret", ..] => secret::secret(&rest(1)),
         ["resident", ..] => resident::resident(&rest(1)),
         ["permission", ..] => permission::permission(&rest(1)),
@@ -294,6 +296,14 @@ Bricks (reusable modules of a fixed type attached to flows and zones; 'crane bri
   crane brick detach|upgrade ATTACHMENT ...               crane brick context set|preview|status ...
   crane brick assign|unassign|agents                      crane brick monitor run|status
   crane brick inbox [apply ID...|--all | dismiss ID... --reason TEXT]   (changes requested on DataSea)
+
+Flows as a knowledge base (traced from a starting point; 'crane flow' for every form)
+  crane flow list|show ID                                 crane flow trace --from SYMBOL [--flow ID] [--depth N]
+  crane flow retrace|rewind|draft|approve|discard ID ...   crane flow priority ID P0|P1|P2|P3 [--enforce-model on|off]
+  crane flow context add|remove ...  person add|remove ...  people suggest ID
+  crane flow test add|require|remove ...  tests run [ID] [--required]  proposals [approve|reject ...]
+  crane flow watch list|add|stop|run  incidents  limit ...  models ...  routing ...
+  (agents ask through their hooks: 'crane-request help'; nothing they ask runs)
 
 Resident agents (assignments that stay idle, with no model, until a trigger or timer wakes them)
   crane resident definition save|activate|revoke|list|show  crane resident create|validate|activate|renew ...

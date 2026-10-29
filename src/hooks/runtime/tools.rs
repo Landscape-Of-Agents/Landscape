@@ -33,6 +33,14 @@ impl Hook {
             .action
             .clone()
             .ok_or("the hook payload has no tool call")?;
+        // The agent channel: 'crane-request …' is answered here and never runs (flow/agent.rs)
+        if let Some(request) = action
+            .command
+            .as_deref()
+            .and_then(crate::flow::agent::words)
+        {
+            return self.answer_request(session, &action, request);
+        }
         // With uploads off (CRANE_INGEST_URL=off) the service never sees this machine's agents,
         // so no Dashboard Agent can quarantine them; with uploads on, an unreachable service
         // fails closed
@@ -98,6 +106,26 @@ impl Hook {
             bricks: Some(&bricks),
         };
         let mut decided: Decided = guard.decide(&action);
+        // Flow knowledge: a flow whose priority routes to model tiers (enforce_model) holds a
+        // change from a model outside them for a person; it only tightens
+        let flow_book = crate::flow::model::FlowBook::of(&self.state).unwrap_or_default();
+        let touched_flows = decided
+            .zones
+            .iter()
+            .filter_map(|entity| entity.strip_prefix("flow:"))
+            .map(str::to_string)
+            .collect::<std::collections::BTreeSet<_>>();
+        if matches!(action.operation, Operation::Write | Operation::Execute) {
+            for reason in
+                crate::flow::context::model_findings(&flow_book, &touched_flows, model.as_deref())
+            {
+                if decided.verdict.decision == Decision::Allow {
+                    decided.verdict.decision = Decision::RequireApproval;
+                }
+                decided.verdict.reasons.push(reason);
+                decided.rules.push("FLOW_MODEL_ROUTING");
+            }
+        }
         if let Some((quarantine_id, reason)) = remote_quarantine {
             decided.verdict.decision = Decision::Quarantine;
             decided.verdict.cost = 0;
@@ -197,8 +225,27 @@ impl Hook {
                 ));
             }
         }
+        // What the flow knowledge says about the touched flows, and incidents a watcher raised for
+        // this session since its last call
+        let flow_ids = entities
+            .iter()
+            .filter_map(|entity| entity.strip_prefix("flow:"))
+            .map(str::to_string)
+            .chain(touched_flows.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>();
+        let flow_guidance = crate::flow::context::guidance(&flow_book, &flow_ids, model.as_deref());
+        let notices =
+            crate::flow::watch::take_notices(&self.stores.directory, &session.foxx_session_id);
+        let incident_notice = (!notices.is_empty()).then(|| {
+            format!(
+                "Crane flow incidents for this session (from its watchers):\n{}",
+                notices.join("\n")
+            )
+        });
         let guidance = [
             zone_guidance,
+            flow_guidance,
+            incident_notice,
             bricks.map(|bricks| bricks.text),
             (!selection_guidance.is_empty()).then(|| {
                 format!(
@@ -514,6 +561,81 @@ impl Hook {
             context: guidance,
             system_message,
             ..decided.verdict
+        };
+        if self.event == HookEvent::PermissionRequest {
+            self.adapter.respond_permission(&verdict)
+        } else {
+            self.adapter.respond_action(&verdict)
+        }
+    }
+
+    /** Answer an agent's 'crane-request': Crane handles it and the command does not run. The
+     * answer reaches the agent as the reason the command was stopped; it is recorded as one event
+     * (not a denial, not a bypass)
+     * Input
+        - session: &SessionRecord - session
+        - action: &crate::hooks::action::AgentAction - the tool call
+        - request: Result<Vec<String>, String> - the request's words, or why it is malformed
+     * Output
+        - Result<(), String>
+    */
+    fn answer_request(
+        &self,
+        session: &SessionRecord,
+        action: &crate::hooks::action::AgentAction,
+        request: Result<Vec<String>, String>,
+    ) -> Result<(), String> {
+        let asker = crate::flow::agent::Asker {
+            session: session.foxx_session_id.clone(),
+            agent: self.adapter.kind().name().to_string(),
+            agent_id: session.agent_id.clone(),
+            model: self
+                .provider
+                .model
+                .clone()
+                .or_else(|| session.model.clone()),
+        };
+        let verb = request
+            .as_ref()
+            .ok()
+            .and_then(|words| words.get(1).cloned())
+            .unwrap_or_else(|| "help".into());
+        let answered = request.and_then(|words| {
+            crate::flow::agent::answer(
+                &self.workspace,
+                &self.stores.directory,
+                &asker,
+                &words,
+                now_millis(),
+            )
+        });
+        let (result, text) = match answered {
+            Ok(text) => ("OK", format!("Crane answered your crane-request (Crane handled it; nothing was run):\n{text}")),
+            Err(error) => ("REFUSED", format!("Crane refused your crane-request: {error}\n'crane-request help' lists what you can ask.")),
+        };
+        crate::platform::notes::note(
+            "FLOW_AGENT_REQUEST",
+            json!({"request": verb, "result": result}),
+        );
+        let (call, _) = self.tool_call_id(session, action);
+        let mut event = self.base_event(
+            "flow.agent_request",
+            crate::telemetry::model::Domain::AuditCompliance,
+            session,
+            &call,
+        );
+        event.scope.tool_call_id = Some(call);
+        event.execution = Some(Execution::NotExecuted);
+        event.payload["request"] = json!(verb);
+        event.payload["result"] = json!(result);
+        self.emit(session, event, None)?;
+        let verdict = Verdict {
+            decision: Decision::Deny,
+            reasons: vec![text],
+            bypass: false,
+            cost: 0,
+            context: None,
+            system_message: None,
         };
         if self.event == HookEvent::PermissionRequest {
             self.adapter.respond_permission(&verdict)

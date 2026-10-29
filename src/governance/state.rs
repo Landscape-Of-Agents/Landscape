@@ -40,6 +40,8 @@ const MANIFEST_DOMAIN: &str = "registry/manifest/v1";
       there is no store, so manifests without one keep their heads
     - bricks_digest: String - digest of .crane/bricks.json (the signed Brick store); empty while
       there is no store, so manifests without one keep their heads
+    - flows_digest: String - digest of .crane/flows.json (the signed flow knowledge: traces,
+      context, priority, people, tests, watcher limits, models); empty while there is none
     - updated_at: u64 - Unix seconds
     - updated_by: String - actor
     - head: String - SHA-512 of this manifest without head and signature
@@ -63,6 +65,8 @@ pub(crate) struct Manifest {
     pub(crate) skills_digest: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) bricks_digest: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) flows_digest: String,
     pub(crate) updated_at: u64,
     pub(crate) updated_by: String,
     pub(crate) head: String,
@@ -110,6 +114,8 @@ pub(crate) struct RegistryFile {
     - skills_digest: String - its digest ("" when absent, "unreadable" when malformed)
     - bricks: Option<Value> - .crane/bricks.json (the signed Brick store), None when absent
     - bricks_digest: String - its digest ("" when absent, "unreadable" when malformed)
+    - flows: Option<Value> - .crane/flows.json (the signed flow knowledge), None when absent
+    - flows_digest: String - its digest ("" when absent, "unreadable" when malformed)
 */
 #[derive(Debug, Clone, Default)]
 pub(crate) struct State {
@@ -124,6 +130,8 @@ pub(crate) struct State {
     pub(crate) skills_digest: String,
     pub(crate) bricks: Option<Value>,
     pub(crate) bricks_digest: String,
+    pub(crate) flows: Option<Value>,
+    pub(crate) flows_digest: String,
 }
 
 /** File of the shared skill store inside .crane */
@@ -137,6 +145,22 @@ pub(crate) const BRICKS_FILE: &str = "bricks.json";
 
 /** Finding code of a .crane/bricks.json that differs from the signed manifest */
 pub(crate) const BRICKS_CHANGED: &str = "bricks_store_changed";
+
+/** File of the signed flow knowledge inside .crane */
+pub(crate) const FLOWS_FILE: &str = "flows.json";
+
+/** Finding code of a .crane/flows.json that differs from the signed manifest */
+pub(crate) const FLOWS_CHANGED: &str = "flows_store_changed";
+
+/** Digest the signed flow knowledge
+ * Input
+    - flows: Option<&Value> - the store
+ * Output
+    - String, "" when there is no store
+*/
+pub(crate) fn flows_digest(flows: Option<&Value>) -> String {
+    flows.map_or_else(String::new, |value| digest_json("flows/store/v1", value))
+}
 
 /** Digest the signed Brick store
  * Input
@@ -286,6 +310,7 @@ impl State {
             .collect::<Result<Vec<Entry>, String>>()?;
         let (skills, skills_digest) = read_store(workspace, SKILLS_FILE, self::skills_digest)?;
         let (bricks, bricks_digest) = read_store(workspace, BRICKS_FILE, self::bricks_digest)?;
+        let (flows, flows_digest) = read_store(workspace, FLOWS_FILE, self::flows_digest)?;
         Ok(Self {
             config: read_json(workspace, "config.json")?,
             checkpoints: read_json(workspace, "checkpoints.json")?,
@@ -298,6 +323,8 @@ impl State {
             skills_digest,
             bricks,
             bricks_digest,
+            flows,
+            flows_digest,
         })
     }
 
@@ -525,6 +552,19 @@ pub(crate) fn integrity(workspace: &Workspace, state: &State, trust: &TrustStore
             format!(".crane/{BRICKS_FILE} (the Brick store) changed since it was signed; restore it with 'git checkout .crane/{BRICKS_FILE}'"),
         ));
     }
+    if manifest.flows_digest.is_empty() {
+        if state.flows.is_some() {
+            findings.push(critical(
+                FLOWS_CHANGED,
+                format!(".crane/{FLOWS_FILE} (the flow knowledge) is not covered by the signed manifest; it is written only by 'crane flow approve|context|priority|person|test|limit|models', so restore it with 'git checkout .crane/{FLOWS_FILE}' or remove it"),
+            ));
+        }
+    } else if manifest.flows_digest != state.flows_digest {
+        findings.push(critical(
+            FLOWS_CHANGED,
+            format!(".crane/{FLOWS_FILE} (the flow knowledge) changed since it was signed; restore it with 'git checkout .crane/{FLOWS_FILE}'"),
+        ));
+    }
     let mut seen = std::collections::BTreeSet::new();
     for record in &state.registry.selections {
         if !seen.insert(record.id.as_str()) {
@@ -726,6 +766,7 @@ pub(crate) fn commit(
         governance_digest: state.governance_digest.clone(),
         skills_digest: skills_digest(state.skills.as_ref()),
         bricks_digest: bricks_digest(state.bricks.as_ref()),
+        flows_digest: flows_digest(state.flows.as_ref()),
         updated_at: now_unix(),
         updated_by: who,
         head: String::new(),
@@ -751,6 +792,10 @@ pub(crate) fn commit(
     if let Some(bricks) = &state.bricks {
         let text = pretty(bricks.clone()).map_err(io_error)?;
         write_atomic(&workspace.file(BRICKS_FILE), text.as_bytes())?;
+    }
+    if let Some(flows) = &state.flows {
+        let text = pretty(flows.clone()).map_err(io_error)?;
+        write_atomic(&workspace.file(FLOWS_FILE), text.as_bytes())?;
     }
     write_atomic(
         &workspace.file("map"),

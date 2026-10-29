@@ -13,6 +13,7 @@ pub(crate) mod flows;
 pub(crate) mod graph;
 pub(crate) mod policy;
 pub(crate) mod rebind;
+pub(crate) mod sign;
 pub(crate) mod state;
 pub(crate) mod verify;
 pub(crate) mod workspace;

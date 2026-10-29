@@ -1158,9 +1158,9 @@ impl Approvals {
         if !allowed {
             let detail = match (role, owners) {
                 ("writer", _) => format!("GitHub does not show @{login} with write access to {remote}; drafts need push, maintain, or admin"),
-                (_, Some(owners)) if owners.owners.is_empty() => format!("{} gives {} no owner (rule '{}'), so no one may request signed Brick changes from the dashboard; add an owner, or apply the change on a machine", owners.file, super::auth::BRICKS_PATH, owners.rule),
-                (_, Some(owners)) => format!("@{login} does not own {} by {} (rule '{}': {}); signed Brick changes need one of its code owners", super::auth::BRICKS_PATH, owners.file, owners.rule, owners.owners.iter().map(|owner| format!("@{owner}")).collect::<Vec<_>>().join(", ")),
-                (_, None) => format!("GitHub does not show @{login} as an admin of {remote}, and no CODEOWNERS line covers {}; signed Brick changes need an admin or owner", super::auth::BRICKS_PATH),
+                (_, Some(owners)) if owners.owners.is_empty() => format!("{} gives {} no owner (rule '{}'), so no one may request this signed change from the dashboard; add an owner, or apply the change on a machine", owners.file, owners.path, owners.rule),
+                (_, Some(owners)) => format!("@{login} does not own {} by {} (rule '{}': {}); this signed change needs one of its code owners", owners.path, owners.file, owners.rule, owners.owners.iter().map(|owner| format!("@{owner}")).collect::<Vec<_>>().join(", ")),
+                (_, None) => format!("GitHub does not show @{login} as an admin of {remote}, and no CODEOWNERS line covers {}; this signed change needs an admin or owner", super::auth::signed_path(staged.get_str("op").unwrap_or_default())),
             };
             collection
                 .update_one(
@@ -1183,6 +1183,29 @@ impl Approvals {
             "Request {request_id} is waiting for a machine: a person there applies it with one click in Landscape or 'crane brick inbox apply {request_id}', and Crane checks{} it there.",
             if role == "writer" { "" } else { " and signs" }
         ))
+    }
+
+    /** The operation of a request still staged for its author's sign-in
+     * Input
+        - request_id: &str - the request
+        - repository: &str - repository identity
+        - login: &str - the signed-in person
+     * Output
+        - Option<String>
+    */
+    pub(crate) fn staged_brick_op(
+        &self,
+        request_id: &str,
+        repository: &str,
+        login: &str,
+    ) -> Option<String> {
+        self.database
+            .collection::<Document>("brick_requests")
+            .find_one(doc! {"request_id": request_id, "repository_id": repository, "requested_by": login, "status": "STAGED"})
+            .run()
+            .ok()
+            .flatten()
+            .and_then(|document| document.get_str("op").ok().map(str::to_string))
     }
 
     /** Withdraw a Brick request that is still staged or waiting (only its author may)

@@ -648,6 +648,8 @@ fn upload(workspace: &Workspace, stores: &Stores, refresh: bool) -> Result<Flush
     crate::brick::runtime::sync_monitors(workspace, stores);
     // Resident agents: one tick (triggers, timers, waits); idle assignments make no model call
     crate::resident::worker::sync(workspace, stores);
+    // Flow watchers: read-only checks of the flows they watch; an incident notifies once
+    crate::flow::watch::sync(workspace, &stores.directory);
     let mut status = state(stores);
     let previous_attempt = status.last_attempt_at;
     status.last_attempt_at = now_millis();

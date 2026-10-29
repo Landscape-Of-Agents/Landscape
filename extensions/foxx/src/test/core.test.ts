@@ -447,6 +447,9 @@ test("names what a DataSea request is about", () => {
   assert.equal(inboxSubject(request("create", { draft: { name: "Glossary" } })), "Glossary");
   assert.equal(inboxSubject(request("revoke", { ref: "guard@1" })), "guard@1");
   assert.equal(inboxSubject(request("migrate", {})), "");
+  assert.equal(inboxSubject(request("flow-priority", { flow: "checkout", priority: "P0" })), "checkout");
+  assert.equal(inboxSubject(request("flow-proposal-approve", { proposal: "fpr_1" })), "fpr_1");
+  assert.equal(inboxSubject(request("flow-trace", { from: "app/pay.py:submit", flow: "" })), "from app/pay.py:submit");
 });
 
 test("builds mock calls for the Test tab and refuses what Crane would refuse", () => {

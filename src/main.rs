@@ -20,6 +20,7 @@ mod cli;
 mod compiler;
 mod discovery;
 mod evolution;
+mod flow;
 mod foxx;
 mod github;
 mod governance;

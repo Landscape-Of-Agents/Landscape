@@ -6,7 +6,8 @@
 // checks a request before it keeps it (and which GitHub role it needs), and the machine checks it
 // again before it builds the command, so a request the service let through is never trusted.
 // Drafts grant nothing, so anyone who can write to the repository may request them; the rest are
-// signed and need a repository admin. Text that looks like it holds a secret is refused.
+// signed and need a repository admin (or a code owner of the signed file). Flow requests ('flow-…')
+// run 'crane flow' commands the same way. Text that looks like it holds a secret is refused.
 
 use serde_json::{json, Map, Value};
 
@@ -94,6 +95,75 @@ pub(crate) const OPERATIONS: &[(&str, Role, &str)] = &[
         "publish",
         Role::Admin,
         "Publish a version to the organization's catalog",
+    ),
+    // Flows (crane flow): drafts and watchers need write access; signed knowledge needs an admin
+    (
+        "flow-trace",
+        Role::Writer,
+        "Trace a flow from a starting point into a draft",
+    ),
+    (
+        "flow-retrace",
+        Role::Writer,
+        "Trace a flow again (a new draft revision)",
+    ),
+    (
+        "flow-rewind",
+        Role::Writer,
+        "Make an earlier draft revision current",
+    ),
+    (
+        "flow-watch-add",
+        Role::Writer,
+        "Start a read-only watcher on a flow",
+    ),
+    ("flow-watch-stop", Role::Writer, "Stop a watcher"),
+    (
+        "flow-approve",
+        Role::Admin,
+        "Approve a traced flow into the knowledge base",
+    ),
+    ("flow-discard", Role::Admin, "Discard a trace draft"),
+    (
+        "flow-priority",
+        Role::Admin,
+        "Set a flow's priority and model routing",
+    ),
+    ("flow-context-add", Role::Admin, "Add context to a flow"),
+    (
+        "flow-context-remove",
+        Role::Admin,
+        "Remove context from a flow",
+    ),
+    (
+        "flow-person-add",
+        Role::Admin,
+        "Designate a person on a flow",
+    ),
+    (
+        "flow-person-remove",
+        Role::Admin,
+        "Remove a designated person",
+    ),
+    (
+        "flow-test-require",
+        Role::Admin,
+        "Require a flow's test in every release (or not)",
+    ),
+    (
+        "flow-proposal-approve",
+        Role::Admin,
+        "Approve an agent's proposal",
+    ),
+    (
+        "flow-proposal-reject",
+        Role::Admin,
+        "Reject an agent's proposal",
+    ),
+    (
+        "flow-limit",
+        Role::Admin,
+        "Change the watcher limits agents work within",
     ),
 ];
 
@@ -343,6 +413,7 @@ pub(crate) fn check(op: &str, params: &Value, reason: &str) -> Result<Value, Str
         "stack-revoke" => {
             json!({"ref": version("the Stack version", text("ref").trim_start_matches("stack:"), false)?})
         }
+        flow if flow.starts_with("flow-") => flow_check(flow, params)?,
         _ => unreachable!("every operation is listed"),
     })
 }
@@ -480,8 +551,364 @@ pub(crate) fn command(
             &why,
         ]),
         "stack-revoke" => owned(&["brick", "stack", "revoke", &text("ref"), "--reason", &why]),
+        flow if flow.starts_with("flow-") => flow_command(flow, &params, &why),
         _ => unreachable!("check() refuses the rest"),
     };
     args.extend(owned(&["--format", "json"]));
     Ok((args, written))
+}
+
+/** A whole number of a request within bounds
+ * Input
+    - params: &Value - parameters
+    - key: &str - field
+    - low, high: u64 - bounds
+ * Output
+    - Result<Option<u64>, String> (None when absent)
+*/
+fn bounded(params: &Value, key: &str, low: u64, high: u64) -> Result<Option<u64>, String> {
+    match &params[key] {
+        Value::Null => Ok(None),
+        Value::String(text) if text.trim().is_empty() => Ok(None),
+        value => value
+            .as_u64()
+            .or_else(|| value.as_str().and_then(|text| text.trim().parse().ok()))
+            .filter(|number| (low..=high).contains(number))
+            .map(Some)
+            .ok_or_else(|| format!("{key} is a whole number from {low} to {high}")),
+    }
+}
+
+/** A short text of a request: trimmed, at most a length, no secret
+ * Input
+    - params: &Value - parameters
+    - key: &str - field
+    - limit: usize - most characters
+    - required: bool - it may not be empty
+ * Output
+    - Result<String, String>
+*/
+fn short(params: &Value, key: &str, limit: usize, required: bool) -> Result<String, String> {
+    let text = params[key].as_str().unwrap_or_default().trim().to_string();
+    if required && text.is_empty() {
+        return Err(format!("{key} is required"));
+    }
+    if text.chars().count() > limit {
+        return Err(format!("{key} is longer than {limit} characters"));
+    }
+    no_secret(key, &text)?;
+    Ok(text)
+}
+
+/** Check a flow request and keep only what its command reads
+ * Input
+    - op: &str - a flow-… operation
+    - params: &Value - parameters
+ * Output
+    - Result<Value, String>
+*/
+fn flow_check(op: &str, params: &Value) -> Result<Value, String> {
+    let flow = || name("Flow", params["flow"].as_str().unwrap_or_default());
+    let handle = |key: &str| -> Result<String, String> {
+        let text = params[key].as_str().unwrap_or_default().trim().to_string();
+        if text.len() > 120
+            || text.chars().any(|c| c.is_whitespace() || c.is_control())
+            || text.starts_with('-')
+        {
+            return Err(format!("{key} is one handle or key without spaces"));
+        }
+        Ok(text)
+    };
+    Ok(match op {
+        "flow-trace" => {
+            let depth = bounded(params, "depth", 1, crate::flow::trace::MAX_DEPTH as u64)?;
+            let from = crate::flow::trace::check_starts(
+                &[params["from"].as_str().unwrap_or_default().to_string()],
+                depth.unwrap_or(crate::flow::trace::DEFAULT_DEPTH as u64) as usize,
+            )?;
+            let id = params["flow"]
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if !id.is_empty() {
+                name("Flow", &id)?;
+            }
+            json!({"from": from.join(","), "flow": id, "depth": depth, "description": short(params, "description", REASON_LIMIT, false)?})
+        }
+        "flow-retrace" | "flow-approve" | "flow-discard" => {
+            json!({"flow": flow()?, "proposed": params["proposed"].as_bool().unwrap_or(false)})
+        }
+        "flow-rewind" => {
+            json!({"flow": flow()?, "revision": bounded(params, "revision", 1, 1_000_000)?.ok_or("name the revision")?})
+        }
+        "flow-priority" => {
+            let priority = params["priority"]
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if priority != "none" {
+                crate::flow::model::Priority::parse(&priority)?;
+            }
+            let enforce = params["enforce_model"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            if !["", "on", "off"].contains(&enforce.as_str()) {
+                return Err("enforce_model is on or off".into());
+            }
+            json!({"flow": flow()?, "priority": priority.to_ascii_uppercase().replace("NONE", "none"), "enforce_model": enforce})
+        }
+        "flow-context-add" => {
+            let kind = crate::flow::model::ContextKind::parse(
+                params["kind"].as_str().unwrap_or_default(),
+            )?;
+            let value = params["value"]
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if value.len() > TEXT_LIMIT {
+                return Err(format!("the value is longer than {TEXT_LIMIT} bytes"));
+            }
+            no_secret("the value", &value)?;
+            let file = params["file"]
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .replace('\\', "/");
+            if !file.is_empty()
+                && (file.starts_with('/')
+                    || file.contains(':')
+                    || file.split('/').any(|part| part == "..")
+                    || file.starts_with(".crane/")
+                    || file.starts_with('-'))
+            {
+                return Err(format!("'{file}' is not a file of the repository"));
+            }
+            if value.is_empty() && file.is_empty() {
+                return Err("give a value or a file".into());
+            }
+            let threshold = match &params["threshold"] {
+                Value::Null => None,
+                Value::String(text) if text.trim().is_empty() => None,
+                other => Some(
+                    other
+                        .as_f64()
+                        .or_else(|| other.as_str().and_then(|text| text.trim().parse().ok()))
+                        .ok_or("the threshold is a number")?,
+                ),
+            };
+            let lines = short(params, "lines", 20, false)?;
+            if !lines.is_empty() && !lines.chars().all(|c| c.is_ascii_digit() || c == '-') {
+                return Err("lines is A-B".into());
+            }
+            json!({"flow": flow()?, "kind": kind.name(), "title": short(params, "title", 200, true)?, "value": value, "unit": short(params, "unit", 20, false)?, "threshold": threshold, "file": file, "lines": lines})
+        }
+        "flow-context-remove" => {
+            json!({"flow": flow()?, "item": name("item", params["item"].as_str().unwrap_or_default())?})
+        }
+        "flow-person-add" => {
+            crate::flow::model::Role::parse(params["role"].as_str().unwrap_or_default())?;
+            json!({"flow": flow()?, "name": short(params, "name", 120, true)?, "role": params["role"].as_str().unwrap_or_default().trim().to_ascii_lowercase(), "github": handle("github")?, "jira": handle("jira")?, "slack": handle("slack")?})
+        }
+        "flow-person-remove" => {
+            json!({"flow": flow()?, "person": name("person", params["person"].as_str().unwrap_or_default())?})
+        }
+        "flow-test-require" => {
+            json!({"flow": flow()?, "test": name("test", params["test"].as_str().unwrap_or_default())?, "required": params["required"].as_bool().unwrap_or(true)})
+        }
+        "flow-proposal-approve" | "flow-proposal-reject" => {
+            let proposal = name("proposal", params["proposal"].as_str().unwrap_or_default())?;
+            if !proposal.starts_with("fpr_") {
+                return Err("name a flow proposal (fpr_…)".into());
+            }
+            json!({"proposal": proposal, "required": params["required"].as_bool().unwrap_or(false)})
+        }
+        "flow-limit" => {
+            let id = params["flow"]
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if !id.is_empty() {
+                name("Flow", &id)?;
+            }
+            let watchers = bounded(params, "watchers", 0, 50)?;
+            let session = bounded(params, "session", 0, 50)?;
+            let per_flow = bounded(params, "per_flow", 0, 50)?;
+            if watchers.is_some() && id.is_empty() {
+                return Err("a flow's watcher limit needs the flow".into());
+            }
+            if watchers.is_none() && session.is_none() && per_flow.is_none() {
+                return Err("change at least one limit".into());
+            }
+            json!({"flow": id, "watchers": watchers, "session": session, "per_flow": per_flow})
+        }
+        "flow-watch-add" => {
+            let checks = params["checks"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if let Some(bad) = checks
+                .iter()
+                .find(|check| !crate::flow::watch::CHECKS.contains(&check.as_str()))
+            {
+                return Err(format!(
+                    "check '{bad}' is one of {}",
+                    crate::flow::watch::CHECKS.join(", ")
+                ));
+            }
+            json!({"flow": flow()?, "purpose": short(params, "purpose", REASON_LIMIT, true)?, "checks": checks})
+        }
+        "flow-watch-stop" => {
+            json!({"watcher": name("watcher", params["watcher"].as_str().unwrap_or_default())?})
+        }
+        _ => return Err(format!("'{op}' cannot be requested")),
+    })
+}
+
+/** The 'crane flow' command of a checked flow request
+ * Input
+    - op: &str - a flow-… operation
+    - params: &Value - checked parameters
+    - why: &str - the reason with who asked
+ * Output
+    - Vec<String> arguments after "crane"
+*/
+fn flow_command(op: &str, params: &Value, why: &str) -> Vec<String> {
+    let text = |key: &str| params[key].as_str().unwrap_or_default().to_string();
+    let words = |list: &[&str]| {
+        list.iter()
+            .map(|word| (*word).to_string())
+            .collect::<Vec<_>>()
+    };
+    let mut args = match op {
+        "flow-trace" => words(&["flow", "trace", "--from", &text("from")]),
+        "flow-retrace" => words(&["flow", "retrace", &text("flow"), "--reason", why]),
+        "flow-rewind" => words(&[
+            "flow",
+            "rewind",
+            &text("flow"),
+            "--to",
+            &params["revision"].to_string(),
+        ]),
+        "flow-approve" => words(&["flow", "approve", &text("flow"), "--reason", why]),
+        "flow-discard" => words(&["flow", "discard", &text("flow"), "--reason", why]),
+        "flow-priority" => words(&["flow", "priority", &text("flow"), &text("priority")]),
+        "flow-context-add" => words(&[
+            "flow",
+            "context",
+            "add",
+            &text("flow"),
+            "--kind",
+            &text("kind"),
+            "--title",
+            &text("title"),
+        ]),
+        "flow-context-remove" => {
+            words(&["flow", "context", "remove", &text("flow"), &text("item")])
+        }
+        "flow-person-add" => words(&[
+            "flow",
+            "person",
+            "add",
+            &text("flow"),
+            "--name",
+            &text("name"),
+            "--role",
+            &text("role"),
+        ]),
+        "flow-person-remove" => {
+            words(&["flow", "person", "remove", &text("flow"), &text("person")])
+        }
+        "flow-test-require" => words(&["flow", "test", "require", &text("flow"), &text("test")]),
+        "flow-proposal-approve" => words(&["flow", "proposals", "approve", &text("proposal")]),
+        "flow-proposal-reject" => words(&[
+            "flow",
+            "proposals",
+            "reject",
+            &text("proposal"),
+            "--reason",
+            why,
+        ]),
+        "flow-limit" => words(&["flow", "limit"]),
+        "flow-watch-add" => words(&[
+            "flow",
+            "watch",
+            "add",
+            &text("flow"),
+            "--purpose",
+            &text("purpose"),
+        ]),
+        "flow-watch-stop" => words(&["flow", "watch", "stop", &text("watcher")]),
+        _ => Vec::new(),
+    };
+    if op == "flow-limit" && !text("flow").is_empty() {
+        args.insert(2, text("flow"));
+    }
+    let mut option = |key: &str, flag: &str| {
+        let value = match &params[key] {
+            Value::String(text) if !text.is_empty() => Some(text.clone()),
+            Value::Number(number) => Some(number.to_string()),
+            _ => None,
+        };
+        if let Some(value) = value {
+            args.push(flag.to_string());
+            args.push(value);
+        }
+    };
+    match op {
+        "flow-trace" => {
+            option("flow", "--flow");
+            option("depth", "--depth");
+            option("description", "--description");
+        }
+        "flow-priority" => option("enforce_model", "--enforce-model"),
+        "flow-context-add" => {
+            option("value", "--value");
+            option("unit", "--unit");
+            option("threshold", "--threshold");
+            option("file", "--file");
+            option("lines", "--lines");
+        }
+        "flow-person-add" => {
+            option("github", "--github");
+            option("jira", "--jira");
+            option("slack", "--slack");
+        }
+        "flow-limit" => {
+            option("watchers", "--watchers");
+            option("session", "--session");
+            option("per_flow", "--flow");
+        }
+        "flow-watch-add" => {
+            let checks = params["checks"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(",");
+            if !checks.is_empty() {
+                args.push("--checks".into());
+                args.push(checks);
+            }
+        }
+        _ => {}
+    }
+    if op == "flow-approve" && params["proposed"].as_bool() == Some(true) {
+        args.push("--proposed".into());
+    }
+    if op == "flow-test-require" && params["required"].as_bool() == Some(false) {
+        args.push("--off".into());
+    }
+    if op == "flow-proposal-approve" && params["required"].as_bool() == Some(true) {
+        args.push("--required".into());
+    }
+    args
 }

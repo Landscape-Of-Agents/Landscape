@@ -55,6 +55,9 @@ const PAGES: &str = include_str!("pages.js");
 /** The pages that operate and govern, and the page's start */
 const GOVERN: &str = include_str!("govern.js");
 
+/** The Flows section (flows as a knowledge base) */
+const FLOWS: &str = include_str!("flows.js");
+
 /** The fox logo (256 px, transparent background) */
 const LOGO: &[u8] = include_bytes!("logo.png");
 
@@ -374,9 +377,9 @@ impl Dashboard {
     pub(crate) fn handle(&self, request: &mut Request) -> Reply {
         let (path, query) = http::split(request.url());
         if request.method().as_str().eq_ignore_ascii_case("POST")
-            && (path == "/api/dashboard-agents" || path == "/api/bricks")
+            && (path == "/api/dashboard-agents" || path == "/api/bricks" || path == "/api/flows")
         {
-            let limit = if path == "/api/bricks" {
+            let limit = if path == "/api/bricks" || path == "/api/flows" {
                 MAX_BRICK_BODY
             } else {
                 MAX_DASHBOARD_AGENT_BODY
@@ -401,7 +404,8 @@ impl Dashboard {
             {
                 return Reply::json(413, json!({"error": "request body could not be read"}));
             }
-            let answer = if path == "/api/bricks" {
+            // Flow requests join the Brick request queue: a person applies them on a machine
+            let answer = if path == "/api/bricks" || path == "/api/flows" {
                 self.brick_requests(request, &query, &body)
             } else {
                 self.dashboard_agents(request, &query, &body)
@@ -437,6 +441,7 @@ impl Dashboard {
             "/glossary.js" => Reply::script(GLOSSARY),
             "/pages.js" => Reply::script(PAGES),
             "/govern.js" => Reply::script(GOVERN),
+            "/flows.js" => Reply::script(FLOWS),
             "/logo.png" => Reply::image(LOGO, "image/png"),
             "/favicon.png" | "/favicon.ico" => Reply::image(FAVICON, "image/png"),
             "/auth/login" => self.login(request),
@@ -984,7 +989,10 @@ impl Dashboard {
             grant: None,
             dashboard_agent: None,
             resident: None,
-            brick: Some(json!({"repository": value("repository"), "request_id": request_id})),
+            // The page the request was made on, to come back to after sign-in
+            brick: Some(
+                json!({"repository": value("repository"), "request_id": request_id, "page": if value("page") == "flows" { "flows" } else { "bricks" }}),
+            ),
         };
         Reply::redirect(&auth.authorize_url(request, &state, true))
             .with_header(
@@ -1031,8 +1039,13 @@ impl Dashboard {
             Ok(access) => access,
             Err(error) => return (false, error),
         };
-        // The CODEOWNERS of the signed store decide signed changes when they cover it
-        let owners = match auth.owners_of(token, &remote, &viewer.login, auth::BRICKS_PATH) {
+        // The CODEOWNERS of the signed file the change writes decide it when they cover it
+        let op = self
+            .approvals
+            .staged_brick_op(&request_id, &repository, &viewer.login)
+            .unwrap_or_default();
+        let path = auth::signed_path(&op);
+        let owners = match auth.owners_of(token, &remote, &viewer.login, path) {
             Ok(owners) => owners,
             Err(error) => {
                 return (
@@ -1762,7 +1775,15 @@ impl Dashboard {
                             auth::encode(&message),
                             u8::from(ok),
                             if bricks {
-                                "bricks"
+                                if intent
+                                    .brick
+                                    .as_ref()
+                                    .is_some_and(|brick| brick["page"] == "flows")
+                                {
+                                    "flows"
+                                } else {
+                                    "bricks"
+                                }
                             } else if grant {
                                 "credits"
                             } else if resident {

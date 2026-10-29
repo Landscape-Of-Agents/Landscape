@@ -1153,6 +1153,10 @@ pub(super) fn notes(event: &Event) -> Vec<Spec> {
                     None => continue,
                 }
             }
+            flow if flow.starts_with("FLOW_") => match super::spec_flows::spec(event, flow, note) {
+                Some(spec) => spec,
+                None => continue,
+            },
             resident if resident.starts_with("RESIDENT_") => {
                 match super::spec_resident::spec(event, resident, note) {
                     Some(spec) => spec,

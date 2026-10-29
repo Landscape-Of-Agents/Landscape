@@ -396,22 +396,16 @@ impl Controls {
             || !self.watch_pause.is_empty()
     }
 
-    /** The mode of an operation (None: no Brick sets one)
-             * Input
-                - class: ChangeClass - Create, Update, Delete, Execute, or Network
-             * Output
-                - Option<Mode>
-            */
     /** The Bricks behind merged controls, for a finding: the references recorded for the keys
-             * (every Brick that sets an enforced control when none is recorded)
-             * Input
-                - keys: impl IntoIterator<Item = String> - control keys: "deny_read:PATTERN",
-                  "read_only:PATTERN", "mode:OPERATION:MODE" (see mode_key), "hide_env:PATTERN",
-                  "require_env:NAME", "network_deny:PATTERN", "network_allow:INDEX", "recovery:LIMIT",
-                  "direct:ADAPTER:OPERATION"
-             * Output
-                - String - references joined by ", "
-            */
+     * (every Brick that sets an enforced control when none is recorded)
+     * Input
+        - keys: impl IntoIterator<Item = String> - control keys: "deny_read:PATTERN",
+          "read_only:PATTERN", "mode:OPERATION:MODE" (see mode_key), "hide_env:PATTERN",
+          "require_env:NAME", "network_deny:PATTERN", "network_allow:INDEX", "recovery:LIMIT",
+          "direct:ADAPTER:OPERATION"
+     * Output
+        - String - references joined by ", "
+    */
     pub(crate) fn origin(&self, keys: impl IntoIterator<Item = String>) -> String {
         let found = keys
             .into_iter()
@@ -453,6 +447,12 @@ impl Controls {
             .insert(reference.to_string());
     }
 
+    /** The mode of an operation (None: no Brick sets one)
+     * Input
+        - class: ChangeClass - Create, Update, Delete, Execute, or Network
+     * Output
+        - Option<Mode>
+    */
     pub(crate) fn mode(&self, class: ChangeClass) -> Option<Mode> {
         match class {
             ChangeClass::Create => self.create,

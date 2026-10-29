@@ -333,6 +333,8 @@ export function inboxSubject(request: InboxRequest): string {
   const draft = (params.draft ?? {}) as Record<string, unknown>;
   if (request.op === "attach") return `${textOf("subject")} → ${textOf("target")}`;
   if (request.op === "assign") return `${textOf("agent")} → ${Array.isArray(params.targets) ? (params.targets as string[]).join(", ") : ""}`;
+  // Flow requests (crane flow): the flow, or the proposal or watcher they act on
+  if (request.op.startsWith("flow-")) return textOf("flow") || textOf("proposal") || textOf("watcher") || (textOf("from") ? `from ${textOf("from")}` : "");
   return textOf("brick_id") || textOf("ref") || textOf("attachment") || textOf("agent") || textOf("stack_id") || textOf("name") || (typeof draft.name === "string" ? draft.name : "") || "";
 }
 

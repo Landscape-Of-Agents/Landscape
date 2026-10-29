@@ -31,6 +31,7 @@ Start with the part that matches what you need. Every term is explained in one p
 |---|---|
 | Selections: protect and target code | [features/selections.md](features/selections.md) |
 | Zones and flows | [features/zones-and-flows.md](features/zones-and-flows.md) |
+| Flows as a knowledge base: traced call graphs, context, priority and models, people, tests, watchers | [features/flow-knowledge.md](features/flow-knowledge.md) |
 | Agent hooks: deciding every action | [features/agent-hooks.md](features/agent-hooks.md) |
 | Scope: the effective boundary | [features/scope.md](features/scope.md) |
 | Skills | [features/skills.md](features/skills.md) |

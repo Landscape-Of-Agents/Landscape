@@ -3162,6 +3162,15 @@ like a secret. Other repositories import it as a draft.
 - Response [response_status (OK), failure_state (NA)]
 - Other [account, brick (ID@N), machine_key]
 
+#### F37.14 `BRICK_PUBLISHED`, `BRICK_IMPORTED` (machine)
+On the publishing machine, `BRICK_PUBLISHED` records that 'crane brick publish' sent a version to
+the organization catalog (`stored` is false when the same digest was already there). On an
+importing machine, `BRICK_IMPORTED` records each draft 'crane brick import' wrote, where it came
+from, and its validation. An import grants nothing until an admin there activates it.
+- Action [action_type (BRICK_CATALOG), action_source (CLI)]
+- Response [response_status (OK), failure_state (NA)]
+- Other [brick (ID@N), type, account, stored, from, validation]
+
 ### F38. Resident agents
 
 A resident agent is an assignment that stays responsible for one Flow, Zone, or Runbook for days or
@@ -3273,6 +3282,76 @@ executed (there is no sandbox).
 - Other [assignment, trigger, model_calls]
 
 ---
+
+### F39. Flows as a knowledge base
+
+A flow's knowledge (its approved trace, typed context, priority and model routing, designated
+people, tests, and watcher limits) is signed in `.crane/flows.json`. Flow commands
+(`crane flow ...`), the hook's agent channel (`crane-request ...`, answered by the hook and never
+run), and the read-only watchers note what happened on the event they belong to: the command's F13
+event, the agent's `flow.agent_request` event, or the `flow.watchers_evaluated` event the background
+sync stores when watchers ran. Every note becomes one F39 event. Fields are identifiers, digests,
+counts, states, and codes. Context text, test descriptions, assumptions, mock data, and incident
+details are never recorded.
+
+Common attributes
+- Action [action_type (FLOW_TRACE, FLOW_APPROVE, FLOW_KNOWLEDGE, FLOW_PROPOSE, FLOW_TEST, FLOW_WATCH, FLOW_INCIDENT, FLOW_REQUEST) (enum), action_source (CLI, HOOK, SYNC), action_id (id of the carrying event)]
+- Resource [resource (CRANE_METADATA), resource_ids (flow, watcher, proposal, incident)]
+- Other [flow, and the fields of each event below]
+
+#### F39.1 `FLOW_TRACED`, `FLOW_REWOUND`
+A flow was traced from its starting points into a draft revision ('crane flow trace|retrace', or an
+agent's 'crane-request trace|retrace'), or an earlier revision was made current again. The trace is
+deterministic: the same code gives the same digest. A draft grants nothing.
+- Response [response_status (OK)]
+- Other [revision, nodes, status (RESOLVED, PARTIAL), via (cli, agent), digest]
+
+#### F39.2 `FLOW_APPROVED`, `FLOW_DISCARDED`
+A person approved the current revision of a draft. A new flow is added to `.crane/governance.yaml`
+with a context pack written from its trace, and the trace is signed into the flow knowledge in the
+same generation. Or the person discarded the draft.
+- Response [response_status (OK)]
+- Other [revision, digest, added, nodes]
+
+#### F39.3 `FLOW_CHANGED`
+Signed flow knowledge changed: a priority, a context item, a person, a test, a limit, a model, or
+the routing.
+- Response [response_status (OK)]
+- Other [change (flow.priority, flow.context.add, flow.person.add, flow.test.require, flow.limit, flow.models.add, flow.routing, ...)]
+
+#### F39.4 `FLOW_PROPOSED`, `FLOW_PROPOSAL_DECIDED`
+An agent proposed a test (with its assumptions and mock data, explained in plain words) or a context
+item for a flow. A person approved it (it becomes signed knowledge, a test optionally required in
+every release) or rejected it (the agent's session is told why).
+- Response [response_status (OK, REJECTED)]
+- Other [proposal, kind (test, context), decision (APPROVED, REJECTED)]
+
+#### F39.5 `FLOW_TESTS_RUN`
+A person or CI ran a flow's tests ('crane flow tests run [--required]'). A failing required test
+fails the command, so a release step stops.
+- Response [response_status (OK, FAILED)]
+- Other [tests, passed, failed, required (required tests that did not pass)]
+
+#### F39.6 `FLOW_WATCHER_STARTED`, `FLOW_WATCHER_STOPPED`, `FLOW_WATCHERS_EVALUATED`
+A read-only watcher (a monitoring subagent) started on a flow: by an agent within the signed limits,
+or by a person. Or it stopped, or the watchers ran their checks (trace drift, required tests,
+denials) without a model.
+- Response [response_status (OK, FIRING)]
+- Other [watcher, by (agent, person), checks, watchers, incidents]
+
+#### F39.7 `FLOW_INCIDENT_RAISED`
+A watcher's check started firing, or an agent reported an incident. The flow's designated people
+were notified through the integrations (Slack, the Jira issue that names them), and the parent
+session receives a notice with its next tool call.
+- Response [response_status (FIRING)]
+- Severity [severity_status (MEDIUM)]
+- Other [incident, code (TRACE_DRIFT, REQUIRED_TEST_FAILING, REQUIRED_TEST_MISSING, DENIALS, AGENT_REPORTED), watcher, notified (count)]
+
+#### F39.8 `FLOW_AGENT_REQUEST`
+An agent asked Crane through its hook ('crane-request ...'). The hook answered and stopped the
+command, so nothing ran. This is not a denial and not a bypass attempt.
+- Response [response_status (OK, REFUSED)]
+- Other [request (flows, flow, route, trace, retrace, test, context, watch, unwatch, incident, help)]
 
 ## Part 3: Where events appear on the dashboard
 

@@ -16,6 +16,7 @@ pub(crate) mod rules;
 pub(crate) mod spec;
 pub(crate) mod spec_bricks;
 pub(crate) mod spec_commands;
+pub(crate) mod spec_flows;
 pub(crate) mod spec_resident;
 pub(crate) mod sync;
 pub(crate) mod usage;

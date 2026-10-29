@@ -143,6 +143,7 @@ pub(crate) fn route(
         },
         ["governance"] => governance(context),
         ["bricks"] => controls::bricks(context),
+        ["flows"] => controls::flows(context),
         ["residents"] => controls::residents(context),
         ["ledger"] => (200, ledger_view(context, query), None),
         ["definitions"] => (

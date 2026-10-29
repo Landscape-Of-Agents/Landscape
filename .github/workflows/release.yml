@@ -1,3 +1,4 @@
+# cspell:words msvc dtolnay pipefail lipo archs compgen foxx elif openvsx ovsx softprops
 name: Release
 
 on:
@@ -36,7 +37,9 @@ jobs:
           - os: macos-15-intel
             target: x86_64-apple-darwin
             platform: macos-intel
-          - os: macos-14
+          # Built on the Intel runner too: Apple's toolchain cross-compiles for Apple Silicon, and
+          # GitHub's arm64 macOS runners are often unavailable (the job then waits and is cancelled)
+          - os: macos-15-intel
             target: aarch64-apple-darwin
             platform: macos-apple-silicon
           - os: windows-latest
@@ -59,6 +62,19 @@ jobs:
           # The DataSea ingestion service compiled into the release, so uploads need no setup
           CRANE_DEFAULT_INGEST_URL: ${{ vars.CRANE_INGEST_URL }}
         run: cargo build --locked --release --target ${{ matrix.target }}
+
+      # A cross-compiled binary cannot run on the machine that built it, so its architecture is
+      # checked instead (arm64 for Apple Silicon, x86_64 for Intel)
+      - name: Check the macOS binary's architecture
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="target/${{ matrix.target }}/release/crane"
+          expected="${{ startsWith(matrix.target, 'aarch64') && 'arm64' || 'x86_64' }}"
+          actual="$(lipo -archs "$binary")"
+          echo "$binary is built for: $actual"
+          test "$actual" = "$expected"
 
       - name: Package Unix binary
         if: runner.os != 'Windows'
@@ -86,7 +102,7 @@ jobs:
           "$hash  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
 
       - name: Upload packaged binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: crane-${{ matrix.target }}
           path: |
@@ -124,7 +140,7 @@ jobs:
 
       - name: Download packaged binaries
         id: download
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: crane-*

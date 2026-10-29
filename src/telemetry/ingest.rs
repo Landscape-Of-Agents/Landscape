@@ -41,8 +41,10 @@ pub(crate) const REQUEST_DOMAIN: &str = "foxx/ingest/request/v1";
 /** Header naming the encoding of a request body ("base64"; absent for plain JSON) */
 pub(crate) const BODY_ENCODING: &str = "X-Crane-Body-Encoding";
 
-/** Most records of one stream sent in one batch */
-pub(crate) const BATCH: usize = 500;
+/** Most records of one stream sent in one batch: about 400 KB of events, so a batch arrives and
+ * is stored well within TIMEOUT on a slow uplink or a small hosted service (a batch that timed out
+ * is sent again; the service drops the duplicates) */
+pub(crate) const BATCH: usize = 100;
 
 /** The Foxx ingestion service every build uploads to unless told otherwise */
 pub(crate) const DEFAULT_INGEST_URL: &str = "https://agentscript-service.onrender.com";
@@ -124,8 +126,8 @@ pub(crate) fn is_approval_code(code: &str) -> bool {
 /** How often the repository status is sent, in milliseconds */
 const STATUS_EVERY: u64 = 120_000;
 
-/** Time limit of one request */
-const TIMEOUT: Duration = Duration::from_secs(20);
+/** Time limit of one request (an upload batch included) */
+const TIMEOUT: Duration = Duration::from_secs(60);
 
 /** Return the ingestion service address: CRANE_INGEST_URL, else CRANE_DEFAULT_INGEST_URL from the
  * build, else DEFAULT_INGEST_URL; None when uploads are off

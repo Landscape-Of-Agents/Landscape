@@ -49,16 +49,20 @@ pub(crate) struct Intent {
     pub(crate) dashboard_agent: Option<Value>,
     #[serde(default)]
     pub(crate) resident: Option<Value>,
+    #[serde(default)]
+    pub(crate) brick: Option<Value>,
 }
 
 /** The viewer's access to a repository, as GitHub reports it
  * Fields
     - admin: bool - administers it
+    - write: bool - can write to it (any of push, maintain, admin)
     - read: bool - can read it (any of pull, triage, push, maintain, admin)
 */
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Access {
     pub(crate) admin: bool,
+    pub(crate) write: bool,
     pub(crate) read: bool,
 }
 
@@ -344,6 +348,7 @@ impl Auth {
         let flag = |name: &str| permissions[name].as_bool().unwrap_or(false);
         Ok(Access {
             admin: flag("admin"),
+            write: ["push", "maintain", "admin"].iter().any(|name| flag(name)),
             read: ["pull", "triage", "push", "maintain", "admin"]
                 .iter()
                 .any(|name| flag(name)),

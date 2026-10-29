@@ -9,7 +9,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 
-import { AttachmentRow, BRICK_GUIDE, BRICK_TEMPLATES, BRICK_TYPES, BrickList, BrickRow, draftFile, LEGACY_TYPES, SnapshotData, succeeded, TypeInfo } from "./core/bricks";
+import { AttachmentRow, BRICK_GUIDE, BRICK_TEMPLATES, BRICK_TYPES, BrickList, BrickRow, draftFile, InboxRequest, inboxSubject, LEGACY_TYPES, SnapshotData, succeeded, TypeInfo } from "./core/bricks";
 import { ContextFormat, contextFromFile, friendlyError, OverlayItem, overlayGraph, problemLines } from "./core/workbench";
 import { call, CANCELLED, Dialogs, OpResult, PanelDeps, refused, scratch, signed, WorkbenchHost, WorkbenchPage } from "./workbench";
 
@@ -83,6 +83,18 @@ const text = (value: unknown): string => (typeof value === "string" ? value : ""
 export function bricksHost(deps: PanelDeps): WorkbenchHost {
   let types: TypeInfo[] = [];
   let list: BrickList | undefined;
+  /** The changes requested on DataSea, asked of the service at most once a minute */
+  let inbox: { requests: InboxRequest[]; error?: string; at: number } = { requests: [], at: 0 };
+
+  /**
+   * The Brick changes people requested on DataSea for this repository.
+   * @param refresh ask the service again now
+   */
+  async function loadInbox(refresh: boolean): Promise<void> {
+    if (!refresh && Date.now() - inbox.at < 60_000) return;
+    const asked = await call<{ requests: InboxRequest[] }>(deps, ["brick", "inbox"]);
+    inbox = { requests: asked.envelope?.data?.requests ?? [], error: asked.envelope ? undefined : asked.error, at: Date.now() };
+  }
 
   /** The newest Brick list, or why there is none. */
   async function load(): Promise<string | undefined> {
@@ -105,6 +117,7 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
   return {
     async state(refresh) {
       const problem = await load();
+      await loadInbox(Boolean(refresh));
       const graph = await deps.graph(refresh);
       const items: OverlayItem[] = (list?.attachments ?? []).map((row) => ({
         id: row.attachment_id,
@@ -127,6 +140,7 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
         guide: BRICK_GUIDE,
         legacy: LEGACY_TYPES,
         craneKinds: types.map((info) => info.type),
+        inbox: inbox.requests.map((request) => ({ ...request, subject: inboxSubject(request) })),
       };
     },
 
@@ -200,6 +214,7 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
       if (!shown.envelope) return { ok: false, message: shown.error ?? "Crane printed no result." };
       return { ok: true, message: "", data: shown.envelope.data };
     }
+    if (op === "inbox:apply" || op === "inbox:dismiss") return inboxDecide(op === "inbox:apply", progress);
     if (op === "migrate") {
       progress("Rewriting former kinds as drafts");
       const migrated = await call<{ next?: string[] }>(deps, ["brick", "migrate"]);
@@ -209,6 +224,45 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
       return { ok: true, message: `${migrated.envelope.summary}${next.length ? " Activate each new draft from the Library, then move its attachments to it:" : ""}`, problems: next };
     }
     return { ok: false, message: `Landscape does not know the operation '${op}'.` };
+  }
+
+  /**
+   * Apply or dismiss Brick changes requested on DataSea: the person chooses which, Crane runs the
+   * same 'crane brick' command for each (checking and, for a signed change, signing it with this
+   * machine's admin key), and DataSea is told the result.
+   * @param applying apply (else dismiss)
+   * @param progress step reporter
+   * @returns result
+   */
+  async function inboxDecide(applying: boolean, progress: (text: string) => void): Promise<OpResult> {
+    await loadInbox(true);
+    if (!inbox.requests.length) return { ok: false, message: inbox.error ? friendlyError(inbox.error) : "No change from DataSea is waiting any more." };
+    const chosen = await dialogs.pickMany({
+      title: applying ? "Apply changes requested on DataSea" : "Dismiss changes requested on DataSea",
+      detail: applying ? "Each one runs here as the 'crane brick' command it names, with every check Crane makes. Signed changes use this machine's admin key; commit .crane afterwards so the team shares them." : "Dismissed requests are not applied; DataSea shows them as dismissed with your reason.",
+      button: applying ? "Continue" : "Dismiss",
+      items: inbox.requests.map((request) => ({ label: `${request.op} ${inboxSubject(request)}`, description: `@${request.requested_by} · needs ${request.role}`, detail: request.reason, picked: true, value: request.request_id })),
+    });
+    if (!chosen?.length) return CANCELLED;
+    if (!applying) {
+      const reason = await dialogs.reason(`Why dismiss ${chosen.length} request(s)? DataSea shows the reason.`);
+      if (!reason) return CANCELLED;
+      progress("Dismissing");
+      const dismissed = await call(deps, ["brick", "inbox", "dismiss", ...chosen, "--reason", reason]);
+      if (!dismissed.envelope) return { ok: false, message: dismissed.error ?? "Crane printed no result." };
+      inbox.at = 0;
+      return succeeded(dismissed.envelope.status) ? { ok: true, message: dismissed.envelope.summary } : refused(dismissed.envelope);
+    }
+    const signing = inbox.requests.filter((request) => chosen.includes(request.request_id) && request.role === "admin").length;
+    if (!(await dialogs.confirm(`Apply ${chosen.length} change(s) from DataSea?`, signing ? `${signing} of them are signed changes: Crane signs them into .crane/bricks.json with your admin key.` : "They write drafts, which grant nothing until an admin activates them.", signing ? "Sign and apply" : "Apply"))) return CANCELLED;
+    progress("Applying the changes from DataSea");
+    const applied = await call<{ results: { request_id: string; op: string; status: string; detail: string }[] }>(deps, ["brick", "inbox", "apply", ...chosen]);
+    inbox.at = 0;
+    if (!applied.envelope) return { ok: false, message: applied.error ?? "Crane printed no result." };
+    const results = applied.envelope.data?.results ?? [];
+    deps.record("FOXX_BRICK_COMMAND", { command: applied.envelope.command, status: applied.envelope.status.toUpperCase(), statement: applied.envelope.summary });
+    const lines = results.map((result) => `${result.status === "APPLIED" ? "Applied" : "Failed"}: ${result.op} (${result.request_id}) — ${friendlyError(result.detail)}`);
+    return succeeded(applied.envelope.status) ? { ok: true, message: applied.envelope.summary, problems: lines } : { ok: false, message: friendlyError(applied.envelope.summary), problems: lines };
   }
 
   /**
@@ -678,7 +732,9 @@ document.addEventListener("click", (event) => {
   const info = event.target.closest("[data-info]");
   if (info) { event.preventDefault(); event.stopPropagation(); showInfo(info.dataset.info); return; }
   const migrate = event.target.closest("[data-migrate]");
-  if (migrate) { event.preventDefault(); perform(migrate, "migrate", {}); }
+  if (migrate) { event.preventDefault(); perform(migrate, "migrate", {}); return; }
+  const inbox = event.target.closest("[data-inbox]");
+  if (inbox) { event.preventDefault(); perform(inbox, "inbox:" + inbox.dataset.inbox, {}); }
 }, true);
 
 // ---------------------------------------------------------------- a kind's settings, in a pop-up
@@ -732,7 +788,7 @@ function renderLibrary() {
         ? '<button class="btn small primary" data-activate="' + esc(row.brick_id) + '">Activate</button><button class="btn small" data-validate="' + esc(row.brick_id) + '">Check for problems</button><button class="btn small" data-common="' + esc(id) + '">Edit common context</button>'
         : row.state === "active" ? '<button class="btn small primary" data-attach-brick="' + esc(row.ref) + '">Attach…</button><button class="btn small" data-common="' + esc(id) + '">Edit common context</button>' : "";
       const former = (S.legacy || {})[row.type];
-      return '<div class="item"><div class="title"><b>' + esc(row.name) + "</b>" + infoButton(id, row.name) + '<span class="tag">' + esc(row.type) + "</span>" + (former ? '<span class="tag warn" title="Read as ' + esc(former) + '">former kind: now ' + esc(former) + "</span>" : "") + '<span<span class="tag ' + stateTone(row.state) + '">' + esc(row.state) + "</span>" + (row.validation && row.validation !== "passed" ? '<span class="tag bad">' + esc(row.validation) + "</span>" : "") + '<span class="muted small mono">' + esc(id) + "</span></div>" +
+      return '<div class="item"><div class="title"><b>' + esc(row.name) + "</b>" + infoButton(id, row.name) + '<span class="tag">' + esc(row.type) + "</span>" + (former ? '<span class="tag warn" title="Read as ' + esc(former) + '">former kind: now ' + esc(former) + "</span>" : "") + '<span class="tag ' + stateTone(row.state) + '">' + esc(row.state) + "</span>" + (row.validation && row.validation !== "passed" ? '<span class="tag bad">' + esc(row.validation) + "</span>" : "") + '<span class="muted small mono">' + esc(id) + "</span></div>" +
         (row.intent ? '<div class="muted small" style="margin-top:4px">' + esc(row.intent) + "</div>" : "") +
         '<div class="chips-row"><button type="button" class="chip-btn" data-kind="' + esc(former ? former.split(" ")[0] : row.type) + '"><span aria-hidden="true">?</span>What is a ' + esc(former ? former.split(" ")[0] : row.type) + " Brick?</button>" +
         (where.length ? '<span class="muted small">Attached to</span>' + where.map((key) => '<button type="button" class="chip-btn" data-goto="' + esc(key) + '" title="Show it in the graph"><span aria-hidden="true">' + (key.startsWith("flow:") ? "⇢" : "▦") + "</span>" + esc(key.replace(/^[a-z]+:/, "")) + "</button>").join("") : "") + "</div>" +
@@ -741,7 +797,9 @@ function renderLibrary() {
   }).join("");
   const formers = S.bricks.filter((row) => row.state === "active" && (S.legacy || {})[row.type]);
   const banner = formers.length ? '<div class="banner info"><span class="icon">ℹ</span><div class="grow small"><b>' + formers.length + " Brick(s) use a former kind</b>They keep working, read as the kinds that replaced them. Rewrite them as drafts of the current kinds, then activate the drafts and move the attachments.</div><button class='btn small primary' data-migrate>Rewrite as current kinds</button></div>" : "";
-  $("library").innerHTML = banner + (html || '<div class="empty-note">No Bricks yet. Create the first one in "Create a Brick".</div>');
+  const asked = S.inbox || [];
+  const fromDataSea = asked.length ? '<div class="banner info"><span class="icon">⇣</span><div class="grow small"><b>' + asked.length + " change(s) requested on DataSea</b>" + asked.slice(0, 4).map((row) => esc(row.op + " " + row.subject) + " · @" + esc(row.requested_by)).join("<br>") + (asked.length > 4 ? "<br>…" : "") + "</div><button class='btn small primary' data-inbox='apply'>Review and apply</button><button class='btn small' data-inbox='dismiss'>Dismiss…</button></div>" : "";
+  $("library").innerHTML = fromDataSea + banner + (html || '<div class="empty-note">No Bricks yet. Create the first one in "Create a Brick".</div>');
 }
 
 // ---------------------------------------------------------------- buttons anywhere on the page

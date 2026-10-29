@@ -7,7 +7,7 @@
 // the exact result before applying it. One file per area: catalog (types, list, show, history),
 // draft (create, edit), check (validate, test), lifecycle (activate, deprecate, revoke), stack,
 // attach (attach, detach, upgrade, context set), context (preview, status), agents (assign,
-// unassign, agents, monitor).
+// unassign, agents, monitor), inbox (the changes people requested on DataSea, applied here).
 
 mod agents;
 mod attach;
@@ -15,6 +15,7 @@ mod catalog;
 mod check;
 mod context;
 mod draft;
+mod inbox;
 mod lifecycle;
 mod migrate;
 mod stack;
@@ -60,6 +61,7 @@ const USAGE: &str = "usage: crane brick types
        crane brick unassign AGENT --reason TEXT
        crane brick agents
        crane brick monitor run [--all] | monitor status
+       crane brick inbox [list] | inbox apply ID...|--all | inbox dismiss ID...|--all --reason TEXT
   (types are fixed; every command takes --format json; signing commands need an admin key)";
 
 /** Dispatch a brick command
@@ -99,6 +101,7 @@ pub(crate) fn brick(args: &[String]) -> Result<(), String> {
         ["agents", ..] => agents::agents(rest(1)),
         ["monitor", "run", ..] => agents::monitor_run(rest(2)),
         ["monitor", "status", ..] => agents::monitor_status(rest(2)),
+        ["inbox", ..] => inbox::inbox(rest(1)),
         _ => Err(USAGE.into()),
     }
 }

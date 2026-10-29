@@ -1,7 +1,8 @@
 "use strict";
 // The DataSea dashboard: the pages that operate and govern. Operate (alerting, credits), Govern (audit
 // trail, governance with zones, flows, and call graphs, compliance with posture, frameworks, and
-// evidence), and Organization (repositories, settings with data retention); then the page starts.
+// evidence), Bricks (with change requests a person applies on a machine), resident agents, and
+// Organization (repositories, settings with data retention); then the page starts.
 
 window.FOXX_PAGES = window.FOXX_PAGES || {};
 
@@ -528,23 +529,269 @@ function brickBuilder(types) {
   return node;
 }
 
+// ---------------------------------------------------------------- Brick changes from the dashboard
+
+Object.assign(TONES, { STAGED: "info", APPLIED: "ok", FAILED: "bad", DISMISSED: "warn", REFUSED: "bad", CANCELLED: "warn", draft: "info", active: "ok", deprecated: "warn", revoked: "bad", detached: "warn" });
+
+/** The operations that sign (they need a repository admin); the rest write drafts (writers) */
+const BRICK_SIGNED = new Set(["activate", "deprecate", "revoke", "attach", "detach", "upgrade", "context-set", "assign", "unassign", "stack-activate", "stack-revoke"]);
+
+/** A labelled control for the request forms */
+function brickField(label, control, note) {
+  return h("label", {}, label, control, note ? h("span", { class: "muted", style: "font-weight:400" }, note) : null);
+}
+
+/** A context editor: the text the machine reported, or a note when it was withheld or cut (the
+ * text is then only replaced when something is typed) */
+function contextEditor(shared, placeholder) {
+  shared = shared || { text: "", withheld: false, truncated: false };
+  const unavailable = shared.withheld || shared.truncated;
+  const area = h("textarea", { rows: 8, maxlength: String(64 * 1024), style: "width:100%;font-family:var(--mono)", placeholder: unavailable ? (shared.withheld ? "Not shown: the text looks like it holds a secret. Type a new text to replace it, or leave this empty to keep it." : "Not shown: the text is longer than the dashboard edits. Type a new text to replace it, or leave this empty to keep it.") : (placeholder || "Guidance agents receive (never secrets)") }, unavailable ? "" : shared.text || "");
+  return { node: area, original: unavailable ? null : shared.text || "", unavailable, value: () => area.value };
+}
+
+/** Ask for a Brick change. The service keeps the request; GitHub confirms at sign-in that you may
+ * make it (write access for drafts, admin for signed changes); a person applies it on a machine,
+ * with one click in Landscape or 'crane brick inbox apply', where Crane checks it again and signs
+ * it with that machine's admin key. The dashboard itself never signs or changes Bricks. */
+function brickRequest(op, title, options) {
+  options = options || {};
+  const signed = BRICK_SIGNED.has(op);
+  const reason = h("input", { type: "text", maxlength: "300", placeholder: "Why (recorded with the change)", "aria-label": "Reason", required: true });
+  const error = h("div", { class: "error-text", role: "alert" });
+  const submit = h("button", { class: "btn primary", type: "submit" }, "Continue with GitHub");
+  details.open(title, h("form", { class: "form", onsubmit: async (event) => {
+    event.preventDefault();
+    error.textContent = "";
+    let params;
+    try { params = options.params ? options.params() : {}; } catch (problem) { error.textContent = problem.message; return; }
+    if (!reason.value.trim()) { error.textContent = "Say why; it is recorded with the change."; reason.focus(); return; }
+    submit.disabled = true;
+    try {
+      const staged = await apiWrite("/api/bricks", { action: "stage", op, params, reason: reason.value.trim() });
+      location.href = staged.continue;
+    } catch (problem) { submit.disabled = false; error.textContent = problem.message; }
+  } },
+    options.facts ? h("div", { class: "kv" }, options.facts.map(([key, value]) => [h("div", {}, key), h("div", {}, h("code", {}, String(value)))])) : null,
+    options.effect ? h("p", {}, options.effect) : null,
+    ...(options.fields || []), brickField("Reason", reason), error,
+    h("p", { class: "muted" }, signed
+      ? "You will sign in with GitHub; only an admin or owner of the repository may request a signed change. Nothing changes yet: a person applies it on a machine with an admin key (one click in Landscape, or 'crane brick inbox apply'), where Crane checks it again and signs it."
+      : "You will sign in with GitHub; anyone with write access to the repository may request a draft. A person applies it on a machine (one click in Landscape, or 'crane brick inbox apply'). A draft grants nothing until an admin activates it."),
+    submit), { kind: "Bricks · request", wide: options.wide });
+  (options.focus || reason).focus();
+}
+
+/** The draft form: create (row null) or edit; only fields that changed are sent on an edit */
+function brickDraftForm(data, row) {
+  const editing = Boolean(row);
+  const types = data.types || [];
+  const definition = (row && row.definition) || {};
+  const current = types.some((item) => item.type === (row || {}).type);
+  const state = { type: row ? row.type : ((types[0] || {}).type || "knowledge") };
+  const input = (value, attrs) => h("input", Object.assign({ type: "text", value: value || "" }, attrs || {}));
+  const name = input(row && row.name, { maxlength: "120" });
+  const id = editing ? null : input("", { placeholder: "made from the name when empty", maxlength: "64" });
+  const intent = input(row && row.intent, { maxlength: "300" });
+  const description = h("textarea", { rows: 2, style: "width:100%" }, definition.description || "");
+  const owner = input(row && row.owner, { maxlength: "120" });
+  const departments = input(((row && row.departments) || []).join(", "));
+  const configText = definition.config_withheld ? "" : JSON.stringify(row ? definition.config || {} : (BRICK_TEMPLATES[state.type] || {}), null, 2);
+  const config = h("textarea", { rows: 10, style: "width:100%;font-family:var(--mono)", placeholder: definition.config_withheld ? "Not shown: the configuration looks like it holds a secret. Type a new one to replace it, or leave this empty to keep it." : "" }, configText);
+  const context = contextEditor(editing ? definition.common_context : { text: "" });
+  // A machine with an older Crane reports no configuration or context text: those stay as they are
+  const reported = !editing || Boolean(row.definition);
+  if (!reported) { config.disabled = true; context.node.disabled = true; config.value = ""; config.placeholder = "The reporting machine's Crane does not send configurations; update Crane there to edit it here."; context.node.placeholder = "The reporting machine's Crane does not send context text; update Crane there to edit it here."; }
+  const sensitivity = select("Sensitivity", (row && row.sensitivity) || "internal", [["internal", "internal"], ["restricted", "restricted"]], () => {});
+  const help = h("div", { class: "muted" });
+  const describe = () => { const info = types.find((item) => item.type === state.type) || {}; put(help, h("b", {}, info.label || state.type), " — ", info.purpose || "", info.unique ? h("div", {}, "Only this kind: ", info.unique) : null); };
+  const kind = editing ? h("div", {}, h("code", {}, row.type), current ? null : h("div", { class: "muted" }, "A former kind: its next version is written in the kind that replaced it (a kind that split in two needs 'Migrate former kinds' first)."))
+    : select("Kind", state.type, types.map((item) => [item.type, item.label + " (" + item.support + ")"]), (value) => { state.type = value; config.value = JSON.stringify(BRICK_TEMPLATES[value] || {}, null, 2); describe(); });
+  describe();
+  const list = (text) => text.split(",").map((item) => item.trim()).filter(Boolean);
+  const params = () => {
+    const draft = {};
+    const changed = (key, value, before) => { if (!editing || value !== before) draft[key] = value; };
+    if (!editing) { draft.type = state.type; if (id.value.trim()) draft.brick_id = id.value.trim(); }
+    if (!name.value.trim()) throw new Error("Give the Brick a name.");
+    changed("name", name.value.trim(), row && row.name);
+    changed("intent", intent.value.trim(), row && (row.intent || ""));
+    changed("description", description.value.trim(), definition.description || "");
+    changed("owner", owner.value.trim() || null, row && (row.owner || null));
+    const departmentList = list(departments.value);
+    if (!editing || departmentList.join(",") !== ((row.departments || []).join(","))) draft.departments = departmentList;
+    if (!reported) { /* configuration and context are kept */ } else if (config.value.trim()) {
+      let parsed;
+      try { parsed = JSON.parse(config.value); } catch (problem) { throw new Error("The configuration is not JSON: " + problem.message); }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("The configuration is a JSON object.");
+      if (!editing || JSON.stringify(parsed) !== JSON.stringify(definition.config || {})) draft.config = parsed;
+    } else if (!editing || !definition.config_withheld) draft.config = {};
+    const text = context.value();
+    if (reported && (!editing || (context.unavailable ? text.trim() !== "" : text !== context.original) || sensitivity.value !== (row.sensitivity || "internal"))) {
+      if (!(context.unavailable && !text.trim())) draft.common_context = { text, sensitivity: sensitivity.value };
+    }
+    if (editing && !Object.keys(draft).length) throw new Error("Nothing changed.");
+    return editing ? { brick_id: row.brick_id, draft } : { draft };
+  };
+  brickRequest(editing ? "edit" : "create", editing ? "Edit " + row.brick_id : "New Brick draft", {
+    wide: true, focus: name,
+    effect: editing ? (row.state === "draft" ? "Changes the draft. It is validated again on the machine; an admin activates it." : "Starts the next version as a draft; " + row.ref + " stays as it is until an admin activates the new one.") : "Writes a draft on the machine. Crane validates it there; an admin activates it.",
+    fields: [brickField("Kind", kind), help, brickField("Name", name), id ? brickField("Id", id) : null, brickField("What it solves (intent, in plain words)", intent), brickField("Description", description), brickField("Owner", owner), brickField("Departments", departments, "comma separated"),
+      brickField("Configuration (JSON, checked against the kind's schema by Crane)", config), brickField("Common context", context.node, "every agent in an attached Flow or Zone receives it; guidance, never authorization; no secrets"), brickField("Sensitivity", sensitivity)].filter(Boolean),
+    params,
+  });
+}
+
+/** Choose targets: a select of the reported Zones and Flows */
+function targetSelect(data, label) {
+  const targets = (data.targets || []).map((item) => [item.target, item.target + (item.status && item.status !== "active" ? " (" + item.status + ")" : "")]);
+  return select(label || "Target", targets.length ? targets[0][0] : "", targets.length ? targets : [["", "no Zone or Flow reported"]], () => {});
+}
+
+/** Attach a Brick version or a Stack to a Zone or Flow, with its Current Context */
+function brickAttach(data, subject) {
+  const target = targetSelect(data);
+  const context = contextEditor({ text: "" }, "Current Context for this attachment only (optional; never secrets)");
+  brickRequest("attach", "Attach " + subject, { facts: [["Brick or Stack", subject]], effect: "Its controls and context apply to every agent working in the target (controls only tighten).",
+    fields: [brickField("Target", target), brickField("Current Context", context.node)],
+    params: () => { if (!target.value) throw new Error("Choose a Zone or Flow."); return { subject, target: target.value, context: context.value() }; } });
+}
+
+/** The actions of a library row */
+function brickActions(data, row) {
+  const button = (label, onclick, tone) => h("button", { type: "button", class: "btn" + (tone ? " " + tone : ""), onclick: (event) => { event.stopPropagation(); onclick(); } }, label);
+  const withReason = (op, title, params, effect) => () => brickRequest(op, title, { facts: [["Brick", row.ref]], effect, params: () => params });
+  const actions = [];
+  if (row.state === "draft") {
+    actions.push(button("Edit", () => brickDraftForm(data, row)));
+    actions.push(button("Activate", withReason("activate", "Activate " + row.brick_id, { brick_id: row.brick_id }, "Signs the draft as version " + row.version + ". The author cannot activate their own Brick while another admin can review it."), "primary"));
+  } else if (row.state === "active") {
+    actions.push(button("Edit", () => brickDraftForm(data, row)));
+    actions.push(button("Attach", () => brickAttach(data, row.ref), "primary"));
+    actions.push(button("Deprecate", withReason("deprecate", "Deprecate " + row.ref, { ref: row.ref }, "Existing attachments keep working; new attachments are refused.")));
+    actions.push(button("Revoke", withReason("revoke", "Revoke " + row.ref, { ref: row.ref }, "Withdraws the version: attachments to it fail closed (changes in the target need approval) until an admin detaches or upgrades them."), "danger"));
+  } else if (row.state === "deprecated") {
+    actions.push(button("Edit", () => brickDraftForm(data, row)));
+    actions.push(button("Revoke", withReason("revoke", "Revoke " + row.ref, { ref: row.ref }, "Withdraws the version: attachments to it fail closed until an admin detaches or upgrades them."), "danger"));
+  }
+  return h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" }, actions);
+}
+
+/** One Brick in the details sidebar: what it is, its configuration and context, and its actions */
+function openBrick(data, row) {
+  const definition = row.definition || {};
+  const shared = definition.common_context || {};
+  const info = (data.types || []).find((item) => item.type === row.type) || {};
+  details.open(row.name, h("div", {},
+    h("div", { class: "kv" }, [["Brick", row.ref], ["Kind", (info.label || row.type) + (info.support ? " · " + info.support : "")], ["State", row.state], ["Validation", row.validation], ["Owner", row.owner || "—"], ["Departments", (row.departments || []).join(", ") || "—"], ["Digest", String(row.digest || "").slice(0, 16)], ["By", row.activated_by || row.updated_by || "—"]].map(([key, value]) => [h("div", {}, key), h("div", {}, h("code", {}, String(value)))])),
+    h("p", {}, row.intent || h("span", { class: "muted" }, "No intent written.")),
+    definition.description ? h("p", { class: "muted" }, definition.description) : null,
+    info.purpose ? h("p", {}, h("b", {}, "What this kind does: "), info.purpose) : null,
+    h("h4", {}, "Configuration"), definition.config_withheld ? h("div", { class: "notice" }, "Not shown: it looks like it holds a secret.") : h("pre", { class: "mono", style: "white-space:pre-wrap;max-height:260px;overflow:auto" }, JSON.stringify(definition.config || {}, null, 2)),
+    h("h4", {}, "Common context"), shared.withheld ? h("div", { class: "notice" }, "Not shown: it looks like it holds a secret.") : shared.text ? h("pre", { class: "mono", style: "white-space:pre-wrap;max-height:260px;overflow:auto" }, shared.text + (shared.truncated ? "\n…(cut)" : "")) : h("div", { class: "muted" }, "None."),
+    (definition.dependencies || []).length ? h("div", {}, h("h4", {}, "Depends on"), h("code", {}, definition.dependencies.join(", "))) : null,
+    h("h4", {}, "Change it"), brickActions(data, row)), { kind: "Brick", wide: true });
+}
+
+/** The actions of an attachment row */
+function attachmentActions(data, row) {
+  const button = (label, onclick, tone) => h("button", { type: "button", class: "btn" + (tone ? " " + tone : ""), onclick: (event) => { event.stopPropagation(); onclick(); } }, label);
+  if (row.state && row.state !== "active") return h("span", { class: "muted" }, "—");
+  const facts = [["Attachment", row.attachment_id], ["Target", row.target], ["Brick or Stack", row.subject]];
+  return h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" },
+    button("Context", () => {
+      const context = contextEditor(row.current_context, "Current Context for this attachment only (never secrets)");
+      brickRequest("context-set", "Current Context of " + row.target, { facts, wide: true, effect: "Replaces the Current Context of this attachment only; nothing else changes.", fields: [brickField("Current Context", context.node)], focus: context.node,
+        params: () => { const text = context.value(); if (context.unavailable && !text.trim()) throw new Error("Type the new text (the current one is not shown here)."); if (!context.unavailable && text === context.original) throw new Error("Nothing changed."); return { attachment: row.attachment_id, text }; } });
+    }),
+    button("Upgrade", () => {
+      const base = String(row.subject).replace(/^stack:/, "").split("@")[0];
+      const stack = String(row.subject).startsWith("stack:");
+      const choices = stack ? data.stacks.filter((item) => item.state === "active" && item.stack_id === base && item.ref !== row.subject).map((item) => [item.ref, item.ref])
+        : data.bricks.filter((item) => item.state === "active" && item.brick_id === base && item.ref !== row.subject).map((item) => [item.ref, item.ref + " · " + item.name]);
+      const to = select("New version", choices.length ? choices[0][0] : "", choices.length ? choices : [["", "no other active version"]], () => {});
+      brickRequest("upgrade", "Upgrade " + row.attachment_id, { facts, effect: "Moves the attachment to another exact version; its Current Context stays.", fields: [brickField("Move to", to)],
+        params: () => { if (!to.value) throw new Error("There is no other active version to move to."); return { attachment: row.attachment_id, to: to.value }; } });
+    }, "primary"),
+    button("Detach", () => brickRequest("detach", "Detach " + row.attachment_id, { facts, effect: "The Brick no longer applies to the target; its Current Context goes with it.", params: () => ({ attachment: row.attachment_id }) }), "danger"));
+}
+
+/** Assign an agent to Zones and Flows */
+function brickAssign(data) {
+  const agent = h("input", { type: "text", placeholder: "claude", maxlength: "64" });
+  const boxes = (data.targets || []).map((item) => ({ target: item.target, box: h("input", { type: "checkbox" }) }));
+  const paused = h("input", { type: "checkbox" });
+  brickRequest("assign", "Assign an agent", { focus: agent, effect: "The agent is expected to work in these targets, under their Bricks.",
+    fields: [brickField("Agent", agent, "the agent identity, as Crane names it (claude, codex, …)"),
+      h("div", {}, h("div", { class: "muted" }, "Targets"), boxes.length ? boxes.map((item) => h("label", { style: "display:flex;flex-direction:row;gap:6px;font-weight:400" }, item.box, h("code", {}, item.target))) : h("div", { class: "muted" }, "No Zone or Flow reported.")),
+      h("label", { style: "display:flex;flex-direction:row;gap:6px;font-weight:400" }, paused, "Start paused")],
+    params: () => { const targets = boxes.filter((item) => item.box.checked).map((item) => item.target); if (!agent.value.trim()) throw new Error("Name the agent."); if (!targets.length) throw new Error("Choose at least one target."); return { agent: agent.value.trim(), targets, paused: paused.checked }; } });
+}
+
+/** Draft a Stack of exact active versions */
+function stackCreate(data) {
+  const name = h("input", { type: "text", maxlength: "120" });
+  const id = h("input", { type: "text", maxlength: "64", placeholder: "made from the name when empty" });
+  const purpose = h("input", { type: "text", maxlength: "300" });
+  const boxes = data.bricks.filter((item) => item.state === "active").map((item) => ({ ref: item.ref, box: h("input", { type: "checkbox" }), label: item.name }));
+  brickRequest("stack-create", "New Stack draft", { focus: name, effect: "A Stack combines exact Brick versions; combining only tightens. An admin activates it.",
+    fields: [brickField("Name", name), brickField("Id", id), brickField("Purpose", purpose),
+      h("div", {}, h("div", { class: "muted" }, "Members (two or more active versions)"), boxes.length ? boxes.map((item) => h("label", { style: "display:flex;flex-direction:row;gap:6px;font-weight:400" }, item.box, h("code", {}, item.ref), " ", item.label)) : h("div", { class: "muted" }, "No active version yet."))],
+    params: () => { const members = boxes.filter((item) => item.box.checked).map((item) => item.ref); if (!name.value.trim()) throw new Error("Give the Stack a name."); if (members.length < 2) throw new Error("Choose two or more versions."); return { name: name.value.trim(), id: id.value.trim(), purpose: purpose.value.trim(), members }; } });
+}
+
+/** What a request is about, in a few words */
+function requestSubject(row) {
+  const params = row.params || {};
+  return params.brick_id || params.ref || (params.subject ? params.subject + " → " + params.target : "") || params.attachment || params.agent || params.stack_id || params.name || (params.draft && params.draft.name) || "";
+}
+
+/** A request's state, with lapsed waiting requests shown as expired */
+function requestStatus(row) {
+  return row.status === "PENDING" && row.expires_at && row.expires_at < Date.now() ? "EXPIRED" : row.status;
+}
+
 async function bricksView(main) {
   if (needRepository(main)) return;
   let data;
   try { data = await api("/api/bricks"); } catch (error) { if (error.status === 404) { main.append(h("div", { class: "notice" }, error.message)); return; } throw error; }
+  data.requests = data.requests || []; data.targets = data.targets || [];
   const report = { kind: "report", what: "The Bricks state", reported: data.reported_at };
   const active = data.bricks.filter((row) => row.state === "active").length;
   const drafts = data.bricks.filter((row) => row.state === "draft").length;
   const attention = data.monitors.filter((row) => !["OK", "NOT_RUN"].includes(row.result)).length;
   const pinIssues = data.attachments.filter((row) => (row.issues || []).length).length;
-  main.append(hero("Bricks", ["Reusable modules of a fixed type, attached to Flows and Zones. As reported by", data.reported_by ? data.reported_by.actor : "a member", "at", dt(data.reported_at), "· store", data.trust].join(" "),
-    [["Active versions", active], ["Drafts", drafts], ["Stacks", data.stacks.length], ["Attachments", data.attachments.length], ["Assigned agents", data.assignments.length], ["Monitors needing attention", attention]]));
+  const waiting = data.requests.filter((row) => requestStatus(row) === "PENDING").length;
+  const former = data.bricks.filter((row) => !(data.types || []).some((item) => item.type === row.type) && row.state !== "revoked").length;
+  const button = (label, onclick, tone) => h("button", { type: "button", class: "btn" + (tone ? " " + tone : ""), onclick }, label);
+  main.append(hero("Bricks", ["Reusable modules of a fixed kind, attached to Flows and Zones. As reported by", data.reported_by ? data.reported_by.actor : "a member", "at", dt(data.reported_at), "· store", data.trust].join(" "),
+    [["Active versions", active], ["Drafts", drafts], ["Stacks", data.stacks.length], ["Attachments", data.attachments.length], ["Assigned agents", data.assignments.length], ["Waiting requests", waiting]]));
+  main.append(h("div", { class: "notice", style: "display:flex;gap:8px;flex-wrap:wrap;align-items:center" },
+    h("span", { style: "flex:1;min-width:240px" }, "Change Bricks from here: each change is a request that a person applies on a machine (one click in Landscape, or 'crane brick inbox apply'), where Crane checks it and signs it. Drafts need write access; signed changes need a repository admin."),
+    button("New Brick", () => brickDraftForm(data, null), "primary"), button("Assign an agent", () => brickAssign(data)), button("New Stack", () => stackCreate(data)),
+    former ? button("Migrate former kinds (" + former + ")", () => brickRequest("migrate", "Migrate former kinds", { effect: "Drafts the current kinds for every Brick of a former kind (one that split becomes two drafts). An admin activates the drafts and moves the attachments." })) : null));
   main.append(zone("brick-state", "State", "", h("div", { class: "kpis span-12" },
     kpi("Active versions", active, { tone: "brand" }), kpi("Drafts (grant nothing)", drafts),
     kpi("Revoked or deprecated", data.bricks.filter((row) => ["revoked", "deprecated"].includes(row.state)).length, { tone: data.bricks.some((row) => row.state === "revoked") ? "bad" : "" }),
     kpi("Pins Crane cannot honor", pinIssues, { tone: pinIssues ? "bad" : "good", note: "these fail closed" }),
     kpi("Snapshots delivered", data.context.deliveries), kpi("Unchanged, not resent", data.context.reused, { note: "provider caching not measured" }))));
-  main.append(zone("brick-library", "Library", "Drafts and activated versions. A published version never changes; editing starts the next version.",
+  main.append(zone("brick-requests", "Requests", "Changes asked for on this dashboard. Each waits until a person applies it on a machine; Crane's result comes back here. Requests lapse after 14 days.",
+    panel("Requests from the dashboard", { span: 12, flush: true }, async (body, big, ctx) => { ctx.record("rows", data.requests); put(body, dataTable([
+      { label: "Request", get: (row) => row.request_id, render: (row) => h("code", {}, row.request_id) },
+      { label: "Change", get: (row) => row.op, filter: true },
+      { label: "About", get: (row) => requestSubject(row), render: (row) => h("code", {}, requestSubject(row)) },
+      { label: "State", get: (row) => requestStatus(row), render: (row) => chip(requestStatus(row)), filter: true },
+      { label: "Needs", get: (row) => row.role, filter: true },
+      { label: "Asked by", get: (row) => row.requested_by, render: (row) => "@" + row.requested_by, filter: true },
+      { label: "Asked", get: (row) => row.requested_at, render: (row) => h("span", { class: "mono" }, dt(row.requested_at)) },
+      { label: "Reason", get: (row) => row.reason },
+      { label: "Result", get: (row) => row.detail || "", render: (row) => h("span", {}, row.detail || "—", row.command ? h("div", {}, h("code", { class: "muted" }, row.command)) : null) },
+      { label: "", get: () => "", render: (row) => (requestStatus(row) === "PENDING" && me && row.requested_by === me.login ? h("button", { type: "button", class: "btn", onclick: async (event) => {
+        event.stopPropagation(); event.target.disabled = true;
+        try { await apiWrite("/api/bricks", { action: "cancel", request_id: row.request_id }); row.status = "CANCELLED"; row.detail = "withdrawn by @" + me.login; render(); } catch (problem) { event.target.disabled = false; event.target.textContent = problem.message; }
+      } }, "Withdraw") : "") },
+    ], data.requests, { sort: 6, dir: -1, empty: "No request yet. Use the buttons above, or the actions in the tables below.", name: "foxx-brick-requests" })); })));
+  main.append(zone("brick-library", "Library", "Drafts and activated versions. A published version never changes; editing starts the next version. Click a row for its configuration and context.",
     panel("Bricks", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.bricks); put(body, dataTable([
       { label: "Brick", get: (row) => row.ref, render: (row) => h("code", {}, row.ref) },
       { label: "Name", get: (row) => row.name, render: (row) => h("b", {}, row.name) },
@@ -557,26 +804,37 @@ async function bricksView(main) {
       { label: "Context", get: (row) => row.common_context_bytes, render: (row) => (row.common_context_bytes ? row.common_context_bytes + " B" : "—"), num: true },
       { label: "Digest", get: (row) => row.digest, render: (row) => h("code", { class: "muted" }, String(row.digest || "").slice(0, 12)) },
       { label: "Activated by", get: (row) => row.activated_by || row.updated_by || "", render: (row) => (row.activated_by || row.updated_by || "—") + (row.self_reviewed ? " (self-reviewed)" : "") },
-    ], data.bricks, { sort: 0, dir: 1, empty: "No Bricks yet. Build a draft below, or run 'crane brick create' on a member's machine.", name: "foxx-bricks" })); }),
+      { label: "Change", get: () => "", render: (row) => brickActions(data, row) },
+    ], data.bricks, { sort: 0, dir: 1, onRow: (row) => openBrick(data, row), empty: "No Bricks yet. 'New Brick' above drafts one.", name: "foxx-bricks" })); }),
     panel("The fixed kinds and what each does today", { span: 12, flush: true }, async (body, big, ctx) => { ctx.record("rows", data.types); put(body, dataTable([
       { label: "Kind", get: (row) => row.label }, { label: "Support", get: (row) => row.support, render: (row) => chip(row.support), filter: true },
       { label: "Purpose", get: (row) => row.purpose }, { label: "Only this kind", get: (row) => row.unique || "" }, { label: "What really happens", get: (row) => row.runtime }, { label: "Fields", get: (row) => (row.fields || []).join(", ") },
     ], data.types, { noColumns: true, pageSize: 16 })); })));
-  main.append(zone("brick-attachments", "Attachments and Stacks", "Where each Brick applies. Current Context belongs to one attachment and changes nothing else; only its digest and size leave the machine.",
+  main.append(zone("brick-attachments", "Attachments and Stacks", "Where each Brick applies. Current Context belongs to one attachment and changes nothing else.",
     panel("Attachments", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.attachments); put(body, dataTable([
       { label: "Attachment", get: (row) => row.attachment_id, render: (row) => h("code", {}, row.attachment_id) },
       { label: "Target", get: (row) => row.target, filter: true },
       { label: "Brick or Stack", get: (row) => row.subject, render: (row) => h("code", {}, row.subject) },
       { label: "State", get: (row) => row.state, render: (row) => chip(row.state), filter: true },
-      { label: "Current context", get: (row) => row.current_context_bytes, render: (row) => (row.current_context_bytes ? row.current_context_bytes + " B · " + String(row.current_context_digest).slice(0, 10) : "—") },
+      { label: "Current context", get: (row) => (row.current_context && row.current_context.text) || "", render: (row) => {
+        const shared = row.current_context || {};
+        if (!row.current_context_bytes) return "—";
+        if (shared.withheld) return h("span", { class: "muted" }, row.current_context_bytes + " B · not shown (looks like a secret)");
+        return h("span", { title: shared.text || "" }, String(shared.text || "").slice(0, 80) + (String(shared.text || "").length > 80 || shared.truncated ? "…" : ""));
+      } },
       { label: "Restricts target", get: (row) => (row.target_restricted ? "yes" : "no"), filter: true },
       { label: "Issues", get: (row) => (row.issues || []).join("; "), render: (row) => ((row.issues || []).length ? h("span", {}, chip("FAIL"), " ", row.issues.join("; ")) : "—") },
       { label: "Attached by", get: (row) => row.attached_by, filter: true },
-    ], data.attachments, { empty: "Nothing attached yet ('crane brick attach ID@N --target flow:ID').", name: "foxx-brick-attachments" })); }),
+      { label: "Change", get: () => "", render: (row) => attachmentActions(data, row) },
+    ], data.attachments, { empty: "Nothing attached yet: open an active Brick and choose Attach.", name: "foxx-brick-attachments" })); }),
     panel("Stacks", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.stacks); put(body, dataTable([
       { label: "Stack", get: (row) => row.ref, render: (row) => h("code", {}, row.ref) }, { label: "Name", get: (row) => row.name }, { label: "Purpose", get: (row) => row.purpose },
       { label: "State", get: (row) => row.state, render: (row) => chip(row.state), filter: true }, { label: "Members", get: (row) => row.members.join(", ") },
-    ], data.stacks, { noColumns: true, empty: "No Stacks. A Stack combines exact Brick versions; it is never a new type." })); })));
+      { label: "Change", get: () => "", render: (row) => h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" },
+        row.state === "draft" ? h("button", { type: "button", class: "btn primary", onclick: () => brickRequest("stack-activate", "Activate Stack " + row.stack_id, { facts: [["Stack", row.stack_id], ["Members", row.members.join(", ")]], effect: "Signs the Stack draft as a version; it can then be attached.", params: () => ({ stack_id: row.stack_id }) }) }, "Activate") : null,
+        row.state === "active" ? h("button", { type: "button", class: "btn primary", onclick: () => brickAttach(data, row.ref) }, "Attach") : null,
+        row.state === "active" ? h("button", { type: "button", class: "btn danger", onclick: () => brickRequest("stack-revoke", "Revoke " + row.ref, { facts: [["Stack", row.ref]], effect: "Withdraws the Stack version: attachments to it fail closed until an admin detaches or upgrades them.", params: () => ({ ref: row.stack_id + "@" + row.version }) }) }, "Revoke") : null) },
+    ], data.stacks, { noColumns: true, empty: "No Stacks. 'New Stack' above combines exact Brick versions; it is never a new type." })); })));
   main.append(zone("brick-agents", "Agents and monitors", "Assignment status (signed) and runtime status (derived on the reporting machine) are separate. Idle agents use no inference: monitors are deterministic.",
     panel("Assigned agents", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.assignments); put(body, dataTable([
       { label: "Agent", get: (row) => row.agent, render: (row) => h("b", {}, row.agent) },
@@ -586,14 +844,15 @@ async function bricksView(main) {
       { label: "Last seen", get: (row) => row.last_seen_at, render: (row) => h("span", { class: "mono" }, row.last_seen_at ? dt(row.last_seen_at) : "—") },
       { label: "Problems", get: (row) => (row.problems || []).join("; ") },
       { label: "Inference", get: (row) => (row.inference ? row.inference.status : ""), render: () => h("span", { class: "muted" }, "not measured") },
-    ], data.assignments, { empty: "No agent is assigned ('crane brick assign claude --targets flow:ID').", name: "foxx-brick-agents" })); }),
+      { label: "Change", get: () => "", render: (row) => (row.assignment_status === "revoked" ? "—" : h("button", { type: "button", class: "btn danger", onclick: () => brickRequest("unassign", "Unassign " + row.agent, { facts: [["Agent", row.agent], ["Targets", (row.targets || []).join(", ")]], effect: "Withdraws the assignment; the agent is no longer expected in these targets.", params: () => ({ agent: row.agent }) }) }, "Unassign")) },
+    ], data.assignments, { empty: "No agent is assigned: 'Assign an agent' above.", name: "foxx-brick-agents" })); }),
     panel("Monitors", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.monitors); put(body, dataTable([
       { label: "Target", get: (row) => row.target, filter: true }, { label: "Brick", get: (row) => row.brick, render: (row) => h("code", {}, row.brick) },
       { label: "Kind", get: (row) => row.monitor, filter: true }, { label: "Source", get: (row) => row.source, filter: true },
       { label: "Result", get: (row) => row.result, render: (row) => chip(row.result), filter: true }, { label: "Detail", get: (row) => row.detail || "" },
       { label: "Every", get: (row) => row.every_minutes, render: (row) => row.every_minutes + " min", num: true },
       { label: "Last run", get: (row) => row.last_run, render: (row) => h("span", { class: "mono" }, row.last_run ? dt(row.last_run) : "—") },
-    ], data.monitors, { empty: "No monitoring, revocation, or intelligence Brick is attached.", name: "foxx-brick-monitors" })); })));
+    ], data.monitors, { empty: "No Watch Brick is attached.", name: "foxx-brick-monitors" })); })));
   main.append(zone("brick-context", "Context snapshots", "What agents received: each snapshot's targets, digest, size, and why it was last refreshed. Unchanged snapshots are referenced, not resent.",
     panel("Snapshots", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { const rows = data.context.snapshots || []; ctx.record("rows", rows); put(body, dataTable([
       { label: "Targets", get: (row) => (row.targets || []).join(", ") },
@@ -608,9 +867,9 @@ async function bricksView(main) {
       { label: "#", get: (row) => row.seq, num: true }, { label: "Action", get: (row) => row.action, filter: true }, { label: "Actor", get: (row) => row.actor, filter: true },
       { label: "Detail", get: (row) => JSON.stringify(row.detail), render: (row) => h("code", {}, JSON.stringify(row.detail)) },
     ], data.history, { sort: 0, dir: -1, noColumns: true, empty: "No signed Brick change yet." })); }),
-    seriesPanel("Brick events over time", { span: 8, by: "event", clauses: [{ path: "flow", op: "is", values: ["F37"] }], info: { title: "Brick events", text: "F37: drafts, validation, activation, attachment, context delivery (MISS sent, HIT referenced), assignments, and monitor runs." } }),
+    seriesPanel("Brick events over time", { span: 8, by: "event", clauses: [{ path: "flow", op: "is", values: ["F37"] }], info: { title: "Brick events", text: "F37: drafts, validation, activation, attachment, context delivery (MISS sent, HIT referenced), assignments, monitor runs, and requests made on this dashboard." } }),
     breakdownPanel("By event", { span: 4, by: "event", clauses: [{ path: "flow", op: "is", values: ["F37"] }] })));
-  main.append(zone("brick-build", "Build a draft", "", panel("Draft builder", { span: 12 }, async (body) => put(body, brickBuilder(data.types || [])))));
+  main.append(zone("brick-build", "Build a draft offline", "", panel("Draft builder", { span: 12 }, async (body) => put(body, brickBuilder(data.types || [])))));
 }
 
 // ---------------------------------------------------------------- resident agents

@@ -180,6 +180,7 @@ pub(crate) fn verified_repositories(read: &ReadOnly) -> Result<Vec<(String, Stri
     - owner: Value - the owner key most recently confirmed by a GitHub admin (null when none)
     - specs: Vec<Value> - the repository's event stream (DASHBOARD.md), oldest first
     - grants: Vec<Value> - credit grants approved on the dashboard, newest first
+    - brick_requests: Vec<Value> - Brick change requests made on the dashboard, newest first
     - dashboard_agents: Vec<Value> - configured monitor-only dashboard agents
     - dashboard_incidents: Vec<Value> - detected and manually recorded 3A incidents
     - dashboard_agent_activity: Vec<Value> - recent configuration, evaluation, and incident actions
@@ -202,6 +203,7 @@ pub(crate) struct Context {
     pub(crate) owner: Value,
     pub(crate) specs: Vec<Value>,
     pub(crate) grants: Vec<Value>,
+    pub(crate) brick_requests: Vec<Value>,
     pub(crate) dashboard_agents: Vec<Value>,
     pub(crate) dashboard_incidents: Vec<Value>,
     pub(crate) dashboard_agent_activity: Vec<Value>,
@@ -470,6 +472,23 @@ pub(crate) fn load(
         .into_iter()
         .map(json)
         .collect::<Vec<_>>();
+    // Unconfirmed requests are left out: GitHub has not yet said who may make them
+    let brick_requests = read
+        .find(
+            "brick_requests",
+            doc! {"repository_id": repository, "status": {"$ne": "STAGED"}},
+            doc! {"requested_at": -1},
+            200,
+        )?
+        .into_iter()
+        .map(json)
+        .map(|mut row| {
+            if let Some(text) = row["params"].as_str() {
+                row["params"] = serde_json::from_str(text).unwrap_or(Value::Null);
+            }
+            row
+        })
+        .collect::<Vec<_>>();
     let statuses = read
         .find("repository_status", among, doc! {"collected_at": -1}, 500)?
         .into_iter()
@@ -504,6 +523,7 @@ pub(crate) fn load(
         owner,
         specs,
         grants,
+        brick_requests,
         dashboard_agents,
         dashboard_incidents,
         dashboard_agent_activity,

@@ -396,6 +396,29 @@ impl Client {
         self.call("GET", "owner", &[])
     }
 
+    /** Fetch the Brick change requests people made on the dashboard for this repository, still
+     * waiting for a machine (cli/brick/inbox.rs applies them when a person says so)
+     * Input
+        - None (uses self)
+     * Output
+        - Result<Value, String> {requests: [{request_id, op, params, reason, role, requested_by,
+          requested_at}]}
+    */
+    pub(crate) fn brick_requests(&self) -> Result<Value, String> {
+        self.call("GET", "brick-requests", &[])
+    }
+
+    /** Tell the service what happened to Brick change requests
+     * Input
+        - results: &[Value] - [{request_id, status: APPLIED|FAILED|DISMISSED, detail}]
+     * Output
+        - Result<Value, String> {settled}
+    */
+    pub(crate) fn settle_brick_requests(&self, results: &[Value]) -> Result<Value, String> {
+        let body = serde_json::to_vec(&json!({"results": results})).map_err(io_error)?;
+        self.call("POST", "brick-requests", &body)
+    }
+
     /** Fetch repository-scoped Dashboard Agent enforcement rules before a tool call. */
     pub(crate) fn dashboard_agent_policy(&self) -> Result<Value, String> {
         self.call("GET", "agent-policy", &[])

@@ -144,6 +144,8 @@ fieldset.timepick { margin-left: auto; padding: 0; min-width: 0; display: flex; 
 .btn { border: 1px solid var(--line-2); background: var(--panel); border-radius: 7px; padding: 5px 10px; cursor: pointer; }
 .btn:hover { border-color: var(--accent-2); background: var(--hover); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line-2)); }
+.btn:disabled { opacity: .6; cursor: default; }
 .btn.link { border: 0; background: none; color: var(--accent); padding: 5px 4px; }
 .btn.small { padding: 2px 8px; font-size: 12px; }
 .btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }

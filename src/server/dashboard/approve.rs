@@ -1052,6 +1052,166 @@ impl Approvals {
     }
 }
 
+/** How many Brick requests one person may have waiting per repository */
+const BRICK_OPEN_LIMIT: u64 = 50;
+
+/** How long a Brick request waits for GitHub to confirm the person's role */
+const BRICK_STAGE_MILLIS: u64 = 10 * 60 * 1000;
+
+/** How long a confirmed Brick request waits for a machine before it lapses */
+pub(crate) const BRICK_REQUEST_MILLIS: u64 = 14 * 24 * 60 * 60 * 1000;
+
+impl Approvals {
+    /** Keep a Brick change request until GitHub confirms the person's role at sign-in: checked
+     * with the rules the machine checks again (brick/requests.rs), and unconfirmed it is only a
+     * staged row that no machine ever reads, removed within the hour
+     * Input
+        - repository: &str - repository identity
+        - login: &str - the signed-in person
+        - op: &str - operation
+        - params: &Value - its parameters
+        - reason: &str - why
+     * Output
+        - Result<(String, &'static str), String> the request id and the role it needs
+    */
+    pub(crate) fn stage_brick_request(
+        &self,
+        repository: &str,
+        login: &str,
+        op: &str,
+        params: &Value,
+        reason: &str,
+    ) -> Result<(String, &'static str), String> {
+        let kept = crate::brick::requests::check(op, params, reason)?;
+        let open = self
+            .database
+            .collection::<Document>("brick_requests")
+            .count_documents(doc! {"repository_id": repository, "requested_by": login, "status": {"$in": ["STAGED", "PENDING"]}})
+            .run()
+            .map_err(io_error)?;
+        if open >= BRICK_OPEN_LIMIT {
+            return Err(format!("you have {open} Brick requests waiting for this repository; apply, dismiss, or withdraw some first"));
+        }
+        let role = crate::brick::requests::role(op)
+            .ok_or_else(|| format!("'{op}' cannot be requested"))?
+            .name();
+        let now = now_millis();
+        let request_id = format!("brq_{}{}", random_id()?, random_id()?);
+        self.database
+            .collection::<Document>("brick_requests")
+            .insert_one(doc! {
+                "request_id": &request_id,
+                "repository_id": repository,
+                "op": op,
+                "params": serde_json::to_string(&kept).map_err(|error| error.to_string())?,
+                "reason": crate::telemetry::redact::redact(reason.trim()).0,
+                "role": role,
+                "requested_by": login,
+                "requested_at": now as i64,
+                "status": "STAGED",
+                "purge_at": bson::DateTime::from_millis((now + 60 * 60 * 1000) as i64),
+            })
+            .run()
+            .map_err(io_error)?;
+        Ok((request_id, role))
+    }
+
+    /** Confirm a staged Brick request with GitHub's answer for the repository: writers (push,
+     * maintain, admin) may request drafts; signed changes need an admin. Confirmed, it waits for a
+     * person on a machine to apply it; refused, it is kept as refused so the page can say why
+     * Input
+        - request_id: &str - the staged request
+        - repository: &str - repository identity
+        - remote: &str - its verified remote (for the message)
+        - login: &str - who signed in (must be who staged it)
+        - access: Access - their access to the repository, from GitHub
+     * Output
+        - Result<String, String> the message for the person
+    */
+    pub(crate) fn confirm_brick_request(
+        &self,
+        request_id: &str,
+        repository: &str,
+        remote: &str,
+        login: &str,
+        access: Access,
+    ) -> Result<String, String> {
+        let now = now_millis();
+        let collection = self.database.collection::<Document>("brick_requests");
+        let staged = collection
+            .find_one(doc! {"request_id": request_id, "repository_id": repository, "requested_by": login, "status": "STAGED",
+                "requested_at": {"$gt": now.saturating_sub(BRICK_STAGE_MILLIS) as i64}})
+            .run()
+            .map_err(io_error)?
+            .ok_or("that request was not found or waited too long for sign-in; make it again")?;
+        let role = staged.get_str("role").unwrap_or("admin");
+        let allowed = if role == "writer" {
+            access.write
+        } else {
+            access.admin
+        };
+        let kept = now + super::BRICK_REQUEST_KEPT_MILLIS;
+        if !allowed {
+            let detail = if role == "writer" {
+                format!("GitHub does not show @{login} with write access to {remote}; drafts need push, maintain, or admin")
+            } else {
+                format!("GitHub does not show @{login} as an admin of {remote}; signed Brick changes need an admin or owner")
+            };
+            collection
+                .update_one(
+                    doc! {"request_id": request_id, "status": "STAGED"},
+                    doc! {"$set": {"status": "REFUSED", "detail": &detail, "settled_at": now as i64, "purge_at": bson::DateTime::from_millis(kept as i64)}},
+                )
+                .run()
+                .map_err(io_error)?;
+            return Err(detail);
+        }
+        collection
+            .update_one(
+                doc! {"request_id": request_id, "status": "STAGED"},
+                doc! {"$set": {"status": "PENDING", "confirmed_at": now as i64, "expires_at": (now + BRICK_REQUEST_MILLIS) as i64,
+                    "purge_at": bson::DateTime::from_millis((kept + BRICK_REQUEST_MILLIS) as i64)}},
+            )
+            .run()
+            .map_err(io_error)?;
+        Ok(format!(
+            "Request {request_id} is waiting for a machine: a person there applies it with one click in Landscape or 'crane brick inbox apply {request_id}', and Crane checks{} it there.",
+            if role == "writer" { "" } else { " and signs" }
+        ))
+    }
+
+    /** Withdraw a Brick request that is still staged or waiting (only its author may)
+     * Input
+        - repository: &str - repository identity
+        - request_id: &str - the request
+        - login: &str - the signed-in person
+     * Output
+        - Result<(), String>
+    */
+    pub(crate) fn cancel_brick_request(
+        &self,
+        repository: &str,
+        request_id: &str,
+        login: &str,
+    ) -> Result<(), String> {
+        let now = now_millis();
+        let changed = self
+            .database
+            .collection::<Document>("brick_requests")
+            .update_one(
+                doc! {"request_id": request_id, "repository_id": repository, "requested_by": login, "status": {"$in": ["STAGED", "PENDING"]}},
+                doc! {"$set": {"status": "CANCELLED", "settled_at": now as i64, "detail": format!("withdrawn by @{login}"),
+                    "purge_at": bson::DateTime::from_millis((now + super::BRICK_REQUEST_KEPT_MILLIS) as i64)}},
+            )
+            .run()
+            .map_err(io_error)?;
+        if changed.modified_count == 0 {
+            return Err("only a waiting request you made can be withdrawn".into());
+        }
+        Ok(())
+    }
+}
+
 /** How long a grant waits for its machine before it lapses */
 const GRANT_LIFETIME_MILLIS: u64 = 7 * 24 * 60 * 60 * 1000;
 

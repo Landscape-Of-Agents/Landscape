@@ -94,7 +94,7 @@ and lists what an admin then signs: activating each draft and moving the attachm
 
 ## How it fits together
 
-1. **Draft.** `crane brick create`, the Bricks panel in VS Code, or a dashboard draft file. A draft
+1. **Draft.** `crane brick create`, the Bricks panel in VS Code, or a request on DataSea. A draft
    grants nothing.
 2. **Validate and test.** `crane brick validate ID` checks the schema. `crane brick test ID --target
    flow:ID` simulates the Brick on a real Flow, lists the files the guard would restrict and the
@@ -150,6 +150,42 @@ are deterministic checks run by the background sync that hooks and commands alre
 Scheduler. There is no Crane daemon. Model tokens are not observed, so inference is shown as
 "not measured".
 
+## Changing Bricks from DataSea
+
+The Bricks page on DataSea can change everything the CLI can. It never holds a signing key, so it
+never changes Bricks itself. Each change is a **request** that a person applies on a machine.
+
+1. **Ask.** On the page, use New Brick, Assign an agent, or New Stack, or a row's actions: Edit,
+   Activate, Attach, Deprecate, Revoke; for attachments Context, Upgrade, and Detach; Unassign; and
+   Migrate former kinds. Give a reason. The page shows the configuration, Common Context, and Current
+   Context the last machine reported, so you edit the real text.
+2. **GitHub confirms your role.** You sign in with GitHub, and the service asks GitHub about the
+   repository. Drafts (create, edit, migrate, new Stack) need write access (push, maintain, or
+   admin). Signed changes (activate, deprecate, revoke, attach, detach, upgrade, context set, assign,
+   unassign, Stack activate and revoke) need a repository admin. If GitHub says no, the request is
+   refused, and the page says why.
+3. **A person applies it.** The request waits up to 14 days. On a machine that uploads for the
+   repository, use one click in Landscape ("changes requested on DataSea", then Review and apply), or
+   run `crane brick inbox` and `crane brick inbox apply ID...` (or `--all`). Crane checks each
+   request again and runs the same `crane brick` command a person would type. The reason records
+   who asked, for example `(requested by @ana on DataSea, brq_…)`. Every validation, the
+   separation-of-duties rule, and the signature apply as usual. A signed change needs that
+   machine's admin key. `crane brick inbox dismiss ID --reason TEXT` declines a request.
+4. **The result comes back.** The page's Requests zone shows each request as applied, failed (with
+   Crane's reason), dismissed, refused, withdrawn, or expired. The next status report shows the new
+   state. Whoever made a waiting request can withdraw it.
+
+What stays on the machine:
+
+- Requests are never applied by a sync or a hook, so an agent cannot apply one.
+- Text and configurations that look like they hold a secret are refused on DataSea and refused
+  again on the machine.
+- Reported text that looks like a secret is withheld: the page shows that it exists, not what it
+  says.
+- A text longer than 16 KB is cut and not edited on the page.
+- A draft made from DataSea is authored by the person who applies it. With two or more signers,
+  another admin activates it.
+
 ## Commands
 
 ```
@@ -162,6 +198,7 @@ crane brick attach ID@N|stack:ID@N --target flow:ID [--context TEXT] [--dry-run]
 crane brick detach ATTACHMENT | upgrade ATTACHMENT --to ID@N | context set ATTACHMENT --text TEXT
 crane brick context preview --targets flow:ID,zone:ID | context status
 crane brick assign AGENT --targets flow:ID | unassign AGENT | agents | monitor run | monitor status
+crane brick inbox | inbox apply ID...|--all | inbox dismiss ID...|--all --reason TEXT
 crane secret set NAME | list | remove NAME
 ```
 
@@ -173,10 +210,12 @@ of them.
 
 - **Landscape for VS Code**: the Bricks view and panel (graph with what each Zone and Flow
   receives, a guide per kind, the configuration pop-up of each Brick, create, attach, contexts,
-  migrate). Signing changes are previewed with `--dry-run` and need your confirmation. See
+  migrate, and the changes requested on DataSea). Signing changes are previewed with `--dry-run`
+  and need your confirmation. See
   [surfaces/vscode.md](../surfaces/vscode.md).
-- **Dashboard**: the Bricks page (Govern), with the library, kinds, attachments, Stacks, agents,
-  monitors, snapshots, signed history, F37 events, and a draft builder. See
+- **Dashboard**: the Bricks page (Govern), with the library (configuration and Common Context per
+  Brick), kinds, attachments with their Current Context, Stacks, agents, monitors, snapshots, signed
+  history, F37 events, the requests made there, and actions for every change (see above). See
   [surfaces/dashboard.md](../surfaces/dashboard.md).
 - **Events**: F37 in [DASHBOARD.md](../../DASHBOARD.md). A decision the guard made because of a
   Brick carries `brick:ID@N` next to its Zones and Flows, and its rule (`BRICK_IDENTITY`,
@@ -194,6 +233,7 @@ of them.
 | No sandbox; an Environment profile other than agent-hooks only makes targets stricter | blocked by the missing sandbox |
 | Credentials reach integrations by name (`for`), not per target; agents never receive them | by design |
 | Runbook attachments are recorded, not applied by the runbook runtime | to build |
-| The dashboard cannot sign or validate; its builder produces a draft file a member imports | partial |
+| The dashboard does not sign or validate: its changes are requests a person applies on a machine | by design |
+| Requests from the dashboard have no dry-run preview; Crane's checks run when they are applied | partial |
 | Monitors only run when a sync or command runs (no daemon); ci, metrics, external have no connector | partial |
 | Nested Stacks | not supported (one level, on purpose) |

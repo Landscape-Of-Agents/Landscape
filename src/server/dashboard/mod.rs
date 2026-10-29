@@ -61,6 +61,10 @@ const LOGO: &[u8] = include_bytes!("logo.png");
 /** The browser tab icon (64 px) */
 const FAVICON: &[u8] = include_bytes!("favicon.png");
 const MAX_DASHBOARD_AGENT_BODY: usize = 64 * 1024;
+/** The largest Brick request (a draft and a context text) */
+const MAX_BRICK_BODY: usize = 192 * 1024;
+/** How long a settled Brick request stays on the page */
+pub(crate) const BRICK_REQUEST_KEPT_MILLIS: u64 = 90 * 24 * 60 * 60 * 1000;
 
 /** When each repository last received an upload, so its cached views are dropped at once */
 static UPLOADS: std::sync::LazyLock<Mutex<HashMap<String, Instant>>> =
@@ -369,35 +373,40 @@ impl Dashboard {
     */
     pub(crate) fn handle(&self, request: &mut Request) -> Reply {
         let (path, query) = http::split(request.url());
-        if request.method().as_str().eq_ignore_ascii_case("POST") && path == "/api/dashboard-agents"
+        if request.method().as_str().eq_ignore_ascii_case("POST")
+            && (path == "/api/dashboard-agents" || path == "/api/bricks")
         {
+            let limit = if path == "/api/bricks" {
+                MAX_BRICK_BODY
+            } else {
+                MAX_DASHBOARD_AGENT_BODY
+            };
             let content_type = http::header(request, "Content-Type").unwrap_or_default();
             if !content_type
                 .to_ascii_lowercase()
                 .starts_with("application/json")
             {
-                return Reply::json(
-                    415,
-                    json!({"error": "Dashboard Agent changes require application/json"}),
-                );
+                return Reply::json(415, json!({"error": "changes require application/json"}));
             }
-            if request
-                .body_length()
-                .is_some_and(|length| length > MAX_DASHBOARD_AGENT_BODY)
-            {
+            if request.body_length().is_some_and(|length| length > limit) {
                 return Reply::json(413, json!({"error": "request body too large"}));
             }
             let mut body = Vec::new();
             if request
                 .as_reader()
-                .take(MAX_DASHBOARD_AGENT_BODY as u64 + 1)
+                .take(limit as u64 + 1)
                 .read_to_end(&mut body)
                 .is_err()
-                || body.len() > MAX_DASHBOARD_AGENT_BODY
+                || body.len() > limit
             {
                 return Reply::json(413, json!({"error": "request body could not be read"}));
             }
-            return match self.dashboard_agents(request, &query, &body) {
+            let answer = if path == "/api/bricks" {
+                self.brick_requests(request, &query, &body)
+            } else {
+                self.dashboard_agents(request, &query, &body)
+            };
+            return match answer {
                 Ok(value) => Reply::json(200, value),
                 Err((status, message)) => Reply::json(status, json!({"error": message})),
             };
@@ -415,6 +424,7 @@ impl Dashboard {
                 | "/auth/agent-action"
                 | "/auth/grant"
                 | "/auth/resident"
+                | "/auth/bricks"
         ) {
             if let Some(location) = Auth::elsewhere(request) {
                 return Reply::redirect(&location);
@@ -434,6 +444,7 @@ impl Dashboard {
             "/auth/agent-action" => self.start_agent_approval(request, &query),
             "/auth/grant" => self.start_grant(request, &query),
             "/auth/resident" => self.start_resident(request, &query),
+            "/auth/bricks" => self.start_bricks(request, &query),
             "/auth/callback" => self.callback(request, &query),
             "/auth/logout" => {
                 // F00.8
@@ -729,6 +740,7 @@ impl Dashboard {
             grant: None,
             dashboard_agent: None,
             resident: None,
+            brick: None,
         };
         let private = query.get("private").is_some_and(|value| value == "1");
         Reply::redirect(&auth.authorize_url(request, &state, private))
@@ -792,6 +804,7 @@ impl Dashboard {
             ),
             dashboard_agent: None,
             resident: None,
+            brick: None,
         };
         let private = query.get("private").is_some_and(|value| value == "1");
         Reply::redirect(&auth.authorize_url(request, &state, private))
@@ -856,6 +869,7 @@ impl Dashboard {
                 "record_id": record_id,
             })),
             resident: None,
+            brick: None,
         };
         Reply::redirect(&auth.authorize_url(request, &state, true))
             .with_header(
@@ -866,6 +880,211 @@ impl Dashboard {
                 "Set-Cookie",
                 &Auth::cookie(request, "foxx_intent", &auth.seal(&intent), 600),
             )
+    }
+
+    /** Answer a Brick request from the page: "stage" keeps it until GitHub confirms the person's
+     * role at sign-in (the page then goes to /auth/bricks), "cancel" withdraws one of theirs
+     * Input
+        - request: &Request - request (the session cookie names the person)
+        - query: &BTreeMap<String, String> - repository
+        - body: &[u8] - {action: stage, op, params, reason} or {action: cancel, request_id}
+     * Output
+        - Result<Value, (u16, String)>
+    */
+    fn brick_requests(
+        &self,
+        request: &Request,
+        query: &BTreeMap<String, String>,
+        body: &[u8],
+    ) -> Result<Value, (u16, String)> {
+        let auth = self
+            .auth
+            .as_ref()
+            .ok_or_else(|| (503, "dashboard sign-in is not configured".into()))?;
+        let viewer = auth
+            .viewer(request)
+            .ok_or_else(|| (401, "sign in with GitHub".into()))?;
+        let repository = query.get("repository").cloned().unwrap_or_default();
+        let repositories = data::verified_repositories(&self.read)
+            .map_err(|_| (503, "repository access could not be verified".into()))?;
+        if !repositories
+            .iter()
+            .any(|(id, remote)| *id == repository && viewer.allowed(remote))
+        {
+            return Err((
+                403,
+                "choose a repository visible to this GitHub account".into(),
+            ));
+        }
+        let input: Value = serde_json::from_slice(body)
+            .map_err(|error| (400, format!("invalid Brick request: {error}")))?;
+        let text = |key: &str| input[key].as_str().unwrap_or_default().to_string();
+        match text("action").as_str() {
+            "stage" => {
+                let (request_id, role) = self
+                    .approvals
+                    .stage_brick_request(
+                        &repository,
+                        &viewer.login,
+                        &text("op"),
+                        &input["params"],
+                        &text("reason"),
+                    )
+                    .map_err(|message| (400, message))?;
+                Ok(json!({
+                    "request_id": request_id,
+                    "role": role,
+                    "continue": format!("/auth/bricks?repository={}&request={request_id}", auth::encode(&repository)),
+                }))
+            }
+            "cancel" => {
+                let request_id = text("request_id");
+                self.approvals
+                    .cancel_brick_request(&repository, &request_id, &viewer.login)
+                    .map_err(|message| (404, message))?;
+                Ok(json!({"ok": true, "request_id": request_id, "status": "CANCELLED"}))
+            }
+            _ => Err((400, "action is stage or cancel".into())),
+        }
+    }
+
+    /** Confirm a staged Brick request: GitHub sign-in carrying its id in a signed cookie; GitHub
+     * decides at the callback whether the person may make it
+     * Input
+        - request: &Request - request
+        - query: &BTreeMap<String, String> - repository, request
+     * Output
+        - Reply
+    */
+    fn start_bricks(&self, request: &Request, query: &BTreeMap<String, String>) -> Reply {
+        let Some(auth) = &self.auth else {
+            return Reply::redirect("/");
+        };
+        let value = |key: &str| query.get(key).cloned().unwrap_or_default();
+        let request_id = value("request");
+        if !is_digest(&value("repository"))
+            || !request_id.starts_with("brq_")
+            || request_id.len() > 64
+            || !request_id
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        {
+            return Reply::json(
+                400,
+                json!({"error": "a Brick request needs its repository and request id"}),
+            );
+        }
+        let state = random_bytes(16)
+            .map(|bytes| hex(&bytes))
+            .unwrap_or_default();
+        let intent = Intent {
+            action: "bricks".into(),
+            code: String::new(),
+            state: state.clone(),
+            grant: None,
+            dashboard_agent: None,
+            resident: None,
+            brick: Some(json!({"repository": value("repository"), "request_id": request_id})),
+        };
+        Reply::redirect(&auth.authorize_url(request, &state, true))
+            .with_header(
+                "Set-Cookie",
+                &Auth::cookie(request, "foxx_oauth", &state, 600),
+            )
+            .with_header(
+                "Set-Cookie",
+                &Auth::cookie(request, "foxx_intent", &auth.seal(&intent), 600),
+            )
+    }
+
+    /** Carry out a Brick request confirmation: ask GitHub for the person's role in the
+     * repository, and keep the request for a machine or refuse it
+     * Input
+        - auth: &Auth - sign-in settings
+        - intent: &Intent - the request to confirm
+        - viewer: &Viewer - who signed in
+        - token: &str - their GitHub token (used for one question, then dropped)
+     * Output
+        - (bool, String) success and the message for the person
+    */
+    fn carry_out_bricks(
+        &self,
+        auth: &Auth,
+        intent: &Intent,
+        viewer: &Viewer,
+        token: &str,
+    ) -> (bool, String) {
+        let asked = intent.brick.clone().unwrap_or_default();
+        let repository = asked["repository"].as_str().unwrap_or_default().to_string();
+        let request_id = asked["request_id"].as_str().unwrap_or_default().to_string();
+        let remote = match data::verified_repositories(&self.read) {
+            Ok(list) => list
+                .into_iter()
+                .find(|(id, _)| *id == repository)
+                .map(|(_, remote)| remote),
+            Err(error) => return (false, error),
+        };
+        let Some(remote) = remote else {
+            return (false, "that repository is not known to the service".into());
+        };
+        let access = match auth.access(token, &remote) {
+            Ok(access) => access,
+            Err(error) => return (false, error),
+        };
+        let outcome = self.approvals.confirm_brick_request(
+            &request_id,
+            &repository,
+            &remote,
+            &viewer.login,
+            access,
+        );
+        // F37.11: a Brick request confirmed or refused on the dashboard
+        let mut spec = service_events::dashboard(
+            if outcome.is_ok() {
+                "BRICK_REQUEST_RECORDED"
+            } else {
+                "BRICK_REQUEST_REFUSED"
+            },
+            "F37",
+            "BRICK_REQUEST",
+            Some(&viewer.login),
+            Some((&repository, &remote)),
+        );
+        spec.respond(
+            if outcome.is_ok() { "OK" } else { "REFUSED" },
+            if outcome.is_ok() {
+                "NA"
+            } else {
+                "ROLE_MISSING"
+            },
+            if outcome.is_ok() {
+                "Brick change requested on the dashboard; a person applies it on a machine."
+            } else {
+                "Brick request refused: GitHub role missing, or the request lapsed."
+            },
+        )
+        .set(
+            "assessment",
+            "assessment_checks",
+            ["GITHUB_REPOSITORY_ROLE"],
+        )
+        .set(
+            "decision",
+            "decision",
+            if outcome.is_ok() { "ALLOW" } else { "DENY" },
+        )
+        .set(
+            "decision",
+            "decision_rule",
+            "GITHUB_WRITE_FOR_DRAFTS_ADMIN_FOR_SIGNED",
+        )
+        .set("resource", "resource", ["CRANE_METADATA"])
+        .set("other", "request", &request_id);
+        self.log.record(spec, Some(&repository), None);
+        match outcome {
+            Ok(message) => (true, message),
+            Err(message) => (false, message),
+        }
     }
 
     /** Start a resident-agent decision: check what was asked, then GitHub sign-in carrying it in
@@ -936,6 +1155,7 @@ impl Dashboard {
                 "repository": value("repository"), "installation": value("installation"), "action": action,
                 "activation": activation, "assignment": assignment, "step": step, "plan": plan, "text": text, "reason": reason,
             })),
+            brick: None,
         };
         let private = query.get("private").is_some_and(|value| value == "1");
         Reply::redirect(&auth.authorize_url(request, &state, private))
@@ -1510,7 +1730,10 @@ impl Dashboard {
                         let grant = intent.action == "grant";
                         let agent_action = intent.action == "dashboard-agent";
                         let resident = intent.action == "resident";
-                        let (ok, message) = if grant {
+                        let bricks = intent.action == "bricks";
+                        let (ok, message) = if bricks {
+                            self.carry_out_bricks(auth, &intent, &viewer, &token)
+                        } else if grant {
                             self.carry_out_grant(auth, &intent, &viewer, &token)
                         } else if resident {
                             self.carry_out_resident(auth, &intent, &viewer, &token)
@@ -1523,7 +1746,9 @@ impl Dashboard {
                             "/?approval={}&ok={}#/{}",
                             auth::encode(&message),
                             u8::from(ok),
-                            if grant {
+                            if bricks {
+                                "bricks"
+                            } else if grant {
                                 "credits"
                             } else if resident {
                                 "residents"

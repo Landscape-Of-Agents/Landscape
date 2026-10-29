@@ -311,6 +311,31 @@ export interface AttachmentRow {
 }
 
 /** The data of 'crane brick list --format json'. */
+/** A Brick change someone requested on DataSea, waiting for a person here to apply it. */
+export interface InboxRequest {
+  request_id: string;
+  op: string;
+  params: Record<string, unknown>;
+  reason: string;
+  role: string;
+  requested_by: string;
+  requested_at: number;
+}
+
+/**
+ * What a DataSea request is about, in a few words.
+ * @param request request
+ * @returns text
+ */
+export function inboxSubject(request: InboxRequest): string {
+  const params = request.params ?? {};
+  const textOf = (key: string): string => (typeof params[key] === "string" ? (params[key] as string) : "");
+  const draft = (params.draft ?? {}) as Record<string, unknown>;
+  if (request.op === "attach") return `${textOf("subject")} → ${textOf("target")}`;
+  if (request.op === "assign") return `${textOf("agent")} → ${Array.isArray(params.targets) ? (params.targets as string[]).join(", ") : ""}`;
+  return textOf("brick_id") || textOf("ref") || textOf("attachment") || textOf("agent") || textOf("stack_id") || textOf("name") || (typeof draft.name === "string" ? draft.name : "") || "";
+}
+
 export interface BrickList {
   bricks: BrickRow[];
   stacks: StackRow[];

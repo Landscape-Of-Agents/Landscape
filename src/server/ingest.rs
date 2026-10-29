@@ -331,6 +331,23 @@ pub(super) fn handle(
                 .map_err(|error| (400, format!("invalid decision results: {error}")))?;
             store::settle_resident_decisions(database, &repository, &installation, &results)
         }
+        // Brick changes people requested on the dashboard, for any machine of the repository
+        ("GET", "brick-requests") => store::pending_brick_requests(database, &repository),
+        ("POST", "brick-requests") => {
+            let results: Value = serde_json::from_slice(&body)
+                .map_err(|error| (400, format!("invalid Brick request results: {error}")))?;
+            let settled =
+                store::settle_brick_requests(database, &repository, &installation, &results);
+            if let Ok(settled) = &settled {
+                super::observe::brick_requests_settled(
+                    &service.log,
+                    &repository,
+                    &installation,
+                    settled,
+                );
+            }
+            settled
+        }
         ("POST", "clear") => {
             let request: Value = serde_json::from_slice(&body)
                 .map_err(|error| (400, format!("invalid clear request: {error}")))?;
@@ -378,7 +395,7 @@ pub(super) fn handle(
         (
             _,
             "positions" | "batch" | "link" | "owner" | "agent-policy" | "grants"
-            | "resident-decisions" | "clear",
+            | "resident-decisions" | "brick-requests" | "clear",
         ) => return Err((405, "method not allowed".into())),
         _ => return Err(not_found()),
     };

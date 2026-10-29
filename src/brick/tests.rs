@@ -1314,3 +1314,138 @@ fn kinds_of_change_and_gates() {
         "a window over midnight"
     );
 }
+
+#[test]
+fn dashboard_requests_are_checked_before_they_run() {
+    use super::requests::{check, command, role, Role};
+    use serde_json::json;
+    assert_eq!(role("create"), Some(Role::Writer));
+    assert_eq!(role("activate"), Some(Role::Admin));
+    assert_eq!(role("context-set"), Some(Role::Admin));
+    assert_eq!(role("delete-everything"), None);
+    // A reason is required, and only the fields a command reads are kept
+    assert!(check("activate", &json!({"brick_id": "guard"}), " ").is_err());
+    let kept = check(
+        "activate",
+        &json!({"brick_id": "guard", "extra": 1}),
+        "reviewed",
+    )
+    .unwrap();
+    assert_eq!(kept, json!({"brick_id": "guard"}));
+    // Names that could be read as options or paths are refused
+    for bad in ["--dry-run", "../x", "a b", ""] {
+        assert!(
+            check("activate", &json!({"brick_id": bad}), "why").is_err(),
+            "{bad}"
+        );
+    }
+    assert!(
+        check("deprecate", &json!({"ref": "guard"}), "why").is_err(),
+        "an exact version"
+    );
+    assert!(check(
+        "attach",
+        &json!({"subject": "stack:s@1", "target": "zone:api"}),
+        "why"
+    )
+    .is_ok());
+    assert!(check(
+        "attach",
+        &json!({"subject": "g@1", "target": "repo:x"}),
+        "why"
+    )
+    .is_err());
+    // Drafts: a current kind, known fields only, no secrets
+    assert!(check(
+        "create",
+        &json!({"draft": {"type": "knowledge", "name": "Glossary"}}),
+        "why"
+    )
+    .is_ok());
+    assert!(
+        check(
+            "create",
+            &json!({"draft": {"type": "scope", "name": "Old"}}),
+            "why"
+        )
+        .is_err(),
+        "a former kind"
+    );
+    assert!(check(
+        "create",
+        &json!({"draft": {"type": "knowledge", "name": "x", "created_by": "me"}}),
+        "why"
+    )
+    .is_err());
+    assert!(check(
+        "edit",
+        &json!({"brick_id": "guard", "draft": {"intent": "clearer"}}),
+        "why"
+    )
+    .is_ok());
+    let secret = "token ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    assert!(check(
+        "context-set",
+        &json!({"attachment": "a1", "text": secret}),
+        "why"
+    )
+    .is_err());
+    assert!(check(
+        "create",
+        &json!({"draft": {"type": "knowledge", "name": "x", "common_context": {"text": secret}}}),
+        "why"
+    )
+    .is_err());
+    // The command is the one a person would type, with the reason and who asked
+    let (args, written) = command(
+        "revoke",
+        &json!({"ref": "guard@2"}),
+        "leaked",
+        "@ana on DataSea, brq_1",
+        "F",
+    )
+    .unwrap();
+    assert_eq!(args[..3], ["brick", "revoke", "guard@2"]);
+    assert_eq!(args[4], "leaked (requested by @ana on DataSea, brq_1)");
+    assert_eq!(args[args.len() - 2..], ["--format", "json"]);
+    assert!(written.is_none());
+    let (args, written) = command(
+        "context-set",
+        &json!({"attachment": "a1", "text": "use v2"}),
+        "why",
+        "@ana",
+        "F",
+    )
+    .unwrap();
+    assert_eq!(args[..6], ["brick", "context", "set", "a1", "--file", "F"]);
+    assert_eq!(written.as_deref(), Some("use v2"));
+    let (args, _) = command(
+        "assign",
+        &json!({"agent": "claude", "targets": ["zone:api", "flow:pay"], "paused": true}),
+        "why",
+        "@ana",
+        "F",
+    )
+    .unwrap();
+    assert_eq!(
+        args[..5],
+        [
+            "brick",
+            "assign",
+            "claude",
+            "--targets",
+            "zone:api,flow:pay"
+        ]
+    );
+    assert!(args.contains(&"--paused".to_string()));
+    let (args, written) = command(
+        "create",
+        &json!({"draft": {"type": "knowledge", "name": "G"}}),
+        "why",
+        "@ana",
+        "F",
+    )
+    .unwrap();
+    assert_eq!(args[..4], ["brick", "create", "--file", "F"]);
+    assert!(written.unwrap().contains("\"knowledge\""));
+}

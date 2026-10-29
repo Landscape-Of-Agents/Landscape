@@ -21,6 +21,7 @@
 //   context  - snapshot assembly, delivery ledger, and refresh tracking
 //   runtime  - checks, assignment status, and the deterministic monitors (watch)
 //   report   - the Brick part of the status a machine reports to the dashboard
+//   requests - what the dashboard may request, checked by the service and again by the machine
 
 pub(crate) mod compose;
 pub(crate) mod config;
@@ -30,6 +31,7 @@ pub(crate) mod guard;
 pub(crate) mod legacy;
 pub(crate) mod model;
 pub(crate) mod report;
+pub(crate) mod requests;
 pub(crate) mod runtime;
 pub(crate) mod store;
 pub(crate) mod types;

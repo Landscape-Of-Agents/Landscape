@@ -3135,6 +3135,25 @@ A person ran `crane brick migrate`: active Bricks of former kinds were rewritten
 current kinds (nothing is signed; an admin activates the drafts and moves the attachments).
 - Other [bricks (count), dry_run]
 
+#### F37.11 `BRICK_REQUEST_RECORDED`, `BRICK_REQUEST_REFUSED` (service)
+Someone asked for a Brick change on the dashboard, and GitHub's answer at sign-in decided it. The
+request is kept for a machine when they have the role (write access for drafts, admin for signed
+changes). Otherwise it is refused, as is a request that waited more than ten minutes for sign-in.
+Nothing changes until a person applies it on a machine.
+- Action [action_type (BRICK_REQUEST), action_source (DASHBOARD), action_user (GitHub login)]
+- Assessment [assessment_checks ([GITHUB_REPOSITORY_ROLE])]
+- Decision [decision (ALLOW, DENY), decision_rule (GITHUB_WRITE_FOR_DRAFTS_ADMIN_FOR_SIGNED)]
+- Response [response_status (OK, REFUSED), failure_state (NA, ROLE_MISSING)]
+- Other [request]
+
+#### F37.12 `BRICK_REQUEST_SETTLED` (service)
+A machine reported what happened to a dashboard request: a person there applied it (`crane brick
+inbox apply`, or Landscape), it failed with Crane's reason, or they dismissed it. One event per
+request. The command it ran notes its own F37 event on that machine.
+- Action [action_type (BRICK_REQUEST), action_source (SERVICE)]
+- Response [response_status (APPLIED, FAILED, DISMISSED), failure_state (NA, CRANE_REFUSED)]
+- Other [request, machine_key]
+
 ### F38. Resident agents
 
 A resident agent is an assignment that stays responsible for one Flow, Zone, or Runbook for days or
@@ -3549,6 +3568,23 @@ expires after 7 days. The service records `CREDITS_GRANT_APPROVED` or `CREDITS_G
 (F27). The next upload of the machine that owns the session applies the grant to the credit ledger.
 The ledger entry reads "granted on the dashboard by @login". The grant becomes `APPLIED`, or
 `REJECTED` when the session is not on that machine. Amounts are 1 to 1000.
+
+### Brick requests
+
+People change Bricks from the Bricks page as requests (schema version 12, `brick_requests`).
+
+- **Staging.** `POST /api/bricks {action: stage, op, params, reason}` checks the request with the
+  rules the machine checks again (`src/brick/requests.rs`) and keeps it as `STAGED`. Then
+  `/auth/bricks` signs the person in with GitHub. Write access confirms a draft and admin access a
+  signed change, and the request becomes `PENDING` for 14 days, or `REFUSED` (F37.11).
+- **Applying.** Any machine of the repository reads waiting requests with `GET brick-requests`.
+  A person applies them there with `crane brick inbox apply` or Landscape. The result goes back
+  with `POST brick-requests` (`APPLIED`, `FAILED`, or `DISMISSED`, F37.12).
+- **Withdrawing.** `POST /api/bricks {action: cancel}` withdraws your own waiting request.
+- **Retention.** Settled requests are kept for 90 days, and unconfirmed ones for an hour.
+- **What the page shows.** The Bricks status now carries each Brick's configuration and Common
+  Context text, each attachment's Current Context text, and the Zones and Flows. Text or a
+  configuration that looks like a secret is withheld, and text over 16 KB is cut.
 
 ### Compliance
 

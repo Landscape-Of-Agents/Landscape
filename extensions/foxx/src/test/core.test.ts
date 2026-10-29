@@ -252,7 +252,7 @@ test("shows an agent's live context only while it is fresh, with its guidance", 
   assert.ok(contextLabel({ ...context, text: "x".repeat(400) }).length <= 140);
 });
 
-import { attachArgs, BRICK_GUIDE, BRICK_TEMPLATES, BRICK_TYPES, CONTROLS, controlArgs, describePreview, draftFile, envelopeLine, parseEnvelope, snapshotMarkdown, subjectOf, succeeded } from "../core/bricks";
+import { attachArgs, BRICK_GUIDE, BRICK_TEMPLATES, BRICK_TYPES, CONTROLS, controlArgs, describePreview, draftFile, envelopeLine, inboxSubject, parseEnvelope, snapshotMarkdown, subjectOf, succeeded } from "../core/bricks";
 
 test("reads the shared envelope of family commands and nothing else", () => {
   const envelope = parseEnvelope('{"schema_version":1,"command":"brick.list","request_id":"req_1","status":"ok","reason_codes":[],"summary":"2 Bricks","refs":{},"data":{"bricks":[]},"created_at":1}');
@@ -438,4 +438,13 @@ test("the settings pop-up of every kind lists every setting Crane accepts for it
     assert.deepEqual(fields.filter((field) => !documented.includes(field)), [], `${kind}: settings missing from "Settings you can configure"`);
     for (const setting of guide.settings) assert.ok(setting.meaning && setting.values, `${kind}: ${setting.name} needs a meaning and its values`);
   }
+});
+
+test("names what a DataSea request is about", () => {
+  const request = (op: string, params: Record<string, unknown>) => ({ request_id: "brq_1", op, params, reason: "why", role: "admin", requested_by: "ana", requested_at: 0 });
+  assert.equal(inboxSubject(request("attach", { subject: "guard@2", target: "zone:api" })), "guard@2 → zone:api");
+  assert.equal(inboxSubject(request("assign", { agent: "claude", targets: ["zone:api", "flow:pay"] })), "claude → zone:api, flow:pay");
+  assert.equal(inboxSubject(request("create", { draft: { name: "Glossary" } })), "Glossary");
+  assert.equal(inboxSubject(request("revoke", { ref: "guard@1" })), "guard@1");
+  assert.equal(inboxSubject(request("migrate", {})), "");
 });

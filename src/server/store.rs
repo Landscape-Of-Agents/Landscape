@@ -419,6 +419,93 @@ pub(super) fn settle_resident_decisions(
     Ok(json!({"settled": settled}))
 }
 
+/** Return the Brick change requests people made on the dashboard for this repository, confirmed
+ * by GitHub, still waiting and not expired; any machine of the repository may apply them, and
+ * only when a person there says so (cli/brick/inbox.rs)
+ * Input
+    - database: &Database - MongoDB
+    - repository: &str - repository identity
+ * Output
+    - Result<Value, String> {requests: [{request_id, op, params, reason, role, requested_by,
+      requested_at}]}
+*/
+pub(super) fn pending_brick_requests(
+    database: &Database,
+    repository: &str,
+) -> Result<Value, String> {
+    let found = database
+        .collection::<Document>("brick_requests")
+        .find(doc! {"repository_id": repository, "status": "PENDING", "expires_at": {"$gt": now_millis() as i64}})
+        .sort(doc! {"requested_at": 1})
+        .limit(100)
+        .run()
+        .map_err(io_error)?;
+    let mut requests = Vec::new();
+    for document in found {
+        let document = document.map_err(io_error)?;
+        let text = |key: &str| document.get_str(key).unwrap_or_default().to_string();
+        requests.push(json!({
+            "request_id": text("request_id"),
+            "op": text("op"),
+            "params": serde_json::from_str::<Value>(&text("params")).unwrap_or(Value::Null),
+            "reason": text("reason"),
+            "role": text("role"),
+            "requested_by": text("requested_by"),
+            "requested_at": number(document.get("requested_at")),
+        }));
+    }
+    Ok(json!({"requests": requests}))
+}
+
+/** Record what a machine did with Brick requests: applied, failed (with why), or dismissed by a
+ * person there; only waiting requests of this repository change
+ * Input
+    - database: &Database - MongoDB
+    - repository: &str - repository identity
+    - installation: &str - the machine
+    - body: &Value - {results: [{request_id, status: APPLIED|FAILED|DISMISSED, detail, command}]}
+ * Output
+    - Result<Value, String> {settled, results: [{request_id, status}]} (only those settled)
+*/
+pub(super) fn settle_brick_requests(
+    database: &Database,
+    repository: &str,
+    installation: &str,
+    body: &Value,
+) -> Result<Value, String> {
+    let mut settled = Vec::new();
+    for result in body["results"].as_array().into_iter().flatten().take(100) {
+        let status = match result["status"].as_str() {
+            Some("APPLIED") => "APPLIED",
+            Some("DISMISSED") => "DISMISSED",
+            _ => "FAILED",
+        };
+        let bounded = |key: &str| {
+            result[key]
+                .as_str()
+                .unwrap_or_default()
+                .chars()
+                .take(300)
+                .collect::<String>()
+        };
+        let id = result["request_id"].as_str().unwrap_or_default();
+        let now = now_millis();
+        let changed = database
+            .collection::<Document>("brick_requests")
+            .update_one(
+                doc! {"request_id": id, "repository_id": repository, "status": "PENDING"},
+                doc! {"$set": {"status": status, "settled_at": now as i64, "settled_by": installation, "detail": bounded("detail"), "command": bounded("command"),
+                    "purge_at": bson::DateTime::from_millis((now + super::dashboard::BRICK_REQUEST_KEPT_MILLIS) as i64)}},
+            )
+            .run()
+            .map_err(io_error)?;
+        if changed.modified_count > 0 {
+            settled.push(json!({"request_id": id, "status": status}));
+        }
+    }
+    Ok(json!({"settled": settled.len(), "results": settled}))
+}
+
 /** Return the repository's owner key most recently confirmed by a GitHub admin of its remote
  * (public information: a public key and who confirmed it)
  * Input

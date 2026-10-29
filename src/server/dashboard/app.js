@@ -8,8 +8,8 @@
 // the lens (a right sidebar with the chart, its metrics, properties, explanation, and an
 // interpretation of what it shows), expanded, shown in monitor mode, or collapsed. Every time is
 // written as YYYY:MM:DD:HH:MM:SS:MMM. Charts come from charts.js, explanations from glossary.js, pages
-// from pages.js and govern.js. The only writes are approvals and credit grants, which GitHub
-// authorizes.
+// from pages.js and govern.js. The only writes are approvals, credit grants, resident decisions, and
+// Brick change requests, which GitHub authorizes (requests are applied on a machine, never here).
 
 const { h, svg, put, dt, duration, fmt, compact, tokens, color, hashColor, tooltip, tip, charts } = window.Foxx;
 const G = window.FOXX_GLOSSARY || { flows: {}, groups: {}, values: {}, evals: {}, facets: {} };
@@ -71,7 +71,7 @@ const NAV = [
   ["Govern", [
     ["audit", "Audit trail", [["audit-summary", "Summary"], ["audit-activity", "Activity"], ["audit-matrix", "Who changed what"], ["audit-timeline", "Change timeline"], ["audit-trail", "Governance changes"], ["command-events", "Commands"], ["dashboard-actions", "Dashboard actions"]]],
     ["governance", "Governance", [["gov-state", "State"], ["gov-zones", "Zones and flows"], ["gov-graphs", "Flow call graphs"], ["gov-rules", "Policies and selections"], ["gov-map", "Selection map"], ["gov-more", "Checkpoints and context"], ["gov-integrity", "Integrity"], ["gov-events", "Governance events"], ["gov-findings", "Findings"]]],
-    ["bricks", "Bricks", [["brick-state", "State"], ["brick-library", "Library"], ["brick-attachments", "Attachments and Stacks"], ["brick-agents", "Agents and monitors"], ["brick-context", "Context snapshots"], ["brick-history", "History and events"], ["brick-build", "Build a draft"]]],
+    ["bricks", "Bricks", [["brick-state", "State"], ["brick-requests", "Requests"], ["brick-library", "Library"], ["brick-attachments", "Attachments and Stacks"], ["brick-agents", "Agents and monitors"], ["brick-context", "Context snapshots"], ["brick-history", "History and events"], ["brick-build", "Build a draft offline"]]],
     ["residents", "Resident agents", [["res-state", "State"], ["res-registry", "Registry"], ["res-inbox", "Review inbox"], ["res-timeline", "Activation timeline"], ["res-health", "Idle cost and health"], ["res-test", "Test and simulate"], ["res-create", "Create"]]],
     ["compliance", "Compliance", [["posture", "Posture"], ["frameworks", "Frameworks"], ["controls", "Controls"], ["evidence", "Evidence"], ["gaps", "Gaps and limitations"], ["inferred", "Inferred observability"], ["unobservable", "Not observable"]]],
   ]],
@@ -93,6 +93,7 @@ const PAGE_GUIDE = {
   distributions: "How numbers are spread: trace durations, gaps between a session's events, events per session, and every numeric eval attribute (hook latency, tool duration, tokens, …).",
   semantics: "The texts events carry: response statements, decision reasons and rules, failure states, assessments, end reasons, and the words used most often.",
   sessions: "Agent sessions with their status, safety, tool calls, tokens, and evals. Open one for its timeline, waterfall, Gantt chart, action graph, tasks, and downloadable report and evidence.",
+  bricks: "Bricks: reusable modules of one fixed kind, attached to Zones and Flows. See the library, attachments with their Current Context, Stacks, assigned agents, monitors, and context snapshots, and change any of them: every change is a request (drafts need write access, signed changes need a repository admin, as GitHub confirms) that a person applies on a machine with one click in Landscape or 'crane brick inbox apply', where Crane checks and signs it.",
   residents: "Resident agents: assignments that stay responsible for a Flow, Zone, or Runbook for days or weeks and wake only when a trigger or timer arrives. Idle assignments make no model call. See every assignment, what waits for a person, each activation from trigger to verified outcome, idle cost and health, plan-only tests, and build drafts that a member imports and an admin activates on their machine.",
   alerting: "Alert rules are built on a member's machine with 'crane alert add' (never here): a metric, a threshold, a window, a filter, and Slack or WhatsApp. Each background sync evaluates them; this page shows every rule, its value against its threshold, every firing, and every delivery with its HTTP result.",
   credits: "Autonomy credits bound what an agent may do on its own. Admins and owners of the repository can grant credits to an agent's session here; GitHub confirms the role, and the session's machine applies the grant at its next sync.",

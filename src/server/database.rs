@@ -22,8 +22,9 @@ use crate::platform::io_error;
 
 /** Current schema version applied by the migrations (3: records keyed by installation; 4: the
  * members' repository status and the service's settings; 10: Dashboard Agent enforcement and
- * approval-gated flow context; 11: resident-agent decisions made on the dashboard) */
-pub(crate) const SCHEMA_VERSION: i64 = 11;
+ * approval-gated flow context; 11: resident-agent decisions made on the dashboard; 12: Brick change
+ * requests made on the dashboard) */
+pub(crate) const SCHEMA_VERSION: i64 = 12;
 
 /** How the service reaches its database
  * Fields
@@ -392,6 +393,21 @@ const COLLECTIONS: &[Collection] = &[
         ],
     },
     Collection {
+        name: "brick_requests",
+        required: &[
+            "request_id",
+            "repository_id",
+            "op",
+            "requested_by",
+            "status",
+        ],
+        indexes: &[
+            (&[("request_id", 1)], true),
+            (&[("repository_id", 1), ("status", 1)], false),
+            (&[("repository_id", 1), ("requested_at", -1)], false),
+        ],
+    },
+    Collection {
         name: "dashboard_agents",
         required: &[
             "agent_id",
@@ -612,6 +628,21 @@ pub(crate) fn migrate(database: &Database) -> Result<i64, String> {
         .create_index(
             IndexModel::builder()
                 .keys(doc! {"expires_at": 1})
+                .options(
+                    IndexOptions::builder()
+                        .expire_after(Duration::from_secs(0))
+                        .build(),
+                )
+                .build(),
+        )
+        .run()
+        .map_err(io_error)?;
+    // Brick requests leave once purge_at passes (an unconfirmed one within the hour)
+    database
+        .collection::<Document>("brick_requests")
+        .create_index(
+            IndexModel::builder()
+                .keys(doc! {"purge_at": 1})
                 .options(
                     IndexOptions::builder()
                         .expire_after(Duration::from_secs(0))

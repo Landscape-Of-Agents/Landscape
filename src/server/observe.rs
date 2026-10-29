@@ -674,3 +674,51 @@ fn statuses(record: &dyn Fn(Spec), batch: &Batch, previous: Option<&Value>, stat
         }
     }
 }
+
+/** F37.12: a machine reported what happened to Brick requests made on the dashboard (applied by a
+ * person there, failed with Crane's reason, or dismissed), one event per request settled
+ * Input
+    - log: &ServiceLog - service log
+    - repository: &str - repository identity
+    - installation: &str - the machine
+    - settled: &Value - {results: [{request_id, status}]}
+ * Output
+    - None
+*/
+pub(super) fn brick_requests_settled(
+    log: &ServiceLog,
+    repository: &str,
+    installation: &str,
+    settled: &Value,
+) {
+    for result in settled["results"].as_array().into_iter().flatten() {
+        let status = result["status"].as_str().unwrap_or("FAILED");
+        let mut spec =
+            service_events::event("BRICK_REQUEST_SETTLED", "F37", "BRICK_REQUEST", "SERVICE");
+        spec.respond(
+            status,
+            if status == "FAILED" {
+                "CRANE_REFUSED"
+            } else {
+                "NA"
+            },
+            match status {
+                "APPLIED" => "A Brick request from the dashboard was applied on a machine.",
+                "DISMISSED" => "A Brick request from the dashboard was dismissed on a machine.",
+                _ => "A Brick request from the dashboard failed on a machine.",
+            },
+        )
+        .severity(
+            if status == "FAILED" { "LOW" } else { "INFO" },
+            "OUTCOME",
+            "NONE",
+        )
+        .set(
+            "other",
+            "request",
+            result["request_id"].as_str().unwrap_or_default(),
+        )
+        .set("other", "machine_key", installation);
+        log.record(spec, Some(repository), Some(installation));
+    }
+}

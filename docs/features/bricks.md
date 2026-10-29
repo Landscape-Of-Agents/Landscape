@@ -99,6 +99,14 @@ and lists what an admin then signs: activating each draft and moving the attachm
 2. **Validate and test.** `crane brick validate ID` checks the schema. `crane brick test ID --target
    flow:ID` simulates the Brick on a real Flow, lists the files the guard would restrict and the
    rules it decides per call, evaluates gates and verification checks, and checks provenance.
+   `--call JSON` (or a file) decides one **mock agent call** instead: which operation, which files,
+   the command, the hosts, which provider and model, and what the session already did (tool calls,
+   minutes, files and lines changed, commands, network calls, denials, failures in a row, a firing
+   Watch). It answers with the verdict (allowed, held for a person, refused), every rule that made
+   it stricter, and each file's autonomy ceiling. It uses the guard's own functions, so it cannot
+   differ from enforcement, and nothing runs. Policies, the autonomy mode, and credits are not part
+   of it. In Landscape, the **Test** tab (or Test… on a Library row) starts from a call the Brick's
+   kind decides, and you can change every field.
 3. **Activate.** An admin signs the version into `.crane/bricks.json` (`crane brick activate ID
    --reason TEXT`). Activation always validates again. The author cannot activate their own Brick
    while another admin can review it; a repository with one signer may, and the version records
@@ -156,14 +164,19 @@ The Bricks page on DataSea can change everything the CLI can. It never holds a s
 never changes Bricks itself. Each change is a **request** that a person applies on a machine.
 
 1. **Ask.** On the page, use New Brick, Assign an agent, or New Stack, or a row's actions: Edit,
-   Activate, Attach, Deprecate, Revoke; for attachments Context, Upgrade, and Detach; Unassign; and
-   Migrate former kinds. Give a reason. The page shows the configuration, Common Context, and Current
-   Context the last machine reported, so you edit the real text.
+   Activate, Attach, Publish, Deprecate, Revoke; for attachments Context, Upgrade, and Detach;
+   Unassign; Import here (from the organization catalog); and Migrate former kinds. Give a reason.
+   The page shows the configuration, Common Context, and Current Context the last machine reported,
+   so you edit the real text.
 2. **GitHub confirms your role.** You sign in with GitHub, and the service asks GitHub about the
-   repository. Drafts (create, edit, migrate, new Stack) need write access (push, maintain, or
-   admin). Signed changes (activate, deprecate, revoke, attach, detach, upgrade, context set, assign,
-   unassign, Stack activate and revoke) need a repository admin. If GitHub says no, the request is
-   refused, and the page says why.
+   repository. Drafts (create, edit, migrate, new Stack, import) need write access (push, maintain,
+   or admin). Signed changes (activate, deprecate, revoke, attach, detach, upgrade, context set,
+   assign, unassign, Stack activate and revoke, publish) need a **code owner of
+   `.crane/bricks.json`** when the repository's CODEOWNERS file (on the default branch) covers it:
+   the last matching line decides, as on GitHub, and a team counts when GitHub shows you as an
+   active member. An admin who is not a code owner is then refused. When no CODEOWNERS line covers
+   the file, signed changes need a repository admin. If GitHub says no, or CODEOWNERS cannot be
+   read, the request is refused, and the page says why.
 3. **A person applies it.** The request waits up to 14 days. On a machine that uploads for the
    repository, use one click in Landscape ("changes requested on DataSea", then Review and apply), or
    run `crane brick inbox` and `crane brick inbox apply ID...` (or `--all`). Crane checks each
@@ -186,12 +199,36 @@ What stays on the machine:
 - A draft made from DataSea is authored by the person who applies it. With two or more signers,
   another admin activates it.
 
+## Sharing Bricks across repositories
+
+A Brick applies in a repository only when that repository's signed `.crane/bricks.json` holds it,
+so teams pull, review, and sign it like code. To share a Brick across an organization without
+copying files, use the **organization catalog** on DataSea:
+
+1. **Publish.** An admin runs `crane brick publish ID@N --reason TEXT` (or asks with Publish on the
+   DataSea page; an admin's machine applies it). Only active versions are published. The entry
+   carries the exact definition, its digest, and a signature by that machine's admin key. It goes
+   to the catalog of the GitHub owner of the repository's verified remote. Text that looks like a
+   secret is refused before it leaves the machine, and again by the service. A published version
+   never changes: publishing other content under the same version is refused.
+2. **Find.** `crane brick catalog` lists what the organization's repositories published. The
+   Organization catalog zone of the Bricks page on DataSea lists it too.
+3. **Import.** `crane brick import org:ID@N` (or Import here on DataSea) checks the digest and the
+   publisher's signature, then saves the Brick as a **draft** here, as the next version of its id
+   (`--as ID` picks another id). It grants nothing until an admin here activates it, so each
+   repository stays the authority for what applies in it.
+
+`crane brick import FILE` also reads a draft file, a catalog entry, or the library file that
+"Download the library" on DataSea saves. An import is all or nothing: if one Brick cannot become a
+draft (its id has a draft already, or a different kind), nothing is saved. On DataSea, each Brick
+also has "Download as draft", for `crane brick create --file FILE` in any repository.
+
 ## Commands
 
 ```
 crane brick types | list | show ID[@N] | history [ID]
 crane brick create --type TYPE --name NAME [--intent ...] [--config JSON] [--context TEXT]   (or --file DRAFT.json)
-crane brick edit ID [...] | validate ID | test ID[@N] [--target flow:ID] | migrate [--dry-run]
+crane brick edit ID [...] | validate ID | test ID[@N] [--target flow:ID] [--call JSON|FILE] | migrate [--dry-run]
 crane brick activate ID --reason TEXT [--dry-run] | deprecate ID@N | revoke ID[@N] --reason TEXT
 crane brick stack create --name NAME --members ID@N,ID@N | stack show ID | stack activate ID | stack revoke ID@N
 crane brick attach ID@N|stack:ID@N --target flow:ID [--context TEXT] [--dry-run]
@@ -199,6 +236,7 @@ crane brick detach ATTACHMENT | upgrade ATTACHMENT --to ID@N | context set ATTAC
 crane brick context preview --targets flow:ID,zone:ID | context status
 crane brick assign AGENT --targets flow:ID | unassign AGENT | agents | monitor run | monitor status
 crane brick inbox | inbox apply ID...|--all | inbox dismiss ID...|--all --reason TEXT
+crane brick publish ID@N --reason TEXT | catalog | import org:ID@N|FILE [--as ID]
 crane secret set NAME | list | remove NAME
 ```
 
@@ -213,8 +251,9 @@ of them.
   migrate, and the changes requested on DataSea). Signing changes are previewed with `--dry-run`
   and need your confirmation. See
   [surfaces/vscode.md](../surfaces/vscode.md).
-- **Dashboard**: the Bricks page (Govern), with the library (configuration and Common Context per
-  Brick), kinds, attachments with their Current Context, Stacks, agents, monitors, snapshots, signed
+- **Dashboard**: the Bricks page (Govern), with a graph of which Bricks apply where, the library
+  (configuration and Common Context per Brick, downloads), the organization catalog, kinds,
+  attachments with their Current Context, Stacks, agents, monitors, snapshots, signed
   history, F37 events, the requests made there, and actions for every change (see above). See
   [surfaces/dashboard.md](../surfaces/dashboard.md).
 - **Events**: F37 in [DASHBOARD.md](../../DASHBOARD.md). A decision the guard made because of a
@@ -237,3 +276,7 @@ of them.
 | Requests from the dashboard have no dry-run preview; Crane's checks run when they are applied | partial |
 | Monitors only run when a sync or command runs (no daemon); ci, metrics, external have no connector | partial |
 | Nested Stacks | not supported (one level, on purpose) |
+| A per-call finding names every Brick on the target that sets a control, not only the one whose rule fired | partial |
+| The mock call test runs on a machine (CLI, Landscape); DataSea has no Test button | to build |
+| A catalog entry cannot be withdrawn yet; a revoked version stays listed (importing repositories decide) | to build |
+| The publisher's key is checked against the signature, not against the importing repository's admins (an import is only a draft) | by design |

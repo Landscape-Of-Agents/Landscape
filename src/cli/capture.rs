@@ -41,7 +41,7 @@ use crate::telemetry::events::EventStore;
     - Result<(), String>
 */
 pub(crate) fn capture(args: &[String]) -> Result<(), String> {
-    let usage = "usage: crane capture demo [--json] | sources [--json] | investigate [commit SHA] [task TASK_ID] [class CLASS] [recipe ID [version N]] [episode EPI] [--json] | replay QUERY_ID [--json] | verify PACK_ID | contribute FILE [--json] | review CONTRIBUTION_ID accept|reject reason TEXT | outcome EPISODE OUTCOME [evidence ID,ID] | feedback PACK_ID sufficient yes|no|unknown [missing TYPE,TYPE] [notes TEXT] | ask FILE | question QUESTION_ID answer PACK_ID|block|unresolvable|reopen | confirm RELATION_ID";
+    let usage = "usage: crane capture demo [--json] | sources [--json] | investigate [commit SHA] [task TASK_ID] [class CLASS] [checklist ID [version N]] [episode EPI] [--json] | replay QUERY_ID [--json] | verify PACK_ID | contribute FILE [--json] | review CONTRIBUTION_ID accept|reject reason TEXT | outcome EPISODE OUTCOME [evidence ID,ID] | feedback PACK_ID sufficient yes|no|unknown [missing TYPE,TYPE] [notes TEXT] | ask FILE | question QUESTION_ID answer PACK_ID|block|unresolvable|reopen | confirm RELATION_ID";
     let id = |position: usize| {
         args.get(position)
             .filter(|word| !word.starts_with('-'))
@@ -53,7 +53,15 @@ pub(crate) fn capture(args: &[String]) -> Result<(), String> {
         Some("sources") => sources(&Args::parse(&args[1..], &[], &["json"])?),
         Some("investigate") => investigate(&Args::parse(
             &args[1..],
-            &["commit", "task", "class", "recipe", "version", "episode"],
+            &[
+                "commit",
+                "task",
+                "class",
+                "checklist",
+                "recipe",
+                "version",
+                "episode",
+            ],
             &["json"],
         )?),
         Some("replay") => replay(&id(1)?, &Args::parse(&args[2..], &[], &["json"])?),
@@ -707,17 +715,18 @@ fn sources(args: &Args) -> Result<(), String> {
 }
 
 /** Investigate a commit (and optionally a task) from the live sources and keep the pack. The
- * recipe is the one named (recipe ID, optionally version N), else the latest serving the question
- * class (class CLASS), else local-change v1; episode EPI continues an earlier work episode
+ * checklist (a recipe in the code) is the one named (checklist ID, optionally version N; 'recipe'
+ * is its former name and still accepted), else the latest serving the question class (class
+ * CLASS), else local-change v1; episode EPI continues an earlier work episode
  * Input
-    - args: &Args - commit, task, class, recipe, version, episode, and flags
+    - args: &Args - commit, task, class, checklist (or recipe), version, episode, and flags
  * Output
     - Result<(), String>
 */
 fn investigate(args: &Args) -> Result<(), String> {
     args.expect_positional(
         0,
-        "crane capture investigate [commit SHA] [task TASK_ID] [class CLASS] [recipe ID [version N]] [episode EPI] [--json]",
+        "crane capture investigate [commit SHA] [task TASK_ID] [class CLASS] [checklist ID [version N]] [episode EPI] [--json]",
     )?;
     let workspace = Workspace::locate()?;
     let revision = args.value("commit").unwrap_or_else(|| "HEAD".into());
@@ -743,7 +752,8 @@ fn investigate(args: &Args) -> Result<(), String> {
                 .map_err(|_| format!("version must be a number, not '{value}'"))
         })
         .transpose()?;
-    let (class, recipe) = match (args.value("recipe"), args.value("class")) {
+    let named = args.value("checklist").or_else(|| args.value("recipe"));
+    let (class, recipe) = match (named, args.value("class")) {
         (Some(id), class) => (
             class.unwrap_or_else(|| id.clone()),
             Some(RecipeRef { id, version }),
@@ -810,7 +820,7 @@ fn print_pack(pack: &EvidencePack) {
     println!("Evidence Pack {} ({:?})", pack.pack_id, pack.status);
     println!("  investigation: {}", pack.investigation);
     println!(
-        "  recipe: {} v{} (query {}, stop: {:?})",
+        "  checklist: {} v{} (query {}, stop: {:?})",
         pack.retrieval.recipe_id,
         pack.retrieval.recipe_version,
         pack.retrieval.query_id,

@@ -830,7 +830,7 @@ flowchart LR
 **Component 1. Work Capture & Evidence Ingestion** ([src/capture/](../../src/capture)).
 Collects evidence about one work episode from registered sources (Git, DataSea events, Landscape
 zones and flows, Crane policies and validation; GitHub, CI, deployments, logs, and metrics through
-fixtures today), using a versioned **Evidence Recipe** with branch conditions, required evidence,
+fixtures today), using a versioned **Evidence Checklist** with branch conditions, required evidence,
 and budgets. It normalizes and redacts every record, links records into an evidence graph with a
 closed relation vocabulary (each edge marked observed, declared, inferred, or reviewed), derives
 assertions (`ci_passed`, `tests_passed`, `deployment_succeeded`, `change_verified`) that keep
@@ -927,25 +927,25 @@ against its parent, and packaged as a review packet. It never publishes anything
 
 The seven components each reason about one pack, one episode, or one capability. **Insight**
 ([src/insight/](../../src/insight)) reasons across all of them, so the system learns from the work it
-observes instead of only answering the questions someone wrote a recipe for.
+observes instead of only answering the questions someone wrote a checklist for.
 
 ```mermaid
 flowchart LR
-  Q["A question no recipe serves"] --> X["Work Capture explores the permitted sources (pack: exploratory)"]
+  Q["A question no checklist serves"] --> X["Work Capture explores the permitted sources (pack: exploratory)"]
   X --> F(["A person judges the pack (capture feedback)"])
   F --> M["Insight miners: gaps, questions, trust, outcomes, work"]
-  M -->|"recipe proposal"| R(["Owner or admin reviews"])
+  M -->|"checklist proposal"| R(["Owner or admin reviews"])
   M -->|"zone context (system-derived)"| C(["A person reviews the contribution"])
   M -->|"capability candidate"| K["Compiler, Lab, Registry gates"]
-  R -->|"accepted: a new, pinned recipe version"| B["RecipeBook"]
-  B --> W["The next question of that class is answered by the learned recipe"]
+  R -->|"accepted: a new, pinned checklist version"| B["RecipeBook"]
+  B --> W["The next question of that class is answered by the learned checklist"]
 ```
 
-- **Cold start.** On a new codebase the five built-in recipes answer what they cover. Every other
+- **Cold start.** On a new codebase the five built-in checklists answer what they cover. Every other
   question is explored instead of refused: the plan is derived from the registry and each source's
-  discovery, it is validated, digested, audited, and replayable like any recipe, and its pack is
+  discovery, it is validated, digested, audited, and replayable like any checklist, and its pack is
   `exploratory`, never `sufficient`.
-- **Learning.** Explorations that people judge sufficient become a proposed `learned-CLASS` recipe
+- **Learning.** Explorations that people judge sufficient become a proposed `learned-CLASS` checklist
   (the steps that found evidence, requiring what every judged exploration found and what the feedback
   said was missing). Evidence gaps and outcome patterns of a zone become system-derived context for
   it. Recurring agent tool sequences point to a capability candidate. Trust patterns point the owner
@@ -953,7 +953,7 @@ flowchart LR
 - **Guarantees.** Insight writes nothing it reads. It counts only what the viewer could open,
   suppresses counts below 3, states every rate with its denominator and its unknowns, never claims a
   cause, and versions its miners. Nothing it proposes takes effect until a person accepts it through
-  a review step that already existed (the contribution ledger, the new recipe ledger with owner or
+  a review step that already existed (the contribution ledger, the new checklist ledger with owner or
   admin review, or the compiler and the registry's gates).
 
 ---
@@ -972,8 +972,8 @@ flowchart LR
 | Alert rule | ok → firing → (reminding) → resolved | background sync | [rules.rs](../../src/telemetry/rules.rs) |
 | Quarantine (remote) | pending → active → release pending → released | dashboard, GitHub-confirmed admin | [approve.rs](../../src/server/dashboard/approve.rs) |
 | Dashboard Agent | `active`, `idle`, `inactive`, `sleep` | dashboard user | [GUIDE](../surfaces/cli.md#dashboard-agents) |
-| Work Capture investigation | `sufficient`, `incomplete`, `budget_exhausted`, `rejected`, `exploratory` (no recipe served the question) | broker | [capture/ingest/pack.rs](../../src/capture/ingest/pack.rs) |
-| Recipe proposal | proposed → accepted (a new, pinned RecipeBook version) / rejected | Insight proposes; the owner or an admin decides | [capture/broker/proposals.rs](../../src/capture/broker/proposals.rs) |
+| Work Capture investigation | `sufficient`, `incomplete`, `budget_exhausted`, `rejected`, `exploratory` (no checklist served the question) | broker | [capture/ingest/pack.rs](../../src/capture/ingest/pack.rs) |
+| Checklist proposal | proposed → accepted (a new, pinned RecipeBook version) / rejected | Insight proposes; the owner or an admin decides | [capture/broker/proposals.rs](../../src/capture/broker/proposals.rs) |
 | Context contribution | proposed → accepted / rejected / superseded / expired | proposer, reviewer (a different human) | [contributions.rs](../../src/capture/ingest/contributions.rs) |
 | Work episode | open → closed with outcome (`succeeded` needs evidence) | recorder or a human | [episode.rs](../../src/capture/ingest/episode.rs) |
 | Capability version | candidate → … → published → deprecated → revoked (§11.3) | registry, Publisher role | [lifecycle.rs](../../src/capability/lifecycle.rs) |
@@ -996,7 +996,7 @@ flowchart LR
 | `.crane/context.json` | Policy context bindings (with file digests) | Crane commands | manifest |
 | `.crane/audit.jsonl` | Governance change history | `commit()` | hash chain, manifest |
 | `~/.crane-trust/` | Signing keys, pinned keys, rollback anchors, upload key, integration secrets, alert rules | Crane only | outside the repository; agents refused |
-| `~/.crane-trust/…/runtime/` | Event store, credit ledger, sessions, alerts, sync state, capture (with recipe proposals) / capability / compiler / lab / discovery / invocation / evolution stores, insight reports | hooks, Crane | hash chains, digests, locks |
+| `~/.crane-trust/…/runtime/` | Event store, credit ledger, sessions, alerts, sync state, capture (with checklist proposals) / capability / compiler / lab / discovery / invocation / evolution stores, insight reports | hooks, Crane | hash chains, digests, locks |
 | MongoDB (`foxx` database) | Every installation's uploaded records, repository status, Dashboard Agents, incidents, approvals | the service only | signed requests, read-only dashboard handle |
 
 ---
@@ -1038,7 +1038,7 @@ flowchart LR
 | Capability Registry, Compiler, Lab, Discovery | Fully implemented and tested logic over real stores | Fed mostly by fixture-based episodes until hosted connectors exist |
 | Invocation | Engine, plans, approvals, ledger, reconciliation | Only a read-only `git.commit` adapter is registered; durable transactions need an external runtime behind `TransactionRuntime` |
 | Evolution | Full signal, drift, proposal, regression logic | Live outcome history is thin (few real invocations); the demo is synthetic and labelled so; no review-request mechanism |
-| Insight | Explorations, feedback, five miners, recipe and context proposals with review, kept reports | Reads Work Capture's store only (not yet the registry, the invocation ledger, or evolution); capability and permission patterns are reported for people, not handed off automatically |
+| Insight | Explorations, feedback, five miners, checklist and context proposals with review, kept reports | Reads Work Capture's store only (not yet the registry, the invocation ledger, or evolution); capability and permission patterns are reported for people, not handed off automatically |
 
 ### 15.2 Known limitations worth fixing
 

@@ -641,7 +641,7 @@ impl EvidenceQueryBroker {
             .ok_or_else(|| {
                 CaptureError::new(
                     ErrorCode::NotFound,
-                    format!("no recipe proposal '{proposal_id}'"),
+                    format!("no checklist proposal '{proposal_id}'"),
                 )
             })?;
         proposal.decide(reviewer, decision, reason, now)?;
@@ -863,7 +863,7 @@ impl EvidenceQueryBroker {
             return Err(CaptureError::new(
                 ErrorCode::InvalidRecipe,
                 format!(
-                    "no recipe for '{}', and no permitted source could be explored",
+                    "no checklist for '{}', and no permitted source could be explored",
                     request.investigation_class
                 ),
             ));
@@ -951,13 +951,13 @@ impl EvidenceQueryBroker {
         let recipe = original.recipe.clone().ok_or_else(|| {
             CaptureError::new(
                 ErrorCode::InvalidRecipe,
-                "the original investigation executed no recipe",
+                "the original investigation executed no checklist",
             )
         })?;
         if Some(recipe.digest()) != original.recipe_digest {
             return Err(CaptureError::new(
                 ErrorCode::InvalidRecipe,
-                "the recorded recipe does not match its digest",
+                "the recorded checklist does not match its digest",
             ));
         }
         // A replay belongs to the original's work episode, not a new one
@@ -1009,7 +1009,7 @@ impl EvidenceQueryBroker {
         found.cloned().ok_or_else(|| {
             CaptureError::new(
                 ErrorCode::InvalidRecipe,
-                format!("no recipe for '{}'", request.investigation_class),
+                format!("no checklist for '{}'", request.investigation_class),
             )
         })
     }
@@ -2141,7 +2141,7 @@ impl EvidenceQueryBroker {
             warnings.push(Warning {
                 kind: WarningKind::Uncertainty,
                 message: format!(
-                    "no recipe serves '{}', so the permitted sources were explored; nothing was required, so this pack shows what the sources hold, not whether the question is answered (feedback on it is how a recipe for the question can be learned)",
+                    "no checklist serves '{}', so the permitted sources were explored; nothing was required, so this pack shows what the sources hold, not whether the question is answered (feedback on it is how a checklist for the question can be learned)",
                     request.investigation_class
                 ),
                 refs: Vec::new(),
@@ -2407,7 +2407,7 @@ impl EvidenceQueryBroker {
             warnings.push(warn(
                 WarningKind::Completeness,
                 format!(
-                    "the recipe starts from a known {variable}, which was not given; the steps that need it could only run if it was learned"
+                    "the checklist starts from a known {variable}, which was not given; the steps that need it could only run if it was learned"
                 ),
                 Vec::new(),
             ));

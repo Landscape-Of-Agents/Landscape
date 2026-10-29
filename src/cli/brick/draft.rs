@@ -253,6 +253,90 @@ fn save(repo: &Repo, args: &Args, command: &str, mut brick: Brick) -> Result<(),
     finish(args, response, &detail)
 }
 
+/** A Brick as a draft file holds it (the fields 'crane brick create --file' reads), so a Brick
+ * from elsewhere (the org catalog) becomes a draft here
+ * Input
+    - brick: &Brick - definition
+ * Output
+    - Value
+*/
+pub(super) fn file_of(brick: &Brick) -> Value {
+    json!({
+        "brick_id": brick.brick_id,
+        "type": brick.brick_type,
+        "name": brick.name,
+        "description": brick.description,
+        "intent": brick.intent,
+        "owner": brick.owner,
+        "departments": brick.departments,
+        "config": brick.config,
+        "common_context": brick.common_context,
+        "dependencies": brick.dependencies.iter().map(ToString::to_string).collect::<Vec<_>>(),
+    })
+}
+
+/** Make a validated draft (not saved) from a draft file's content: the next version of its id
+ * here, checked as 'crane brick create --file' checks it
+ * Input
+    - repo: &Repo - repository
+    - file: &Value - draft file content
+    - id: Option<String> - the id to use (else the file's brick_id, else one made from the name)
+ * Output
+    - Result<BrickDraft, String>
+    - Error when a draft of the id exists, the type is unknown or differs from the id's versions,
+      or a field is malformed
+*/
+pub(super) fn draft_of(
+    repo: &Repo,
+    file: &Value,
+    id: Option<String>,
+) -> Result<BrickDraft, String> {
+    let brick_type = BrickType::parse(
+        file["type"]
+            .as_str()
+            .ok_or("the draft names no type (the types are fixed: run 'crane brick types')")?,
+    )?;
+    let name = file["name"].as_str().ok_or("the draft has no name")?;
+    let id = id
+        .or_else(|| file["brick_id"].as_str().map(str::to_string))
+        .unwrap_or_else(|| slug(name));
+    crate::platform::validate_name("Brick", &id)?;
+    if store::brick_draft(&repo.workspace, &id)?.is_some() {
+        return Err(format!(
+            "a draft of {id} already exists here; finish or remove it first, or import under another id (--as ID)"
+        ));
+    }
+    if let Some(latest) = repo.store.versions(&id).last() {
+        if latest.brick.brick_type != brick_type {
+            return Err(format!(
+                "{id} is a {} Brick here; a type never changes (import under another id: --as ID)",
+                latest.brick.brick_type.name()
+            ));
+        }
+    }
+    let by = store::author(&repo.workspace);
+    let mut brick = store::new_brick(
+        &id,
+        repo.store.next_version(&id, false),
+        brick_type,
+        name,
+        by.clone(),
+    );
+    let mut fields = file.clone();
+    if let Some(object) = fields.as_object_mut() {
+        object.remove("brick_id");
+    }
+    apply_file(&mut brick, &fields)?;
+    brick.created_at = crate::platform::now_millis();
+    let validation = validate::brick(&brick, &repo.store, &repo.workspace.root);
+    Ok(BrickDraft {
+        brick,
+        validation,
+        updated_by: by,
+        updated_at: crate::platform::now_millis(),
+    })
+}
+
 /** Run 'crane brick create'
  * Input
     - args: &[String] - arguments after "create"

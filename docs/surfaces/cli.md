@@ -64,8 +64,8 @@ comments); whitespace-only changes never satisfy a target.
 | Admins | `admin list`, `admin register`, `admin add PUBLIC_KEY [name NAME]`, `admin del PUBLIC_KEY` |
 | Zones and flows | `governance sign`, `governance graph [--json]` (zones, flows, and selections as an acyclic graph, with the agents active in each) |
 | Scope | `scope inspect [PATH ...]`, `scope resolve read\|write\|delete\|execute\|network TARGET [lines A-B] [mode MODE]`, `scope explain DECISION_ID\|TOOL_CALL_ID`, `scope diff [--record]`, `scope test`, `scope audit [session ID] [days N]` (all with `--json`; see [Scope](#scope-the-effective-boundary)) |
-| Work Capture | `capture demo [--json]`, `capture sources [--json]`, `capture investigate [commit SHA] [task TASK_ID] [class CLASS] [recipe ID [version N]] [episode EPI] [--json]`, `capture replay QUERY_ID [--json]`, `capture verify PACK_ID`, `capture contribute FILE [--json]`, `capture review CONTRIBUTION_ID accept\|reject reason TEXT`, `capture outcome EPISODE OUTCOME [evidence ID,ID]`, `capture feedback PACK_ID sufficient yes\|no\|unknown [missing TYPE,TYPE] [notes TEXT]`, `capture ask FILE`, `capture question QUESTION_ID answer PACK_ID\|block\|unresolvable\|reopen`, `capture confirm RELATION_ID` |
-| Insight | `insight report [--json]`, `insight reports [--json]`, `insight propose PATTERN_ID`, `insight recipes [--json]`, `insight review PROPOSAL_ID accept\|reject reason TEXT` |
+| Work Capture | `capture demo [--json]`, `capture sources [--json]`, `capture investigate [commit SHA] [task TASK_ID] [class CLASS] [checklist ID [version N]] [episode EPI] [--json]`, `capture replay QUERY_ID [--json]`, `capture verify PACK_ID`, `capture contribute FILE [--json]`, `capture review CONTRIBUTION_ID accept\|reject reason TEXT`, `capture outcome EPISODE OUTCOME [evidence ID,ID]`, `capture feedback PACK_ID sufficient yes\|no\|unknown [missing TYPE,TYPE] [notes TEXT]`, `capture ask FILE`, `capture question QUESTION_ID answer PACK_ID\|block\|unresolvable\|reopen`, `capture confirm RELATION_ID` |
+| Insight | `insight report [--json]`, `insight reports [--json]`, `insight propose PATTERN_ID`, `insight checklists [--json]`, `insight review PROPOSAL_ID accept\|reject reason TEXT` |
 | Capabilities | `capability demo`, `capability intake ...`, `capability create\|propose FILE`, `capability validate (ID [--dry-run] \| file FILE)`, `capability inspect\|versions\|list`, `capability publish ID version N reason TEXT`, `capability deprecate\|revoke\|reject ...`, `capability stale`, `capability shared [ID]` |
 | Compiler | `compile demo [--json]`, `compile episode EPI pack PCK digest D capability ID name TEXT purpose TEXT task-class CLASS [intent FILE] [risk RISK] [profile NAME] [--json]` |
 | Validation Lab | `lab demo [--json]`, `lab run ID [version N] [digest DIGEST] plan FILE [compilation REPORT_ID] [--json]`, `lab reports ID [version N] [--json]` |
@@ -282,22 +282,22 @@ writes to them.
 crane capture demo                 # failed-deployment investigation from fixtures (no credentials)
 crane capture sources              # this repository's live sources and their health
 crane capture investigate task tsk_... commit HEAD --json
-crane capture investigate class pull-request-review --json   # or recipe ID [version N]
+crane capture investigate class pull-request-review --json   # or checklist ID [version N]
 crane capture replay QUERY_ID      # re-run a recorded investigation and report what changed
 crane capture verify PACK_ID       # check a kept Evidence Pack against its manifest
 crane capture outcome EPISODE succeeded evidence EVD_ID,EVD_ID
-crane capture investigate class release-notes --json        # no recipe serves it: an exploration
+crane capture investigate class release-notes --json        # no checklist serves it: an exploration
 crane capture feedback PACK_ID sufficient yes missing test_report notes "also needs the tests"
 ```
 
-**A question no recipe serves is explored, not refused.** When the class matches no recipe (and the
-request names neither a recipe nor a plan), the broker asks every permitted source to discover what
+**A question no checklist serves is explored, not refused.** When the class matches no checklist (and the
+request names neither a checklist nor a plan), the broker asks every permitted source to discover what
 it holds, then builds a bounded plan from the registry: one query per resource type and evidence
-type the actor may receive, filtered by every scope value already known. The plan is a recipe like
+type the actor may receive, filtered by every scope value already known. The plan is a checklist like
 any other (validated, digested, audited, replayable), and the same registry and request always give
 the same plan. Because an exploration cannot know what "complete" means, it requires nothing, and
 its pack is `exploratory`, never `sufficient`. `feedback` records whether a pack served the person
-who used it, and what was still missing; Insight learns recipes from that feedback (see below).
+who used it, and what was still missing; Insight learns checklists from that feedback (see below).
 
 `investigate` uses the live connectors (the local Git repository, DataSea's local event store,
 `.crane/governance.yaml`, and the AgentScript policies with the current validation report). For a
@@ -308,10 +308,10 @@ deterministic fixture connectors. A task can be named by Crane's id (`tsk_...`) 
 key in `CRANE_TASK_ID`. `episode EPI` continues an earlier work episode, and a replay always stays
 in its original's episode.
 
-Built-in recipes: `failed-deployment` v1 and v2 (v2 binds its conditions to the deployment under
+Built-in checklists: `failed-deployment` v1 and v2 (v2 binds its conditions to the deployment under
 investigation and fetches schema evidence when the change touches `migrations/`), `local-change`
 v1, `deployment-discovery` v1 (the deployments of an environment), and `pr-review` v1. A published
-recipe version never changes; a change is a new version.
+checklist version never changes; a change is a new version.
 
 People act on context: `contribute FILE` proposes context (it stays proposed), `review` accepts or
 rejects someone else's proposal (only the repository owner or an admin may), `ask` and `question`
@@ -328,26 +328,26 @@ The code lives in `src/capture`, split into four categories plus the broker:
 | `format` | Raw artifacts (content hash, redaction, `blob:` storage reference), the versioned Evidence Record (`observed_at` separate from `ingested_at`), and five typed parsers that report `parsed`/`partially_parsed`/`failed` |
 | `correlate` | Entities, the controlled relation vocabulary (`CONTAINS` ... `SUPERSEDES`, each `observed`/`declared`/`inferred`/`reviewed`), bounded traversal and Context Views, and assertions with lineage |
 | `ingest` | Eligibility-first evidence selection, context contributions, work episodes, questions, feedback, outcomes, and the Evidence Pack |
-| `broker` | Versioned Evidence Recipes and the Evidence Query Broker |
+| `broker` | Versioned Evidence Checklists and the Evidence Query Broker |
 
-**Recipes.** A recipe is a versioned, immutable list of steps. Each step names a resource kind, an
+**Checklists.** A checklist is a versioned, immutable list of steps. Each step names a resource kind, an
 operation, an evidence type, and parameters that are literals or exactly one `{variable}` from the
 resolved scope. A step runs only when its branch predicate (`exists`, `missing`, `field_equals`,
-`scope_known`, `all`, `any`, `not`) holds for the evidence retrieved so far. A recipe also declares
+`scope_known`, `all`, `any`, `not`) holds for the evidence retrieved so far. A checklist also declares
 required evidence (optionally conditional), stopping rules, and limits. The built-in
 `failed-deployment` v1 retrieves the deployment's logs and metrics only if the deployment failed,
 and schema evidence only if a migration ran. If a step needs a scope value that is unknown, it
 reports *not queried* and never widens the query. A proposed plan (for example from a model) is
-validated as a recipe before anything runs.
+validated as a checklist before anything runs.
 
 **The broker** resolves scope and authorization before any query. A request that explicitly names
 a repository, environment, or resource the actor may not access is rejected without contacting any
 source. The broker validates each query against the resource, enforces step, record, payload, and
 time budgets, then ingests, normalizes, and correlates the results and derives assertions
 (`ci_passed`, `tests_passed`, `deployment_succeeded`, and `change_verified` derived from those
-three). The audit record (`audit.jsonl`) holds the exact recipe and digest, policy decisions,
+three). The audit record (`audit.jsonl`) holds the exact checklist and digest, policy decisions,
 branch decisions, every query with its parameters, source snapshot, records, errors, and timing,
-the budget used, and the metrics. A replay re-runs the recorded recipe against the current sources
+the budget used, and the metrics. A replay re-runs the recorded checklist against the current sources
 and reports `exact`, `diverged`, or `unverifiable` (when a source cannot identify its snapshot).
 
 **Evidence Pack** fields: `pack_id`, `episode_id`, `investigation`, `status`
@@ -372,12 +372,12 @@ is redacted before storage. A record marked secret keeps only its reference.
 
 Insight ([src/insight/](../../src/insight)) finds patterns across everything Work Capture kept, and
 turns them into proposals that people review. It writes nothing it reads, and nothing it finds
-changes a recipe, a context, a capability, or a policy until a person accepts the proposal.
+changes a checklist, a context, a capability, or a policy until a person accepts the proposal.
 
 ```bash
 crane insight report               # patterns under your own access, kept in runtime/insight
-crane insight propose PATTERN_ID   # a recipe proposal, or context for a zone (stays proposed)
-crane insight recipes              # recipe proposals and their status
+crane insight propose PATTERN_ID   # a checklist proposal, or context for a zone (stays proposed)
+crane insight checklists              # checklist proposals and their status
 crane insight review PROPOSAL_ID accept reason "this is what we check"   # owner and admins only
 ```
 
@@ -387,7 +387,7 @@ the person running Crane may see:
 | Miner | Pattern | Where it can lead |
 | --- | --- | --- |
 | `evidence-gaps` | evidence a zone's investigations keep lacking, by reason (empty, unavailable, denied, not queried, parse failed) | system-derived context for the zone, reviewed in the contribution ledger |
-| `questions` | a question class no recipe serves: how often it was asked, explored, and judged sufficient | a learned recipe, reviewed by the owner or an admin |
+| `questions` | a question class no checklist serves: how often it was asked, explored, and judged sufficient | a learned checklist, reviewed by the owner or an admin |
 | `trust` | how often a zone's investigations were sufficient, beside the outcomes of its work | the owner or an admin (the zone's agent permissions) |
 | `outcomes` | a zone or top directory whose work fails clearly more often than all work | context for the zone; a co-occurrence, never a cause |
 | `work` | an agent tool sequence that recurs across work episodes | a capability candidate compiled from one succeeded episode (`crane compile episode`) |
@@ -399,15 +399,15 @@ open them (the same eligibility check Work Capture applies), so a staging-only p
 production's rates. A report names its miners' version and is kept with a digest; a changed report
 is refused when read.
 
-**The learning loop.** A question with no recipe is explored. People judge the explorations with
+**The learning loop.** A question with no checklist is explored. People judge the explorations with
 `crane capture feedback`. When two explorations of a class are judged sufficient, `insight report`
-shows a `question` pattern that leads to a recipe, and `insight propose` builds `learned-CLASS`
+shows a `question` pattern that leads to a checklist, and `insight propose` builds `learned-CLASS`
 from the steps that found evidence in those explorations. It requires what every one of them found,
 plus what the feedback said was still missing. The proposal is made by the system actor
-`crane-insight`, so the owner or an admin can review it. Accepting it publishes the recipe as a new
+`crane-insight`, so the owner or an admin can review it. Accepting it publishes the checklist as a new
 version, pinned like the built-in ones, which can never change. From then on the class is served
-by that recipe, and Insight stops reporting it as unanswered. A learned recipe never displaces a
-built-in one: one the RecipeBook cannot take is refused at review, and `insight recipes` lists any
+by that checklist, and Insight stops reporting it as unanswered. A learned checklist never displaces a
+built-in one: one the RecipeBook cannot take is refused at review, and `insight checklists` lists any
 that a later release shadows.
 
 ## Capability Registry
@@ -548,7 +548,7 @@ crane compile episode EPI pack PCK digest D capability ID name TEXT purpose TEXT
 
 **The report** records:
 - the compiler, schema, and report versions
-- lineage: intake, pack and digest, investigation, recipe, and source references
+- lineage: intake, pack and digest, investigation, checklist, and source references
 - the extraction method and the candidate digest
 - the basis of every step, claim, and applicability element (`observed`, `declared`, `derived`,
   `inferred`, `hypothesis`, `unknown`)

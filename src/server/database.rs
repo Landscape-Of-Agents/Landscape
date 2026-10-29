@@ -24,7 +24,7 @@ use crate::platform::io_error;
  * members' repository status and the service's settings; 10: Dashboard Agent enforcement and
  * approval-gated flow context; 11: resident-agent decisions made on the dashboard; 12: Brick change
  * requests made on the dashboard) */
-pub(crate) const SCHEMA_VERSION: i64 = 12;
+pub(crate) const SCHEMA_VERSION: i64 = 13;
 
 /** How the service reaches its database
  * Fields
@@ -405,6 +405,15 @@ const COLLECTIONS: &[Collection] = &[
             (&[("request_id", 1)], true),
             (&[("repository_id", 1), ("status", 1)], false),
             (&[("repository_id", 1), ("requested_at", -1)], false),
+        ],
+    },
+    // The org catalog of Bricks: one immutable entry per account, Brick id, and version
+    Collection {
+        name: "brick_catalog",
+        required: &["account", "brick_id", "version", "digest", "entry"],
+        indexes: &[
+            (&[("account", 1), ("brick_id", 1), ("version", 1)], true),
+            (&[("account", 1), ("published_at", -1)], false),
         ],
     },
     Collection {

@@ -419,6 +419,39 @@ impl Client {
         self.call("POST", "brick-requests", &body)
     }
 
+    /** Publish an activated Brick version to the org catalog (brick/share.rs)
+     * Input
+        - entry: &Value - signed catalog entry
+     * Output
+        - Result<Value, String> {account, ref, stored: true|false (false: the same version was there)}
+    */
+    pub(crate) fn publish_brick(&self, entry: &Value) -> Result<Value, String> {
+        let body = serde_json::to_vec(entry).map_err(io_error)?;
+        self.call("POST", "brick-catalog", &body)
+    }
+
+    /** List the org catalog of this repository's account
+     * Input
+        - None
+     * Output
+        - Result<Value, String> {account, entries: [{ref, brick_id, version, type, name, intent,
+          digest, published_by, published_at, source_remote}]}
+    */
+    pub(crate) fn brick_catalog(&self) -> Result<Value, String> {
+        self.call("GET", "brick-catalog", &[])
+    }
+
+    /** Fetch one entry of the org catalog, with its definition and signature
+     * Input
+        - reference: &str - "ID@N"
+     * Output
+        - Result<Value, String> {entry}
+    */
+    pub(crate) fn brick_catalog_entry(&self, reference: &str) -> Result<Value, String> {
+        let body = serde_json::to_vec(&json!({"ref": reference})).map_err(io_error)?;
+        self.call("POST", "brick-catalog-entry", &body)
+    }
+
     /** Fetch repository-scoped Dashboard Agent enforcement rules before a tool call. */
     pub(crate) fn dashboard_agent_policy(&self) -> Result<Value, String> {
         self.call("GET", "agent-policy", &[])

@@ -8,8 +8,8 @@ gap with a guess.
 
 1. **You ask a question**, such as "why did this deployment fail?" (a question class) or "what does
    this commit change?".
-2. **A recipe says where to look**: a saved checklist such as "check CI, then the commits, then the
-   logs". If no recipe exists, Crane explores, and that answer is never called complete.
+2. **A checklist says where to look**: a saved checklist such as "check CI, then the commits, then the
+   logs". If no checklist exists, Crane explores, and that answer is never called complete.
 3. **Sources answer** within their fixed scope and your access.
 4. **You get an Evidence Pack**: the evidence, what it proves, and what is missing, sealed with a
    digest so it cannot be changed later.
@@ -37,6 +37,6 @@ crane capture outcome EPISODE succeeded|failed|...
 ## Where it leads
 
 Packs are what Evidence Receipts are made of, what skills cite as proof, and what Insight learns
-from. Feedback that a pack was sufficient teaches the system which explorations deserve a recipe.
+from. Feedback that a pack was sufficient teaches the system which explorations deserve a checklist.
 
 Deep dive: [architecture/work-capture.md](../architecture/work-capture.md).

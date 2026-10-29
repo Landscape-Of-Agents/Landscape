@@ -12,7 +12,7 @@
 // what depends on the call (identity, reads, operation modes, approvals, caps, environment, direct
 // operations, gates that change without a file changing).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::Serialize;
@@ -307,6 +307,8 @@ pub(crate) struct GateRule {
     - watch_pause: Vec<String> - Watch Bricks that pause the target while they fire
     - fail_closed: Vec<String> - pins and shares Crane cannot honor
     - sources: BTreeSet<String> - Brick references that set an enforced control
+    - origins: BTreeMap<String, BTreeSet<String>> - the Brick references behind each merged control,
+      by control key (see Controls::origin), so a finding names the Bricks whose rule decided it
     - gaps: Vec<Problem> - restrictions declared but not enforced
 */
 #[derive(Debug, Clone, Default, Serialize)]
@@ -339,6 +341,8 @@ pub(crate) struct Controls {
     pub(crate) watch_pause: Vec<String>,
     pub(crate) fail_closed: Vec<String>,
     pub(crate) sources: BTreeSet<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) origins: BTreeMap<String, BTreeSet<String>>,
     pub(crate) gaps: Vec<Problem>,
 }
 
@@ -393,11 +397,62 @@ impl Controls {
     }
 
     /** The mode of an operation (None: no Brick sets one)
+             * Input
+                - class: ChangeClass - Create, Update, Delete, Execute, or Network
+             * Output
+                - Option<Mode>
+            */
+    /** The Bricks behind merged controls, for a finding: the references recorded for the keys
+             * (every Brick that sets an enforced control when none is recorded)
+             * Input
+                - keys: impl IntoIterator<Item = String> - control keys: "deny_read:PATTERN",
+                  "read_only:PATTERN", "mode:OPERATION:MODE" (see mode_key), "hide_env:PATTERN",
+                  "require_env:NAME", "network_deny:PATTERN", "network_allow:INDEX", "recovery:LIMIT",
+                  "direct:ADAPTER:OPERATION"
+             * Output
+                - String - references joined by ", "
+            */
+    pub(crate) fn origin(&self, keys: impl IntoIterator<Item = String>) -> String {
+        let found = keys
+            .into_iter()
+            .filter_map(|key| self.origins.get(&key))
+            .flatten()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let chosen = if found.is_empty() {
+            &self.sources
+        } else {
+            &found
+        };
+        chosen.iter().cloned().collect::<Vec<_>>().join(", ")
+    }
+
+    /** The control key of an operation's mode; the Bricks that set the strictest mode are the
+     * ones recorded under the final mode's key
      * Input
-        - class: ChangeClass - Create, Update, Delete, Execute, or Network
+        - class: ChangeClass - operation
+        - mode: Mode - mode
      * Output
-        - Option<Mode>
+        - String, such as "mode:delete:deny"
     */
+    pub(crate) fn mode_key(class: ChangeClass, mode: Mode) -> String {
+        format!("mode:{}:{}", config::serial(&class), config::serial(&mode))
+    }
+
+    /** Record a Brick behind a merged control
+     * Input
+        - key: String - control key
+        - reference: &str - Brick reference
+     * Output
+        - None
+    */
+    fn note(&mut self, key: String, reference: &str) {
+        self.origins
+            .entry(key)
+            .or_default()
+            .insert(reference.to_string());
+    }
+
     pub(crate) fn mode(&self, class: ChangeClass) -> Option<Mode> {
         match class {
             ChangeClass::Create => self.create,
@@ -545,6 +600,23 @@ pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Con
                 }
             }
             Config::Access(access) => {
+                for pattern in &access.read_only {
+                    controls.note(format!("read_only:{pattern}"), reference);
+                }
+                for pattern in &access.deny_read {
+                    controls.note(format!("deny_read:{pattern}"), reference);
+                }
+                for class in [
+                    ChangeClass::Create,
+                    ChangeClass::Update,
+                    ChangeClass::Delete,
+                    ChangeClass::Execute,
+                    ChangeClass::Network,
+                ] {
+                    if let Some(mode) = access.mode(class) {
+                        controls.note(Controls::mode_key(class, mode), reference);
+                    }
+                }
                 controls.read_only.extend(access.read_only.iter().cloned());
                 controls.deny_read.extend(access.deny_read.iter().cloned());
                 if !access.include.is_empty() || !access.exclude.is_empty() {
@@ -587,9 +659,20 @@ pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Con
                 if environment.profile != "agent-hooks" {
                     controls.isolation.push(environment.profile.clone());
                 }
+                for pattern in &environment.hide_env {
+                    controls.note(format!("hide_env:{pattern}"), reference);
+                }
+                for name in &environment.require_env {
+                    controls.note(format!("require_env:{name}"), reference);
+                }
+                for pattern in &environment.network.deny {
+                    controls.note(format!("network_deny:{pattern}"), reference);
+                }
                 controls.hide_env.extend(environment.hide_env);
                 controls.require_env.extend(environment.require_env);
                 if !environment.network.allow.is_empty() {
+                    let index = controls.network_allow.len();
+                    controls.note(format!("network_allow:{index}"), reference);
                     controls.network_allow.push(environment.network.allow);
                 }
                 controls.network_deny.extend(environment.network.deny);
@@ -626,6 +709,10 @@ pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Con
                         .operations
                         .push((rule.adapter.clone(), rule.operation.clone()));
                     if action.deny_direct {
+                        controls.note(
+                            format!("direct:{}:{}", rule.adapter, rule.operation),
+                            reference,
+                        );
                         controls.direct.push((rule.adapter, rule.operation));
                     }
                 }
@@ -633,6 +720,7 @@ pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Con
             }
             Config::Recovery(recovery) => match recovery.max_consecutive_failures {
                 Some(limit) => {
+                    controls.note(format!("recovery:{limit}"), reference);
                     controls.max_consecutive_failures = Some(
                         controls
                             .max_consecutive_failures

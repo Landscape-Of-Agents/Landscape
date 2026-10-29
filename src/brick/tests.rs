@@ -1449,3 +1449,235 @@ fn dashboard_requests_are_checked_before_they_run() {
     assert_eq!(args[..4], ["brick", "create", "--file", "F"]);
     assert!(written.unwrap().contains("\"knowledge\""));
 }
+
+/** A mock call is decided by the same rules as a real one: Access and Approval findings, a cap
+ * reached by the stated session counts, a read-only file's ceiling, an Identity rule skipped for a
+ * person, and malformed calls refused
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn mock_calls_are_decided_like_real_ones() {
+    use super::trial::run;
+    use std::collections::BTreeMap;
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::write(root.join("app/pay.py"), "x = 1\n").unwrap();
+    let mut store = BrickStore::default();
+    for (id, kind, config) in [
+        ("who", BrickType::Identity, json!({"agents": ["claude"]})),
+        (
+            "files",
+            BrickType::Access,
+            json!({"read_only": ["app/locked/**"], "delete": "deny"}),
+        ),
+        (
+            "human",
+            BrickType::Approval,
+            json!({"operations": ["git_push"], "reason": "release owners decide"}),
+        ),
+        ("caps", BrickType::Limits, json!({"max_tool_calls": 5})),
+    ] {
+        store
+            .bricks
+            .push(entry(brick(id, 1, kind, config, ""), VersionState::Active));
+    }
+    store.attachments = ["who", "files", "human", "caps"]
+        .iter()
+        .enumerate()
+        .map(|(index, id)| attached(&format!("a{index}"), "zone:pay", &format!("{id}@1"), ""))
+        .collect();
+    let members = BTreeMap::from([(
+        "zone:pay".to_string(),
+        BTreeSet::from(["app/pay.py".to_string(), "app/locked/key.py".to_string()]),
+    )]);
+    let workspace = workspace(root);
+    let decide = |call: serde_json::Value| {
+        run(
+            &workspace, &store, &members, None, "zone:pay", &call, 10_000_000,
+        )
+    };
+
+    // An ordinary change by an allowed agent passes
+    let plain = decide(json!({"files": ["app/pay.py"], "lines": 3})).unwrap();
+    assert_eq!(plain["verdict"], "allow", "{plain}");
+    assert_eq!(plain["call"]["operation"], "write");
+
+    // Deleting is denied by the Access Brick
+    let delete = decide(json!({"files": ["app/pay.py"], "delete": true})).unwrap();
+    assert_eq!(delete["verdict"], "deny", "{delete}");
+    assert!(
+        delete["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["rule"] == "BRICK_ACCESS_MODE" && finding["brick"] == "files@1"),
+        "{delete}"
+    );
+    // A finding names the Brick whose rule decided it, not every Brick on the target
+    assert!(
+        delete["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|finding| !finding["brick"].as_str().unwrap().contains(',')),
+        "{delete}"
+    );
+
+    // A read-only file gets the observe ceiling, so a change is refused
+    let locked = decide(json!({"files": ["app/locked/key.py"]})).unwrap();
+    assert_eq!(locked["verdict"], "deny", "{locked}");
+    assert_eq!(locked["files"][0]["ceiling"], "observe");
+
+    // A push names no file and still needs a person
+    let push = decide(json!({"command": "git push origin main"})).unwrap();
+    assert_eq!(push["verdict"], "approval", "{push}");
+    assert_eq!(push["call"]["operation"], "execute");
+
+    // Another provider is refused; a person (no agent) is not decided by identity
+    let other = decide(json!({"files": ["app/pay.py"], "agent": "codex"})).unwrap();
+    assert_eq!(other["verdict"], "deny", "{other}");
+    let person = decide(json!({"files": ["app/pay.py"], "agent": ""})).unwrap();
+    assert_eq!(person["verdict"], "allow", "{person}");
+
+    // The stated session counts reach the cap
+    let spent = decide(json!({"files": ["app/pay.py"], "session": {"tool_calls": 5}})).unwrap();
+    assert_ne!(spent["verdict"], "allow", "{spent}");
+    assert!(
+        spent["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["rule"] == "BRICK_LIMIT" && finding["brick"] == "caps@1"),
+        "{spent}"
+    );
+
+    // Malformed calls are refused, not guessed
+    for bad in [
+        json!("write"),
+        json!({"files": ["../outside.py"]}),
+        json!({"files": ["/etc/passwd"]}),
+        json!({"operation": "execute"}),
+        json!({"operation": "fly", "files": ["app/pay.py"]}),
+        json!({"files": ["app/pay.py"], "surprise": 1}),
+        json!({"files": ["app/pay.py"], "session": {"tool_calls": -1}}),
+        json!({"files": ["app/pay.py"], "session": {"coffee": 1}}),
+        json!({"operation": "read"}),
+    ] {
+        assert!(decide(bad.clone()).is_err(), "{bad} was accepted");
+    }
+}
+
+/** A catalog entry verifies only as published: its digest and the publisher's signature hold, a
+ * changed definition or another key is refused, secret-looking text is never shared, and
+ * references are exact
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn catalog_entries_verify_only_as_published() {
+    use super::share::{entry, message, reference, verify, DOMAIN};
+    use crate::trust::crypto::SigningIdentity;
+
+    let key = SigningIdentity::generate().unwrap();
+    let published = brick(
+        "api-guard",
+        2,
+        BrickType::Access,
+        json!({"read_only": ["config/**"]}),
+        "Production settings change through review.",
+    );
+    let reference_text = published.reference().to_string();
+    let sign = |brick: &Brick| {
+        key.sign(
+            DOMAIN,
+            &message(&brick.reference().to_string(), &brick.digest()),
+        )
+    };
+    let good = entry(
+        &published,
+        &key.public_hex(),
+        sign(&published),
+        "ana",
+        "shared guard",
+    );
+    assert_eq!(verify(&good).unwrap(), published);
+    assert_eq!(good["ref"], reference_text);
+
+    // A definition changed after publishing no longer matches its digest
+    let mut changed = good.clone();
+    changed["brick"]["config"] = json!({"read_only": []});
+    assert!(verify(&changed).unwrap_err().contains("digest"));
+    // Another key, or a signature over another version, is refused
+    let other = SigningIdentity::generate().unwrap();
+    let mut forged = good.clone();
+    forged["publisher_key"] = json!(other.public_hex());
+    assert!(verify(&forged).unwrap_err().contains("signature"));
+    let mut renamed = good.clone();
+    renamed["ref"] = json!("api-guard@3");
+    assert!(verify(&renamed).is_err());
+    assert!(verify(&json!({"format": "other"})).is_err());
+    // Secret-looking text is not shared, even when signed
+    let leaky = brick(
+        "leaky",
+        1,
+        BrickType::Knowledge,
+        json!({}),
+        "use token ghp_0123456789abcdefghijklmnopqrstuvwxyzAB",
+    );
+    assert!(
+        verify(&entry(&leaky, &key.public_hex(), sign(&leaky), "ana", "x"))
+            .unwrap_err()
+            .contains("secret")
+    );
+
+    assert_eq!(
+        reference("org:api-guard@2").unwrap(),
+        ("api-guard".into(), 2)
+    );
+    assert_eq!(reference("api-guard@2").unwrap(), ("api-guard".into(), 2));
+    for bad in ["org:api-guard", "org:api-guard@0", "org:../x@1", "org:a@b"] {
+        assert!(reference(bad).is_err(), "{bad}");
+    }
+
+    // The dashboard may request an import (a draft) and a publish (signed)
+    use super::requests::{command, role, Role};
+    assert_eq!(role("import"), Some(Role::Writer));
+    assert_eq!(role("publish"), Some(Role::Admin));
+    let (args, _) = command(
+        "import",
+        &json!({"ref": "org:api-guard@2", "as": "guard"}),
+        "reuse it",
+        "@ana on DataSea, brq_1",
+        "F",
+    )
+    .unwrap();
+    assert_eq!(
+        args[..5],
+        ["brick", "import", "org:api-guard@2", "--as", "guard"]
+    );
+    let (args, _) = command(
+        "publish",
+        &json!({"ref": "api-guard@2"}),
+        "share it",
+        "@ana on DataSea, brq_2",
+        "F",
+    )
+    .unwrap();
+    assert_eq!(args[..3], ["brick", "publish", "api-guard@2"]);
+    assert!(command("import", &json!({"ref": "org:--all@1"}), "x", "@ana", "F").is_err());
+    assert!(command(
+        "import",
+        &json!({"ref": "org:a@1", "as": "../x"}),
+        "x",
+        "@ana",
+        "F"
+    )
+    .is_err());
+}

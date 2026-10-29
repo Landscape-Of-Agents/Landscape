@@ -331,6 +331,61 @@ pub(super) fn handle(
                 .map_err(|error| (400, format!("invalid decision results: {error}")))?;
             store::settle_resident_decisions(database, &repository, &installation, &results)
         }
+        // The org catalog of Bricks (brick/share.rs): an admin's machine publishes an activated
+        // version, signed; the account is the owner of the remote this machine verified
+        ("POST", "brick-catalog") => {
+            let entry: Value = serde_json::from_slice(&body)
+                .map_err(|error| (400, format!("invalid catalog entry: {error}")))?;
+            let brick = crate::brick::share::verify(&entry).map_err(|error| (400, error))?;
+            let (account, remote) = store::catalog_account(database, &repository, &installation)
+                .map_err(|error| (500, error))?
+                .ok_or((403, "only a repository whose GitHub remote this machine verified can publish to an organization's catalog".to_string()))?;
+            let reference = brick.reference().to_string();
+            match store::catalog_digest(database, &account, &brick.brick_id, brick.version)
+                .map_err(|error| (500, error))?
+            {
+                Some(digest) if digest == brick.digest() => {
+                    Ok(json!({"account": account, "ref": reference, "stored": false}))
+                }
+                Some(_) => return Err((409, format!("org:{reference} is already published with other content; a published version never changes, so publish the next version"))),
+                None => {
+                    if store::catalog_size(database, &account).map_err(|error| (500, error))?
+                        >= crate::brick::share::MAX_ENTRIES
+                    {
+                        return Err((409, format!("the catalog of {account} holds {} entries, the most it keeps", crate::brick::share::MAX_ENTRIES)));
+                    }
+                    let kept = store::keep_catalog_entry(database, &account, &remote, &repository, &brick, &entry);
+                    if kept.is_ok() {
+                        super::observe::brick_published(&service.log, &repository, &installation, &account, &reference);
+                    }
+                    kept
+                }
+            }
+        }
+        ("GET", "brick-catalog") => {
+            match store::catalog_account(database, &repository, &installation)
+                .map_err(|error| (500, error))?
+            {
+                Some((account, _)) => store::brick_catalog(database, &account),
+                None => Ok(
+                    json!({"account": null, "entries": [], "detail": "this machine has not verified a GitHub remote for the repository, so it has no organization catalog"}),
+                ),
+            }
+        }
+        ("POST", "brick-catalog-entry") => {
+            let asked: Value = serde_json::from_slice(&body)
+                .map_err(|error| (400, format!("invalid request: {error}")))?;
+            let (id, version) =
+                crate::brick::share::reference(asked["ref"].as_str().unwrap_or_default())
+                    .map_err(|error| (400, error))?;
+            let (account, _) = store::catalog_account(database, &repository, &installation)
+                .map_err(|error| (500, error))?
+                .ok_or((403, "this machine has not verified a GitHub remote for the repository, so it has no organization catalog".to_string()))?;
+            match store::catalog_entry(database, &account, &id, version).map_err(|error| (500, error))? {
+                Some(entry) => Ok(json!({"account": account, "entry": entry})),
+                None => return Err((404, format!("org:{id}@{version} is not in the catalog of {account} ('crane brick catalog' lists it)"))),
+            }
+        }
         // Brick changes people requested on the dashboard, for any machine of the repository
         ("GET", "brick-requests") => store::pending_brick_requests(database, &repository),
         ("POST", "brick-requests") => {
@@ -394,8 +449,17 @@ pub(super) fn handle(
         }
         (
             _,
-            "positions" | "batch" | "link" | "owner" | "agent-policy" | "grants"
-            | "resident-decisions" | "brick-requests" | "clear",
+            "positions"
+            | "batch"
+            | "link"
+            | "owner"
+            | "agent-policy"
+            | "grants"
+            | "resident-decisions"
+            | "brick-requests"
+            | "brick-catalog"
+            | "brick-catalog-entry"
+            | "clear",
         ) => return Err((405, "method not allowed".into())),
         _ => return Err(not_found()),
     };

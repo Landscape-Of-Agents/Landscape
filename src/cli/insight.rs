@@ -25,7 +25,7 @@ use crate::insight::{self, Destination, InsightReport, Pattern, MIN_SUPPORT};
     - Result<(), String>
 */
 pub(crate) fn insight(args: &[String]) -> Result<(), String> {
-    let usage = "usage: crane insight report [--json] | reports [--json] | propose PATTERN_ID | recipes [--json] | review PROPOSAL_ID accept|reject reason TEXT";
+    let usage = "usage: crane insight report [--json] | reports [--json] | propose PATTERN_ID | checklists [--json] | review PROPOSAL_ID accept|reject reason TEXT";
     let id = |position: usize| {
         args.get(position)
             .filter(|word| !word.starts_with('-'))
@@ -36,7 +36,8 @@ pub(crate) fn insight(args: &[String]) -> Result<(), String> {
         Some("report") => report(&Args::parse(&args[1..], &[], &["json"])?),
         Some("reports") => reports(&Args::parse(&args[1..], &[], &["json"])?),
         Some("propose") => propose(&id(1)?),
-        Some("recipes") => recipes(&Args::parse(&args[1..], &[], &["json"])?),
+        // "recipes" was the former name of checklists, kept so existing scripts keep working
+        Some("checklists" | "recipes") => recipes(&Args::parse(&args[1..], &[], &["json"])?),
         Some("review") => {
             let decision = id(2)?;
             review(
@@ -110,7 +111,7 @@ fn next_step(pattern: &Pattern) -> String {
             pattern.pattern_id
         ),
         Destination::Recipe { class } => format!(
-            "propose a recipe for '{class}': crane insight propose {}",
+            "propose a checklist for '{class}': crane insight propose {}",
             pattern.pattern_id
         ),
         Destination::Capability { episode } => format!(
@@ -211,7 +212,7 @@ fn propose(pattern_id: &str) -> Result<(), String> {
     broker.store.save()?;
     match proposed {
         Proposed::Recipe(id) => println!(
-            "Proposed recipe {id}; it is used only after the owner or an admin accepts it (crane insight review {id} accept reason TEXT)"
+            "Proposed checklist {id}; it is used only after the owner or an admin accepts it (crane insight review {id} accept reason TEXT)"
         ),
         Proposed::Context(id) => println!(
             "Proposed context {id}; it stays proposed until a person reviews it (crane capture review {id} accept|reject reason TEXT)"
@@ -220,14 +221,15 @@ fn propose(pattern_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/** List recipe proposals, and accepted recipes the RecipeBook could not take
+/** List checklist proposals (checklists are recipes in the code), and accepted ones the RecipeBook
+ * could not take
  * Input
     - args: &Args - flags
  * Output
     - Result<(), String>
 */
 fn recipes(args: &Args) -> Result<(), String> {
-    args.expect_positional(0, "crane insight recipes [--json]")?;
+    args.expect_positional(0, "crane insight checklists [--json]")?;
     let workspace = Workspace::locate()?;
     let broker = local_broker(&workspace, Clock::system())?;
     let mut proposals = broker.store.recipe_proposals.values().collect::<Vec<_>>();
@@ -275,6 +277,6 @@ fn review(id: &str, decision: &str, args: &Args) -> Result<(), String> {
     let policy = local_policy(&workspace, &broker)?;
     broker.review_recipe(&policy, id, decision, &reason)?;
     broker.store.save()?;
-    println!("Recipe proposal {id}: {decision:?}");
+    println!("Checklist proposal {id}: {decision:?}");
     Ok(())
 }

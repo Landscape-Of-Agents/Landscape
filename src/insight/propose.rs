@@ -210,7 +210,7 @@ fn learn_recipe(
     if steps.is_empty() {
         return Err(CaptureError::new(
             ErrorCode::InvalidRecipe,
-            format!("the explorations of '{class}' found no evidence to learn a recipe from"),
+            format!("the explorations of '{class}' found no evidence to learn a checklist from"),
         ));
     }
     let starting_conditions = steps

@@ -3142,7 +3142,7 @@ changes). Otherwise it is refused, as is a request that waited more than ten min
 Nothing changes until a person applies it on a machine.
 - Action [action_type (BRICK_REQUEST), action_source (DASHBOARD), action_user (GitHub login)]
 - Assessment [assessment_checks ([GITHUB_REPOSITORY_ROLE])]
-- Decision [decision (ALLOW, DENY), decision_rule (GITHUB_WRITE_FOR_DRAFTS_ADMIN_FOR_SIGNED)]
+- Decision [decision (ALLOW, DENY), decision_rule (GITHUB_WRITE_FOR_DRAFTS_ADMIN_FOR_SIGNED, CODEOWNERS_OF_BRICKS_FOR_SIGNED: the CODEOWNERS line covering .crane/bricks.json names who may request signed changes)]
 - Response [response_status (OK, REFUSED), failure_state (NA, ROLE_MISSING)]
 - Other [request]
 
@@ -3153,6 +3153,14 @@ request. The command it ran notes its own F37 event on that machine.
 - Action [action_type (BRICK_REQUEST), action_source (SERVICE)]
 - Response [response_status (APPLIED, FAILED, DISMISSED), failure_state (NA, CRANE_REFUSED)]
 - Other [request, machine_key]
+
+#### F37.13 `BRICK_PUBLISHED` (service)
+An admin's machine published an activated Brick version to the organization catalog ('crane brick
+publish'). The service checked the digest and the publisher's signature, and that nothing looks
+like a secret. Other repositories import it as a draft.
+- Action [action_type (BRICK_CATALOG), action_source (SERVICE)]
+- Response [response_status (OK), failure_state (NA)]
+- Other [account, brick (ID@N), machine_key]
 
 ### F38. Resident agents
 

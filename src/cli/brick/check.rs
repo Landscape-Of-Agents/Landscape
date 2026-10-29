@@ -6,6 +6,8 @@
 // verification and provenance checks are evaluated against the working tree and the signed state;
 // declared-only types say so instead of passing.
 
+use std::collections::BTreeMap;
+
 use serde_json::{json, Value};
 
 use super::{find, open, target_option, targets, Found, Repo};
@@ -15,9 +17,12 @@ use crate::brick::model::{
 };
 use crate::brick::runtime::{run_checks, CheckOutcome};
 use crate::brick::store;
+use crate::brick::store::BrickStore;
 use crate::brick::types::Support;
 use crate::brick::validate;
+use crate::cli::args::Args;
 use crate::cli::protocol::{finish, parse, Response, Status};
+use crate::governance::zones::{self, Lifecycle};
 
 /** Run 'crane brick validate'
  * Input
@@ -106,6 +111,24 @@ fn simulate(repo: &Repo, brick: &Brick, target: &str) -> Result<Value, String> {
     let info = all
         .get(target)
         .ok_or_else(|| format!("{target} is not a Zone or Flow of .crane/governance.yaml"))?;
+    Ok(crate::brick::effect::preview(
+        &repo.workspace,
+        &simulated(repo, brick, target)?,
+        target,
+        &info.files,
+    ))
+}
+
+/** The store as it would be with a Brick activated and attached to a target (its other versions
+ * and attachments stay as they are)
+ * Input
+    - repo: &Repo - repository
+    - brick: &Brick - definition (a draft is simulated as if activated)
+    - target: &str - target key
+ * Output
+    - Result<BrickStore, String>
+*/
+fn simulated(repo: &Repo, brick: &Brick, target: &str) -> Result<BrickStore, String> {
     let mut simulated = repo.store.clone();
     simulated
         .bricks
@@ -135,12 +158,145 @@ fn simulate(repo: &Repo, brick: &Brick, target: &str) -> Result<Value, String> {
         attached_by: Default::default(),
         attached_at: 0,
     });
-    Ok(crate::brick::effect::preview(
+    Ok(simulated)
+}
+
+/** Run 'crane brick test ID --call JSON': decide one mock agent call with the Brick attached to
+ * the target (brick/trial.rs)
+ * Input
+    - args: &Args - parsed arguments
+    - repo: &Repo - repository
+    - brick: &Brick - definition (a draft is tested as if activated)
+    - raw: &str - the mock call as JSON, or the file holding it
+ * Output
+    - Result<(), String>
+*/
+fn trial(args: &Args, repo: &Repo, brick: &Brick, raw: &str) -> Result<(), String> {
+    let text = if raw.trim_start().starts_with('{') {
+        raw.to_string()
+    } else {
+        std::fs::read_to_string(raw).map_err(|error| format!("could not read {raw}: {error}"))?
+    };
+    let call = serde_json::from_str::<Value>(&text)
+        .map_err(|error| format!("the mock call is not JSON: {error}"))?;
+    let all = targets(repo)?;
+    let target = match target_option(args)? {
+        Some(target) => target.key(),
+        None => repo
+            .store
+            .attachments
+            .iter()
+            .find(|attachment| matches!(&attachment.subject, Subject::Brick { brick_id, .. } if *brick_id == brick.brick_id))
+            .map(|attachment| attachment.target.key())
+            .filter(|key| !key.starts_with("runbook:"))
+            .ok_or("name the Flow or Zone to test on: --target flow:ID")?,
+    };
+    let info = all
+        .get(&target)
+        .ok_or_else(|| format!("{target} is not a Zone or Flow of .crane/governance.yaml"))?;
+    let members = all
+        .iter()
+        .filter(|(key, entity)| entity.status == Lifecycle::Active || **key == target)
+        .map(|(key, entity)| (key.clone(), entity.files.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut notes = Vec::new();
+    if info.status != Lifecycle::Active {
+        notes.push(format!(
+            "{target} is not active, so its Bricks do not apply yet; it is tested as if it were"
+        ));
+    }
+    let base = match repo
+        .workspace
+        .trust()
+        .map(|trust| trust.runtime())
+        .and_then(|runtime| zones::cached_limits(&repo.workspace, &repo.state, &runtime))
+    {
+        Ok(limits) => Some(limits),
+        Err(error) => {
+            notes.push(format!(
+                "the Zones' and Flows' own limits could not be read ({error}), so only the Bricks decide here"
+            ));
+            None
+        }
+    };
+    let mut result = crate::brick::trial::run(
         &repo.workspace,
-        &simulated,
-        target,
-        &info.files,
-    ))
+        &simulated(repo, brick, &target)?,
+        &members,
+        base.as_ref(),
+        &target,
+        &call,
+        crate::platform::now_millis(),
+    )?;
+    if let Some(list) = result["notes"].as_array_mut() {
+        list.extend(notes.into_iter().map(Value::from));
+    }
+    let verdict = result["verdict"].as_str().unwrap_or("allow").to_string();
+    crate::platform::notes::note(
+        "BRICK_TESTED",
+        json!({"brick": brick.reference().to_string(), "type": brick.brick_type, "result": "OK", "cases": 1, "mock_call": true, "verdict": verdict}),
+    );
+    let mut detail = result["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|finding| {
+            format!(
+                "  [{}] {} — {} (Brick {})",
+                finding["decision"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_uppercase(),
+                finding["rule"].as_str().unwrap_or_default(),
+                finding["reason"].as_str().unwrap_or_default(),
+                finding["brick"].as_str().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>();
+    for row in result["files"].as_array().into_iter().flatten() {
+        detail.push(format!(
+            "  file {}: ceiling {}, {}{}",
+            row["path"].as_str().unwrap_or_default(),
+            row["ceiling"].as_str().unwrap_or_default(),
+            row["decision"].as_str().unwrap_or_default(),
+            row["reasons"]
+                .as_array()
+                .filter(|reasons| !reasons.is_empty())
+                .map(|reasons| format!(
+                    " ({})",
+                    reasons
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ))
+                .unwrap_or_default()
+        ));
+    }
+    detail.extend(
+        result["notes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|note| format!("  note: {note}")),
+    );
+    let said = match verdict.as_str() {
+        "deny" => "refused",
+        "approval" => "held for a person",
+        _ => "allowed by the Bricks",
+    };
+    let response = Response::new(
+        "brick.test",
+        Status::Ok,
+        format!(
+            "{} on {target}: this call would be {said}",
+            brick.reference()
+        ),
+    )
+    .reference("brick_ref", brick.reference().to_string())
+    .data(json!({"trial": result}));
+    finish(args, response, &detail)
 }
 
 /** Run 'crane brick test'
@@ -150,13 +306,19 @@ fn simulate(repo: &Repo, brick: &Brick, target: &str) -> Result<Value, String> {
     - Result<(), String>
 */
 pub(super) fn test(args: &[String]) -> Result<(), String> {
-    let args = parse(args, &["target", "flow", "zone"], &[])?;
-    args.expect_positional(1, "crane brick test ID[@N] [--target flow:ID|zone:ID]")?;
+    let args = parse(args, &["target", "flow", "zone", "call"], &[])?;
+    args.expect_positional(
+        1,
+        "crane brick test ID[@N] [--target flow:ID|zone:ID] [--call JSON|FILE]",
+    )?;
     let repo = open()?;
     let brick = match find(&repo, &args.positional[0])? {
         Found::Draft(draft) => draft.brick,
         Found::Version(entry) => entry.brick,
     };
+    if let Some(raw) = args.value("call") {
+        return trial(&args, &repo, &brick, &raw);
+    }
     let validation = validate::brick(&brick, &repo.store, &repo.workspace.root);
     let mut cases = vec![case(
         "validation",

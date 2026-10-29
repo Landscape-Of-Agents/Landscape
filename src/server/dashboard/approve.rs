@@ -12,7 +12,7 @@ use mongodb::bson::{self, doc, Bson, Document};
 use mongodb::sync::Database;
 use serde_json::{json, Value};
 
-use super::auth::{Access, Intent};
+use super::auth::{Access, Intent, Ownership};
 use crate::platform::{io_error, now_millis};
 use crate::telemetry::ingest::CODE_DOMAIN;
 use crate::trust::crypto::digest;
@@ -1135,6 +1135,7 @@ impl Approvals {
         remote: &str,
         login: &str,
         access: Access,
+        owners: Option<&Ownership>,
     ) -> Result<String, String> {
         let now = now_millis();
         let collection = self.database.collection::<Document>("brick_requests");
@@ -1145,17 +1146,21 @@ impl Approvals {
             .map_err(io_error)?
             .ok_or("that request was not found or waited too long for sign-in; make it again")?;
         let role = staged.get_str("role").unwrap_or("admin");
-        let allowed = if role == "writer" {
-            access.write
-        } else {
-            access.admin
+        let owned = owners.is_some_and(|owners| owners.owned);
+        let allowed = match (role, owners) {
+            // A code owner of the signed store may draft too
+            ("writer", _) => access.write || owned,
+            // CODEOWNERS cover the signed store: only its owners request signed changes
+            (_, Some(_)) => owned,
+            (_, None) => access.admin,
         };
         let kept = now + super::BRICK_REQUEST_KEPT_MILLIS;
         if !allowed {
-            let detail = if role == "writer" {
-                format!("GitHub does not show @{login} with write access to {remote}; drafts need push, maintain, or admin")
-            } else {
-                format!("GitHub does not show @{login} as an admin of {remote}; signed Brick changes need an admin or owner")
+            let detail = match (role, owners) {
+                ("writer", _) => format!("GitHub does not show @{login} with write access to {remote}; drafts need push, maintain, or admin"),
+                (_, Some(owners)) if owners.owners.is_empty() => format!("{} gives {} no owner (rule '{}'), so no one may request signed Brick changes from the dashboard; add an owner, or apply the change on a machine", owners.file, super::auth::BRICKS_PATH, owners.rule),
+                (_, Some(owners)) => format!("@{login} does not own {} by {} (rule '{}': {}); signed Brick changes need one of its code owners", super::auth::BRICKS_PATH, owners.file, owners.rule, owners.owners.iter().map(|owner| format!("@{owner}")).collect::<Vec<_>>().join(", ")),
+                (_, None) => format!("GitHub does not show @{login} as an admin of {remote}, and no CODEOWNERS line covers {}; signed Brick changes need an admin or owner", super::auth::BRICKS_PATH),
             };
             collection
                 .update_one(

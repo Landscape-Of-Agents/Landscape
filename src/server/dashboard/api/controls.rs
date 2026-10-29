@@ -74,6 +74,7 @@ pub(super) fn bricks(context: &Context) -> Answer {
     view["reported_at"] = status["collected_at"].clone();
     // Changes people requested here, and what may be requested with which GitHub role
     view["requests"] = json!(context.brick_requests);
+    view["catalog"] = json!(context.brick_catalog);
     view["operations"] = crate::brick::requests::OPERATIONS
         .iter()
         .map(|(op, role, label)| json!({"op": op, "role": role.name(), "label": label}))

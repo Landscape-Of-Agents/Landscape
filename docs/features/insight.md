@@ -8,7 +8,7 @@ proposals that a person accepts or rejects. It changes nothing by itself.
 | Pattern | Example |
 |---|---|
 | **Evidence gaps** | 62% of changes in `migrations/` had no test report |
-| **Unanswered questions** | "Which deploy broke refunds?" asked six times, never answered by a recipe |
+| **Unanswered questions** | "Which deploy broke refunds?" asked six times, never answered by a checklist |
 | **Trust** | approvals in a zone always granted, with clean outcomes |
 | **Outcomes** | work touching `migrations/` failed 4 of 6 times against 2 of 10 overall (seen together, not a cause) |
 | **Work** | the same steps done repeatedly: a candidate skill |
@@ -24,7 +24,7 @@ proposals that a person accepts or rejects. It changes nothing by itself.
 
 ```
 crane insight report              # patterns found now
-crane insight propose PATTERN_ID  # turn a pattern into a proposal (a recipe, or context for a zone)
-crane insight recipes             # proposals and their status
+crane insight propose PATTERN_ID  # turn a pattern into a proposal (a checklist, or context for a zone)
+crane insight checklists             # proposals and their status
 crane insight review PROPOSAL_ID accept|reject reason TEXT    # owners and admins
 ```

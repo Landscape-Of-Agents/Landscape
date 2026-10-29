@@ -18,7 +18,7 @@ that hold up in an audit.
 | The system | Examples |
 |---|---|
 | **Decides by itself** (bounded, reversible, already authorized) | deny an action that breaks a rule; quarantine a session after a bypass; route a gap to its owner |
-| **Proposes for a person** | new rules, wider autonomy, a published skill, a learned recipe |
+| **Proposes for a person** | new rules, wider autonomy, a published skill, a learned checklist |
 | **Never decides** | weakening or removing a rule; publishing what it proposed; releasing a quarantine; decisions about people |
 
 Silence never means yes: an unanswered approval parks or denies the action.

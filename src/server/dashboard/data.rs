@@ -181,6 +181,8 @@ pub(crate) fn verified_repositories(read: &ReadOnly) -> Result<Vec<(String, Stri
     - specs: Vec<Value> - the repository's event stream (DASHBOARD.md), oldest first
     - grants: Vec<Value> - credit grants approved on the dashboard, newest first
     - brick_requests: Vec<Value> - Brick change requests made on the dashboard, newest first
+    - brick_catalog: Vec<Value> - the org catalog of the remote's account, newest first, without
+      definitions
     - dashboard_agents: Vec<Value> - configured monitor-only dashboard agents
     - dashboard_incidents: Vec<Value> - detected and manually recorded 3A incidents
     - dashboard_agent_activity: Vec<Value> - recent configuration, evaluation, and incident actions
@@ -204,6 +206,7 @@ pub(crate) struct Context {
     pub(crate) specs: Vec<Value>,
     pub(crate) grants: Vec<Value>,
     pub(crate) brick_requests: Vec<Value>,
+    pub(crate) brick_catalog: Vec<Value>,
     pub(crate) dashboard_agents: Vec<Value>,
     pub(crate) dashboard_incidents: Vec<Value>,
     pub(crate) dashboard_agent_activity: Vec<Value>,
@@ -489,6 +492,31 @@ pub(crate) fn load(
             row
         })
         .collect::<Vec<_>>();
+    // The organization's shared Bricks (brick/share.rs), listed without their definitions
+    let brick_catalog = match super::auth::account(remote) {
+        Some(account) => read
+            .aggregate(
+                "brick_catalog",
+                vec![
+                    doc! {"$match": {"account": &account}},
+                    doc! {"$sort": {"published_at": -1}},
+                    doc! {"$limit": crate::brick::share::MAX_ENTRIES as i64},
+                    doc! {"$project": {"_id": 0, "entry": 0}},
+                ],
+            )?
+            .into_iter()
+            .map(json)
+            .map(|mut row| {
+                row["ref"] = json!(format!(
+                    "{}@{}",
+                    row["brick_id"].as_str().unwrap_or_default(),
+                    row["version"]
+                ));
+                row
+            })
+            .collect::<Vec<_>>(),
+        None => Vec::new(),
+    };
     let statuses = read
         .find("repository_status", among, doc! {"collected_at": -1}, 500)?
         .into_iter()
@@ -524,6 +552,7 @@ pub(crate) fn load(
         specs,
         grants,
         brick_requests,
+        brick_catalog,
         dashboard_agents,
         dashboard_incidents,
         dashboard_agent_activity,

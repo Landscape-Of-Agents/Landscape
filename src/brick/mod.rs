@@ -22,6 +22,8 @@
 //   runtime  - checks, assignment status, and the deterministic monitors (watch)
 //   report   - the Brick part of the status a machine reports to the dashboard
 //   requests - what the dashboard may request, checked by the service and again by the machine
+//   share    - the org catalog on DataSea: signing and checking published versions
+//   trial    - a mock agent call decided by the Brick rules ('crane brick test --call')
 
 pub(crate) mod compose;
 pub(crate) mod config;
@@ -33,7 +35,9 @@ pub(crate) mod model;
 pub(crate) mod report;
 pub(crate) mod requests;
 pub(crate) mod runtime;
+pub(crate) mod share;
 pub(crate) mod store;
+pub(crate) mod trial;
 pub(crate) mod types;
 pub(crate) mod usage;
 pub(crate) mod validate;

@@ -193,9 +193,9 @@ sandbox (not available yet).
 | **Source (connector)** | One system evidence comes from, with a fixed scope. Read-only by design. |
 | **Evidence** | One fact from a source, with where it came from and how sensitive it is. |
 | **Question class** | A kind of question, such as "why did this deployment fail?". |
-| **Recipe** | A saved checklist of where to look for one question class: "check CI, then the commits, then the logs". |
-| **Exploration** | Looking around when no recipe exists yet. Its answer is never called complete. |
-| **Learned recipe** | A recipe the system proposed from explorations people found useful, accepted by an owner. |
+| **Checklist** | A saved, versioned list of where to look for one question class: "check CI, then the commits, then the logs". Formerly called a recipe: the CLI still accepts `recipe ID` and `crane insight recipes`, and stored records and the code keep the field `recipe_id`. |
+| **Exploration** | Looking around when no checklist exists yet. Its answer is never called complete. |
+| **Learned checklist** | A checklist the system proposed from explorations people found useful, accepted by an owner. |
 | **Evidence Pack** | The bundled answer to one question: the evidence, what it proves, and what is missing. Sealed with a digest. |
 | **Proven / contradicted / unknown** | The three answers to any claim (yes, no, unknown). Unknown always comes with a reason. |
 | **Unknown reasons** | Why something is unknown: empty (looked, nothing there), unavailable, denied, not_queried, parse_failed. |
@@ -211,7 +211,7 @@ sandbox (not available yet).
 | **Insight** | Finds repeating patterns across past work and turns them into proposals. Changes nothing itself. |
 | **Pattern** | Something seen repeatedly: a recurring evidence gap, an unanswered question, a work routine. |
 | **Minimum support** | A pattern needs at least 3 cases, so no single record can be singled out. |
-| **Proposal** | A suggested change (a recipe, context, a rule) that waits for a person's decision. |
+| **Proposal** | A suggested change (a checklist, context, a rule) that waits for a person's decision. |
 | **Co-occurrence** | Two things seen together. Never presented as cause. |
 
 ## 10. Records and the dashboard

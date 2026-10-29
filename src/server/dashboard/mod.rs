@@ -1031,12 +1031,23 @@ impl Dashboard {
             Ok(access) => access,
             Err(error) => return (false, error),
         };
+        // The CODEOWNERS of the signed store decide signed changes when they cover it
+        let owners = match auth.owners_of(token, &remote, &viewer.login, auth::BRICKS_PATH) {
+            Ok(owners) => owners,
+            Err(error) => {
+                return (
+                    false,
+                    format!("CODEOWNERS could not be read, so the request was not kept: {error}"),
+                )
+            }
+        };
         let outcome = self.approvals.confirm_brick_request(
             &request_id,
             &repository,
             &remote,
             &viewer.login,
             access,
+            owners.as_ref(),
         );
         // F37.11: a Brick request confirmed or refused on the dashboard
         let mut spec = service_events::dashboard(
@@ -1066,7 +1077,7 @@ impl Dashboard {
         .set(
             "assessment",
             "assessment_checks",
-            ["GITHUB_REPOSITORY_ROLE"],
+            ["GITHUB_REPOSITORY_ROLE", "CODEOWNERS"],
         )
         .set(
             "decision",
@@ -1076,7 +1087,11 @@ impl Dashboard {
         .set(
             "decision",
             "decision_rule",
-            "GITHUB_WRITE_FOR_DRAFTS_ADMIN_FOR_SIGNED",
+            if owners.is_some() {
+                "CODEOWNERS_OF_BRICKS_FOR_SIGNED"
+            } else {
+                "GITHUB_WRITE_FOR_DRAFTS_ADMIN_FOR_SIGNED"
+            },
         )
         .set("resource", "resource", ["CRANE_METADATA"])
         .set("other", "request", &request_id);

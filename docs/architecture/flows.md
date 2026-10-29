@@ -52,7 +52,7 @@ refer to the event scenarios in [DASHBOARD.md](../../DASHBOARD.md).
 
 **Learning (the Capability Compiler and Insight)**
 21. [A Work Capture investigation](#21-a-work-capture-investigation)
-22. [Exploration of a question no recipe serves](#22-exploration-of-a-question-no-recipe-serves)
+22. [Exploration of a question no checklist serves](#22-exploration-of-a-question-no-checklist-serves)
 23. [Replay](#23-replay)
 24. [Contributions, outcomes, feedback, and questions](#24-contributions-outcomes-feedback-and-questions)
 25. [Capability intake, validation, and publication](#25-capability-intake-validation-and-publication)
@@ -443,13 +443,13 @@ Code: [capture/broker/run.rs](../../src/capture/broker/run.rs), [capture/broker/
 
 - **Problem.** Answer "what happened with this work, what is proven, what is not, and why" with an
   honest, bounded, authorized pack.
-- **Lifecycle.** Choose a recipe (plan, explicit, class) → compute the budget → resolve scope and
+- **Lifecycle.** Choose a checklist (plan, explicit, class) → compute the budget → resolve scope and
   authorization → reject explicit forbidden requests → open the episode → resolve zone and flow versions
   → run each step (budget, branch, type, environment, resources by priority, call with deadline and
   paging, per-record authorization, ingest, link, learn) → stop early when satisfied (mandatory steps
   still run) → link governance changes → derive assertions → compute missing evidence with reasons →
   select, build the view, warn, seal → store pack and audit.
-- **Steps and why.** Authorization before retrieval and on every record; recipes decide retrieval, not
+- **Steps and why.** Authorization before retrieval and on every record; checklists decide retrieval, not
   the asker; gaps carry reasons so each routes to the right person.
 - **Humans in the loop.** Choosing the question (class, task, commit) and acting on gaps. Can be reduced
   by triggering investigations automatically on pull requests and deployments.
@@ -462,18 +462,18 @@ Code: [capture/broker/run.rs](../../src/capture/broker/run.rs), [capture/broker/
 - **Fixes needed.** Several known commits: steps check the first and warn (**LOW**). No live
   deployment, log, or metric connectors (**MEDIUM**). Store save reads and merges everything
   (**MEDIUM** at scale).
-- **How to fix safely.** Per-commit runs behind a recipe flag in a new recipe version; new connectors
+- **How to fix safely.** Per-commit runs behind a checklist flag in a new checklist version; new connectors
   through the contract harness; append-only store segments with the existing merge semantics.
 
-## 22. Exploration of a question no recipe serves
+## 22. Exploration of a question no checklist serves
 Code: [capture/broker/run.rs](../../src/capture/broker/run.rs) (`explore`), [capture/broker/recipe.rs](../../src/capture/broker/recipe.rs) (`exploration`).
 
-- **Problem.** A new codebase has no recipes for most questions; refusing them means the system never
+- **Problem.** A new codebase has no checklists for most questions; refusing them means the system never
   learns.
-- **Lifecycle.** No recipe for the class (and no recipe or plan named) → resolve scope → for each
+- **Lifecycle.** No checklist for the class (and no checklist or plan named) → resolve scope → for each
   permitted, querying source: discover what it holds → keep the evidence types the actor may receive
   (dropping types a complete listing lacks) → one query step per resource type and evidence type,
-  filtered by known scope values → validate as a recipe (`explore-…`) → run like any recipe → pack
+  filtered by known scope values → validate as a checklist (`explore-…`) → run like any checklist → pack
   `exploratory` with an Uncertainty warning. No permitted source: an audited refusal.
 - **Steps and why.** Derived from the registry, not from the words of the question, so it is
   deterministic and auditable. It requires nothing, so it never claims sufficiency.
@@ -490,10 +490,10 @@ Code: [capture/broker/run.rs](../../src/capture/broker/run.rs) (`explore`), [cap
 Code: [capture/broker/run.rs](../../src/capture/broker/run.rs) (`replay`, `compare`).
 
 - **Problem.** Would we conclude the same today?
-- **Lifecycle.** Load the original audit → refuse if the recipe digest changed → re-run with current
+- **Lifecycle.** Load the original audit → refuse if the checklist digest changed → re-run with current
   permissions in the original's episode → compare steps in both directions (state, snapshot, evidence
   sets) → `exact`, `diverged`, or `unverifiable` stored on the replay's audit.
-- **Steps and why.** The exact recipe, not the current version, so a difference means the world
+- **Steps and why.** The exact checklist, not the current version, so a difference means the world
   changed.
 - **Humans in the loop.** Deciding what a divergence means.
 - **Surfaces.** CLI (`crane capture replay`).
@@ -644,17 +644,17 @@ Code: [insight/](../../src/insight), [cli/insight.rs](../../src/cli/insight.rs),
 - **Lifecycle.** `crane insight report` builds the read model under the viewer's access → five miners
   produce patterns (counts below 3 suppressed) → the report is digested and kept → `crane insight
   propose PATTERN_ID` turns a pattern into a recipe proposal (from explorations judged sufficient) or
-  system-derived zone context → `crane insight review` (owner or admin) accepts a recipe, publishing a
+  system-derived zone context → `crane insight review` (owner or admin) accepts a checklist, publishing a
   new pinned version → the next question of that class uses it; context goes through contribution
   review.
 - **Steps and why.** Every output enters an existing review step; patterns are co-occurrences with
   denominators; the read model reuses Work Capture's eligibility check, so aggregates cannot leak.
-- **Humans in the loop.** Judging explorations, accepting recipes and context, compiling capability
+- **Humans in the loop.** Judging explorations, accepting checklists and context, compiling capability
   candidates, deciding autonomy. Safe mitigation: schedule reports automatically and notify reviewers;
   never auto-accept.
 - **Surfaces.** CLI; changes what Work Capture retrieves (after acceptance) and what packs contain.
 - **Input, result, storage.** Capture store (read only); reports in `runtime/insight/reports.jsonl`;
-  recipe proposals in `runtime/capture/recipe_proposals.jsonl`; contributions in the contribution
+  checklist proposals in `runtime/capture/recipe_proposals.jsonl`; contributions in the contribution
   ledger.
 - **Reasoning.** Agentic and business intelligence without agents rewriting rules.
 - **Fixes needed.** Reads only the capture store (**MEDIUM**); outcome patterns need hand-recorded

@@ -98,14 +98,14 @@ impl RecipeProposal {
         recipe.validate()?;
         let invalid = |message: &str| Err(CaptureError::new(ErrorCode::InvalidRecipe, message));
         if recipe.investigation_classes.is_empty() {
-            return invalid("a proposed recipe must serve at least one question class");
+            return invalid("a proposed checklist must serve at least one question class");
         }
         if recipe.recipe_id.starts_with(EXPLORATION_PREFIX) || recipe.recipe_id.starts_with("plan-")
         {
-            return invalid("an exploration or a plan is not a publishable recipe id");
+            return invalid("an exploration or a plan is not a publishable checklist id");
         }
         if recipe.version == 0 {
-            return invalid("a published recipe version starts at 1");
+            return invalid("a published checklist version starts at 1");
         }
         let rationale = rationale
             .chars()
@@ -155,13 +155,13 @@ impl RecipeProposal {
         if reviewer.actor.kind != ActorKind::Human || !reviewer.may_review {
             return Err(CaptureError::new(
                 ErrorCode::Unauthorized,
-                "only an authorized human reviewer can accept or reject a recipe",
+                "only an authorized human reviewer can accept or reject a checklist",
             ));
         }
         if reviewer.actor.id == self.proposed_by.id {
             return Err(CaptureError::new(
                 ErrorCode::SelfApproval,
-                "a proposer cannot review their own recipe",
+                "a proposer cannot review their own checklist",
             ));
         }
         if self.status != ProposalStatus::Proposed || decision == ProposalStatus::Proposed {

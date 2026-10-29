@@ -35,7 +35,7 @@ and `RULES_VERSION` stays at 1 because the existing rules did not change.
 - MEDIUM: 2.1.4 (`Actor::human_operator`, review rights from the machine's owner or admin key),
   2.1.8, 2.2.7, 2.3.1 (`deployment-discovery`, `pr-review`), 2.3.5, 2.4.4(2), 2.5.6, 2.7.6(1),
   2.8.3(3), 2.10.2(2), 2.11.1(2), 2.11.1(3), 2.12(1), 2.2.12 (live GitHub connector), 2.14 (replay,
-  verify, contribute, review, outcome, ask, question, confirm; class, recipe, version, episode).
+  verify, contribute, review, outcome, ask, question, confirm; class, checklist, version, episode).
 - LOW: 2.1.1 (older-layout test), 2.1.2, 2.1.7, 2.2.5, 2.2.8 (connector contract harness), 2.2.11,
   2.2.13 (Git pages), 2.3.1 (starting conditions), 2.3.2 (priority), 2.3.6 (mandatory steps),
   2.3.9(2), 2.3.10, 2.5.5, 2.6.2(1), 2.6.4, 2.7.3, 2.9.7, 2.10.3, 2.11.2, 2.12(2), 2.13.3(3).
@@ -61,7 +61,7 @@ and `RULES_VERSION` stays at 1 because the existing rules did not change.
 - 2.2.4(1): no connector needs a credential (the GitHub connector uses the GitHub CLI's own login);
   a resolver belongs with the first one that does.
 - 2.2.4(2): the CLI's resources are defined in code, so there is no stored configuration to version.
-- 2.5.1: the question is a label; recipes and plans decide what is retrieved.
+- 2.5.1: the question is a label; checklists and plans decide what is retrieved.
 - 2.6.2(2): a webhook receiver needs signed authentication of the sending source on the service.
 - 2.7.2: no producer needs a new relation word yet.
 - 2.7.4: no source states how long a relation holds.
@@ -360,7 +360,7 @@ and `RULES_VERSION` stays at 1 because the existing rules did not change.
       for writing, but older readers cannot read v2 audits. Note this in the release.
   - Test: `schema_runs_when_commit_adds_migration` (v2) and `subject_bound_field_equals` (two
     deployments, one failed; logs fetched only for the failed one).
-  - Class guard: a golden test pinning each built-in recipe's digest (see 2.3.9), so any edit to a
+  - Class guard: a golden test pinning each built-in checklist's digest (see 2.3.9), so any edit to a
     published version fails.
 
 - **[2.8.3(1)] Only four assertion rules; failed validation and governed-zone touches produce no
@@ -385,7 +385,7 @@ and `RULES_VERSION` stays at 1 because the existing rules did not change.
     - `change_verified` should probably include `policies_hold`. Decide explicitly: including it
       changes `change_verified` in local-change packs from Unknown to No when validation fails.
   - Test: `failed_validation_yields_policies_hold_no`; `zone_touch_assertion_lists_zones`.
-  - Class guard: a test asserting that every EvidenceType present in a built-in recipe's
+  - Class guard: a test asserting that every EvidenceType present in a built-in checklist's
     `required` list feeds at least one rule, or is explicitly marked "context only".
 
 - **[2.4.4(1)] Learn: the first record ingested decides the commit (Part 8 #11). HIGH**
@@ -435,13 +435,13 @@ and `RULES_VERSION` stays at 1 because the existing rules did not change.
 
 - **[2.1.8] / [2.5.3] Refusals returned as errors leave no audit (Part 4 C1, C2; Part 8 #13).
   MEDIUM**
-  - Breaks: "no recipe for 'X'" (run.rs:565) and an invalid plan (`from_plan` → `validate`)
+  - Breaks: "no checklist for 'X'" (run.rs:565) and an invalid plan (`from_plan` → `validate`)
     return `Err` before any audit exists, so nobody can see later that a request was refused.
   - Fix: before returning the error, push a `QueryAuditRecord` with `recipe: None`,
     `recipe_digest: None` (the fields are already Optional, run.rs:299), `stop_reason: Rejected`,
     `status: Rejected`, the error in `errors`, and `pack_id: None`. Keep returning `Err` so callers
     behave the same.
-  - Check: `replay` refuses audits without a recipe (it already does: "executed no recipe"). The
+  - Check: `replay` refuses audits without a checklist (it already does: "executed no checklist"). The
     CLI output is unchanged.
   - Test: `missing_recipe_is_audited`, `invalid_plan_is_audited`.
   - Class guard: a test that every `Err` path out of `investigate` and `replay` leaves exactly one
@@ -501,14 +501,14 @@ and `RULES_VERSION` stays at 1 because the existing rules did not change.
   - Test: count `evaluate` calls per investigation (expect 1).
   - Class guard: covered by the deadline work in 2.3.7.
 
-- **[2.3.1] Only two recipes exist. MEDIUM**
-  - Breaks: every other question needs a proposed plan or fails (C1). There is no discovery recipe
+- **[2.3.1] Only two checklists exist. MEDIUM**
+  - Breaks: every other question needs a proposed plan or fails (C1). There is no discovery checklist
     ("which deployments happened in this window?").
   - Fix: add `deployment-discovery` v1 (Query Deployment by `{environment}` within the window) and
     `pr-review` v1 (PR, commits, CI, tests, policies, validation, zones).
   - Check: `for_class` collisions (2.3.9(2)). Each new class must be unique.
-  - Test: one scenario test per recipe, plus golden digests.
-  - Class guard: the recipe digest golden test.
+  - Test: one scenario test per checklist, plus golden digests.
+  - Class guard: the checklist digest golden test.
 
 - **[2.3.5] Conditional requirements disappear when their subject was never fetched. MEDIUM**
   - Breaks: `missing` (run.rs:1161) drops requirements whose `when` is false. If the deployment
@@ -673,7 +673,7 @@ and `RULES_VERSION` stays at 1 because the existing rules did not change.
   - Test: an open and save time benchmark with 100k evidence records.
   - Class guard: a CI performance budget for open plus save.
 
-- **[2.14] CLI: one recipe reachable; no replay, contribute, review, outcome, feedback, or
+- **[2.14] CLI: one checklist reachable; no replay, contribute, review, outcome, feedback, or
   verify-pack commands (Part 8 #26). MEDIUM**
   - Breaks: `crane capture investigate` forces `local-change` (`src/cli/capture.rs:323`) and
     grants the caller everything (`src/cli/capture.rs:300-312`). The other functionalities are
@@ -725,17 +725,17 @@ and `RULES_VERSION` stays at 1 because the existing rules did not change.
   ever exceed one page.
 - **[2.3.1] starting_conditions validated but never enforced. LOW.** Fix: at run start, if a
   starting-condition variable is unknown, add a Completeness warning, or reject; decide per
-  recipe.
+  checklist.
 - **[2.3.2] Every permitted resource of a type is asked, so budget doubles. LOW.** Fix: an
   optional `priority` on ResourceDefinition; a step asks the highest-priority available resource,
   plus others only when it fails.
 - **[2.3.6] Stopping early can skip later contradicting evidence. LOW.** Fix: a `mandatory: bool`
-  on RecipeStep (verification) that the stopping rule never skips. Requires a new recipe version.
-- **[2.3.9(2)] for_class picks alphabetically when two recipes serve a class. LOW.** Fix: refuse
+  on RecipeStep (verification) that the stopping rule never skips. Requires a new checklist version.
+- **[2.3.9(2)] for_class picks alphabetically when two checklists serve a class. LOW.** Fix: refuse
   duplicate classes in `RecipeBook::add`.
 - **[2.3.10] Plans have no conditional requirements; relevance is not judged. LOW.** Fix: accept
   `RequiredEvidence` with predicates in plans. Relevance stays the caller's job, so document it.
-- **[2.5.1] question is only a label. LOW (by design).** Document it; provide discovery recipes
+- **[2.5.1] question is only a label. LOW (by design).** Document it; provide discovery checklists
   (2.3.1).
 - **[2.5.5] resolve_versions spends budget without checking it. LOW.** Fix: check
   `run.exhausted()` before each version fetch.
@@ -746,7 +746,7 @@ and `RULES_VERSION` stays at 1 because the existing rules did not change.
   `IngestPath{kind:"webhook"}` (delivery dedupe exists). Needs signed source authentication.
 - **[2.6.4] Payload::field reads only some shapes. LOW.** Fix: support Measurement point names and
   Text excerpt matching where predicates need them, or refuse predicates on unsupported types
-  during recipe validation.
+  during checklist validation.
 - **[2.7.2] The vocabulary lacks words such as COVERS (test → file). LOW.** Fix: add words via code
   plus a VOCABULARY_VERSION bump.
 - **[2.7.3] RelationStatus::Reviewed never produced. LOW.** Fix: a review API that promotes a
@@ -778,7 +778,7 @@ and `RULES_VERSION` stays at 1 because the existing rules did not change.
 ## E. Holds as designed (NONE)
 
 2.1.3 Truth · 2.2.1 resource types · 2.2.6 connector contract · 2.2.9 QuerySpec validation ·
-2.3.8 recipe validate and digest · 2.5.8 step and stop labels · 2.7.7 traversal and Context View ·
+2.3.8 checklist validate and digest · 2.5.8 step and stop labels · 2.7.7 traversal and Context View ·
 2.8.4 hypotheses and trace · 2.9.4 excerpts · 2.9.5 contribution separation · 2.9.8
 InvestigationStatus. Keep their existing tests; they are the guarantees the fixes above rely on.
 
@@ -795,7 +795,7 @@ InvestigationStatus. Keep their existing tests; they are the guarantees the fixe
   freshness checks that run only when `freshness_ms` is set (consider a default freshness per
   evidence type: LOW).
 - Part 7.2 scaling: history → 2.13.3 · sources and slowness → 2.3.7, 2.2.13, plus parallel steps
-  (needs 2.1.7 first, then a step dependency graph with results merged in recipe order so audits
+  (needs 2.1.7 first, then a step dependency graph with results merged in checklist order so audits
   stay identical: MEDIUM, after the correctness fixes) · data per source → 2.2.10(2) · graph →
   2.7.6(1) · repositories → shard by repository (LOW) · freshness → 2.6.2(2).
 - Part 8 register #1–#30 → the sections named in each entry above.
@@ -813,7 +813,7 @@ InvestigationStatus. Keep their existing tests; they are the guarantees the fixe
 6. 2.3.3 / 2.4.4(1) multi-value warning, then fan-out (HIGH), with the replay key change from
    2.12(1).
 7. 2.2.13 dual task identity (HIGH).
-8. 2.3.9 golden recipe digests, then 2.3.4 predicates as failed-deployment v2 (HIGH). Never edit
+8. 2.3.9 golden checklist digests, then 2.3.4 predicates as failed-deployment v2 (HIGH). Never edit
    v1.
 9. 2.8.3 new rules with a RULES_VERSION bump (HIGH), after checking capability, lab, and evolution
    tolerate them.
@@ -826,12 +826,12 @@ InvestigationStatus. Keep their existing tests; they are the guarantees the fixe
 - `CRANE_INGEST_URL=off cargo test --locked`. This runs the 24 capture unit tests
   (`src/capture/tests.rs`), `tests/capture.rs`, AND the capability, compiler, lab, discovery,
   invocation, and evolution suites, which all consume Evidence Packs. Any change to pack shape,
-  assertion ids, SourceState mapping, or recipe versions shows up there.
+  assertion ids, SourceState mapping, or checklist versions shows up there.
 - The byte-identical demo test (tests.rs:1741-1760) must pass unless the change intentionally
   alters demo output. If it does, update the expectations in the same commit and say why.
 - If any persisted shape changes (entity keys, new enum variants, new fields), bump
   SCHEMA_VERSION (mod.rs:38), add a `migrate` step (store.rs:810), and add a version 1 to
   version 2 fixture test.
 - Add the three class guards once, early: (1) the pack-reference property test (2.1.6), (2) the
-  golden recipe digests (2.3.9), (3) the connector contract harness (2.2.12). Together they catch
+  golden checklist digests (2.3.9), (3) the connector contract harness (2.2.12). Together they catch
   most future issues of these kinds automatically.

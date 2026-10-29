@@ -63,6 +63,11 @@ pub(crate) const OPERATIONS: &[(&str, Role, &str)] = &[
     ),
     ("stack-create", Role::Writer, "Draft a Stack"),
     (
+        "import",
+        Role::Writer,
+        "Draft a Brick from the organization's catalog",
+    ),
+    (
         "activate",
         Role::Admin,
         "Activate a draft (sign it as a version)",
@@ -85,6 +90,11 @@ pub(crate) const OPERATIONS: &[(&str, Role, &str)] = &[
     ("unassign", Role::Admin, "Withdraw an agent's assignment"),
     ("stack-activate", Role::Admin, "Activate a Stack draft"),
     ("stack-revoke", Role::Admin, "Revoke a Stack version"),
+    (
+        "publish",
+        Role::Admin,
+        "Publish a version to the organization's catalog",
+    ),
 ];
 
 /** The role an operation needs
@@ -276,8 +286,18 @@ pub(crate) fn check(op: &str, params: &Value, reason: &str) -> Result<Value, Str
             json!({"brick_id": name("Brick", &text("brick_id"))?, "draft": draft(&params["draft"], true)?})
         }
         "migrate" => json!({}),
+        "import" => {
+            let (id, version) = super::share::reference(&text("ref"))?;
+            let as_id = text("as");
+            if !as_id.is_empty() {
+                name("Brick", &as_id)?;
+            }
+            json!({"ref": format!("org:{id}@{version}"), "as": as_id})
+        }
         "activate" => json!({"brick_id": name("Brick", &text("brick_id"))?}),
-        "deprecate" | "revoke" => json!({"ref": version("the version", &text("ref"), false)?}),
+        "deprecate" | "revoke" | "publish" => {
+            json!({"ref": version("the version", &text("ref"), false)?})
+        }
         "attach" => {
             json!({"subject": version("the Brick or Stack", &text("subject"), true)?, "target": target(&text("target"))?, "context": context("context")?})
         }
@@ -367,8 +387,15 @@ pub(crate) fn command(
             owned(&["brick", "edit", &text("brick_id"), "--file", file])
         }
         "migrate" => owned(&["brick", "migrate"]),
+        "import" => {
+            let mut words = owned(&["brick", "import", &text("ref")]);
+            if !text("as").is_empty() {
+                words.extend(owned(&["--as", &text("as")]));
+            }
+            words
+        }
         "activate" => owned(&["brick", "activate", &text("brick_id"), "--reason", &why]),
-        "deprecate" | "revoke" => owned(&["brick", op, &text("ref"), "--reason", &why]),
+        "deprecate" | "revoke" | "publish" => owned(&["brick", op, &text("ref"), "--reason", &why]),
         "attach" => {
             let mut words = owned(&[
                 "brick",

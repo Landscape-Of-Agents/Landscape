@@ -668,6 +668,7 @@ function brickActions(data, row) {
   } else if (row.state === "active") {
     actions.push(button("Edit", () => brickDraftForm(data, row)));
     actions.push(button("Attach", () => brickAttach(data, row.ref), "primary"));
+    if (!(data.catalog || []).some((item) => item.ref === row.ref)) actions.push(button("Publish", withReason("publish", "Publish " + row.ref + " to the organization", { ref: row.ref }, "Sends this exact version, signed with the admin key of the machine that applies the request, to the catalog every repository of the organization sees. They import it as a draft; it grants nothing there until their admin activates it. A published version never changes.")));
     actions.push(button("Deprecate", withReason("deprecate", "Deprecate " + row.ref, { ref: row.ref }, "Existing attachments keep working; new attachments are refused.")));
     actions.push(button("Revoke", withReason("revoke", "Revoke " + row.ref, { ref: row.ref }, "Withdraws the version: attachments to it fail closed (changes in the target need approval) until an admin detaches or upgrades them."), "danger"));
   } else if (row.state === "deprecated") {
@@ -675,6 +676,65 @@ function brickActions(data, row) {
     actions.push(button("Revoke", withReason("revoke", "Revoke " + row.ref, { ref: row.ref }, "Withdraws the version: attachments to it fail closed until an admin detaches or upgrades them."), "danger"));
   }
   return h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" }, actions);
+}
+
+/** A Brick as a draft file 'crane brick create --file' (or Landscape) imports on a machine; text
+ * the report withheld as secret-looking is left out, so the file never carries it */
+function brickDraftFile(row) {
+  const definition = row.definition || {};
+  const shared = definition.common_context || {};
+  return {
+    type: row.type, name: row.name, intent: row.intent || "", owner: row.owner || null, departments: row.departments || [],
+    description: definition.description || "", config: definition.config_withheld ? {} : definition.config || {},
+    common_context: { text: shared.withheld ? "" : shared.text || "", sensitivity: row.sensitivity || "internal" },
+    dependencies: definition.dependencies || [],
+  };
+}
+
+/** Save a JSON value as a file */
+function saveJson(name, value) {
+  h("a", { href: URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" })), download: name }).click();
+}
+
+/** The landscape as a graph: Zones and Flows on the left, the Bricks and Stacks attached to them on
+ * the right, one line per attachment (red when Crane cannot honor the pin, so the target fails
+ * closed). Clicking a Brick opens it; clicking a target shows only its lines. */
+function brickGraph(data) {
+  const svg = Foxx.svg;
+  const targets = (data.targets || []).map((row) => ({ key: row.target, status: row.status }));
+  for (const row of data.attachments) if (!targets.some((item) => item.key === row.target)) targets.push({ key: row.target, status: "" });
+  const subjects = [...new Set(data.attachments.map((row) => row.subject))];
+  if (!targets.length) return h("div", { class: "empty" }, "No Zone or Flow reported yet. Zones and Flows come from .crane/governance.yaml on the reporting machine.");
+  const rows = Math.max(targets.length, subjects.length), rowHeight = 38, width = 820, boxWidth = 250, top = 12;
+  const height = rows * rowHeight + top * 2;
+  const place = (index, count) => top + (index + (rows - count) / 2) * rowHeight;
+  const leftX = 12, rightX = width - boxWidth - 12;
+  const at = (key) => targets.findIndex((item) => item.key === key);
+  const brickOf = (subject) => data.bricks.find((row) => row.ref === subject.replace(/^brick:/, ""));
+  const enabled = (row) => row.state === "enabled" || row.state === "active";
+  let focus = null;
+  const lines = data.attachments.map((row) => {
+    const y1 = place(at(row.target), targets.length) + 15, y2 = place(subjects.indexOf(row.subject), subjects.length) + 15;
+    const bad = (row.issues || []).length > 0;
+    const line = svg("path", { d: "M" + (leftX + boxWidth) + " " + y1 + " C " + (width / 2) + " " + y1 + ", " + (width / 2) + " " + y2 + ", " + rightX + " " + y2, fill: "none", stroke: bad ? "var(--bad)" : enabled(row) ? "var(--ok)" : "var(--line-2)", "stroke-width": bad ? 2.5 : 1.6, "stroke-dasharray": enabled(row) || bad ? null : "4 4" },
+      svg("title", {}, row.target + " → " + row.subject + (bad ? " · fails closed: " + row.issues.join("; ") : "")));
+    line.dataset.target = row.target;
+    return line;
+  });
+  const box = (x, y, label, sub, tone, onclick, title) => svg("g", { style: { cursor: onclick ? "pointer" : "default" }, onclick },
+    svg("title", {}, title || label),
+    svg("rect", { x, y, width: boxWidth, height: 30, rx: 7, fill: "var(--panel-2)", stroke: tone, "stroke-width": 1.4 }),
+    svg("text", { x: x + 10, y: y + 13, "font-size": 12, "font-weight": 700, fill: "var(--ink)" }, label.length > 34 ? label.slice(0, 33) + "…" : label),
+    svg("text", { x: x + 10, y: y + 25, "font-size": 10.5, fill: "var(--muted)" }, sub));
+  const show = (key) => { focus = focus === key ? null : key; for (const line of lines) line.style.opacity = !focus || line.dataset.target === focus ? 1 : 0.12; };
+  const left = targets.map((item, index) => box(leftX, place(index, targets.length), item.key.replace(/^(zone|flow):/, ""), (item.key.startsWith("flow:") ? "Flow" : "Zone") + (item.status ? " · " + item.status : "") + " · " + data.attachments.filter((row) => row.target === item.key).length + " attached", item.key.startsWith("flow:") ? "var(--info)" : "var(--low)", () => show(item.key), item.key + ": click to show only its attachments"));
+  const right = subjects.map((subject, index) => {
+    const brick = brickOf(subject);
+    const stack = subject.startsWith("stack:");
+    return box(rightX, place(index, subjects.length), brick ? brick.name : subject.replace(/^(brick|stack):/, ""), (stack ? "Stack " : (brick ? brick.type + " · " : "")) + subject.replace(/^(brick|stack):/, "") + (brick && brick.state !== "active" ? " · " + brick.state : ""), brick && brick.state === "revoked" ? "var(--bad)" : "var(--line-2)", brick ? () => openBrick(data, brick) : null, brick ? "Open " + brick.ref : subject);
+  });
+  return h("div", { style: "overflow-x:auto" }, svg("svg", { viewBox: "0 0 " + width + " " + height, width: "100%", style: { minWidth: "560px", maxHeight: Math.max(220, height) + "px" }, role: "img", "aria-label": "Zones and Flows with the Bricks attached to them" }, lines, left, right),
+    h("div", { class: "muted", style: "display:flex;gap:14px;flex-wrap:wrap;font-size:12px;margin-top:6px" }, h("span", {}, "Green line: applies"), h("span", {}, "Dashed: disabled"), h("span", {}, "Red: fails closed (changes need a person)"), h("span", {}, "Click a Zone or Flow to isolate it; click a Brick to open it.")));
 }
 
 /** One Brick in the details sidebar: what it is, its configuration and context, and its actions */
@@ -690,7 +750,10 @@ function openBrick(data, row) {
     h("h4", {}, "Configuration"), definition.config_withheld ? h("div", { class: "notice" }, "Not shown: it looks like it holds a secret.") : h("pre", { class: "mono", style: "white-space:pre-wrap;max-height:260px;overflow:auto" }, JSON.stringify(definition.config || {}, null, 2)),
     h("h4", {}, "Common context"), shared.withheld ? h("div", { class: "notice" }, "Not shown: it looks like it holds a secret.") : shared.text ? h("pre", { class: "mono", style: "white-space:pre-wrap;max-height:260px;overflow:auto" }, shared.text + (shared.truncated ? "\n…(cut)" : "")) : h("div", { class: "muted" }, "None."),
     (definition.dependencies || []).length ? h("div", {}, h("h4", {}, "Depends on"), h("code", {}, definition.dependencies.join(", "))) : null,
-    h("h4", {}, "Change it"), brickActions(data, row)), { kind: "Brick", wide: true });
+    h("h4", {}, "Change it"), brickActions(data, row),
+    h("h4", {}, "Download"), h("div", { style: "display:flex;gap:6px;flex-wrap:wrap;align-items:center" },
+      h("button", { type: "button", class: "btn", onclick: () => saveJson((row.brick_id || "brick") + "-draft.json", brickDraftFile(row)) }, "Download as draft"),
+      h("span", { class: "muted" }, "Import it with 'crane brick create --file FILE' in any repository; it starts as a draft there." + (definition.config_withheld || shared.withheld ? " Withheld text is left out." : "")))), { kind: "Brick", wide: true });
 }
 
 /** The actions of an attachment row */
@@ -767,14 +830,17 @@ async function bricksView(main) {
   main.append(hero("Bricks", ["Reusable modules of a fixed kind, attached to Flows and Zones. As reported by", data.reported_by ? data.reported_by.actor : "a member", "at", dt(data.reported_at), "· store", data.trust].join(" "),
     [["Active versions", active], ["Drafts", drafts], ["Stacks", data.stacks.length], ["Attachments", data.attachments.length], ["Assigned agents", data.assignments.length], ["Waiting requests", waiting]]));
   main.append(h("div", { class: "notice", style: "display:flex;gap:8px;flex-wrap:wrap;align-items:center" },
-    h("span", { style: "flex:1;min-width:240px" }, "Change Bricks from here: each change is a request that a person applies on a machine (one click in Landscape, or 'crane brick inbox apply'), where Crane checks it and signs it. Drafts need write access; signed changes need a repository admin."),
+    h("span", { style: "flex:1;min-width:240px" }, "Change Bricks from here: each change is a request that a person applies on a machine (one click in Landscape, or 'crane brick inbox apply'), where Crane checks it and signs it. Drafts need write access. Signed changes need a code owner of .crane/bricks.json when CODEOWNERS covers it, else a repository admin."),
     button("New Brick", () => brickDraftForm(data, null), "primary"), button("Assign an agent", () => brickAssign(data)), button("New Stack", () => stackCreate(data)),
+    data.bricks.length ? button("Download the library", () => saveJson("bricks-library.json", { format: "crane-brick-library/v1", exported_at: Date.now(), reported_at: data.reported_at, bricks: data.bricks.filter((row) => row.state === "active" || row.state === "draft").map((row) => Object.assign({ ref: row.ref, state: row.state }, brickDraftFile(row))) })) : null,
     former ? button("Migrate former kinds (" + former + ")", () => brickRequest("migrate", "Migrate former kinds", { effect: "Drafts the current kinds for every Brick of a former kind (one that split becomes two drafts). An admin activates the drafts and moves the attachments." })) : null));
   main.append(zone("brick-state", "State", "", h("div", { class: "kpis span-12" },
     kpi("Active versions", active, { tone: "brand" }), kpi("Drafts (grant nothing)", drafts),
     kpi("Revoked or deprecated", data.bricks.filter((row) => ["revoked", "deprecated"].includes(row.state)).length, { tone: data.bricks.some((row) => row.state === "revoked") ? "bad" : "" }),
     kpi("Pins Crane cannot honor", pinIssues, { tone: pinIssues ? "bad" : "good", note: "these fail closed" }),
     kpi("Snapshots delivered", data.context.deliveries), kpi("Unchanged, not resent", data.context.reused, { note: "provider caching not measured" }))));
+  main.append(zone("brick-graph", "Landscape", "Which Bricks apply where, as the last machine reported.",
+    panel("Zones, Flows, and their Bricks", { span: 12, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.attachments); put(body, brickGraph(data)); })));
   main.append(zone("brick-requests", "Requests", "Changes asked for on this dashboard. Each waits until a person applies it on a machine; Crane's result comes back here. Requests lapse after 14 days.",
     panel("Requests from the dashboard", { span: 12, flush: true }, async (body, big, ctx) => { ctx.record("rows", data.requests); put(body, dataTable([
       { label: "Request", get: (row) => row.request_id, render: (row) => h("code", {}, row.request_id) },
@@ -835,6 +901,23 @@ async function bricksView(main) {
         row.state === "active" ? h("button", { type: "button", class: "btn primary", onclick: () => brickAttach(data, row.ref) }, "Attach") : null,
         row.state === "active" ? h("button", { type: "button", class: "btn danger", onclick: () => brickRequest("stack-revoke", "Revoke " + row.ref, { facts: [["Stack", row.ref]], effect: "Withdraws the Stack version: attachments to it fail closed until an admin detaches or upgrades them.", params: () => ({ ref: row.stack_id + "@" + row.version }) }) }, "Revoke") : null) },
     ], data.stacks, { noColumns: true, empty: "No Stacks. 'New Stack' above combines exact Brick versions; it is never a new type." })); })));
+  main.append(zone("brick-catalog", "Organization catalog", "Brick versions the repositories of this organization published. Import one as a draft here; it grants nothing until an admin here activates it.",
+    panel("Published Bricks", { span: 12, flush: true }, async (body, big, ctx) => { ctx.record("rows", data.catalog || []); put(body, dataTable([
+      { label: "Brick", get: (row) => "org:" + row.ref, render: (row) => h("code", {}, "org:" + row.ref) },
+      { label: "Name", get: (row) => row.name, render: (row) => h("b", {}, row.name) },
+      { label: "Type", get: (row) => row.type, filter: true },
+      { label: "Intent", get: (row) => row.intent || "" },
+      { label: "From", get: (row) => String(row.source_remote || "").replace(/^github\.com\//, ""), filter: true },
+      { label: "Published by", get: (row) => row.published_by, filter: true },
+      { label: "Why", get: (row) => row.reason || "" },
+      { label: "Published", get: (row) => row.published_at, render: (row) => h("span", { class: "mono" }, dt(row.published_at)) },
+      { label: "Digest", get: (row) => row.digest, render: (row) => h("code", { class: "muted" }, String(row.digest || "").slice(0, 12)) },
+      { label: "", get: () => "", render: (row) => {
+        const here = data.bricks.some((item) => item.brick_id === row.brick_id);
+        const as = h("input", { type: "text", maxlength: "64", placeholder: here ? "required: " + row.brick_id + " exists here" : "keep " + row.brick_id });
+        return h("button", { type: "button", class: "btn primary", onclick: (event) => { event.stopPropagation(); brickRequest("import", "Import org:" + row.ref, { facts: [["Brick", "org:" + row.ref], ["From", row.source_remote], ["Digest", String(row.digest || "").slice(0, 16)]], effect: "A person here runs 'crane brick import org:" + row.ref + "': Crane checks the publisher's signature and the digest, then saves a draft. It grants nothing until an admin here activates it.", fields: [brickField("Import as", as, "another id, when this repository already has a Brick with this id")], params: () => ({ ref: "org:" + row.ref, as: as.value.trim() }) }); } }, "Import here");
+      } },
+    ], data.catalog || [], { sort: 7, dir: -1, empty: "Nothing published yet. An admin publishes an active version with Publish in the Library above, or 'crane brick publish ID@N --reason TEXT'.", name: "foxx-brick-catalog" })); })));
   main.append(zone("brick-agents", "Agents and monitors", "Assignment status (signed) and runtime status (derived on the reporting machine) are separate. Idle agents use no inference: monitors are deterministic.",
     panel("Assigned agents", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.assignments); put(body, dataTable([
       { label: "Agent", get: (row) => row.agent, render: (row) => h("b", {}, row.agent) },

@@ -18,6 +18,7 @@ mod draft;
 mod inbox;
 mod lifecycle;
 mod migrate;
+mod share;
 mod stack;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,7 +43,7 @@ const USAGE: &str = "usage: crane brick types
        crane brick edit ID [the options of create, without --type]
        crane brick migrate [--dry-run]
        crane brick validate ID
-       crane brick test ID[@N] [--target flow:ID|zone:ID]
+       crane brick test ID[@N] [--target flow:ID|zone:ID] [--call JSON|FILE]
        crane brick activate ID --reason TEXT [--dry-run]
        crane brick deprecate ID@N --reason TEXT
        crane brick revoke ID[@N] --reason TEXT
@@ -62,6 +63,7 @@ const USAGE: &str = "usage: crane brick types
        crane brick agents
        crane brick monitor run [--all] | monitor status
        crane brick inbox [list] | inbox apply ID...|--all | inbox dismiss ID...|--all --reason TEXT
+       crane brick publish ID@N --reason TEXT | catalog | import org:ID@N|FILE [--as ID]
   (types are fixed; every command takes --format json; signing commands need an admin key)";
 
 /** Dispatch a brick command
@@ -102,6 +104,9 @@ pub(crate) fn brick(args: &[String]) -> Result<(), String> {
         ["monitor", "run", ..] => agents::monitor_run(rest(2)),
         ["monitor", "status", ..] => agents::monitor_status(rest(2)),
         ["inbox", ..] => inbox::inbox(rest(1)),
+        ["publish", ..] => share::publish(rest(1)),
+        ["catalog", ..] => share::catalog(rest(1)),
+        ["import", ..] => share::import(rest(1)),
         _ => Err(USAGE.into()),
     }
 }

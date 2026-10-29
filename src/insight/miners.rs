@@ -256,7 +256,7 @@ fn questions(model: &ReadModel, served: &BTreeSet<String>, mined: &mut Mined) {
             "questions",
             format!("class {class}"),
             format!(
-                "'{class}' was asked {} times and no recipe serves it; {} explorations ran: {} judged sufficient, {} not, {} not judged",
+                "'{class}' was asked {} times and no checklist serves it; {} explorations ran: {} judged sufficient, {} not, {} not judged",
                 asked.len(),
                 explorations.len(),
                 sufficient.len(),

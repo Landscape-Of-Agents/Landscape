@@ -459,17 +459,17 @@ impl EvidenceRecipe {
     pub(crate) fn validate(&self) -> CaptureResult<()> {
         let invalid = |message: String| Err(CaptureError::new(ErrorCode::InvalidRecipe, message));
         if !crate::capture::resources::registry::valid_identifier(&self.recipe_id) {
-            return invalid(format!("invalid recipe id '{}'", self.recipe_id));
+            return invalid(format!("invalid checklist id '{}'", self.recipe_id));
         }
         if self.steps.is_empty() || self.steps.len() > MAX_RECIPE_STEPS {
-            return invalid(format!("a recipe needs 1 to {MAX_RECIPE_STEPS} steps"));
+            return invalid(format!("a checklist needs 1 to {MAX_RECIPE_STEPS} steps"));
         }
         let ceiling = Budget::ceiling();
         if self.limits.tighter(ceiling) != self.limits
             || self.limits.max_steps == 0
             || self.limits.max_records == 0
         {
-            return invalid("recipe limits must be positive and within the ceiling".into());
+            return invalid("checklist limits must be positive and within the ceiling".into());
         }
         for variable in &self.starting_conditions {
             if !VARIABLES.contains(&variable.as_str()) {
@@ -496,7 +496,7 @@ impl EvidenceRecipe {
                 Operation::Query => {}
                 other => {
                     return invalid(format!(
-                        "step '{}' uses {other:?}; recipes fetch or query",
+                        "step '{}' uses {other:?}; checklists fetch or query",
                         step.step_id
                     ))
                 }

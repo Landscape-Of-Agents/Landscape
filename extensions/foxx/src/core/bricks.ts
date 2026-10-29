@@ -336,6 +336,114 @@ export function inboxSubject(request: InboxRequest): string {
   return textOf("brick_id") || textOf("ref") || textOf("attachment") || textOf("agent") || textOf("stack_id") || textOf("name") || (typeof draft.name === "string" ? draft.name : "") || "";
 }
 
+/** The counts of what a session did before a mock call ('crane brick test --call'). */
+export const SESSION_COUNTS = ["tool_calls", "minutes", "files_changed", "lines_changed", "commands", "network_calls", "denials", "failures_in_row"] as const;
+
+/** The Test form of the Bricks panel, as the page sends it: every field is text or a checkbox. */
+export interface MockForm {
+  operation: string;
+  files: string;
+  lines: string;
+  newFile: boolean;
+  delete: boolean;
+  command: string;
+  hosts: string;
+  agent: string;
+  model: string;
+  watchFiring: boolean;
+  session: Record<string, string>;
+}
+
+/**
+ * Turn the Test form into the mock call Crane decides: files one per line (or comma-separated),
+ * hosts comma-separated, and only the counts that were filled in.
+ * @param form the form
+ * @returns the mock call, or the field and problem the person must fix
+ */
+export function mockCall(form: MockForm): { call?: Record<string, unknown>; field?: string; problem?: string } {
+  const list = (value: string): string[] => value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
+  const whole = (value: string): number | undefined => (/^\d+$/.test(value.trim()) ? Number(value.trim()) : undefined);
+  const call: Record<string, unknown> = { operation: form.operation, agent: form.agent.trim() };
+  const files = list(form.files);
+  if (files.length) call.files = files;
+  if ((form.operation === "read" || form.operation === "write") && !files.length) return { field: "files", problem: "Name at least one file the call reads or changes." };
+  if (form.operation === "execute" && !form.command.trim()) return { field: "command", problem: "Give the command the agent runs." };
+  if (form.command.trim()) call.command = form.command.trim();
+  const hosts = list(form.hosts);
+  if (hosts.length) call.hosts = hosts;
+  if (form.model.trim()) call.model = form.model.trim();
+  if (form.operation === "write") {
+    if (form.lines.trim()) {
+      const lines = whole(form.lines);
+      if (lines === undefined) return { field: "lines", problem: "Lines changed is a whole number." };
+      call.lines = lines;
+    }
+    if (form.newFile) call.new_file = true;
+    if (form.delete) call.delete = true;
+  }
+  const session: Record<string, number> = {};
+  for (const key of SESSION_COUNTS) {
+    const raw = (form.session[key] ?? "").trim();
+    if (!raw) continue;
+    const value = whole(raw);
+    if (value === undefined) return { field: `s-${key}`, problem: "A whole number, or leave it empty." };
+    session[key] = value;
+  }
+  if (Object.keys(session).length) call.session = session;
+  if (form.watchFiring) call.watch_firing = true;
+  return { call };
+}
+
+/**
+ * A mock call that exercises a Brick of a kind, to start the Test form from: the call each kind
+ * decides (a push for an Approval Brick, a hidden variable for an Environment Brick, the cap for a
+ * Limits Brick, ...). The person changes it before running.
+ * @param type the Brick's kind
+ * @param config its configuration
+ * @param file a file of the target, when one is known
+ * @returns the form's starting values, and a line on what kinds that decide nothing per call do
+ */
+export function mockPreset(type: string, config: Record<string, unknown>, file: string): { form: MockForm; note?: string } {
+  const first = (value: unknown): string => (Array.isArray(value) && typeof value[0] === "string" ? value[0] : "");
+  const count = (value: unknown): string => (typeof value === "number" ? String(value) : "");
+  const form: MockForm = { operation: "write", files: file, lines: "10", newFile: false, delete: false, command: "", hosts: "", agent: "claude", model: "", watchFiring: false, session: {} };
+  const kind = LEGACY_TYPES[type] ? LEGACY_TYPES[type].split(" ")[0] : type;
+  switch (kind) {
+    case "identity":
+      form.agent = "codex";
+      break;
+    case "access": {
+      const denied = first(config.deny_read);
+      if (denied) Object.assign(form, { operation: "read", files: denied.replace(/\*\*?.*$/, "example.txt").replace(/\/\//g, "/") });
+      else if (config.delete === "deny" || config.delete === "ask") form.delete = true;
+      break;
+    }
+    case "approval":
+    case "action":
+      Object.assign(form, { operation: "execute", files: "", command: "git push origin main" });
+      break;
+    case "limits":
+      form.session = { tool_calls: count(config.max_tool_calls), minutes: count(config.max_runtime_minutes), files_changed: count(config.max_files_changed), lines_changed: count(config.max_lines_changed) };
+      break;
+    case "environment": {
+      const hidden = first(config.hide_env);
+      Object.assign(form, { operation: "execute", files: "", command: hidden ? `printenv ${hidden.replace(/\*.*$/, "KEY")}` : "curl https://example.com", hosts: "example.com" });
+      break;
+    }
+    case "recovery":
+      form.session = { failures_in_row: count(config.max_consecutive_failures) || "3" };
+      break;
+    case "watch":
+      form.watchFiring = true;
+      break;
+    case "knowledge":
+    case "verification":
+    case "provenance":
+      return { form, note: `A ${kind} Brick decides nothing per call, so any mock call is allowed by it. 'Check the configuration' shows what it does.` };
+  }
+  return { form };
+}
+
 export interface BrickList {
   bricks: BrickRow[];
   stacks: StackRow[];

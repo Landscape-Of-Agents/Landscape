@@ -487,21 +487,6 @@ fn by_mode(mode: Mode, reason: String, rule: &'static str, brick: String) -> Opt
     }
 }
 
-/** The references of the Bricks of a target, for a finding without one deciding Brick
- * Input
-    - controls: &Controls - controls
- * Output
-    - String
-*/
-fn sources(controls: &Controls) -> String {
-    controls
-        .sources
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 /** Decide a call against the Brick rules
  * Input
     - rules: &Rules - Brick rules
@@ -624,7 +609,13 @@ pub(crate) fn decide(
                     decision: Decision::Deny,
                     reason: format!("{file} may not be read in {target}"),
                     rule: "BRICK_DENY_READ",
-                    brick: sources(controls),
+                    brick: controls.origin(
+                        controls
+                            .deny_read
+                            .iter()
+                            .filter(|pattern| glob::matches(pattern, file))
+                            .map(|pattern| format!("deny_read:{pattern}")),
+                    ),
                 }));
             }
         }
@@ -641,7 +632,7 @@ pub(crate) fn decide(
                         super::config::serial(&mode)
                     ),
                     "BRICK_ACCESS_MODE",
-                    sources(controls),
+                    controls.origin([Controls::mode_key(classes[0], mode)]),
                 ));
             }
             for rule in controls
@@ -682,7 +673,7 @@ pub(crate) fn decide(
                         super::config::serial(&mode)
                     ),
                     "BRICK_ACCESS_MODE",
-                    sources(controls),
+                    controls.origin([Controls::mode_key(ChangeClass::Execute, mode)]),
                 ));
             }
             for rule in &controls.approvals {
@@ -812,7 +803,7 @@ pub(crate) fn decide(
                             "{target} needs the environment variable {name}, which is not set"
                         ),
                         rule: "BRICK_ENV_MISSING",
-                        brick: sources(controls),
+                        brick: controls.origin([format!("require_env:{name}")]),
                     }));
                 }
             }
@@ -828,7 +819,11 @@ pub(crate) fn decide(
                         used.failures_in_row
                     ),
                     rule: "BRICK_RECOVERY_PAUSE",
-                    brick: sources(controls),
+                    brick: controls.origin(
+                        controls
+                            .max_consecutive_failures
+                            .map(|limit| format!("recovery:{limit}")),
+                    ),
                 }));
             }
             // Watch: a firing signal pauses the target
@@ -863,7 +858,7 @@ pub(crate) fn decide(
                         super::config::serial(&mode)
                     ),
                     "BRICK_ACCESS_MODE",
-                    sources(controls),
+                    controls.origin([Controls::mode_key(ChangeClass::Network, mode)]),
                 ));
             }
             for destination in call.network {
@@ -877,7 +872,13 @@ pub(crate) fn decide(
                         decision: Decision::Deny,
                         reason: format!("{host} may not be reached while working in {target}"),
                         rule: "BRICK_NETWORK",
-                        brick: sources(controls),
+                        brick: controls.origin(
+                            controls
+                                .network_deny
+                                .iter()
+                                .filter(|pattern| host_matches(pattern, &host))
+                                .map(|pattern| format!("network_deny:{pattern}")),
+                        ),
                     }));
                 } else if controls
                     .network_allow
@@ -888,7 +889,16 @@ pub(crate) fn decide(
                         decision: Decision::Deny,
                         reason: format!("{host} is not an allowed host while working in {target}"),
                         rule: "BRICK_NETWORK",
-                        brick: sources(controls),
+                        brick: controls.origin(
+                            controls
+                                .network_allow
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, allowed)| {
+                                    !allowed.iter().any(|pattern| host_matches(pattern, &host))
+                                })
+                                .map(|(index, _)| format!("network_allow:{index}")),
+                        ),
                     }));
                 }
             }
@@ -900,7 +910,15 @@ pub(crate) fn decide(
                     "the call would reveal {name}, which agents working in {target} may not read"
                 ),
                 rule: "BRICK_HIDDEN_ENV",
-                brick: sources(controls),
+                brick: controls.origin(
+                    controls
+                        .hide_env
+                        .iter()
+                        .filter(|pattern| {
+                            reveals(&texts, &words, std::slice::from_ref(pattern)).is_some()
+                        })
+                        .map(|pattern| format!("hide_env:{pattern}")),
+                ),
             }));
         }
     }
@@ -942,7 +960,7 @@ pub(crate) fn decide(
                         && sequences.iter().any(|sequence| has(&words, sequence))
                 });
                 if matched {
-                    push(Some(Finding { decision: Decision::Deny, reason: format!("{operation} is done through Crane for {target}, not by agents directly"), rule: "BRICK_ACTION_DIRECT", brick: sources(controls) }));
+                    push(Some(Finding { decision: Decision::Deny, reason: format!("{operation} is done through Crane for {target}, not by agents directly"), rule: "BRICK_ACTION_DIRECT", brick: controls.origin([format!("direct:{adapter}:{operation}")]) }));
                 }
             }
         }

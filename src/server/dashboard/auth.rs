@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tiny_http::Request;
 
-use crate::platform::now_millis;
+use crate::platform::{glob, now_millis};
 use crate::server::http::{cookie, header};
 use crate::trust::crypto::{hex, unhex, verify_signature, SigningIdentity};
 
@@ -65,6 +65,25 @@ pub(crate) struct Access {
     pub(crate) write: bool,
     pub(crate) read: bool,
 }
+
+/** Who owns a repository path by its CODEOWNERS file, and whether the viewer is one of them
+ * Fields
+    - file: String - the CODEOWNERS file read (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")
+    - rule: String - the pattern that decides the path (the last matching line, as GitHub reads it)
+    - owners: Vec<String> - its owners: logins and org/team names, without "@" (e-mail entries are
+      not GitHub accounts and are left out); empty when the rule names no owner
+    - owned: bool - the viewer is a listed login or an active member of a listed team
+*/
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Ownership {
+    pub(crate) file: String,
+    pub(crate) rule: String,
+    pub(crate) owners: Vec<String>,
+    pub(crate) owned: bool,
+}
+
+/** The path whose CODEOWNERS decide signed Brick changes on the dashboard */
+pub(crate) const BRICKS_PATH: &str = ".crane/bricks.json";
 
 /** Lifetime of a session */
 pub(crate) const SESSION_MILLIS: u64 = 8 * 60 * 60 * 1000;
@@ -422,6 +441,130 @@ impl Auth {
         ))
     }
 
+    /** Who owns a path of a repository by the CODEOWNERS file on its default branch, and whether
+     * the token's account is one of them (directly, or as an active member of a listed team; team
+     * membership needs the read:org scope the dashboard's sign-in asks for). The token is used only
+     * for these requests and is never kept.
+     * Input
+        - token: &str - OAuth access token
+        - remote: &str - normalized remote, github.com/OWNER/NAME
+        - login: &str - the signed-in account (lowercase)
+        - path: &str - repository-relative path
+     * Output
+        - Result<Option<Ownership>, String>: None when there is no CODEOWNERS file or no line
+          covers the path
+        - Error when GitHub cannot be asked (the caller refuses then: it fails closed)
+    */
+    pub(crate) fn owners_of(
+        &self,
+        token: &str,
+        remote: &str,
+        login: &str,
+        path: &str,
+    ) -> Result<Option<Ownership>, String> {
+        let Some(repository) = remote.strip_prefix("github.com/") else {
+            return Ok(None);
+        };
+        let (status, body) = self.github_get(
+            token,
+            &format!("/repos/{repository}"),
+            "application/vnd.github+json",
+        )?;
+        if !(200..300).contains(&status) {
+            return Err(format!("GitHub returned HTTP {status} for {repository}"));
+        }
+        let details: Value = serde_json::from_str(&body)
+            .map_err(|error| format!("GitHub returned invalid JSON for {repository}: {error}"))?;
+        let branch = details["default_branch"]
+            .as_str()
+            .filter(|branch| !branch.is_empty())
+            .ok_or("GitHub returned no default branch")?;
+        for file in [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"] {
+            let (status, contents) = self.github_get(
+                token,
+                &format!("/repos/{repository}/contents/{file}?ref={}", encode(branch)),
+                "application/vnd.github.raw+json",
+            )?;
+            if status == 404 {
+                continue;
+            }
+            if !(200..300).contains(&status) {
+                return Err(format!(
+                    "GitHub returned HTTP {status} while reading {file}"
+                ));
+            }
+            // GitHub uses the first CODEOWNERS file it finds
+            let Some((rule, owners)) = codeowners_rule(&contents, path) else {
+                return Ok(None);
+            };
+            let mut owned = false;
+            for owner in &owners {
+                owned = match owner.split_once('/') {
+                    None => owner.eq_ignore_ascii_case(login),
+                    Some((org, team)) => {
+                        let (status, body) = self.github_get(
+                            token,
+                            &format!(
+                                "/orgs/{}/teams/{}/memberships/{}",
+                                encode(org),
+                                encode(team),
+                                encode(login)
+                            ),
+                            "application/vnd.github+json",
+                        )?;
+                        (200..300).contains(&status)
+                            && serde_json::from_str::<Value>(&body)
+                                .is_ok_and(|member| member["state"] == "active")
+                    }
+                };
+                if owned {
+                    break;
+                }
+            }
+            return Ok(Some(Ownership {
+                file: file.to_string(),
+                rule,
+                owners,
+                owned,
+            }));
+        }
+        Ok(None)
+    }
+
+    /** Ask GitHub's API with a token, reading at most one megabyte of the answer
+     * Input
+        - token: &str - access token
+        - path: &str - API path
+        - accept: &str - media type
+     * Output
+        - Result<(u16, String), String> status and body (any status; the caller decides)
+    */
+    fn github_get(&self, token: &str, path: &str, accept: &str) -> Result<(u16, String), String> {
+        let response = match self
+            .agent
+            .get(&format!("{}{path}", self.api_url))
+            .set("Authorization", &format!("Bearer {token}"))
+            .set("Accept", accept)
+            .set("User-Agent", concat!("crane/", env!("CARGO_PKG_VERSION")))
+            .call()
+        {
+            Ok(response) => response,
+            Err(ureq::Error::Status(_, response)) => response,
+            Err(error) => return Err(format!("GitHub could not be asked: {error}")),
+        };
+        let status = response.status();
+        let mut body = String::new();
+        response
+            .into_reader()
+            .take(1_000_001)
+            .read_to_string(&mut body)
+            .map_err(|error| format!("could not read GitHub's response: {error}"))?;
+        if body.len() > 1_000_000 {
+            return Err("GitHub response exceeded the one-megabyte limit".into());
+        }
+        Ok((status, body))
+    }
+
     /** Verify the token's GitHub identity and a direct account entry in the repository's default
      * branch CODEOWNERS file. The token is used only for these requests and is never retained.
      */
@@ -529,6 +672,63 @@ impl Auth {
     }
 }
 
+/** Report whether a CODEOWNERS pattern covers a path, as GitHub reads it: a leading "/" anchors it
+ * at the root; a pattern with no other "/" matches at any depth; a trailing "/", or a last segment
+ * without wildcards, also covers everything under that directory
+ * Input
+    - pattern: &str - CODEOWNERS pattern
+    - path: &str - repository-relative path
+ * Output
+    - bool
+*/
+fn codeowners_matches(pattern: &str, path: &str) -> bool {
+    let anchored = pattern.starts_with('/');
+    let body = pattern.trim_start_matches('/');
+    let directory = body.ends_with('/');
+    let body = body.trim_end_matches('/');
+    if body.is_empty() {
+        return false;
+    }
+    let base = if !anchored && !body.contains('/') {
+        format!("**/{body}")
+    } else {
+        body.to_string()
+    };
+    let last = body.rsplit('/').next().unwrap_or(body);
+    let expands = directory || !last.contains(['*', '?']);
+    (!directory && glob::matches(&base, path))
+        || (expands && glob::matches(&format!("{base}/**"), path))
+}
+
+/** The line of a CODEOWNERS file that decides a path: the last one whose pattern covers it
+ * Input
+    - contents: &str - CODEOWNERS text
+    - path: &str - repository-relative path
+ * Output
+    - Option<(String, Vec<String>)> the pattern and its owners (lowercase, without "@"; e-mail
+      entries left out)
+*/
+fn codeowners_rule(contents: &str, path: &str) -> Option<(String, Vec<String>)> {
+    // The last matching line decides, so read from the end
+    contents
+        .lines()
+        .rev()
+        .filter_map(|line| {
+            let mut fields = line
+                .split('#')
+                .next()
+                .unwrap_or_default()
+                .split_whitespace();
+            let pattern = fields.next()?;
+            let owners = fields
+                .filter_map(|owner| owner.strip_prefix('@'))
+                .map(str::to_ascii_lowercase)
+                .collect::<Vec<_>>();
+            Some((pattern.to_string(), owners))
+        })
+        .find(|(pattern, _)| codeowners_matches(pattern, path))
+}
+
 fn codeowners_contains(contents: &str, login: &str) -> bool {
     contents.lines().any(|line| {
         let mut fields = line
@@ -564,7 +764,7 @@ pub(crate) fn encode(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{account, codeowners_contains, Viewer};
+    use super::{account, codeowners_contains, codeowners_matches, codeowners_rule, Viewer};
 
     /** Check owner matching for personal accounts and organizations
      * Input
@@ -594,5 +794,64 @@ mod tests {
         assert!(codeowners_contains(contents, "ALICE"));
         assert!(!codeowners_contains(contents, "team"));
         assert!(!codeowners_contains(contents, "bob"));
+    }
+
+    /** CODEOWNERS patterns are read as GitHub reads them, and the last matching line decides
+     * Input
+        - None
+     * Output
+        - None (panics on failure)
+    */
+    #[test]
+    fn the_last_matching_codeowners_line_decides() {
+        let path = ".crane/bricks.json";
+        for (pattern, covered) in [
+            ("*", true),
+            ("/.crane/", true),
+            (".crane/", true),
+            ("/.crane", true),
+            (".crane/*.json", true),
+            ("/.crane/bricks.json", true),
+            ("bricks.json", true),
+            ("/src/", false),
+            (".crane/drafts/", false),
+            ("/bricks.json", false),
+            ("*.md", false),
+        ] {
+            assert_eq!(codeowners_matches(pattern, path), covered, "{pattern}");
+        }
+        let contents = "* @alice
+/.crane/ @Acme/Platform @bob ana@example.com
+# /.crane/ @mallory
+";
+        assert_eq!(
+            codeowners_rule(contents, path),
+            Some((
+                "/.crane/".into(),
+                vec!["acme/platform".into(), "bob".into()]
+            ))
+        );
+        assert_eq!(
+            codeowners_rule(contents, "src/a.rs"),
+            Some(("*".into(), vec!["alice".into()]))
+        );
+        assert_eq!(
+            codeowners_rule(
+                "/src/ @alice
+",
+                path
+            ),
+            None
+        );
+        // A later line without owners leaves the path unowned
+        assert_eq!(
+            codeowners_rule(
+                "* @alice
+/.crane/
+",
+                path
+            ),
+            Some(("/.crane/".into(), Vec::new()))
+        );
     }
 }

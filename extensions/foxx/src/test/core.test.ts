@@ -252,7 +252,7 @@ test("shows an agent's live context only while it is fresh, with its guidance", 
   assert.ok(contextLabel({ ...context, text: "x".repeat(400) }).length <= 140);
 });
 
-import { attachArgs, BRICK_GUIDE, BRICK_TEMPLATES, BRICK_TYPES, CONTROLS, controlArgs, describePreview, draftFile, envelopeLine, inboxSubject, parseEnvelope, snapshotMarkdown, subjectOf, succeeded } from "../core/bricks";
+import { attachArgs, BRICK_GUIDE, BRICK_TEMPLATES, BRICK_TYPES, CONTROLS, controlArgs, describePreview, draftFile, envelopeLine, inboxSubject, mockCall, mockPreset, parseEnvelope, snapshotMarkdown, subjectOf, succeeded } from "../core/bricks";
 
 test("reads the shared envelope of family commands and nothing else", () => {
   const envelope = parseEnvelope('{"schema_version":1,"command":"brick.list","request_id":"req_1","status":"ok","reason_codes":[],"summary":"2 Bricks","refs":{},"data":{"bricks":[]},"created_at":1}');
@@ -447,4 +447,27 @@ test("names what a DataSea request is about", () => {
   assert.equal(inboxSubject(request("create", { draft: { name: "Glossary" } })), "Glossary");
   assert.equal(inboxSubject(request("revoke", { ref: "guard@1" })), "guard@1");
   assert.equal(inboxSubject(request("migrate", {})), "");
+});
+
+test("builds mock calls for the Test tab and refuses what Crane would refuse", () => {
+  const blank = { operation: "write", files: "", lines: "", newFile: false, delete: false, command: "", hosts: "", agent: "claude", model: "", watchFiring: false, session: {} };
+  assert.equal(mockCall(blank).field, "files", "a change names a file");
+  assert.equal(mockCall({ ...blank, operation: "execute" }).field, "command");
+  assert.equal(mockCall({ ...blank, files: "a.ts", lines: "ten" }).field, "lines");
+  assert.equal(mockCall({ ...blank, files: "a.ts", session: { tool_calls: "-2" } }).field, "s-tool_calls");
+  const built = mockCall({ ...blank, files: "src/a.ts\nsrc/b.ts, src/c.ts", lines: "40", delete: true, hosts: "a.com, b.com", session: { tool_calls: "12", minutes: "" } }).call!;
+  assert.deepEqual(built.files, ["src/a.ts", "src/b.ts", "src/c.ts"]);
+  assert.deepEqual(built.hosts, ["a.com", "b.com"]);
+  assert.equal(built.lines, 40);
+  assert.equal(built.delete, true);
+  assert.deepEqual(built.session, { tool_calls: 12 }, "only the counts filled in");
+  assert.equal(mockCall({ ...blank, operation: "read", files: "a.ts", delete: true }).call!.delete, undefined, "delete belongs to changes");
+  // Each kind starts from a call it decides
+  assert.equal(mockPreset("approval", {}, "").form.command, "git push origin main");
+  assert.equal(mockPreset("identity", {}, "a.ts").form.agent, "codex");
+  assert.equal(mockPreset("limits", { max_tool_calls: 30 }, "a.ts").form.session.tool_calls, "30");
+  assert.match(mockPreset("environment", { hide_env: ["AWS_*"] }, "").form.command, /^printenv AWS_KEY$/);
+  assert.equal(mockPreset("access", { deny_read: ["config/secrets/**"] }, "").form.operation, "read");
+  assert.ok(mockPreset("knowledge", {}, "").note, "kinds that decide nothing per call say so");
+  assert.equal(mockPreset("watch", {}, "").form.watchFiring, true);
 });

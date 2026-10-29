@@ -57,7 +57,7 @@ flowchart LR
   A["1 Act under rules<br/>Crane: decide before, verify after"] --> R["2 Record<br/>Black Box: attempts, decisions, effects"]
   R --> P["3 Prove<br/>Receipts: proven, contradicted, unknown and why"]
   P --> L["4 Learn<br/>Insight: patterns, proposals"]
-  L -->|"reviewed by a person"| K["Organizational knowledge<br/>context, recipes, autonomy, procedures"]
+  L -->|"reviewed by a person"| K["Organizational knowledge<br/>context, checklists, autonomy, procedures"]
   K -->|"delivered to every agent and person"| A
 ```
 
@@ -96,7 +96,7 @@ dashboard is for exploration, not the main interface.
 | **The pull request** | reviewers, tech leads | reads the receipt as a check; sees gaps and routes them | to build (engine exists) |
 | **Slack or Teams** | everyone | daily digest per role; incident summaries; approval and review requests; "ask" in natural language | alerts exist (Slack, WhatsApp); digests, reviews, and ask to build |
 | **The editor** | developers, tech leads | authors rules; sees what agents were told; sees zone patterns next to the code | exists for rules and live context; patterns to build |
-| **The proposal inbox** | tech leads, admins, owners | accepts or rejects everything the system learned: recipes, zone context, autonomy changes, procedures | partial (CLI review exists per kind); unified inbox to build |
+| **The proposal inbox** | tech leads, admins, owners | accepts or rejects everything the system learned: checklists, zone context, autonomy changes, procedures | partial (CLI review exists per kind); unified inbox to build |
 | **The dashboard** | managers, security, compliance, platform | explores the record, role lenses, near misses, trends | exists (record); lenses to build |
 | **Reports** | CEO, board, auditors, insurers | signed monthly and period reports | to build |
 | **The tracker** (Jira, Linear) | product and project managers | a comment on each item with its proof status | Jira alerts exist; proof comments to build |
@@ -126,7 +126,7 @@ Unknown: runtime metrics (the metrics source has been unavailable since Tuesday)
 How it works and why it is safe:
 - A model may translate the words into a question class and references (task, zone, deployment). That
   translation is shown and audited; it never decides what is retrieved.
-- Retrieval is a recipe or an exploration ([capture/broker/run.rs](../../src/capture/broker/run.rs)),
+- Retrieval is a checklist or an exploration ([capture/broker/run.rs](../../src/capture/broker/run.rs)),
   under the asker's access policy, with gaps and reasons.
 - Knowledge comes only from reviewed sources: signed rules, accepted contributions, published
   procedures, and Insight patterns with minimum support.
@@ -152,7 +152,7 @@ both safe and proven, which is exactly the promise.
 | **First-pass receipt completeness** | share of agent changes whose first receipt has no gaps the agent could have closed itself (tests not run, task not linked) | agents learning what "done" means here | Receipts |
 | **Context effectiveness** | denials and rework in a zone before versus after context was added | knowledge actually changing behavior | Black Box, Insight |
 | **Approvals needed per verified change** | human approvals divided by verified changes | autonomy earned where safe | decision events |
-| **Question answer rate** | share of questions answered `sufficient` by a recipe (not exploration) | the organization's playbook growing | Work Capture, Insight |
+| **Question answer rate** | share of questions answered `sufficient` by a checklist (not exploration) | the organization's playbook growing | Work Capture, Insight |
 | **Procedure reuse** | share of recurring work done through a published procedure | learning compounding into reuse | capability pipeline |
 
 ### 3.3 Operations metrics
@@ -239,11 +239,11 @@ to rebuild from zero:
 2. **Decision-time presence.** Only a system that decides before actions run sees the attempts that
    never happened. Near misses and barrier performance are invisible to observability, analytics, and
    CI.
-3. **People-signed knowledge.** Rules, context, recipes, autonomy, and procedures change only through a
+3. **People-signed knowledge.** Rules, context, checklists, autonomy, and procedures change only through a
    person's signature or review. This is the reason an organization lets the system teach its agents.
 4. **Evidence with honest unknowns and a chain of custody.** Every claim is traceable; every gap has a
    reason; nothing can be edited after the fact. Reports built on it survive audits and incidents.
-5. **Organization-specific learned knowledge.** Learned recipes, reviewed context, near-miss history,
+5. **Organization-specific learned knowledge.** Learned checklists, reviewed context, near-miss history,
    earned autonomy, and verified procedures are specific to each customer and accumulate from the day
    of installation. Leaving means starting over.
 6. **An open standard for the rules and events.** Publishing AgentScript and the event specification as
@@ -283,7 +283,7 @@ that misses attempts (ends decision-time presence).
 They get the product free during the program and a founding price afterwards. We ask for weekly use of
 the inbox and near-miss review, permission to use anonymized aggregates, and a case study. Success
 criteria agreed up front: the first prevented change with context in week one, receipts on every pull
-request by week three, the first accepted learned recipe or context by week six.
+request by week three, the first accepted learned checklist or context by week six.
 
 ---
 
@@ -294,7 +294,7 @@ The product sorts every decision into three tiers. The tier is part of the desig
 | Tier | Meaning | Examples |
 |---|---|---|
 | **Takes automatically** | bounded, reversible, and already authorized by signed rules | deny an action that breaks a signed rule; ask a person under an assisted ceiling; degrade or quarantine a session after a violation or bypass; run an investigation; attach a receipt; route a gap to its owner; open an incident when a monitor's threshold is crossed; deliver reviewed context |
-| **Proposes for a person** | changes what agents may do or know | learned recipes; zone context; autonomy ceilings and credit costs; capability publication; outcome of a work episode; new rules from near misses; quarantine of a teammate's session |
+| **Proposes for a person** | changes what agents may do or know | learned checklists; zone context; autonomy ceilings and credit costs; capability publication; outcome of a work episode; new rules from near misses; quarantine of a teammate's session |
 | **Never decides** | would remove the human authority the product is built on | weakening or removing a rule; publishing a capability; accepting its own proposals; releasing a quarantine; changing who is an admin |
 
 ### 7.1 Decisions by domain
@@ -464,7 +464,7 @@ part of the loop is domain-neutral**:
 | Part of the loop | Why it is not specific to code | Code |
 |---|---|---|
 | Resource registry and connector contract | resource types already include `Tracker` and `InternalApi`; a connector is any read-only source with `discover`, `fetch`, `query` | [capture/resources/registry.rs](../../src/capture/resources/registry.rs), [connector.rs](../../src/capture/resources/connector.rs) |
-| Recipes, explorations, budgets | any question class over any registered source | [capture/broker/](../../src/capture/broker) |
+| Checklists, explorations, budgets | any question class over any registered source | [capture/broker/](../../src/capture/broker) |
 | Access policy | resources, environments, evidence types, sensitivity, per actor | [capture/mod.rs](../../src/capture/mod.rs) |
 | Evidence model | proven, contradicted, unknown and why, for any fact | [capture/ingest/pack.rs](../../src/capture/ingest/pack.rs) |
 | Decision before, verification after | any action an agent proposes through a tool, once the tool gateway exists | [hooks/enforce.rs](../../src/hooks/enforce.rs) |
@@ -475,7 +475,7 @@ The extension therefore needs **three things**, not a rewrite:
 1. **Connectors** for business systems, read-only, through the existing contract.
 2. **The tool gateway (MCP)**, so agents acting in business systems pass through the same
    "decide before, verify after" loop as coding agents.
-3. **Domain recipes and evidence types**, so questions in each domain have a known plan and facts have
+3. **Domain checklists and evidence types**, so questions in each domain have a known plan and facts have
    a known shape.
 
 ---
@@ -488,7 +488,7 @@ The extension therefore needs **three things**, not a rewrite:
 |---|---|---|---|
 | **Control** | may this agent do this, here, now? | an agent may not change the fee rule | a sales agent may not send a discount above 15% without approval |
 | **Proof** | what is actually proven about this piece of work? | the receipt of a pull request | whether a customer commitment in a contract was delivered |
-| **Memory** | what does the organization already know about this? | context for a zone; learned recipes | what we promised this customer; why we chose this vendor |
+| **Memory** | what does the organization already know about this? | context for a zone; learned checklists | what we promised this customer; why we chose this vendor |
 | **Autonomy** | where can agents be trusted with more? | widen a zone's ceiling on evidence | let the support agent issue refunds below a limit after a clean record |
 | **Decision** | which route should we take, with what evidence and what unknowns? | which commit caused a failed deployment | build or buy; which market to enter; how to scope new infrastructure (section 17) |
 
@@ -576,7 +576,7 @@ now; support and operations are next; drafting-only domains follow.
 ## 15. What the organization can ask
 
 Every question below is answered the same way: a model may translate the words into a question class
-and references (shown and audited); retrieval is a recipe or an exploration under the asker's access;
+and references (shown and audited); retrieval is a checklist or an exploration under the asker's access;
 the answer states proven, contradicted, and unknown, and links to its evidence. Status says whether the
 data exists.
 
@@ -622,7 +622,7 @@ data exists.
 | Grant the connector's resources to the roles that may use them (access policy) | an admin | minutes |
 | Optionally route the support agent's tools through the gateway | platform team | an hour |
 | Sign the first business rules ("refunds above 200 need a person") on the dashboard | head of support | minutes |
-| Pick or accept domain recipes ("ticket to change", "refund review") | the team | minutes; learned recipes follow from use |
+| Pick or accept domain checklists ("ticket to change", "refund review") | the team | minutes; learned checklists follow from use |
 
 ### 16.3 Why it stays safe
 
@@ -657,7 +657,7 @@ The output is a **Decision Pack**, the decision-making counterpart of the Eviden
 |---|---|
 | The question and its constraints | the decision to make, with signed constraints (budget, policies, deadlines) |
 | Routes | every option considered, including "do nothing", each marked as proposed by a person or by a model (a hypothesis) |
-| Evidence plan per route | which recipes and explorations gather evidence for and against it, across all connected sources |
+| Evidence plan per route | which checklists and explorations gather evidence for and against it, across all connected sources |
 | Evidence per route | proven, contradicted, unknown and why, with links |
 | Risk per route | from the organization's own record: zones and flows touched, past outcomes and near misses in those areas, verification debt, dependencies |
 | Cost and effort estimates | marked as estimates, with what they rest on |
@@ -670,7 +670,7 @@ The output is a **Decision Pack**, the decision-making counterpart of the Eviden
 ```mermaid
 flowchart LR
   F["1 Frame: the question, constraints, owner"] --> O["2 Routes: people propose; models propose as hypotheses"]
-  O --> P["3 Plan evidence per route (recipes, explorations)"]
+  O --> P["3 Plan evidence per route (checklists, explorations)"]
   P --> G["4 Gather under budget, across sources"]
   G --> C["5 Compare: proven / contradicted / unknown, risk from our own record"]
   C --> U{"Unknowns that would change the answer?"}
@@ -757,7 +757,7 @@ Continuing the numbering of section 10.
 | 26 | Business connectors (support desk, CRM, incident tool, observability, billing, service catalog, applicant tracking) | evidence from business systems | to build | [capture/resources/connector.rs](../../src/capture/resources/connector.rs) |
 | 27 | Business evidence types and payload shapes (ticket, deal, quote, contract clause, invoice, incident) | facts with a known shape | to build | [capture/format/record.rs](../../src/capture/format/record.rs) |
 | 28 | Business rules: plain-language forms that compile to signed rules for the gateway (limits, forbidden promises, required approvals) | non-technical people govern their agents | to build | [governance/policy.rs](../../src/governance/policy.rs), the gateway (component 2) |
-| 29 | Domain recipes (ticket to change, refund review, deal promise check, incident to change) | known plans for common questions | to build | [capture/broker/recipe.rs](../../src/capture/broker/recipe.rs) |
+| 29 | Domain checklists (ticket to change, refund review, deal promise check, incident to change) | known plans for common questions | to build | [capture/broker/recipe.rs](../../src/capture/broker/recipe.rs) |
 | 30 | Business receipts (refunds, quotes, contract changes) | proof that agent actions followed policy | to build | [capture/ingest/pack.rs](../../src/capture/ingest/pack.rs) |
 | 31 | Decision Packs: framing, routes, evidence plans, comparison, signed decision, outcome tracking | decision intelligence | to build | Work Capture broker and packs, Insight |
 | 32 | Decision ledger and learning (which routes and evidence predicted good outcomes) | the organization gets better at deciding | to build | [insight/](../../src/insight) |
@@ -888,7 +888,7 @@ records them, and nothing more.
 |---|---|---|
 | **Granting or widening authority**: signing rules, envelopes, autonomy ceilings, admin changes | authority that can widen itself is no authority; this is the root of trust ([governance/state.rs](../../src/governance/state.rs)) | yes, by making it rarer (expiring envelopes renewed from evidence in one review), never by automating it |
 | **Weakening or removing a rule or control** | the system must never be able to loosen its own constraints | no |
-| **Publishing anything reusable**: capabilities, learned recipes, reviewed context | what is published is taught to every agent | yes, by batching proposals and showing their evidence, never by auto-acceptance |
+| **Publishing anything reusable**: capabilities, learned checklists, reviewed context | what is published is taught to every agent | yes, by batching proposals and showing their evidence, never by auto-acceptance |
 | **Irreversible, high-blast actions**: deleting production data, money above limits, signing contracts, public statements, first communication of a new kind to customers | mistakes cannot be undone | partly: envelopes for well-understood, bounded subsets; first-of-kind always human |
 | **Releasing containment**: lifting a quarantine, closing a security incident | the agent under containment is the party least trusted at that moment | no |
 | **Decisions about people**: hiring, performance, discipline, compensation, termination | legal (EU AI Act high-risk employment uses; GDPR Article 22 on solely automated decisions; works councils) and ethical | no; the system may not even prepare individual assessments (section 23.6) |
@@ -913,7 +913,7 @@ records them, and nothing more.
 
 ### 23.2 Recommending changes
 
-- **Allowed.** Rules, context, recipes, autonomy, architecture, priorities, process.
+- **Allowed.** Rules, context, checklists, autonomy, architecture, priorities, process.
 - **How.** Every recommendation is a proposal object with its evidence, the expected effect, the
   counter-evidence, and what would prove it wrong; it lands in the proposal inbox
   ([capture/broker/proposals.rs](../../src/capture/broker/proposals.rs) and

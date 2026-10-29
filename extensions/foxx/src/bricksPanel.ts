@@ -9,7 +9,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 
-import { AttachmentRow, BRICK_GUIDE, BRICK_TEMPLATES, BRICK_TYPES, BrickList, BrickRow, draftFile, InboxRequest, inboxSubject, LEGACY_TYPES, SnapshotData, succeeded, TypeInfo } from "./core/bricks";
+import { AttachmentRow, BRICK_GUIDE, BRICK_TEMPLATES, BRICK_TYPES, BrickList, BrickRow, draftFile, InboxRequest, inboxSubject, LEGACY_TYPES, MockForm, mockCall, mockPreset, SnapshotData, succeeded, TypeInfo } from "./core/bricks";
 import { ContextFormat, contextFromFile, friendlyError, OverlayItem, overlayGraph, problemLines } from "./core/workbench";
 import { call, CANCELLED, Dialogs, OpResult, PanelDeps, refused, scratch, signed, WorkbenchHost, WorkbenchPage } from "./workbench";
 
@@ -147,7 +147,7 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
     async run(op, values, progress, asked) {
       dialogs = asked;
       const result = await operate(op, values, progress);
-      if (result.ok && !op.startsWith("load:")) await deps.refresh();
+      if (result.ok && !op.startsWith("load:") && op !== "test") await deps.refresh();
       return result;
     },
   };
@@ -214,6 +214,13 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
       if (!shown.envelope) return { ok: false, message: shown.error ?? "Crane printed no result." };
       return { ok: true, message: "", data: shown.envelope.data };
     }
+    if (op === "load:test") {
+      const shown = await call<{ definition: { type?: string; config?: Record<string, unknown> } }>(deps, ["brick", "show", text(values.ref)]);
+      if (!shown.envelope) return { ok: false, message: shown.error ?? "Crane printed no result." };
+      const definition = shown.envelope.data?.definition ?? {};
+      return { ok: true, message: "", data: mockPreset(definition.type ?? "", definition.config ?? {}, text(values.file)) };
+    }
+    if (op === "test") return test(values, progress);
     if (op === "inbox:apply" || op === "inbox:dismiss") return inboxDecide(op === "inbox:apply", progress);
     if (op === "migrate") {
       progress("Rewriting former kinds as drafts");
@@ -224,6 +231,38 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
       return { ok: true, message: `${migrated.envelope.summary}${next.length ? " Activate each new draft from the Library, then move its attachments to it:" : ""}`, problems: next };
     }
     return { ok: false, message: `Landscape does not know the operation '${op}'.` };
+  }
+
+  /**
+   * Test a Brick on a Zone or Flow: its configuration checks ('crane brick test'), or, with a mock
+   * call, what the Brick rules would decide about that one agent call ('--call'). A draft is tested
+   * as if it were activated and attached; nothing is signed, run, or counted.
+   * @param values the form: ref, target, mock (send a mock call), and the mock call's fields
+   * @param progress step reporter
+   * @returns result whose data is Crane's envelope data with its status and summary
+   */
+  async function test(values: Record<string, unknown>, progress: (text: string) => void): Promise<OpResult> {
+    const ref = text(values.ref), target = text(values.target);
+    if (!ref) return { ok: false, message: "Choose the Brick to test.", fields: { brick: "Choose a Brick." } };
+    const args = ["brick", "test", ref];
+    if (target) args.push("--target", target);
+    let file: { file: string; dispose(): void } | undefined;
+    if (values.mock) {
+      if (!target) return { ok: false, message: "Choose the Zone or Flow the call happens in.", fields: { target: "Choose a Zone or Flow." } };
+      const built = mockCall(values.form as MockForm);
+      if (!built.call) return { ok: false, message: built.problem ?? "Check the mock call.", fields: built.field ? { [built.field]: built.problem ?? "" } : {} };
+      file = scratch("mock-call.json", JSON.stringify(built.call));
+      args.push("--call", file.file);
+    }
+    progress(file ? "Deciding the mock call" : "Testing the configuration");
+    try {
+      const result = await call<Record<string, unknown>>(deps, args);
+      if (!result.envelope) return { ok: false, message: result.error ?? "Crane printed no result." };
+      if (file && !result.envelope.data?.trial) return refused(result.envelope);
+      return { ok: true, message: "", data: { status: result.envelope.status, summary: result.envelope.summary, ...result.envelope.data } };
+    } finally {
+      file?.dispose();
+    }
   }
 
   /**
@@ -431,6 +470,18 @@ export const BRICKS_PAGE: WorkbenchPage = {
 .prop-help { grid-column: 1 / -1; color: var(--muted); font-size: 11.5px; }
 .prop-help small { display: block; font-size: 11px; }
 @media (max-width: 520px) { .prop { grid-template-columns: 1fr; } }
+.mock { margin: 0; padding: 10px 12px 12px; border: 1px solid var(--line); border-radius: var(--radius); }
+.mock legend { padding: 0 6px; font-weight: 700; }
+.grid3, .grid4 { display: grid; gap: 0 12px; align-items: end; }
+.grid3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.grid4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 720px) { .grid3, .grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.verdict { display: flex; gap: 10px; align-items: center; margin: 14px 0 8px; padding: 10px 12px; border-radius: var(--radius); border: 1px solid var(--line); border-left: 4px solid var(--tone); }
+.verdict b { font-size: 14px; }
+.cases { display: grid; gap: 5px; margin-bottom: 8px; }
+.case { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--raised); }
+.case .what { font-weight: 700; overflow-wrap: anywhere; }
+.case .why { grid-column: 2; color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
 `,
   body: `<div class="shell">
 <header class="top"><span class="mark" aria-hidden="true">▦</span><div class="grow"><b>Bricks</b><div class="muted small" id="summary">Loading…</div></div><button class="btn" id="refresh" title="Ask Crane again">Refresh</button></header>
@@ -445,6 +496,7 @@ export const BRICKS_PAGE: WorkbenchPage = {
     <button data-tab="create" role="tab" aria-selected="true">Create a Brick</button>
     <button data-tab="attach" role="tab">Attach</button>
     <button data-tab="context" role="tab">Edit context</button>
+    <button data-tab="test" role="tab">Test</button>
     <button data-tab="library" role="tab">Library<span class="count" id="count-library"></span></button>
   </div>
   <div class="body">
@@ -502,6 +554,49 @@ export const BRICKS_PAGE: WorkbenchPage = {
       </div>
     </div>
 
+    <div data-panel="test" hidden>
+      <form id="test-form" novalidate>
+        <div class="grid2">
+          <div class="field" data-field="brick"><label for="t-brick">Brick</label><select id="t-brick"></select><div class="help">A draft is tested as if it were activated and attached.</div></div>
+          <div class="field" data-field="target"><label for="t-target">Zone or Flow</label><select id="t-target" data-targets></select><div class="help">Where the call happens. Or click one in the graph.</div></div>
+        </div>
+        <div class="row" style="margin:2px 0 12px"><button class="btn" id="t-check" type="button">Check the configuration</button><span class="muted small">What the Brick restricts on that Zone or Flow, file by file, and its checks.</span></div>
+        <fieldset class="mock"><legend>Mock agent call</legend>
+          <div id="t-note" class="banner info" hidden style="margin-bottom:8px"><span class="icon">ℹ</span><div class="grow small" id="t-note-text"></div></div>
+          <div class="grid3">
+            <div class="field" data-field="operation"><label for="t-operation">The agent</label><select id="t-operation"><option value="write">changes files</option><option value="read">reads files</option><option value="execute">runs a command</option><option value="other">does something else</option></select></div>
+            <div class="field" data-field="agent"><label for="t-agent">Provider</label><input type="text" id="t-agent" placeholder="claude"><div class="help">Empty: a person, not an agent.</div></div>
+            <div class="field" data-field="model"><label for="t-model">Model <span class="muted">(optional)</span></label><input type="text" id="t-model" placeholder="claude-opus-5-5"></div>
+          </div>
+          <div class="field" data-field="files"><label for="t-files">Files <span class="muted">(repository paths, one per line)</span></label><textarea id="t-files" class="code" style="min-height:52px" placeholder="src/api/handler.ts"></textarea></div>
+          <div class="grid3" id="t-write">
+            <div class="field" data-field="lines"><label for="t-lines">Lines changed per file</label><input type="text" id="t-lines" inputmode="numeric" placeholder="10"></div>
+            <label class="check"><input type="checkbox" id="t-new"><span class="grow">They are new files</span></label>
+            <label class="check"><input type="checkbox" id="t-delete"><span class="grow">The change deletes them</span></label>
+          </div>
+          <div class="grid2">
+            <div class="field" data-field="command"><label for="t-command">Command</label><input type="text" id="t-command" class="code" placeholder="git push origin main"></div>
+            <div class="field" data-field="hosts"><label for="t-hosts">Hosts it reaches <span class="muted">(comma-separated)</span></label><input type="text" id="t-hosts" placeholder="api.example.com"></div>
+          </div>
+          <details class="more"><summary>What the session did before this call</summary>
+            <div class="grid4" style="margin-top:8px">
+              <div class="field" data-field="s-tool_calls"><label for="s-tool_calls">Tool calls</label><input type="text" id="s-tool_calls" inputmode="numeric" placeholder="0"></div>
+              <div class="field" data-field="s-minutes"><label for="s-minutes">Minutes running</label><input type="text" id="s-minutes" inputmode="numeric" placeholder="0"></div>
+              <div class="field" data-field="s-files_changed"><label for="s-files_changed">Files changed</label><input type="text" id="s-files_changed" inputmode="numeric" placeholder="0"></div>
+              <div class="field" data-field="s-lines_changed"><label for="s-lines_changed">Lines changed</label><input type="text" id="s-lines_changed" inputmode="numeric" placeholder="0"></div>
+              <div class="field" data-field="s-commands"><label for="s-commands">Commands</label><input type="text" id="s-commands" inputmode="numeric" placeholder="0"></div>
+              <div class="field" data-field="s-network_calls"><label for="s-network_calls">Network calls</label><input type="text" id="s-network_calls" inputmode="numeric" placeholder="0"></div>
+              <div class="field" data-field="s-denials"><label for="s-denials">Denials</label><input type="text" id="s-denials" inputmode="numeric" placeholder="0"></div>
+              <div class="field" data-field="s-failures_in_row"><label for="s-failures_in_row">Failures in a row</label><input type="text" id="s-failures_in_row" inputmode="numeric" placeholder="0"></div>
+            </div>
+            <label class="check"><input type="checkbox" id="t-watch"><span class="grow">A Watch Brick on this Zone or Flow is firing</span></label>
+          </details>
+          <div class="row" style="margin-top:12px"><button class="btn primary" id="t-run" type="submit">Run the mock call</button><button class="btn" id="t-preset" type="button" title="Start again from a call this kind of Brick decides">Reset to the example call</button><span class="muted small">Nothing runs; Crane decides the call with the same rules the hooks use.</span></div>
+        </fieldset>
+      </form>
+      <div id="t-result" aria-live="polite"></div>
+    </div>
+
     <div data-panel="library" hidden id="library"></div>
   </div>
 </section>
@@ -545,6 +640,7 @@ function onState(state) {
   $("a-empty").hidden = attachable.length > 0;
   options($("k-brick"), S.bricks.filter((row) => row.state === "draft" || row.state === "active").map((row) => ({ value: row.state === "draft" ? row.brick_id : row.ref, label: row.name + " · " + (row.state === "draft" ? row.brick_id + " draft" : row.ref) })), "Choose a Brick");
   options($("v-attachment"), S.attachments.map((row) => ({ value: row.attachment_id, label: row.target + " · " + subjectName(row.subject) + " (" + brickRef(row.subject) + ")" })), "Choose an attachment");
+  options($("t-brick"), S.bricks.filter((row) => row.state === "draft" || row.state === "active").map((row) => ({ value: row.state === "draft" ? row.brick_id : row.ref, label: row.name + " · " + (row.state === "draft" ? row.brick_id + " draft" : row.ref) + " · " + row.type })), "Choose a Brick");
   renderLibrary();
   const picked = graph.picked();
   // Crane's state changed: what agents receive may have changed too
@@ -785,8 +881,8 @@ function renderLibrary() {
       const where = S.attachments.filter((item) => brickRef(item.subject) === row.ref).map((item) => item.target);
       const id = row.state === "draft" ? row.brick_id : row.ref;
       const actions = row.state === "draft"
-        ? '<button class="btn small primary" data-activate="' + esc(row.brick_id) + '">Activate</button><button class="btn small" data-validate="' + esc(row.brick_id) + '">Check for problems</button><button class="btn small" data-common="' + esc(id) + '">Edit common context</button>'
-        : row.state === "active" ? '<button class="btn small primary" data-attach-brick="' + esc(row.ref) + '">Attach…</button><button class="btn small" data-common="' + esc(id) + '">Edit common context</button>' : "";
+        ? '<button class="btn small primary" data-activate="' + esc(row.brick_id) + '">Activate</button><button class="btn small" data-validate="' + esc(row.brick_id) + '">Check for problems</button><button class="btn small" data-test="' + esc(id) + '">Test…</button><button class="btn small" data-common="' + esc(id) + '">Edit common context</button>'
+        : row.state === "active" ? '<button class="btn small primary" data-attach-brick="' + esc(row.ref) + '">Attach…</button><button class="btn small" data-test="' + esc(id) + '">Test…</button><button class="btn small" data-common="' + esc(id) + '">Edit common context</button>' : "";
       const former = (S.legacy || {})[row.type];
       return '<div class="item"><div class="title"><b>' + esc(row.name) + "</b>" + infoButton(id, row.name) + '<span class="tag">' + esc(row.type) + "</span>" + (former ? '<span class="tag warn" title="Read as ' + esc(former) + '">former kind: now ' + esc(former) + "</span>" : "") + '<span class="tag ' + stateTone(row.state) + '">' + esc(row.state) + "</span>" + (row.validation && row.validation !== "passed" ? '<span class="tag bad">' + esc(row.validation) + "</span>" : "") + '<span class="muted small mono">' + esc(id) + "</span></div>" +
         (row.intent ? '<div class="muted small" style="margin-top:4px">' + esc(row.intent) + "</div>" : "") +
@@ -871,6 +967,85 @@ $("volatile-form").addEventListener("submit", (event) => {
   if (row && (row.current_context || "") === values.text) { notice("info", "Nothing changed in the volatile context."); return; }
   perform($("v-submit"), "volatile", values);
 });
+// ---------------------------------------------------------------- testing a Brick
+const SESSION = ["tool_calls", "minutes", "files_changed", "lines_changed", "commands", "network_calls", "denials", "failures_in_row"];
+const CASE_TONE = { PASS: "ok", FAIL: "bad", BLOCKED: "bad", UNKNOWN: "warn", NOT_RUN: "warn", DECLARED: "" };
+const VERDICT = { allow: ["var(--ok)", "ok", "Allowed by the Bricks"], approval: ["var(--warn)", "warn", "Held for a person"], deny: ["var(--bad)", "bad", "Refused"] };
+function testForm() {
+  const session = {};
+  for (const key of SESSION) session[key] = $("s-" + key).value;
+  return { operation: $("t-operation").value, files: $("t-files").value, lines: $("t-lines").value, newFile: $("t-new").checked, delete: $("t-delete").checked, command: $("t-command").value, hosts: $("t-hosts").value, agent: $("t-agent").value, model: $("t-model").value, watchFiring: $("t-watch").checked, session };
+}
+function fillTest(form) {
+  $("t-operation").value = form.operation; $("t-files").value = form.files; $("t-lines").value = form.lines; $("t-new").checked = form.newFile; $("t-delete").checked = form.delete;
+  $("t-command").value = form.command; $("t-hosts").value = form.hosts; $("t-agent").value = form.agent; $("t-model").value = form.model; $("t-watch").checked = form.watchFiring;
+  for (const key of SESSION) $("s-" + key).value = form.session[key] || "";
+  if (SESSION.some((key) => form.session[key]) || form.watchFiring) $("test-form").querySelector("details.more").open = true;
+  showWrite();
+}
+function showWrite() { $("t-write").hidden = $("t-operation").value !== "write"; }
+async function loadPreset() {
+  const ref = $("t-brick").value;
+  $("t-note").hidden = true;
+  if (!ref) return;
+  const keep = $("t-files").value.split("\\n")[0].trim();
+  const result = await ask("load:test", { ref, file: keep });
+  if (!result.ok) { notice("bad", result.message); return; }
+  fillTest(result.data.form);
+  if (result.data.note) { $("t-note-text").textContent = result.data.note; $("t-note").hidden = false; }
+}
+function openTest(ref) {
+  selectTab("test");
+  const select = $("t-brick");
+  const match = [...select.options].find((option) => option.value === ref || option.value.split("@")[0] === ref.split("@")[0]);
+  if (match) select.value = match.value;
+  const attached = S.attachments.find((item) => brickRef(item.subject).split("@")[0] === ref.split("@")[0]);
+  const picked = graph.picked();
+  if (picked && !picked.startsWith("item:")) setTarget(picked); else if (attached) $("t-target").value = attached.target;
+  loadPreset();
+}
+async function runTest(button, mock) {
+  const form = $("test-form");
+  clearErrors(form);
+  const values = { ref: $("t-brick").value, target: $("t-target").value, mock, form: testForm() };
+  if (!values.ref) { fieldError("brick", "Choose a Brick."); return; }
+  if (mock && !values.target) { fieldError("target", "Choose where the call happens."); return; }
+  const label = button.innerHTML;
+  button.disabled = true; button.innerHTML = '<span class="spin" aria-hidden="true"></span> Testing…';
+  const result = await ask("test", values);
+  button.disabled = false; button.innerHTML = label;
+  if (!result.ok) { $("t-result").innerHTML = ""; notice(result.cancelled ? "info" : "bad", result.message, result.problems); for (const [name, text] of Object.entries(result.fields || {})) fieldError(name, text); return; }
+  notice();
+  $("t-result").innerHTML = result.data.trial ? renderTrial(result.data.trial) : renderCases(result.data);
+  $("t-result").scrollIntoView({ block: "nearest" });
+}
+function renderTrial(trial) {
+  const tone = VERDICT[trial.verdict] || VERDICT.allow;
+  const findings = trial.findings.map((item) => '<div class="case"><span class="tag ' + (VERDICT[item.decision] || VERDICT.allow)[1] + '">' + esc(item.decision === "approval" ? "ask" : item.decision) + '</span><span class="what">' + esc(item.reason) + '</span><span class="why">' + esc(item.rule) + " · from " + esc(item.brick) + "</span></div>").join("");
+  const files = trial.files.map((row) => '<div class="case"><span class="tag ' + (VERDICT[row.decision] || VERDICT.allow)[1] + '">' + esc(row.ceiling) + '</span><span class="what mono">' + esc(row.path) + '</span><span class="why">' + (row.targets.length ? "in " + esc(row.targets.join(", ")) : "in no Zone or Flow") + (row.zone_ceiling && row.zone_ceiling !== row.ceiling ? " · the Zones alone allow " + esc(row.zone_ceiling) : "") + (row.reasons.length ? " · " + esc(row.reasons.join("; ")) : "") + (row.exists ? "" : " · new file") + "</span></div>").join("");
+  return '<div class="verdict" style="--tone:' + tone[0] + '"><span class="tag ' + tone[1] + '">' + esc(trial.verdict) + '</span><b class="grow">' + esc(tone[2]) + '</b><span class="muted small">on ' + esc(trial.target) + "</span></div>" +
+    '<h4 class="props-title">Rules that decided</h4><div class="cases">' + (findings || '<div class="muted small">No Brick rule made this call stricter.</div>') + "</div>" +
+    (files ? '<h4 class="props-title">Files, with their autonomy ceiling</h4><div class="cases">' + files + "</div>" : "") +
+    trial.notes.map((note) => '<div class="small muted">' + esc(note) + "</div>").join("");
+}
+function renderCases(data) {
+  const cases = (data.cases || []).map((item) => '<div class="case"><span class="tag ' + (CASE_TONE[item.status] || "") + '">' + esc(item.status) + '</span><span class="what">' + esc(item.name) + '</span><span class="why">' + esc(item.detail) + "</span></div>").join("");
+  const files = (data.effects || []).flatMap((effect) => (effect.files || []).map((row) => '<div class="case"><span class="tag">' + esc(row.ceiling || row.criticality || "") + '</span><span class="what mono">' + esc(row.path) + '</span><span class="why">' + esc(effect.target) + " · " + esc((row.reasons || []).join("; ")) + "</span></div>")).join("");
+  return '<div class="verdict" style="--tone:var(--' + (data.status === "passed" || data.status === "ok" ? "ok" : data.status === "failed" || data.status === "blocked" ? "bad" : "warn") + ')"><b class="grow">' + esc(data.summary) + "</b></div>" +
+    '<div class="cases">' + (cases || '<div class="muted small">No checks.</div>') + "</div>" +
+    (files ? '<h4 class="props-title">Files it restricts</h4><div class="cases">' + files + "</div>" : "") +
+    (data.runtime ? '<div class="small muted">What Crane does with this kind today: ' + esc(data.runtime) + ".</div>" : "");
+}
+$("t-brick").addEventListener("change", loadPreset);
+$("t-operation").addEventListener("change", showWrite);
+$("t-preset").addEventListener("click", (event) => { event.preventDefault(); loadPreset(); });
+$("t-check").addEventListener("click", (event) => { event.preventDefault(); runTest(event.currentTarget, false); });
+$("test-form").addEventListener("submit", (event) => { event.preventDefault(); runTest($("t-run"), true); });
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-test]");
+  if (button) { event.preventDefault(); openTest(button.dataset.test); }
+});
+
 showPreview(null);
 vscode.postMessage({ type: "ready" });
 `,

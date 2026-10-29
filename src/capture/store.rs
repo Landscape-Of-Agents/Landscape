@@ -1182,7 +1182,7 @@ impl CaptureStore {
         if self.recipe_proposals.contains_key(&proposal.proposal_id) {
             return Err(CaptureError::new(
                 ErrorCode::InvalidTransition,
-                format!("recipe proposal '{}' exists", proposal.proposal_id),
+                format!("checklist proposal '{}' exists", proposal.proposal_id),
             ));
         }
         if let Some(taken) = self.recipe_proposals.values().find(|other| {

@@ -88,11 +88,11 @@ can be honest. If the pack hides a gap, every component after it inherits the hi
                                         │
  ┌──────────────────────────────────────▼───────────────────────────────────────┐
  │ BROKER  broker/run.rs                                                        │
- │  1 choose a recipe from the RecipeBook ─────────────── broker/recipe.rs      │
+ │  1 choose a checklist from the RecipeBook ─────────────── broker/recipe.rs   │
  │  2 resolve scope (what is this about, who may use what) resources/scope.rs   │
  │  3 rejection gate (asked for something forbidden? stop)                      │
  │  4 resolve zone and flow versions                                            │
- │  5 for each recipe step:                                                     │
+ │  5 for each checklist step:                                                  │
  │      budget → branch → type wanted → type allowed → environment allowed      │
  │      → find resources → call each one:                                       │
  │          fill templates → validate the query → ask the connector             │
@@ -148,7 +148,7 @@ If an agent queried GitHub, CI, and logs itself:
 - nobody would know what it asked, what it skipped, or why;
 - a model's choice of where to look would silently decide what the answer contains.
 
-The broker inverts all three. A **recipe** (a fixed, versioned plan) decides what to ask. An
+The broker inverts all three. A **checklist** (a fixed, versioned plan) decides what to ask. An
 **access policy** decides what is allowed. A **budget** decides how much. The **audit record**
 remembers all of it. The broker's own header says it *"is not a pass-through proxy"*
 ([run.rs:1-11](../../src/capture/broker/run.rs#L1-L11)).
@@ -168,9 +168,9 @@ From [mod.rs:11-14](../../src/capture/mod.rs#L11-L14):
 
 This is the backbone of the chapter. Each step is explained in full later; here they are in order:
 
-1. **Choose a recipe** from a proposed plan, an explicit reference, or the question's class
+1. **Choose a checklist** from a proposed plan, an explicit reference, or the question's class
    ([`select_recipe`, run.rs:565](../../src/capture/broker/run.rs#L565)).
-2. **Compute the budget** as the smallest of the request's, the recipe's, and the global ceiling
+2. **Compute the budget** as the smallest of the request's, the checklist's, and the global ceiling
    ([run.rs:600](../../src/capture/broker/run.rs#L600)).
 3. **Resolve scope**: copy known references, mark forbidden things, list permitted sources, list
    unknown facts ([`resolve`, scope.rs:114](../../src/capture/resources/scope.rs#L114)).
@@ -179,7 +179,7 @@ This is the backbone of the chapter. Each step is explained in full later; here 
 5. **Open the work episode** ([`ensure_episode`, store.rs:668](../../src/capture/store.rs#L668)).
 6. **Resolve zone and flow versions** through Landscape
    ([`resolve_versions`, run.rs:691](../../src/capture/broker/run.rs#L691)).
-7. **Execute every recipe step** with its gates
+7. **Execute every checklist step** with its gates
    ([`execute`, run.rs:757](../../src/capture/broker/run.rs#L757)).
 8. **For every returned record**: ingest, link, learn ([`call`, run.rs:921](../../src/capture/broker/run.rs#L921)).
 9. **Link governance**: files to zones and flows, zones and flows to policies
@@ -212,7 +212,7 @@ These small types are used by every other file.
 - **Fix and criticality.** Write a migration test when version 2 lands. **LOW.**
 - **Resolved (2026-10-21).** The test `older_store_layout_still_opens`
   ([tests.rs:4492](../../src/capture/tests.rs#L4492)) opens a store written before the new fields
-  existed (no recipe pins, page counts, withheld counts, outcome history, or later episodes) and
+  existed (no checklist pins, page counts, withheld counts, outcome history, or later episodes) and
   checks that they read as their defaults. Every field the fixes added is `#[serde(default)]`, so
   `SCHEMA_VERSION` stays 1. **New criticality: NONE** until version 2 lands.
 
@@ -356,13 +356,13 @@ These small types are used by every other file.
 - **Definition.** A closed list of 13 refusal reasons plus a human message.
 - **Code.** [mod.rs:103](../../src/capture/mod.rs#L103), [mod.rs:125](../../src/capture/mod.rs#L125).
 - **Why it exists.** Callers can react to the *kind* of refusal without parsing text.
-- **What breaks.** Some refusals are returned as errors and never audited: "no recipe for this
+- **What breaks.** Some refusals are returned as errors and never audited: "no checklist for this
   class" ([run.rs:565](../../src/capture/broker/run.rs#L565)) and an invalid proposed plan
   ([recipe.rs:792](../../src/capture/broker/recipe.rs#L792)). Nobody can later see that someone asked
   and was refused.
 - **Fix and criticality.** Write a `Rejected` audit record before returning. **MEDIUM.**
 - **Resolved (2026-10-21).** `audit_refusal` ([run.rs:620](../../src/capture/broker/run.rs#L620))
-  stores a `Rejected` audit, with no recipe, the error, and no pack, before `investigate` or
+  stores a `Rejected` audit, with no checklist, the error, and no pack, before `investigate` or
   `replay` returns the error. Callers still receive the same error. A refused request is now
   visible afterwards. **New criticality: NONE.**
 
@@ -391,8 +391,8 @@ These small types are used by every other file.
   Metrics, InternalApi, Landscape, Crane`. A **connector** is the code that knows how to talk to one
   kind of source.
 - **Code.** [`ResourceType`, registry.rs:31](../../src/capture/resources/registry.rs#L31).
-- **Why it exists.** Recipes ask for a *type* ("a CI source"), not a product ("GitHub Actions"), so
-  the same recipe works with any CI.
+- **Why it exists.** Checklists ask for a *type* ("a CI source"), not a product ("GitHub Actions"), so
+  the same checklist works with any CI.
 - **What breaks.** Nothing in the type itself. **NONE.**
 
 #### 2.2.2 `ResourceDefinition`, the declaration of one source
@@ -403,7 +403,7 @@ These small types are used by every other file.
 | Field | Holds | Why it exists |
 |---|---|---|
 | `resource_id` | `"ci"` | the name used everywhere else |
-| `resource_type` | `Ci` | lets recipes match it ([run.rs:839](../../src/capture/broker/run.rs#L839)) |
+| `resource_type` | `Ci` | lets checklists match it ([run.rs:839](../../src/capture/broker/run.rs#L839)) |
 | `connector_type` | `"fixture"`, `"git"`, … | which compiled-in code serves it |
 | `capabilities` ([registry.rs:84](../../src/capture/resources/registry.rs#L84)) | operations, evidence types, filter keys | the only questions it may be asked |
 | `scope` ([registry.rs:98](../../src/capture/resources/registry.rs#L98)) | repositories, projects, environments, resources | where it may look |
@@ -647,10 +647,10 @@ These small types are used by every other file.
     cached, and `begin()` clears the cache when the next investigation starts, so a replay after a
     change recomputes it. It still cannot be interrupted by the time budget. **LOW.**
 
-### 2.3 Recipes and the RecipeBook ([broker/recipe.rs](../../src/capture/broker/recipe.rs))
+### 2.3 Checklists and the RecipeBook ([broker/recipe.rs](../../src/capture/broker/recipe.rs))
 
 #### 2.3.1 `EvidenceRecipe`, a fixed plan for one kind of question
-- **Definition.** A **recipe** is a written, versioned, unchangeable plan for one class of
+- **Definition.** A **checklist** is a written, versioned, unchangeable plan for one class of
   investigation. It lists:
   - the **steps** to ask;
   - the evidence that is **required** for the answer to count as sufficient;
@@ -663,33 +663,33 @@ These small types are used by every other file.
   asking the same kind of question get the same retrieval, so their packs can be compared.
 - **How it helps.** Reproducible, reviewable investigations ("what does a deployment-failure
   investigation look at?" has one answer).
-- **What breaks.** Only two recipes exist: `failed-deployment`
+- **What breaks.** Only two checklists exist: `failed-deployment`
   ([recipe.rs:554](../../src/capture/broker/recipe.rs#L554)) and `local-change`
   ([recipe.rs:703](../../src/capture/broker/recipe.rs#L703)). Every other question needs a proposed plan
   (§2.3.10).
-- **Fix and criticality.** Add recipes for common classes: discovery ("which deployments happened in
+- **Fix and criticality.** Add checklists for common classes: discovery ("which deployments happened in
   this window?"), PR review, and incident. **MEDIUM.**
-- **Resolved (2026-10-21).** Two recipes were added. `deployment-discovery` v1
+- **Resolved (2026-10-21).** Two checklists were added. `deployment-discovery` v1
   ([recipe.rs:906](../../src/capture/broker/recipe.rs#L906)), class `deployment-discovery`, queries the
   deployments of an environment within the window. `pr-review` v1
   ([recipe.rs:960](../../src/capture/broker/recipe.rs#L960)), class `pull-request-review`, reads the pull
   request, its commits, CI, tests, policies, validation, and zones. `failed-deployment` v2 was also
-  published (§2.3.4). A test pins each recipe's digest. No incident recipe exists yet. **New
+  published (§2.3.4). A test pins each checklist's digest. No incident checklist exists yet. **New
   criticality: LOW.**
 - **Also unused.** `starting_conditions` is validated ([recipe.rs:336](../../src/capture/broker/recipe.rs#L336))
-  but never checked at run time. A recipe that expects a deployment runs without one. **LOW.**
-  **Resolved (2026-10-21):** a starting condition that is unknown when the recipe begins gets a
-  Completeness warning naming it. The recipe still runs, because the gaps it leaves are reported
+  but never checked at run time. A checklist that expects a deployment runs without one. **LOW.**
+  **Resolved (2026-10-21):** a starting condition that is unknown when the checklist begins gets a
+  Completeness warning naming it. The checklist still runs, because the gaps it leaves are reported
   anyway. **NONE.**
 
-#### 2.3.2 `RecipeStep`, one request inside a recipe
+#### 2.3.2 `RecipeStep`, one request inside a checklist
 - **Definition.** A step names a resource *type*, an operation (`Fetch` or `Query` only), an evidence
   type, a record template (for Fetch) or filter templates (for Query), a result limit, and a
   condition `when`.
 - **Code.** [recipe.rs:177](../../src/capture/broker/recipe.rs#L177); built by the helper
   [`step`, recipe.rs:488](../../src/capture/broker/recipe.rs#L488).
-- **Why it exists.** Naming a *type* keeps recipes portable. Restricting operations to two keeps
-  recipes read-only and simple.
+- **Why it exists.** Naming a *type* keeps checklists portable. Restricting operations to two keeps
+  checklists read-only and simple.
 - **What breaks.** Every permitted resource of the named type is asked
   ([run.rs:880](../../src/capture/broker/run.rs#L880)). Two CI sources means double the budget and,
   when their bytes differ, double-counted support (§2.8.2).
@@ -746,7 +746,7 @@ These small types are used by every other file.
 - **Resolved (2026-10-21).** `FieldEquals` gained an optional `subject` (such as
   `{deployment}`), so only records about that deployment count. A new predicate,
   `AnyFileMatches{glob}` ([recipe.rs:82](../../src/capture/broker/recipe.rs#L82)), looks at the files a
-  CodeChange touched; recipe validation refuses an empty glob. `failed-deployment` **v2**
+  CodeChange touched; checklist validation refuses an empty glob. `failed-deployment` **v2**
   ([recipe.rs:858](../../src/capture/broker/recipe.rs#L858)) binds its conditions to the deployment
   under investigation, and runs the schema step when the change touches `migrations/`. **v1 was not
   edited**: its digest is pinned, and the demo still pins v1, so its output did not change.
@@ -784,8 +784,8 @@ These small types are used by every other file.
   skip. **LOW.**
 - **Resolved (2026-10-21).** `RecipeStep.mandatory` marks a step that the stopping rule
   never skips: once the required evidence is complete, later steps become `NotQueried`, except
-  mandatory ones, which still run. The field is left out of the serialized recipe when false, so the
-  digests of existing recipes did not change. No built-in recipe uses it yet. **New criticality:
+  mandatory ones, which still run. The field is left out of the serialized checklist when false, so the
+  digests of existing checklists did not change. No built-in checklist uses it yet. **New criticality:
   NONE.**
 
 #### 2.3.7 `Budget`, `ceiling`, `tighter`
@@ -795,7 +795,7 @@ These small types are used by every other file.
   [`ceiling`, recipe.rs:211](../../src/capture/broker/recipe.rs#L211),
   [`tighter`, recipe.rs:226](../../src/capture/broker/recipe.rs#L226).
 - **How it works.** The effective budget is the field-by-field minimum of the request's, the
-  recipe's, and the ceiling.
+  checklist's, and the ceiling.
 - **Why it exists.** Nobody can exceed the ceiling, and a requester can only lower limits.
 - **What breaks.** Time is checked only between steps
   ([`exhausted`, run.rs:369](../../src/capture/broker/run.rs#L369)), so a connector that hangs is never
@@ -816,55 +816,55 @@ These small types are used by every other file.
   - Validation checks: a valid id; 1 to 32 steps; limits positive and within the ceiling; known
     starting conditions; unique, valid step ids; Fetch steps have a record template; only Fetch and
     Query; valid templates; `1 ≤ limit ≤ 200`; valid predicates.
-  - The **digest** is a hash of the whole recipe, a fingerprint: same digest, same plan.
+  - The **digest** is a hash of the whole checklist, a fingerprint: same digest, same plan.
 - **What breaks.** Nothing. **NONE.**
 
-#### 2.3.9 `RecipeBook`, the library of recipes
-- **Definition.** The **RecipeBook** is the library of every known recipe, filed first by name and
+#### 2.3.9 `RecipeBook`, the library of checklists
+- **Definition.** The **RecipeBook** is the library of every known checklist, filed first by name and
   then by version number: `recipe_id → version → recipe`.
 - **Code.** [recipe.rs:414](../../src/capture/broker/recipe.rs#L414).
 - **How it works.**
   - [`add`, recipe.rs:426](../../src/capture/broker/recipe.rs#L426) validates, then refuses an existing
     name and version whose content differs: *"publish a new version"*.
-  - [`get`, recipe.rs:450](../../src/capture/broker/recipe.rs#L450) finds a recipe by reference, and
+  - [`get`, recipe.rs:450](../../src/capture/broker/recipe.rs#L450) finds a checklist by reference, and
     returns the latest version when none is given.
-  - [`for_class`, recipe.rs:464](../../src/capture/broker/recipe.rs#L464) finds the latest recipe that
+  - [`for_class`, recipe.rs:464](../../src/capture/broker/recipe.rs#L464) finds the latest checklist that
     serves a question class.
-  - The broker fills the book with the two built-in recipes
+  - The broker fills the book with the two built-in checklists
     ([run.rs:445](../../src/capture/broker/run.rs#L445)).
 - **Why it exists.** An audit record saying "failed-deployment v1" must mean the same plan forever.
-  Replay also refuses a recorded recipe whose digest does not match
+  Replay also refuses a recorded checklist whose digest does not match
   ([run.rs:512](../../src/capture/broker/run.rs#L512)).
 - **What breaks.**
   1. The book is rebuilt from code on every run, so immutability only holds inside one process. A
      code change to `failed_deployment()` without a version bump silently changes "v1".
-  2. When two recipes serve the same class, `for_class` picks by alphabetical name order, not by
+  2. When two checklists serve the same class, `for_class` picks by alphabetical name order, not by
      intent.
 - **Fix and criticality.**
-  1. Persist recipe digests and refuse a known version whose digest changed. **MEDIUM.**
-  2. Refuse two recipes for the same class, or rank them explicitly. **LOW.**
+  1. Persist checklist digests and refuse a known version whose digest changed. **MEDIUM.**
+  2. Refuse two checklists for the same class, or rank them explicitly. **LOW.**
 - **Resolved (2026-10-21).** 
-  1. A test pins the digest of every built-in recipe. The store also pins
+  1. A test pins the digest of every built-in checklist. The store also pins
      `(recipe id, version) → digest` (`pin_recipe`, [store.rs:1070](../../src/capture/store.rs#L1070)),
      and a known version whose digest changed is refused with "publish a new version".
-  2. `RecipeBook::add` refuses a recipe id that serves a class another recipe id already serves.
-     Versions of one recipe may share a class, and the latest one is chosen.
+  2. `RecipeBook::add` refuses a checklist id that serves a class another checklist id already serves.
+     Versions of one checklist may share a class, and the latest one is chosen.
 
   **New criticality: NONE** for both.
 
 #### 2.3.10 `from_plan`, plans proposed by a model
 - **Definition.** A **plan** is a list of steps proposed by a caller (usually a model) instead of a
-  registered recipe.
+  registered checklist.
 - **Code.** [recipe.rs:792](../../src/capture/broker/recipe.rs#L792).
-- **How it works.** Wrap the steps in a recipe with tighter limits (16 calls, 200 records, 1 MiB,
+- **How it works.** Wrap the steps in a checklist with tighter limits (16 calls, 200 records, 1 MiB,
   30 s), run the **same** validation, and name it `plan-<12 characters of digest>`.
-- **Why it exists.** It is the only way to investigate a question no recipe covers. A model's
+- **Why it exists.** It is the only way to investigate a question no checklist covers. A model's
   suggestion gets no special trust.
 - **What breaks.** Required evidence comes only from the request, so there are no conditional
   requirements. Nothing judges whether the plan is *relevant*, only whether it is *allowed*.
 - **Fix and criticality.** Allow conditional requirements in plans. **LOW.**
 - **Resolved (2026-10-21).** A request can carry `plan_required`: evidence required
-  under a condition, validated and used like a recipe's requirements. Whether a plan is relevant
+  under a condition, validated and used like a checklist's requirements. Whether a plan is relevant
   stays the caller's job, by design. **New criticality: NONE.**
 
 ### 2.4 Scope resolution ([resources/scope.rs](../../src/capture/resources/scope.rs))
@@ -948,7 +948,7 @@ These small types are used by every other file.
   - optional episode and task;
   - the question text and its **investigation class** (the kind of question, such as
     `deployment-failure`);
-  - an explicit recipe or a proposed plan;
+  - an explicit checklist or a proposed plan;
   - **known references** (`KnownRefs`): repository, branch, commits, pull requests, deployments,
     environment, sessions, zones, flows;
   - an optional restriction to certain resources;
@@ -960,7 +960,7 @@ These small types are used by every other file.
 - **What breaks.** The `question` is only a **label**. Nothing reads its words. Turning a person's
   words into a class and references is left entirely to the caller (Part 5, Example 1).
 - **Fix and criticality.** This is intended (a deterministic boundary). Document it, and provide
-  helper recipes for discovery. **LOW.**
+  helper checklists for discovery. **LOW.**
 
 #### 2.5.2 The broker and the investigation in progress
 - **Definition.** The **broker** ([`EvidenceQueryBroker`, run.rs:342](../../src/capture/broker/run.rs#L342))
@@ -972,14 +972,14 @@ These small types are used by every other file.
   - [`note`, run.rs:393](../../src/capture/broker/run.rs#L393) records a step that called no connector.
   - [`deny`, run.rs:425](../../src/capture/broker/run.rs#L425) records a refusal.
   - [`exhausted`, run.rs:369](../../src/capture/broker/run.rs#L369) reports which limit was reached.
-- **Wiring.** [`new`](../../src/capture/broker/run.rs#L445) loads the built-in recipes;
+- **Wiring.** [`new`](../../src/capture/broker/run.rs#L445) loads the built-in checklists;
   [`connect`](../../src/capture/broker/run.rs#L470) attaches a connector to a registered resource.
 
 #### 2.5.3 `investigate` and `select_recipe`
 - **Code.** [run.rs:494](../../src/capture/broker/run.rs#L494), [run.rs:565](../../src/capture/broker/run.rs#L565).
-- **How it works.** Choose a proposed plan (through `from_plan`), else the explicit recipe, else the
-  recipe of the class. Then call `run` in `Fresh` mode ([`ExecutionMode`, run.rs:117](../../src/capture/broker/run.rs#L117)).
-- **What breaks.** When no recipe matches, an error is returned and nothing is audited (§2.1.8).
+- **How it works.** Choose a proposed plan (through `from_plan`), else the explicit checklist, else the
+  checklist of the class. Then call `run` in `Fresh` mode ([`ExecutionMode`, run.rs:117](../../src/capture/broker/run.rs#L117)).
+- **What breaks.** When no checklist matches, an error is returned and nothing is audited (§2.1.8).
   **MEDIUM.**
 - **Resolved (2026-10-21).** The refusal is now audited (§2.1.8). **New criticality:
   NONE.**
@@ -1017,7 +1017,7 @@ These small types are used by every other file.
 
 #### 2.5.6 `execute`, the main loop (the step algorithm)
 - **Code.** [run.rs:757](../../src/capture/broker/run.rs#L757).
-- **How it works.** For each step, in recipe order:
+- **How it works.** For each step, in checklist order:
 
 ```
 A  budget reached? (run.rs:766)  → mark this and all later steps BudgetExhausted; stop
@@ -1088,7 +1088,7 @@ H  stop early? (run.rs:893)      → if satisfied → Satisfied; later steps Not
 | State | Set when | Meaning for a reader |
 |---|---|---|
 | `Executed` | the connector answered usably | asked and answered (possibly with nothing) |
-| `Skipped` | the condition was false | not relevant, by the recipe's logic |
+| `Skipped` | the condition was false | not relevant, by the checklist's logic |
 | `NotQueried` | type not wanted, no resource, unknown value, unknown repository, or early stop | never asked |
 | `Denied` | policy refused the type, environment, or every resource | not allowed to ask |
 | `Failed` | no connector, invalid query, or an unusable status | asked, and the source broke |
@@ -1183,8 +1183,8 @@ H  stop early? (run.rs:893)      → if satisfied → Satisfied; later steps Not
 - **What breaks.** [`Payload::field`](../../src/capture/format/record.rs#L208) only reads Structured
   fields, the commit of Code, and the first node of Graph. A predicate on a field of any other shape
   is always false. **LOW.**
-- **Resolved (2026-10-21).** Recipe validation now refuses a field condition on Text or
-  Measurement evidence, so a predicate that could never hold is caught when the recipe is written,
+- **Resolved (2026-10-21).** Checklist validation now refuses a field condition on Text or
+  Measurement evidence, so a predicate that could never hold is caught when the checklist is written,
   instead of being silently false at run time. **New criticality: NONE.**
 
 #### 2.6.5 Parsers and `normalize`
@@ -1451,7 +1451,7 @@ H  stop early? (run.rs:893)      → if satisfied → Satisfied; later steps Not
      `governed_zone_touched`, per commit, lists the zones its files belong to, as information
      rather than pass or fail. `RULES_VERSION` stays 1, because the existing rules did not change,
      so existing assertion ids did not move. A class guard checks that every evidence type a
-     built-in recipe requires feeds a rule (`RULE_INPUTS`) or is marked context only
+     built-in checklist requires feeds a rule (`RULE_INPUTS`) or is marked context only
      (`CONTEXT_ONLY`). **NONE.**
   2. Assertions are derived only from records the actor may see (§2.1.6). **NONE.**
   3. With no subject known, the pack gets an Uncertainty warning saying no subject was
@@ -1695,11 +1695,11 @@ propose ─► PROPOSED ──review(Accepted, by another authorized human)─�
   NONE.**
 
 ### 2.12 Replay ([run.rs:512](../../src/capture/broker/run.rs#L512))
-- **Definition.** A **replay** re-runs a recorded investigation, with its exact recipe and request,
+- **Definition.** A **replay** re-runs a recorded investigation, with its exact checklist and request,
   against the sources as they are now, and compares the two runs.
 - **How it works.**
   1. Load the original audit.
-  2. Refuse it if the stored recipe's digest no longer matches.
+  2. Refuse it if the stored checklist's digest no longer matches.
   3. Re-run with the **current** permissions.
   4. Compare ([`compare`, run.rs:1761](../../src/capture/broker/run.rs#L1761)) each step that was
      originally `Executed`: was it executed again, in the same state, with the same snapshot and the
@@ -1749,7 +1749,7 @@ propose ─► PROPOSED ──review(Accepted, by another authorized human)─�
   1. [`save`](../../src/capture/store.rs#L372) takes the lock, re-reads what is on disk, merges it with
      memory, and writes. Merging is by content id (`merge_keyed`): records are united, a
      contribution's status never moves backwards (`lifecycle_rank`), audits keep their order, and
-     the state merges deliveries, cursors, and recipe pins. Two concurrent investigations both keep
+     the state merges deliveries, cursors, and checklist pins. Two concurrent investigations both keep
      their evidence and audits, and a test checks it. **NONE.**
   2. `write_collection` skips files that did not change, but a save still reads and merges every
      collection. **MEDIUM** at scale.
@@ -1759,15 +1759,15 @@ propose ─► PROPOSED ──review(Accepted, by another authorized human)─�
 - **`crane capture demo`** runs the story from fixtures ([`run`, demo.rs:252](../../src/capture/demo.rs#L252)).
 - **`crane capture sources`** lists the four live sources with their health.
 - **`crane capture investigate [commit SHA] [task ID]`**
-  - forces recipe `local-change` ([cli/capture.rs:323](../../src/cli/capture.rs#L323));
+  - forces checklist `local-change` ([cli/capture.rs:323](../../src/cli/capture.rs#L323));
   - grants the caller every resource and the environments `local, ci, hosted`
     ([cli/capture.rs:300-312](../../src/cli/capture.rs#L300-L312));
   - saves the result.
 - **What breaks.**
-  1. Only one recipe is reachable from the CLI.
+  1. Only one checklist is reachable from the CLI.
   2. There is no command for replay, contributions, review, outcomes, feedback, or verifying a pack.
 - **Fix and criticality.** Add those commands. **MEDIUM** (they are reachable only from code today).
-- **Resolved (2026-10-21).** `investigate` takes `class`, `recipe ID [version N]`, and
+- **Resolved (2026-10-21).** `investigate` takes `class`, `checklist ID [version N]`, and
   `episode EPI`, and eight commands were added: `replay`, `verify`, `contribute`, `review`,
   `outcome`, `ask`, `question`, and `confirm` ([cli/capture.rs](../../src/cli/capture.rs)). The caller's
   policy covers this repository's local sources, and review rights come from the machine's key
@@ -1828,21 +1828,21 @@ Two kinds of state appear in this component, and mixing them up causes most conf
 For each case: the **trigger**, the **path** through the code, the **response**, what **the pack**
 ends up containing, and the **weak point** with its criticality.
 
-**C1. The question fits no recipe.**
+**C1. The question fits no checklist.**
 - **Trigger:** class `slow-api`, no plan.
 - **Path:** [`select_recipe`](../../src/capture/broker/run.rs#L565).
-- **Response:** error "no recipe for 'slow-api'". Nothing is queried.
+- **Response:** error "no checklist for 'slow-api'". Nothing is queried.
 - **Pack:** none, and **no audit**.
 - **Weak point:** the refusal is invisible afterwards. **MEDIUM.**
 - **Resolved (2026-10-21):** the refusal is stored as a `Rejected` audit (§2.1.8). A
-  `deployment-discovery` and a `pr-review` recipe now exist (§2.3.1). **NONE.**
-- **Changed later (2026-10-21, with Insight):** a class no recipe serves is no longer refused. The
+  `deployment-discovery` and a `pr-review` checklist now exist (§2.3.1). **NONE.**
+- **Changed later (2026-10-21, with Insight):** a class no checklist serves is no longer refused. The
   broker asks each permitted source to discover what it holds and derives a bounded exploration from
   the registry (one query per resource type and evidence type the actor may receive, filtered by the
-  known scope values), validated, audited, and replayable like any recipe. The pack is
-  `exploratory`, never `sufficient`. Only a named recipe that does not exist, an invalid plan, or
+  known scope values), validated, audited, and replayable like any checklist. The pack is
+  `exploratory`, never `sufficient`. Only a named checklist that does not exist, an invalid plan, or
   having no permitted source to explore is still an audited refusal. People's feedback on
-  explorations is what Insight learns recipes from (see [GUIDE.md](../surfaces/cli.md#insight-learning-from-work)).
+  explorations is what Insight learns checklists from (see [GUIDE.md](../surfaces/cli.md#insight-learning-from-work)).
 
 **C2. A proposed plan is malformed.**
 - **Trigger:** a filter `"9f1c*"`.
@@ -1852,7 +1852,7 @@ ends up containing, and the **weak point** with its criticality.
 - **Resolved (2026-10-21):** audited, as C1. **NONE.**
 
 **C3. A needed fact is unknown.**
-- **Trigger:** the recipe needs `{deployment}` and none is known.
+- **Trigger:** the checklist needs `{deployment}` and none is known.
 - **Path:** `fill` fails ([run.rs:951](../../src/capture/broker/run.rs#L951)).
 - **Response:** the step is `NotQueried`: "scope value 'deployment' is unknown".
 - **Pack:** the missing Deployment is `NotQueried`, with the variable named. That is actionable.
@@ -1924,8 +1924,8 @@ ends up containing, and the **weak point** with its criticality.
   3. [`connect`](../../src/capture/broker/run.rs#L470);
   4. add it to each actor's `AccessPolicy.resources`.
 
-  Every recipe step with a matching type, evidence, and operation now calls it automatically
-  ([run.rs:839](../../src/capture/broker/run.rs#L839)); no recipe changes. **Weak point:** it is called
+  Every checklist step with a matching type, evidence, and operation now calls it automatically
+  ([run.rs:839](../../src/capture/broker/run.rs#L839)); no checklist changes. **Weak point:** it is called
   *in addition to* the existing source, so budget use doubles. **LOW.**
   **Resolved (2026-10-21):** a `priority` on the definition makes the step ask the better source
   first, and the other only when it fails (§2.3.2). **NONE.**
@@ -2018,7 +2018,7 @@ task, pull request, deployment, commit = unknown
 
 | # | What happens | Values |
 |---|---|---|
-| 1 | Recipe | `for_class("deployment-failure")` gives `failed-deployment` v1 |
+| 1 | Checklist | `for_class("deployment-failure")` gives `failed-deployment` v1 |
 | 2 | Scope | `unknown = [task, branch, commit, pull_request, deployment, session]`; the episode is **new and untracked** |
 | 3 | `task`, `pull-request` | `{task}` and `{pull_request}` unknown, so `NotQueried` |
 | 4 | `code-change`, `ci`, `tests` | `{commit}` unknown, so `NotQueried` |
@@ -2032,7 +2032,7 @@ task, pull request, deployment, commit = unknown
 What the person sees: *"I need a deployment id: every required item is NotQueried because the
 deployment, pull request, and task are unknown."* That is honest, but not yet useful.
 
-**Stage 2: resolving the ambiguity with a discovery plan.** No recipe can *find* deployments, so the
+**Stage 2: resolving the ambiguity with a discovery plan.** No checklist can *find* deployments, so the
 agent proposes one step ([`from_plan`](../../src/capture/broker/recipe.rs#L792)):
 
 ```json
@@ -2045,7 +2045,7 @@ agent proposes one step ([`from_plan`](../../src/capture/broker/recipe.rs#L792))
 
 | # | What happens | Values |
 |---|---|---|
-| 1 | Validation | template allowed, limit within 200, id valid; the recipe becomes `plan-<digest>` with a 16 / 200 / 1 MiB / 30 s budget |
+| 1 | Validation | template allowed, limit within 200, id valid; the checklist becomes `plan-<digest>` with a 16 / 200 / 1 MiB / 30 s budget |
 | 2 | Query | `QuerySpec{environment: production, window, limit 20}` validates against `deploy` |
 | 3 | `page` | keeps deployment records with `environment=production` and a timestamp in the window, which returns **`dep-7731`** |
 | 4 | Learn | commit `9f1c2ab7d4` (from the deployment). **The deployment id itself is not learned** (§2.4.4) |
@@ -2084,7 +2084,7 @@ missing-evidence entry.
   (§2.2.10). The empty assertion list comes with an Uncertainty warning (§2.8.3), and the unknown
   starting condition gets a Completeness warning (§2.3.1).
 - **Stage 2.** No hand-written plan is needed: class `deployment-discovery` selects the
-  `deployment-discovery` recipe (§2.3.1), and the deployment id is learned into scope (§2.4.4). If
+  `deployment-discovery` checklist (§2.3.1), and the deployment id is learned into scope (§2.4.4). If
   two deployments failed, both commits are learned, and a warning names the one that was not
   checked (§2.3.3).
 - **Stage 3.** `failed-deployment` v2 is the default for the class, so the schema step runs, because
@@ -2099,7 +2099,7 @@ missing-evidence entry.
 
 | # | What happens | Code | Values |
 |---|---|---|---|
-| 1 | Build the request | [cli/capture.rs](../../src/cli/capture.rs) | commit = `HEAD`, repository = remote label, recipe **forced** to `local-change` v1, task `PAY-142`, policy grants all four sources |
+| 1 | Build the request | [cli/capture.rs](../../src/cli/capture.rs) | commit = `HEAD`, repository = remote label, checklist **forced** to `local-change` v1, task `PAY-142`, policy grants all four sources |
 | 2 | `commit` | Git fetch | one CodeChange record (files, 8 KB diff) |
 | 3 | `agent-calls` | DataSea query `task=PAY-142` ([local.rs:283](../../src/capture/resources/local.rs#L283)) | filters on Crane's **canonical** id `tsk_…`; `PAY-142` is an external key, so **0 records: `Empty`** |
 | 4 | `landscape` | Landscape query | every zone and flow, as GraphState records |
@@ -2199,7 +2199,7 @@ mark **and a reason**, because each reason calls for a different action.
 ```
 EVIDENCE RECEIPT · PAY-142 "Make refunds idempotent"          ◐ INCOMPLETE
 Q: Why did deployment dep-7731 of PAY-142 fail?
-Recipe failed-deployment v1 · digest 7c2e… · 13 source calls · stop: completed
+Checklist failed-deployment v1 · digest 7c2e… · 13 source calls · stop: completed
 
 VERDICTS
  ✔ ci_passed             commit 9f1c2ab7d4   YES      1 independent source
@@ -2229,10 +2229,10 @@ INTEGRITY  manifest a91f… · replay: EXACT
 | Receipt line | **Cause**: which data produces it | **Effect**: what it should make happen |
 |---|---|---|
 | Status `◐ INCOMPLETE` | `pack.status`, computed at [run.rs:1260](../../src/capture/broker/run.rs#L1260) | A gate rule: **pass** only if `Sufficient` and `change_verified = Yes`; **block** on any `No`; **ask a human** on any `Unknown`. Unknown deliberately does not auto-block, because gates that block on every gap get switched off |
-| Recipe line | `pack.retrieval` (id, version, digest, steps, stop reason) | Anyone can reproduce the investigation. "v1" means one plan forever (§2.3.9), so a dispute is settled by replaying, not by arguing |
+| Checklist line | `pack.retrieval` (id, version, digest, steps, stop reason) | Anyone can reproduce the investigation. "v1" means one plan forever (§2.3.9), so a dispute is settled by replaying, not by arguing |
 | ✔ / ◌ / ✘ verdicts | `pack.assertions`, built by the decision table (§2.8.2); "independent sources" is `independent_support` | ✔ from one source: decide whether one source is enough for this risk. ◌: go to GAPS. ✘ from two sources: the failure is corroborated, so move on to *why*. A **⚠ CONFLICT** line (both sides present) means a human must adjudicate |
 | GAPS | `pack.missing_evidence`, with each reason chosen by priority (§2.9.2) | **Each reason routes to a different person.** `EMPTY` → the developer or agent produces the evidence. `UNAVAILABLE` → platform on-call repairs the source. `DENIED` → the access owner. `NOT QUERIED` → a Crane admin supplies the id or connects a source. `PARSE FAILED` → the integration owner |
-| DECIDED NOT TO LOOK | `retrieval.branches` with `held = false` | Makes the recipe's assumptions visible. Here a human can spot that the commit *does* add a migration although the deployment says it did not |
+| DECIDED NOT TO LOOK | `retrieval.branches` with `held = false` | Makes the checklist's assumptions visible. Here a human can spot that the commit *does* add a migration although the deployment says it did not |
 | GOVERNANCE TOUCHED | context view entities, BELONGS_TO and GOVERNED_BY edges with version scopes (§2.7.6) | Tells reviewers the risk class, and pins the zone version in force, so later drift is detectable |
 | SAFETY | artifact redactions and sensitivity (§2.6.3) | Confidence that the receipt is safe to share. It also exposes an application that logs passwords, which is a separate finding |
 | UNVERIFIED IDEAS | `pack.contributions` that are Proposed and agent-proposed | A human may accept one through review (§2.10.3). From then on it travels as reusable, human-approved context for zone `refunds`. The system learns without agents writing their own memory |
@@ -2243,7 +2243,7 @@ INTEGRITY  manifest a91f… · replay: EXACT
 1. **A trigger fires:** a pull request is opened or updated, or a deployment finishes. CI runs Crane
    under a human or service identity, never inside an agent session (Crane refuses agent sessions).
 2. **An investigation runs.** `crane capture investigate … --json` exists today, but it only uses the
-   `local-change` recipe. A deployment receipt needs the hosted connectors (§2.2.12).
+   `local-change` checklist. A deployment receipt needs the hosted connectors (§2.2.12).
 3. **A renderer maps the pack's JSON to the layout above.** No new logic is needed, because every
    line is a field that already exists.
 4. **The receipt is posted** as a GitHub check run (conclusion `success`, `neutral`, or `failure` by
@@ -2277,7 +2277,7 @@ information does not decide between them.
 
 | Kind | Example | What the component does | Code | Where it still fails | Criticality |
 |---|---|---|---|---|---|
-| **A. What to look for** | "the refund thing broke" | No free-text reading; a class picks a recipe; plans are validated like recipes | [recipe.rs:464](../../src/capture/broker/recipe.rs#L464), [recipe.rs:792](../../src/capture/broker/recipe.rs#L792) | No recipe means an unaudited error | MEDIUM |
+| **A. What to look for** | "the refund thing broke" | No free-text reading; a class picks a checklist; plans are validated like checklists | [recipe.rs:464](../../src/capture/broker/recipe.rs#L464), [recipe.rs:792](../../src/capture/broker/recipe.rs#L792) | No checklist means an unaudited error | MEDIUM |
 | **B. Which object** | "which commit?" | An unknown value makes the step `NotQueried`, never widened; learning keeps lineage | [run.rs:951](../../src/capture/broker/run.rs#L951), [scope.rs:271](../../src/capture/resources/scope.rs#L271) | Several values use the first one silently | HIGH |
 | **C. Which link** | "is this PR from this task?" | Observed, declared, or inferred, stored on each edge; never linked by timing | [model.rs:175](../../src/capture/correlate/model.rs#L175) | Branch-name inference is weak, but it is labelled inferred | NONE |
 | **D. Which fact is true** | healthy vs unhealthy | Both sides are kept as Unresolved; copies count once | [assertions.rs:212](../../src/capture/correlate/assertions.rs#L212) | Mirrors with different bytes count twice | LOW |
@@ -2286,7 +2286,7 @@ information does not decide between them.
 | **G. Is it still true** | an old log | Event time kept apart from ingestion time; freshness warnings; snapshots; replay | [parsers.rs:570](../../src/capture/format/parsers.rs#L570), [run.rs:1761](../../src/capture/broker/run.rs#L1761) | Freshness checks only run when a limit is set; replay misses recovered sources | MEDIUM |
 
 **After the fixes (2026-10-21).**
-- **A**: refusals are audited, and discovery and PR-review recipes exist. **LOW.**
+- **A**: refusals are audited, and discovery and PR-review checklists exist. **LOW.**
 - **B**: every value is learned, and the values not checked are named in a warning. **LOW.**
 - **D**: unchanged, by design. **LOW.**
 - **E**: two more commit field names, and normalized commit and environment keys; there is no
@@ -2316,7 +2316,7 @@ slow. Six things grow:
 | What grows | Where it breaks today | Why | Fix | Why the fix keeps the guarantees | Criticality |
 |---|---|---|---|---|---|
 | **History** | [`open`](../../src/capture/store.rs#L214) loads everything; [`save`](../../src/capture/store.rs#L288) rewrites everything; the lock gap loses writes | whole-file JSONL | Append-only logs with persisted indexes, then a database (the hosted service already has MongoDB) | Content-based ids (§2.1.2) make writes idempotent upserts, so many writers converge | CRITICAL (race), MEDIUM (cost) |
-| **Sources and slowness** | Steps run one after another; no call deadlines; DataSea reads its whole log ([local.rs:264](../../src/capture/resources/local.rs#L264)) | sequential, synchronous design | A dependency graph of steps: a step depends on earlier evidence when its predicate looks at evidence, or when a template uses a variable `learn` can fill. Independent steps run in parallel. Add deadlines and indexes | Merge results back **in recipe order** before writing the audit or evaluating predicates, so the audit is identical to a sequential run | MEDIUM |
+| **Sources and slowness** | Steps run one after another; no call deadlines; DataSea reads its whole log ([local.rs:264](../../src/capture/resources/local.rs#L264)) | sequential, synchronous design | A dependency graph of steps: a step depends on earlier evidence when its predicate looks at evidence, or when a template uses a variable `learn` can fill. Independent steps run in parallel. Add deadlines and indexes | Merge results back **in checklist order** before writing the audit or evaluating predicates, so the audit is identical to a sequential run | MEDIUM |
 | **Data per source** | Cursors are never followed ([run.rs:1060](../../src/capture/broker/run.rs#L1060)) | not implemented | Follow cursors within the record budget, or warn | Budgets still cap the total | HIGH |
 | **Graph size** | [`link_governance`](../../src/capture/correlate/link.rs#L439) compares every file with every zone on every run | full recompute | Re-link only files touched by this run; recompute everything only when a zone or flow version changes | Traversal is already capped (6 / 1000 / 1 MiB), so query cost does not grow | MEDIUM |
 | **Repositories and teams** | One local store per machine | local-first design | Shard by repository; investigations of different episodes share only idempotent entities | Every record carries its repository, and every request carries its own access policy | LOW |
@@ -2358,8 +2358,8 @@ data: store load and save, governance re-linking, and DataSea reads.
 | 14 | Partial with zero records shows as Empty | [run.rs:1485](../../src/capture/broker/run.rs#L1485) | Map it to Unavailable | MEDIUM |
 | 15 | Conditional requirements vanish when their subject is missing | [run.rs:1161](../../src/capture/broker/run.rs#L1161) | Report them as NotQueried | MEDIUM |
 | 16 | No per-call deadline | [run.rs:369](../../src/capture/broker/run.rs#L369) | Deadlines on connector calls | MEDIUM |
-| 17 | Recipe "v1" can change between releases | [recipe.rs:426](../../src/capture/broker/recipe.rs#L426) | Persist recipe digests | MEDIUM |
-| 18 | Discovery results (deployments, tasks) are not learned | [scope.rs:271](../../src/capture/resources/scope.rs#L271) | Add learning rules; add a discovery recipe | MEDIUM |
+| 17 | Checklist "v1" can change between releases | [recipe.rs:426](../../src/capture/broker/recipe.rs#L426) | Persist checklist digests | MEDIUM |
+| 18 | Discovery results (deployments, tasks) are not learned | [scope.rs:271](../../src/capture/resources/scope.rs#L271) | Add learning rules; add a discovery checklist | MEDIUM |
 | 19 | Follow-ups and replays create new episodes | [episode.rs:170](../../src/capture/ingest/episode.rs#L170) | Accept an explicit episode or conversation id | MEDIUM |
 | 20 | Any human can overwrite an outcome | [episode.rs:129](../../src/capture/ingest/episode.rs#L129) | Require `may_review` | MEDIUM |
 | 21 | Policy weakening is judged by a keyword | [contributions.rs:236](../../src/capture/ingest/contributions.rs#L236) | Rely on the Crane workflow; review the prose | MEDIUM |
@@ -2367,13 +2367,13 @@ data: store load and save, governance re-linking, and DataSea reads.
 | 23 | Verification runs twice per local investigation and cannot be interrupted | [local.rs:594](../../src/capture/resources/local.rs#L594) | Cache it per run; add a deadline | MEDIUM |
 | 24 | Replay misses recovered sources | [run.rs:1761](../../src/capture/broker/run.rs#L1761) | Compare in both directions | MEDIUM |
 | 25 | Unknown reference field names link to nothing | [parsers.rs:541](../../src/capture/format/parsers.rs#L541) | Per-connector field maps | MEDIUM |
-| 26 | Only one recipe is reachable from the CLI; missing commands | [cli/capture.rs](../../src/cli/capture.rs) | Add commands | MEDIUM |
+| 26 | Only one checklist is reachable from the CLI; missing commands | [cli/capture.rs](../../src/cli/capture.rs) | Add commands | MEDIUM |
 | 27 | Source health is never used | [registry.rs:410](../../src/capture/resources/registry.rs#L410) | Probe health, mark Unhealthy | LOW |
 | 28 | `auth_reference` is never resolved | [registry.rs:247](../../src/capture/resources/registry.rs#L247) | Implement with the first hosted connector | LOW |
 | 29 | Declared but unused: `Reviewed`, `Contradicted`, `Superseded`, the question lifecycle, `expire`, relation validity | various | Wire them up or remove them | LOW |
 | 30 | Sealing leaves dropped ids in the context view | [pack.rs:397](../../src/capture/ingest/pack.rs#L397) | Prune the view after sealing | LOW |
 
-The core ideas hold up: three-valued truth, typed gap reasons, immutable recipes, eligibility before
+The core ideas hold up: three-valued truth, typed gap reasons, immutable checklists, eligibility before
 ranking, the controlled vocabulary, and human-only promotion of knowledge. Almost every break above
 is one of two patterns:
 
@@ -2403,7 +2403,7 @@ Both are local fixes that leave the architecture unchanged. Items 1 to 4 are the
 | 15 | Resolved | `unevaluable` keeps the requirement as NotQueried | NONE |
 | 16 | Partly resolved | Deadlines on connector calls; Crane verification is not interruptible | LOW |
 | 17 | Resolved | Golden digests and store pins | NONE |
-| 18 | Resolved | Deployments and tasks learned; `deployment-discovery` recipe | NONE |
+| 18 | Resolved | Deployments and tasks learned; `deployment-discovery` checklist | NONE |
 | 19 | Resolved | Replay keeps the episode; `episode EPI` on the CLI | NONE |
 | 20 | Resolved | Review rights needed; outcome history kept | NONE |
 | 21 | Resolved | Allow-list of effects; the policy must be named | LOW |
@@ -2411,7 +2411,7 @@ Both are local fixes that leave the architecture unchanged. Items 1 to 4 are the
 | 23 | Partly resolved | Verification once per investigation; not interruptible | LOW |
 | 24 | Resolved | Comparison in both directions | NONE |
 | 25 | Partly resolved | More commit field names, normalized keys; no per-connector map | LOW |
-| 26 | Resolved | Class, recipe, version, episode; eight new commands | LOW |
+| 26 | Resolved | Class, checklist, version, episode; eight new commands | LOW |
 | 27 | Resolved | A failed source is not asked again in the same investigation | NONE |
 | 28 | Left as designed | No connector needs a credential yet (GitHub uses the CLI's login) | LOW |
 | 29 | Mostly resolved | `Reviewed`, the question lifecycle, and `expire` are wired up; `Contradicted` and `Superseded` stay reserved; relation validity is left unset | LOW |

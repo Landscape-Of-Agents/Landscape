@@ -506,6 +506,176 @@ pub(super) fn settle_brick_requests(
     Ok(json!({"settled": settled.len(), "results": settled}))
 }
 
+/** The account of the org catalog a machine's repository shares in: the GitHub owner of the
+ * remote this machine verified for it
+ * Input
+    - database: &Database - MongoDB
+    - repository: &str - repository identity
+    - installation: &str - the machine
+ * Output
+    - Result<Option<(String, String)>, String> (account, remote); None without a verified GitHub
+      remote
+*/
+pub(super) fn catalog_account(
+    database: &Database,
+    repository: &str,
+    installation: &str,
+) -> Result<Option<(String, String)>, String> {
+    let known = database
+        .collection::<Document>("repositories")
+        .find_one(
+            doc! {"repository_id": repository, "installation": installation, "verified": true},
+        )
+        .run()
+        .map_err(io_error)?;
+    Ok(known.and_then(|document| {
+        let remote = document.get_str("remote").ok()?.to_string();
+        let account = super::dashboard::auth::account(&remote)?;
+        Some((account, remote))
+    }))
+}
+
+/** The digest an account's catalog holds for a Brick version, if any
+ * Input
+    - database: &Database - MongoDB
+    - account: &str - account
+    - brick_id: &str - Brick
+    - version: u32 - version
+ * Output
+    - Result<Option<String>, String>
+*/
+pub(super) fn catalog_digest(
+    database: &Database,
+    account: &str,
+    brick_id: &str,
+    version: u32,
+) -> Result<Option<String>, String> {
+    Ok(database
+        .collection::<Document>("brick_catalog")
+        .find_one(doc! {"account": account, "brick_id": brick_id, "version": version as i64})
+        .run()
+        .map_err(io_error)?
+        .and_then(|document| document.get_str("digest").ok().map(str::to_string)))
+}
+
+/** Keep a checked catalog entry (brick::share::verify) in an account's catalog
+ * Input
+    - database: &Database - MongoDB
+    - account: &str - account
+    - remote: &str - the publishing repository's remote
+    - repository: &str - its identity
+    - brick: &crate::brick::model::Brick - the definition
+    - entry: &Value - the entry
+ * Output
+    - Result<Value, String> {account, ref, stored: true}
+*/
+pub(super) fn keep_catalog_entry(
+    database: &Database,
+    account: &str,
+    remote: &str,
+    repository: &str,
+    brick: &crate::brick::model::Brick,
+    entry: &Value,
+) -> Result<Value, String> {
+    let text = |key: &str| entry[key].as_str().unwrap_or_default().to_string();
+    database
+        .collection::<Document>("brick_catalog")
+        .insert_one(doc! {
+            "account": account, "brick_id": &brick.brick_id, "version": brick.version as i64,
+            "digest": brick.digest(), "type": brick.brick_type.name(), "name": &brick.name, "intent": &brick.intent,
+            "entry": serde_json::to_string(entry).map_err(io_error)?,
+            "published_by": text("published_by"), "publisher_key": text("publisher_key"), "reason": text("reason"),
+            "source_repository": repository, "source_remote": remote, "published_at": now_millis() as i64,
+        })
+        .run()
+        .map_err(io_error)?;
+    Ok(json!({"account": account, "ref": brick.reference().to_string(), "stored": true}))
+}
+
+/** How many entries an account's catalog holds
+ * Input
+    - database: &Database - MongoDB
+    - account: &str - account
+ * Output
+    - Result<u64, String>
+*/
+pub(super) fn catalog_size(database: &Database, account: &str) -> Result<u64, String> {
+    database
+        .collection::<Document>("brick_catalog")
+        .count_documents(doc! {"account": account})
+        .run()
+        .map_err(io_error)
+}
+
+/** An account's catalog, newest first, without definitions
+ * Input
+    - database: &Database - MongoDB
+    - account: &str - account
+ * Output
+    - Result<Value, String> {account, entries: [{ref, brick_id, version, type, name, intent, digest,
+      published_by, publisher_key, reason, source_remote, published_at}]}
+*/
+pub(super) fn brick_catalog(database: &Database, account: &str) -> Result<Value, String> {
+    let found = database
+        .collection::<Document>("brick_catalog")
+        .find(doc! {"account": account})
+        .projection(doc! {"entry": 0})
+        .sort(doc! {"published_at": -1})
+        .limit(crate::brick::share::MAX_ENTRIES as i64)
+        .run()
+        .map_err(io_error)?;
+    let mut entries = Vec::new();
+    for document in found {
+        entries.push(catalog_row(&document.map_err(io_error)?));
+    }
+    Ok(json!({"account": account, "entries": entries}))
+}
+
+/** One catalog entry as listed
+ * Input
+    - document: &Document - stored entry
+ * Output
+    - Value
+*/
+pub(super) fn catalog_row(document: &Document) -> Value {
+    let text = |key: &str| document.get_str(key).unwrap_or_default().to_string();
+    let version = number(document.get("version"));
+    json!({
+        "ref": format!("{}@{version}", text("brick_id")), "brick_id": text("brick_id"), "version": version,
+        "type": text("type"), "name": text("name"), "intent": text("intent"), "digest": text("digest"),
+        "published_by": text("published_by"), "publisher_key": text("publisher_key"), "reason": text("reason"),
+        "source_remote": text("source_remote"), "published_at": number(document.get("published_at")),
+    })
+}
+
+/** One entry of an account's catalog, with its signed definition
+ * Input
+    - database: &Database - MongoDB
+    - account: &str - account
+    - brick_id: &str - Brick
+    - version: u32 - version
+ * Output
+    - Result<Option<Value>, String> the entry as published
+*/
+pub(super) fn catalog_entry(
+    database: &Database,
+    account: &str,
+    brick_id: &str,
+    version: u32,
+) -> Result<Option<Value>, String> {
+    let found = database
+        .collection::<Document>("brick_catalog")
+        .find_one(doc! {"account": account, "brick_id": brick_id, "version": version as i64})
+        .run()
+        .map_err(io_error)?;
+    found
+        .map(|document| {
+            serde_json::from_str::<Value>(document.get_str("entry").unwrap_or_default())
+                .map_err(io_error)
+        })
+        .transpose()
+}
+
 /** Return the repository's owner key most recently confirmed by a GitHub admin of its remote
  * (public information: a public key and who confirmed it)
  * Input

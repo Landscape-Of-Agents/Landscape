@@ -392,9 +392,12 @@ fn explorations_become_a_learned_recipe_through_the_cli() {
         "propose",
         question["pattern_id"].as_str().unwrap(),
     ]);
-    assert!(proposed.contains("Proposed recipe"), "{proposed}");
-    let (ok, recipes) = fixture.json(&["insight", "recipes", "--json"]);
+    assert!(proposed.contains("Proposed checklist"), "{proposed}");
+    let (ok, recipes) = fixture.json(&["insight", "checklists", "--json"]);
     assert!(ok, "{recipes}");
+    // The former name still works
+    let (ok, former) = fixture.json(&["insight", "recipes", "--json"]);
+    assert!(ok && former == recipes, "{former}");
     let proposal = recipes["proposals"][0].clone();
     assert_eq!(proposal["status"], json!("proposed"));
     assert_eq!(

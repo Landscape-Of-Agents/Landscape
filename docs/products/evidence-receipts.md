@@ -26,7 +26,7 @@ engineers.
 | Capability | Status |
 |---|---|
 | Evidence Packs: evidence about a change, with a reason for every gap | exists ([features/evidence.md](../features/evidence.md)) |
-| Learned recipes: questions people found answered well become reusable | exists ([features/insight.md](../features/insight.md)) |
+| Learned checklists: questions people found answered well become reusable | exists ([features/insight.md](../features/insight.md)) |
 | Verified procedures: work repeatedly proven becomes a skill | exists ([features/skills.md](../features/skills.md)) |
 | Receipt renderer and pull-request check (pass when proven, block on "no", ask a person on "unknown") | to build |
 | Feature rollup for product managers (acceptance criteria as `target` rules) | to build |

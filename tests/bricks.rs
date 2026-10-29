@@ -320,3 +320,103 @@ fn bricks_are_drafted_activated_attached_enforced_and_revoked() {
         text(&fixture.as_agent(&["brick", "list"])).contains("cannot be executed by an AI agent")
     );
 }
+
+/** A downloaded library is imported as drafts that grant nothing (all or nothing), and a mock
+ * call is decided by an attached Brick without running or recording anything
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn libraries_import_as_drafts_and_mock_calls_are_decided() {
+    let fixture = Fixture::ready();
+    fixture.write(
+        ".crane/governance.yaml",
+        "version: 1\nzones:\n  - id: payments\n    description: Payment logic\n    selectors:\n      files: [app/payments.py]\n    autonomy_ceiling: delegated\n",
+    );
+    fixture.write("app/payments.py", "x = 1\n");
+    fixture.ok(&["governance", "sign"]);
+    let library = json!({
+        "format": "crane-brick-library/v1",
+        "bricks": [
+            {"ref": "no-deletes@3", "state": "active", "type": "access", "name": "No deletes", "intent": "Agents never delete payment code",
+             "config": {"delete": "deny"}, "common_context": {"text": "Deleting needs the payments team.", "sensitivity": "internal"}, "dependencies": []},
+            {"ref": "push-review@1", "state": "active", "type": "approval", "name": "Push review", "intent": "A person approves pushes",
+             "config": {"operations": ["git_push"], "reason": "release owners decide"}, "common_context": {"text": "", "sensitivity": "internal"}, "dependencies": []}
+        ]
+    });
+    fixture.write("library.json", &library.to_string());
+    let (code, imported) = envelope(&fixture, &["brick", "import", "library.json"]);
+    assert_eq!(code, Some(0), "{imported}");
+    let drafts = imported["data"]["drafts"].as_array().unwrap();
+    assert_eq!(drafts.len(), 2);
+    assert_eq!(
+        drafts[0]["brick_ref"], "no-deletes@1",
+        "versions start over here"
+    );
+    assert!(fixture
+        .work
+        .join(".crane/drafts/bricks/no-deletes.json")
+        .is_file());
+    assert!(
+        !fixture.work.join(".crane/bricks.json").exists(),
+        "an import signs nothing"
+    );
+    // Importing again is refused before anything is saved
+    let again = fixture.run(&["brick", "import", "library.json"]);
+    assert!(!again.status.success());
+    assert!(text(&again).contains("already exists"), "{}", text(&again));
+
+    // A mock call: the draft is tested as if attached; deleting is refused, a small change is not
+    let (code, deleted) = envelope(
+        &fixture,
+        &[
+            "brick",
+            "test",
+            "no-deletes",
+            "--target",
+            "zone:payments",
+            "--call",
+            "{\"files\": [\"app/payments.py\"], \"delete\": true}",
+        ],
+    );
+    assert_eq!(code, Some(0), "{deleted}");
+    assert_eq!(deleted["data"]["trial"]["verdict"], "deny", "{deleted}");
+    assert_eq!(
+        deleted["data"]["trial"]["findings"][0]["rule"],
+        "BRICK_ACCESS_MODE"
+    );
+    let (_, changed) = envelope(
+        &fixture,
+        &[
+            "brick",
+            "test",
+            "no-deletes",
+            "--target",
+            "zone:payments",
+            "--call",
+            "{\"files\": [\"app/payments.py\"], \"lines\": 2}",
+        ],
+    );
+    assert_eq!(changed["data"]["trial"]["verdict"], "allow", "{changed}");
+    let malformed = fixture.run(&[
+        "brick",
+        "test",
+        "no-deletes",
+        "--target",
+        "zone:payments",
+        "--call",
+        "{\"files\": [\"../outside\"]}",
+    ]);
+    assert!(!malformed.status.success());
+    assert!(
+        text(&malformed).contains("not a file inside the repository"),
+        "{}",
+        text(&malformed)
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.work.join("app/payments.py")).unwrap(),
+        "x = 1\n"
+    );
+}

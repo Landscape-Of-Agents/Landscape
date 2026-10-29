@@ -722,3 +722,33 @@ pub(super) fn brick_requests_settled(
         log.record(spec, Some(repository), Some(installation));
     }
 }
+
+/** F37.13: an admin's machine published an activated Brick version to the org catalog
+ * Input
+    - log: &ServiceLog - service log
+    - repository: &str - the publishing repository
+    - installation: &str - the machine
+    - account: &str - the catalog's account
+    - reference: &str - "ID@N"
+ * Output
+    - None
+*/
+pub(super) fn brick_published(
+    log: &ServiceLog,
+    repository: &str,
+    installation: &str,
+    account: &str,
+    reference: &str,
+) {
+    let mut spec = service_events::event("BRICK_PUBLISHED", "F37", "BRICK_CATALOG", "SERVICE");
+    spec.respond(
+        "OK",
+        "NA",
+        "A Brick version was published to the organization's catalog; other repositories import it as a draft.",
+    )
+    .severity("INFO", "OUTCOME", "NONE")
+    .set("other", "account", account)
+    .set("other", "brick", reference)
+    .set("other", "machine_key", installation);
+    log.record(spec, Some(repository), Some(installation));
+}

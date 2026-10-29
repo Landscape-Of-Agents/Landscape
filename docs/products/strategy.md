@@ -280,8 +280,8 @@ Every product below is designed to get *stronger* under these movements, not wea
    - **Verification debt (for quality and tech leads).** Recurring gaps ranked by zone criticality and
      affected changes, each routed to the role that owns its reason (the former Debt Exchange, fed by
      Insight's evidence-gap patterns).
-   - **Learning from questions.** Questions no recipe serves are explored; people's feedback becomes
-     learned recipes after review ([insight/](../../src/insight), [capture/broker/proposals.rs](../../src/capture/broker/proposals.rs)),
+   - **Learning from questions.** Questions no checklist serves are explored; people's feedback becomes
+     learned checklists after review ([insight/](../../src/insight), [capture/broker/proposals.rs](../../src/capture/broker/proposals.rs)),
      so receipts get more complete for each organization over time.
    - **Verified procedure export.** Work that is repeatedly verified (Insight's work patterns, compiled
      by the capability pipeline) is exported as a signed procedure in the vendors' own skill and tool
@@ -302,7 +302,7 @@ Every product below is designed to get *stronger* under these movements, not wea
    not the attempt history; an agent vendor could summarize its own work, but a receipt written by the
    party that did the work is not independent.
 4. **What keeps customers using it.** Reviewers who rely on receipts approve agent work faster; removing
-   them slows every merge. Learned recipes and verified procedures are organization-specific assets that
+   them slows every merge. Learned checklists and verified procedures are organization-specific assets that
    accumulate. Receipts feed Black Box's accident classification and the board report.
 5. **Near-future implementations.**
    - The receipt renderer and the check publisher (the main gap).
@@ -325,7 +325,7 @@ Every product below is designed to get *stronger* under these movements, not wea
    - Business: which changes are verified, which are not and why, and where verification investment
      closes the most risk; true feature status for product managers.
    - Agentic: an agent receives its own change's receipt at `STOP` (to build) and closes its evidence gaps
-     before a person looks; learned recipes and verified procedures make each next change better
+     before a person looks; learned checklists and verified procedures make each next change better
      evidenced and each next agent better equipped.
 10. **Drawbacks, limitations, iterations.**
     - Without live test and deployment connectors, many receipts say "unknown" for those parts; this is
@@ -381,7 +381,7 @@ flowchart LR
   R -->|"accidents: failed deployments of bypassed changes"| B
   B -->|"earned-autonomy proposals, signed by admins"| C
   B -->|"reviewed near-miss context"| C
-  R -->|"learned recipes, verified procedures, incident context"| C
+  R -->|"learned checklists, verified procedures, incident context"| C
 ```
 
 Crane produces the record; Black Box and Receipts turn it into safety, assurance, and proof; and what
@@ -417,7 +417,7 @@ signature or review.
 | Aggregates count only what the viewer could open; **minimum support 3** | aggregates must not leak a hidden record | Insight read model ([insight/read.rs](../../src/insight/read.rs)) |
 | **Co-occurrence, never cause** | correlations presented as causes mislead | Insight outcome miner |
 | Every number **links to its evidence** | trust in a report is trust in its drill-down | event digests, pack manifests |
-| Definitions are **versioned** | a changed definition must not look like a changed trend | miners' version, recipe digests |
+| Definitions are **versioned** | a changed definition must not look like a changed trend | miners' version, checklist digests |
 | Person-level views are **private by default** | surveillance ends adoption | to be enforced in Black Box lenses |
 
 ---

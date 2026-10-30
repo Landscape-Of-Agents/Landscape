@@ -120,6 +120,7 @@ pub(crate) fn check(url: &str) -> Result<String, String> {
  * Output
     - bool
 */
+#[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the hosted dashboard's check
 pub(crate) fn is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {

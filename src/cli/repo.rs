@@ -195,6 +195,112 @@ pub(crate) fn github(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/** Run 'crane integrate NAME --settings JSON [--secrets-stdin]' or 'crane integrate --status':
+ * set an integration without prompts (every address must answer before anything is kept;
+ * credentials come only from this machine's standard input), or list every integration's status
+ * Input
+    - args: &[String] - arguments after "integrate"
+ * Output
+    - Result<(), String>
+*/
+fn integrate_without_prompts(args: &[String]) -> Result<(), String> {
+    use crate::cli::protocol::{finish, parse, Response, Status as Outcome};
+    use serde_json::{json, Map, Value};
+    let args = parse(args, &["settings"], &["secrets-stdin", "status"])?;
+    let workspace = Workspace::discover()?;
+    if args.flag("status") {
+        let status = integrations::status(&workspace);
+        let detail = status
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(name, row)| {
+                format!(
+                    "  {name}: {}",
+                    if row["connected"] == true {
+                        "connected".to_string()
+                    } else if row["configured"] == true {
+                        format!("missing {}", row["missing_secrets"])
+                    } else {
+                        "not set".to_string()
+                    }
+                )
+            })
+            .collect::<Vec<_>>();
+        let response = Response::new("integrate.status", Outcome::Ok, "integration status")
+            .data(json!({"integrations": status, "schemas": integrations::schema::schemas_json()}));
+        return finish(&args, response, &detail);
+    }
+    crate::trust::require_human("crane integrate")?;
+    args.expect_positional(1, "crane integrate NAME --settings JSON [--secrets-stdin]")?;
+    let name = args.positional[0].to_ascii_lowercase();
+    let given: Map<String, Value> = match args.value("settings") {
+        Some(text) => serde_json::from_str::<Value>(&text)
+            .map_err(|error| format!("--settings is not valid JSON: {error}"))?
+            .as_object()
+            .cloned()
+            .ok_or("--settings must be a JSON object")?,
+        None => Map::new(),
+    };
+    let credentials: Map<String, Value> = if args.flag("secrets-stdin") {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+            .map_err(crate::platform::io_error)?;
+        if text.trim().is_empty() {
+            Map::new()
+        } else {
+            serde_json::from_str::<Value>(&text)
+                .map_err(|_| "the credentials on standard input are not a JSON object".to_string())?
+                .as_object()
+                .cloned()
+                .ok_or("the credentials on standard input must be a JSON object")?
+        }
+    } else {
+        Map::new()
+    };
+    if given.is_empty() && credentials.is_empty() {
+        return Err(
+            "give --settings JSON, credentials on standard input (--secrets-stdin), or both".into(),
+        );
+    }
+    let saved = integrations::set_settings(&workspace, &name, &given, &credentials)?;
+    let missing = saved["missing_secrets"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or(0);
+    let mut detail = saved["checked"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(|line| format!("  checked: {line}"))
+        .collect::<Vec<_>>();
+    if let Some(verified) = saved["verified"].as_object() {
+        detail.push(format!(
+            "  {}: {}",
+            if verified["ok"] == true {
+                "verified"
+            } else {
+                "not verified"
+            },
+            verified["message"].as_str().unwrap_or_default()
+        ));
+    }
+    let summary = if missing > 0 {
+        format!(
+            "saved the {name} settings (every address answered); add {} on this machine: crane integrate {name} --secrets-stdin, or approve it in Landscape",
+            saved["missing_secrets"].as_array().into_iter().flatten().filter_map(|secret| secret["label"].as_str()).collect::<Vec<_>>().join(", ")
+        )
+    } else {
+        format!("saved the {name} integration; it is connected")
+    };
+    finish(
+        &args,
+        Response::new("integrate.set", Outcome::Ok, summary).data(saved),
+        &detail,
+    )
+}
+
 /** Configure an integration interactively
  * Input
     - args: &[String] - jira, whatsapp, slack, or github
@@ -202,8 +308,11 @@ pub(crate) fn github(args: &[String]) -> Result<(), String> {
     - Result<(), String>
 */
 pub(crate) fn integrate(args: &[String]) -> Result<(), String> {
+    if args.len() > 1 || args.first().is_some_and(|arg| arg.starts_with("--")) {
+        return integrate_without_prompts(args);
+    }
     let [name] = args else {
-        return Err("usage: crane integrate jira|whatsapp|slack|github".into());
+        return Err("usage: crane integrate jira|whatsapp|slack|github|datadog|grafana|google_meet|oncall [--settings JSON] [--secrets-stdin] [--status]".into());
     };
     let integration = integrations::configure(name)?;
     println!(

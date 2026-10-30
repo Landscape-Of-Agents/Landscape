@@ -808,7 +808,7 @@ async function craneIn(directory: string, args: string[], input = "") {
  * @returns result (code 126 when the configured Crane cannot be used), or undefined when there is
  *   no repository
  */
-async function crane(args: string[]) {
+async function crane(args: string[], input = "") {
   const directory = root();
   if (!directory) {
     vscode.window.showErrorMessage("Landscape: Crane is not set up in this folder; run 'Landscape: Set Up Crane in This Repository'.");
@@ -819,7 +819,7 @@ async function crane(args: string[]) {
     void warnCrane(checked);
     return { code: 126, stdout: "", stderr: checked.message ?? "Crane cannot be used." };
   }
-  return craneIn(directory, args);
+  return craneIn(directory, args, input);
 }
 
 /**
@@ -1583,7 +1583,7 @@ export function activate(context: vscode.ExtensionContext): void {
   void bricks.load();
   // The Bricks and Resident Agents panels: a graph of the Zones and Flows with what hangs on them
   const panelDeps: PanelDeps = {
-    crane: (args) => crane(args),
+    crane: (args, input) => crane(args, input),
     graph: (refresh) => graphHost.load(refresh),
     targets: targetsOf,
     refresh: async () => {

@@ -12,6 +12,7 @@ mod github;
 mod jira;
 mod observability;
 pub(crate) mod prompt;
+pub(crate) mod schema;
 mod slack;
 mod whatsapp;
 
@@ -379,6 +380,170 @@ pub(crate) fn configured(workspace: &Workspace) -> Vec<Integration> {
         .iter()
         .filter_map(|provider| load(workspace, provider.name()))
         .collect()
+}
+
+/** Set an integration's settings without prompts (from DataSea, Landscape, or a script): the
+ * given settings are merged and checked, every address among them must answer from this machine
+ * before anything is kept, and credentials (given on this machine only) are added
+ * Input
+    - workspace: &Workspace - repository
+    - name: &str - integration (one with a schema)
+    - given: &Map<String, Value> - non-secret settings ("" or null removes one)
+    - credentials: &Map<String, Value> - credentials entered on this machine ("" removes one)
+ * Output
+    - Result<Value, String> - {name, settings, checked, missing_secrets, verified}
+    - Error, with nothing saved, when a setting is invalid or an address does not answer
+*/
+pub(crate) fn set_settings(
+    workspace: &Workspace,
+    name: &str,
+    given: &Map<String, Value>,
+    credentials: &Map<String, Value>,
+) -> Result<Value, String> {
+    let schema =
+        schema::schema(name).ok_or_else(|| {
+            format!(
+            "'{name}' cannot be set without prompts; use one of {}, or 'crane integrate {name}'",
+            schema::SCHEMAS.iter().map(|schema| schema.name).collect::<Vec<_>>().join(", ")
+        )
+        })?;
+    let current = load(workspace, name);
+    let settings = schema::merge_settings(
+        schema,
+        current
+            .as_ref()
+            .map(|integration| &integration.settings)
+            .unwrap_or(&Map::new()),
+        given,
+    )?;
+    // Every address given now must point somewhere before it is kept
+    let mut checked = Vec::new();
+    let mut failures = Vec::new();
+    for setting in schema
+        .settings
+        .iter()
+        .filter(|setting| setting.kind == schema::Kind::Url)
+    {
+        let Some(url) = settings.get(setting.key).and_then(Value::as_str) else {
+            continue;
+        };
+        let unchanged = current
+            .as_ref()
+            .and_then(|integration| integration.settings.get(setting.key))
+            .and_then(Value::as_str)
+            == Some(url);
+        if unchanged && !given.contains_key(setting.key) {
+            continue;
+        }
+        match crate::platform::probe::check(url) {
+            Ok(answer) => checked.push(answer),
+            Err(error) => failures.push(format!("{} ({}): {error}", setting.label, setting.key)),
+        }
+    }
+    if !failures.is_empty() {
+        return Err(format!(
+            "nothing was saved: an address does not point to the service\n- {}",
+            failures.join("\n- ")
+        ));
+    }
+    schema::check_secrets(schema, &settings, credentials)?;
+    let mut secrets = secrets(workspace, name);
+    // A credential an Environment Brick supplies is not stored here
+    if crate::trust::vault::for_operation(workspace, name).is_some() {
+        secrets.remove("token");
+    }
+    for (key, value) in credentials {
+        match value.as_str().map(str::trim) {
+            Some("") | None => {
+                secrets.remove(key);
+            }
+            Some(text) => {
+                secrets.insert(key.clone(), json!(text));
+            }
+        }
+    }
+    // Credentials that no longer apply with these settings are dropped
+    secrets.retain(|key, _| {
+        schema
+            .secrets
+            .iter()
+            .any(|secret| secret.key == key && schema::applies(secret.when, &settings))
+    });
+    let integration = Integration {
+        name: name.to_string(),
+        settings,
+        secret_fields: secrets.keys().cloned().collect(),
+        configured_at: now_unix(),
+        configured_by: actor(),
+    };
+    let (settings_path, secrets_path) = paths(workspace, name)?;
+    write_atomic(
+        &settings_path,
+        serde_json::to_string_pretty(&integration)
+            .map_err(io_error)?
+            .as_bytes(),
+    )?;
+    write_atomic(
+        &secrets_path,
+        serde_json::to_string(&Value::Object(secrets.clone()))
+            .map_err(io_error)?
+            .as_bytes(),
+    )?;
+    restrict_to_owner(&secrets_path)?;
+    let missing = schema::missing_secrets(schema, &integration.settings, &secrets);
+    let verified = if missing.is_empty() {
+        Some(match verify(workspace, &integration) {
+            Ok(message) => json!({"ok": true, "message": message}),
+            Err(error) => json!({"ok": false, "message": error}),
+        })
+    } else {
+        None
+    };
+    Ok(json!({
+        "name": name,
+        "settings": integration.settings,
+        "checked": checked,
+        "missing_secrets": missing.iter().map(|secret| json!({"key": secret.key, "label": secret.label})).collect::<Vec<_>>(),
+        "verified": verified,
+    }))
+}
+
+/** Every integration with a schema: whether it is connected (settings and every credential that
+ * applies), its non-secret settings, and the credentials still missing
+ * Input
+    - workspace: &Workspace - repository
+ * Output
+    - Value - {NAME: {connected, configured, settings, missing_secrets}}
+*/
+pub(crate) fn status(workspace: &Workspace) -> Value {
+    let mut all = Map::new();
+    for schema in schema::SCHEMAS {
+        let integration = load(workspace, schema.name);
+        let (settings, missing) = match &integration {
+            Some(integration) => {
+                let missing = schema::missing_secrets(
+                    schema,
+                    &integration.settings,
+                    &secrets(workspace, schema.name),
+                );
+                (
+                    integration.settings.clone(),
+                    missing.iter().map(|secret| secret.key).collect::<Vec<_>>(),
+                )
+            }
+            None => (Map::new(), Vec::new()),
+        };
+        all.insert(
+            schema.name.into(),
+            json!({
+                "configured": integration.is_some(),
+                "connected": integration.is_some() && missing.is_empty(),
+                "settings": settings,
+                "missing_secrets": missing,
+            }),
+        );
+    }
+    Value::Object(all)
 }
 
 /** Require an https URL

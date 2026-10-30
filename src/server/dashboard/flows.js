@@ -273,7 +273,12 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
           if (spec.required && (params[key] === "" || params[key] === null)) { error.textContent = spec.label + " is required."; control.focus(); return; }
         }
         if (options.shape) params.checks = options.shape(params);
-        if (options.validate) { const problem = options.validate(params); if (problem) { error.textContent = problem; return; } }
+        if (options.validate) {
+          submit.disabled = true;
+          const problem = await options.validate(params);
+          submit.disabled = false;
+          if (problem) { error.textContent = problem; return; }
+        }
         if (!reason.value.trim()) { error.textContent = "Say why; it is recorded with the change."; reason.focus(); return; }
         submit.disabled = true;
         try {
@@ -661,9 +666,11 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
     // At rest: the repository's routing, limits, proposals, incidents, and requests
     function repositoryView() {
       const proposals = data.proposals.filter((proposal) => proposal.status === "PENDING");
-      const nav = chips([["overview", "Overview"], ["proposals", "Proposals", proposals.length], ["incidents", "Incidents", data.incidents.length], ["requests", "Requests", data.requests.length]]);
+      const linked = Object.values(data.integrations || {}).filter((row) => row.connected).length;
+      const nav = chips([["overview", "Overview"], ["connections", "Connections", linked + "/" + (data.integration_schemas || []).length], ["proposals", "Proposals", proposals.length], ["incidents", "Incidents", data.incidents.length], ["requests", "Requests", data.requests.length]]);
       let pane, peek = null;
-      if (state.filter === "proposals") pane = list(proposals.map((proposal) => itemRow({ type: "proposal", id: proposal.proposal_id }, proposalTitle(proposal), proposal.flow + " · " + dt(proposal.proposed_at), pill(proposal.kind))), "No proposals from agents are waiting.");
+      if (state.filter === "connections") pane = connectionsPane();
+      else if (state.filter === "proposals") pane = list(proposals.map((proposal) => itemRow({ type: "proposal", id: proposal.proposal_id }, proposalTitle(proposal), proposal.flow + " · " + dt(proposal.proposed_at), pill(proposal.kind))), "No proposals from agents are waiting.");
       else if (state.filter === "incidents") pane = list(data.incidents.slice(0, 50).map((incident) => itemRow({ type: "incident", id: incident.incident_id }, incident.summary, incident.flow + " · " + dt(incident.raised_at), pill(incident.code, "bad"))), "No incidents.");
       else if (state.filter === "requests") pane = list(data.requests.slice(0, 50).map((row, index) => itemRow({ type: "request", id: index }, requestTitle(row), "@" + row.requested_by + " · " + dt(row.requested_at), chip(requestStatus(row)))), "No flow requests were made here.");
       else pane = [
@@ -780,7 +787,9 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
     function peopleConnections() {
       const names = [["slack", "Slack"], ["jira", "Jira"], ["github", "GitHub"], ["whatsapp", "WhatsApp"]];
       return h("div", { class: "fx-section" },
-        h("div", { class: "fx-conn" }, names.map(([key, label]) => pill(label + (connections[key] ? " · connected" : " · not connected"), connections[key] ? "ok" : "", connections[key] ? label + " is connected on the reporting machine" : "Run 'crane integrate " + key + "' to connect " + label))),
+        h("div", { class: "fx-conn" }, names.map(([key, label]) => schemaOf(key)
+          ? h("button", { class: "fx-btn small" + (connections[key] ? "" : " ghost"), type: "button", title: connections[key] ? "Change the " + label + " connection" : "Connect " + label, onclick: () => connectDialog(key) }, pill(label + (connections[key] ? " · connected" : " · not connected"), connections[key] ? "ok" : ""))
+          : pill(label + (connections[key] ? " · connected" : " · not connected"), connections[key] ? "ok" : "", connections[key] ? label + " is connected on the reporting machine" : "Run 'crane integrate " + key + "' to connect " + label))),
         data.connections ? null : note("The reporting machine runs a Crane that does not report its connections; update Crane there."));
     }
     /** The services a person has an id in, each with whether that service is connected */
@@ -999,6 +1008,129 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
       back.querySelector("button").focus();
     }
 
+    // ---------------------------------------------------------------- connections
+
+    const schemas = data.integration_schemas || [];
+    const integrations = data.integrations || {};
+    const schemaOf = (name) => schemas.find((schema) => schema.name === name);
+    /** Every address in a value (strings that start with http:// or https://) */
+    function urlsIn(value) {
+      const found = new Set();
+      const walk = (item) => {
+        if (typeof item === "string" && /^https?:\/\//.test(item.trim())) found.add(item.trim());
+        else if (Array.isArray(item)) item.forEach(walk);
+        else if (item && typeof item === "object") Object.values(item).forEach(walk);
+      };
+      walk(value);
+      return [...found];
+    }
+    /** Ask DataSea whether an address points to a service ({ok, private, message}) */
+    async function probeUrl(url) {
+      try { return await apiWrite("/api/flows", { action: "probe", url }); } catch (error) { return { ok: false, private: false, message: error.message }; }
+    }
+    /** Check every address; returns the ones that failed, the private ones (checked by the machine), and the ones that answered */
+    async function checkUrls(urls) {
+      const results = await Promise.all(urls.map((url) => probeUrl(url).then((answer) => Object.assign({ url }, answer))));
+      return { failed: results.filter((row) => !row.ok), later: results.filter((row) => row.ok && row.private), answered: results.filter((row) => row.ok && !row.private) };
+    }
+    /** A modal that lists addresses that do not point to a service */
+    function urlError(failed) {
+      const close = () => back.remove();
+      const back = h("div", { class: "fx-dialog", role: "alertdialog", "aria-modal": "true", "aria-label": "Addresses that do not answer", onclick: (event) => { if (event.target === back) close(); }, onkeydown: (event) => { if (event.key === "Escape") close(); } },
+        h("form", { onsubmit: (event) => { event.preventDefault(); close(); } },
+          h("div", { class: "fx-kind", style: "color:var(--bad)" }, "Not kept"),
+          h("h2", {}, "An address does not point to a service"),
+          h("ul", { class: "fx-errors" }, failed.map((row) => h("li", {}, row.message))),
+          note("Nothing is attached until every address answers. Fix the address, or check that the service is up."),
+          h("div", { class: "acts" }, h("button", { class: "fx-btn primary", type: "submit" }, "Got it"))));
+      document.body.append(back);
+      back.querySelector("button").focus();
+    }
+
+    /** Connect (or change) an integration: its non-secret settings, each address checked before it
+     * is sent; the machine checks the addresses again and keeps the settings, and credentials are
+     * entered there (Landscape asks for them when it applies the request) */
+    function connectDialog(name) {
+      const schema = schemaOf(name);
+      if (!schema) { boundsError(["The reporting machine runs a Crane that cannot set " + name + " from DataSea; update Crane there."]); return; }
+      const current = (integrations[name] || {}).settings || {};
+      const values = {};
+      for (const setting of schema.settings) values[setting.key] = current[setting.key] !== undefined ? String(current[setting.key]) : (setting.default || "");
+      const applies = (when) => !when || when.values.includes(values[when.key]);
+      const rows = h("div", { class: "fx-section" });
+      const secrets = h("div");
+      const error = h("div", { class: "error", role: "alert" });
+      const reason = h("input", { type: "text", maxlength: "300", placeholder: "Recorded with the change", "aria-label": "Why" });
+      const submit = h("button", { class: "fx-btn primary", type: "submit" }, "Check and continue with GitHub");
+      const draw = () => {
+        put(rows, schema.settings.filter((setting) => applies(setting.when)).map((setting) => {
+          const verdict = h("span", { class: "fx-verdict" });
+          let control;
+          if (setting.kind === "choice") control = h("select", { onchange: (event) => { values[setting.key] = event.target.value; draw(); } }, setting.choices.map((choice) => h("option", { value: choice, selected: values[setting.key] === choice ? "" : undefined }, choice)));
+          else control = h("input", { type: setting.kind === "url" ? "url" : "text", value: values[setting.key], placeholder: setting.default || "", spellcheck: "false", oninput: (event) => { values[setting.key] = event.target.value.trim(); put(verdict); } });
+          const probe = setting.kind === "url" ? h("button", { class: "fx-btn small", type: "button", onclick: async () => {
+            if (!values[setting.key]) { put(verdict, h("span", { class: "bad" }, "Enter the address first.")); return; }
+            put(verdict, h("span", { class: "muted" }, "Checking…"));
+            const answer = await probeUrl(values[setting.key]);
+            put(verdict, h("span", { class: answer.ok ? "ok" : "bad" }, (answer.ok ? (answer.private ? "◌ " : "✓ ") : "✗ ") + answer.message));
+          } }, "Check") : null;
+          return h("label", {}, setting.label + (setting.required ? "" : " (optional)"), probe ? h("div", { class: "fx-acts", style: "flex-wrap:nowrap" }, control, probe) : control, verdict);
+        }));
+        const needed = schema.secrets.filter((secret) => !secret.optional && applies(secret.when));
+        const missing = (integrations[name] || {}).missing_secrets || [];
+        put(secrets, needed.length ? h("div", { class: "fx-note" }, "Credentials are never sent to DataSea. ", h("b", {}, needed.map((secret) => secret.label).join(", ")), (integrations[name] || {}).configured && !missing.length ? " are already on the machine." : " are entered on the machine: Landscape asks for them when it applies this request (or run 'crane integrate " + name + " --secrets-stdin').") : null);
+      };
+      draw();
+      const close = () => back.remove();
+      const back = h("div", { class: "fx-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Connect " + schema.label, onclick: (event) => { if (event.target === back) close(); }, onkeydown: (event) => { if (event.key === "Escape") close(); } },
+        h("form", { onsubmit: async (event) => {
+          event.preventDefault();
+          error.textContent = "";
+          const settings = {};
+          for (const setting of schema.settings) {
+            if (!applies(setting.when)) continue;
+            if (setting.required && !values[setting.key]) { error.textContent = setting.label + " is required."; return; }
+            if (values[setting.key] !== (current[setting.key] === undefined ? "" : String(current[setting.key]))) settings[setting.key] = values[setting.key];
+          }
+          if (!Object.keys(settings).length) { error.textContent = "Nothing changed."; return; }
+          if (!reason.value.trim()) { error.textContent = "Say why; it is recorded with the change."; reason.focus(); return; }
+          submit.disabled = true;
+          submit.textContent = "Checking the addresses…";
+          const { failed } = await checkUrls(urlsIn(settings));
+          if (failed.length) { submit.disabled = false; submit.textContent = "Check and continue with GitHub"; urlError(failed); return; }
+          try {
+            const staged = await apiWrite("/api/flows", { action: "stage", op: "integration-set", params: { name, settings }, reason: reason.value.trim() });
+            location.href = staged.continue + "&page=flows";
+          } catch (problem) { submit.disabled = false; submit.textContent = "Check and continue with GitHub"; error.textContent = problem.message; }
+        } },
+          h("div", { class: "fx-kind" }, "Code owners · request"),
+          h("h2", {}, ((integrations[name] || {}).configured ? "Change " : "Connect ") + schema.label),
+          note(schema.purpose + ". Every address is checked before it is sent, and again by the machine before it keeps it; nothing is attached until it answers."),
+          rows, secrets,
+          h("label", {}, "Why", reason),
+          error,
+          note("GitHub confirms you are a code owner of .crane/flows.json (or a repository admin). A person applies it on a machine ('crane brick inbox apply', or one click in Landscape)."),
+          h("div", { class: "acts" }, h("button", { class: "fx-btn ghost", type: "button", onclick: close }, "Cancel"), submit)));
+      document.body.append(back);
+      (back.querySelector("input, select") || reason).focus();
+    }
+
+    /** Every integration subagents use, with its status and a way to connect it */
+    function connectionsPane() {
+      if (!schemas.length) return note("The reporting machine runs a Crane that does not report its connections; update Crane there.");
+      return [
+        note("Connections subagents use for their actions. Settings are set here; credentials stay on the machine."),
+        h("div", { class: "fx-items" }, schemas.map((schema) => {
+          const row = integrations[schema.name] || {};
+          const tone = row.connected ? "ok" : row.configured ? "accent" : "";
+          const label = row.connected ? "connected" : row.configured ? "needs " + (row.missing_secrets || []).join(", ") : "not connected";
+          return h("div", { class: "fx-item", style: "cursor:default" },
+            h("span", { class: "t" }, schema.label), h("span", { class: "m" }, schema.purpose),
+            h("span", { class: "r" }, pill(label, tone), h("button", { class: "fx-btn small", type: "button", onclick: () => connectDialog(schema.name) }, row.configured ? "Change…" : "Connect…")));
+        })),
+      ];
+    }
+
     /** The full view of a subagent: properties, actions, parameters, context, Crane's governance,
      * runs, and a JSON configuration that is merged, checked against the flow, and requested */
     function subagentInfo(watcher) {
@@ -1015,13 +1147,22 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
       const props = (rows) => h("dl", { class: "fx-props" }, rows.filter(Boolean).flatMap(([key, value]) => [h("dt", {}, key), h("dd", {}, empty(value) ? h("span", { class: "muted" }, "—") : value)]));
       const editor = h("textarea", { class: "fx-json", spellcheck: "false", "aria-label": "Configuration (JSON)" }, JSON.stringify(config, null, 2));
       const verdict = h("div", { class: "fx-verdict", role: "status" });
-      const check = () => {
+      const check = async () => {
         let patch;
         try { patch = JSON.parse(editor.value); } catch (error) { put(verdict, h("span", { class: "bad" }, "Not valid JSON: " + error.message)); return null; }
         let merged;
         try { merged = mergeConfig(watcher.config || {}, patch); } catch (error) { put(verdict, h("span", { class: "bad" }, error.message)); return null; }
         const problems = boundsProblems(subtype, merged, watcher.flow);
         if (problems.length) { put(verdict, h("span", { class: "bad" }, problems.length + " problem(s): outside the flow's bounds")); boundsError(problems); return null; }
+        // Every address it carries must point to a service before it is attached
+        const urls = urlsIn(patch);
+        if (urls.length) {
+          put(verdict, h("span", { class: "muted" }, "Checking " + urls.length + " address(es)…"));
+          const { failed, later } = await checkUrls(urls);
+          if (failed.length) { put(verdict, h("span", { class: "bad" }, failed.length + " address(es) do not answer")); urlError(failed); return null; }
+          put(verdict, h("span", { class: "ok" }, "Within the flow's bounds; " + (urls.length - later.length) + " address(es) answered" + (later.length ? ", " + later.length + " private one(s) are checked by the machine" : "") + "."));
+          return patch;
+        }
         put(verdict, h("span", { class: "ok" }, "Within the flow's bounds. Crane checks it again on the machine and when it is approved."));
         return patch;
       };
@@ -1046,8 +1187,8 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
             const spec = actionSpec(subtype, id) || {};
             const needs = spec.integration ? spec.integration.split("|") : [];
             const linked = needs.some((name) => connections[name]);
-            return h("div", { class: "fx-item", style: "cursor:default" }, h("span", { class: "t" }, spec.label || id), h("span", { class: "m" }, id + " · needs " + (spec.ceiling || "?") + (needs.length ? " · " + needs.join(" or ") : "") + (spec.runs === "prepared" ? " · recorded for a person (not called yet)" : spec.runs === "integration" ? " · runs through the integration" : " · Crane does it")),
-              h("span", { class: "r" }, needs.length ? pill(linked ? "connected" : "not connected", linked ? "ok" : "") : pill("crane")));
+            return h("div", { class: "fx-item", style: "cursor:default" }, h("span", { class: "t" }, spec.label || id), h("span", { class: "m" }, id + " · needs " + (spec.ceiling || "?") + (needs.length ? " · " + needs.join(" or ") : "") + (spec.runs === "integration" ? " · calls the service" : " · Crane does it")),
+              h("span", { class: "r" }, needs.length ? pill(linked ? "connected" : "not connected", linked ? "ok" : "") : pill("crane"), needs.length && !linked ? h("button", { class: "fx-btn small", type: "button", onclick: () => connectDialog(needs[0]) }, "Connect…") : null));
           })) : note("No actions.")),
           section("Parameters", Object.keys(config.parameters || {}).length ? props(Object.entries(config.parameters).map(([key, value]) => [key, h("code", {}, typeof value === "string" ? value : JSON.stringify(value))])) : note("None. Incident subagents read parameters.jira_issue for the ticket.")),
           section("Context", (config.context || []).length ? h("ul", { class: "fx-errors", style: "color:var(--ink)" }, config.context.map((item) => h("li", {}, item))) : note("No standing context of its own."), note("No volatile context of its own: when it runs, the flow's common context (" + common + " item" + (common === 1 ? "" : "s") + ") is its volatile context.")),
@@ -1066,9 +1207,12 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
             editor, verdict,
             h("div", { class: "fx-acts" },
               h("button", { class: "fx-btn small", type: "button", onclick: check }, "Check bounds"),
-              h("button", { class: "fx-btn small primary", type: "button", onclick: () => { const patch = check(); if (!patch) return; close(); request("flow-watch-edit", "Change " + watcher.watcher_id, { params: { watcher: watcher.watcher_id, config: patch }, effect: "Merges the configuration into " + watcher.watcher_id + ". Crane checks the flow's bounds on the machine, and a person approves it in Landscape.", fields: [{ key: "purpose", label: "Purpose (leave as is to keep it)", value: watcher.purpose }] }); } }, "Merge and request…"),
+              h("button", { class: "fx-btn small primary", type: "button", onclick: async () => { const patch = await check(); if (!patch) return; close(); request("flow-watch-edit", "Change " + watcher.watcher_id, { params: { watcher: watcher.watcher_id, config: patch }, effect: "Merges the configuration into " + watcher.watcher_id + ". Crane checks the flow's bounds on the machine, and a person approves it in Landscape.", fields: [{ key: "purpose", label: "Purpose (leave as is to keep it)", value: watcher.purpose }] }); } }, "Merge and request…"),
               h("span", { class: "fx-spacer" }),
-              h("button", { class: "fx-btn small danger", type: "button", onclick: () => { close(); request("flow-watch-stop", "Stop " + watcher.watcher_id, { params: { watcher: watcher.watcher_id } }); } }, "Stop…"))) : null));
+              h("button", { class: "fx-btn small danger", type: "button", onclick: () => { close(); request("flow-watch-stop", "Stop " + watcher.watcher_id, { params: { watcher: watcher.watcher_id } }); } }, "Stop…"))) : null,
+          statusOf(watcher) === "ACTIVE" ? section("Run now",
+            note("A person's manual trigger: the subagent runs its actions once, through the connections the machine has, and records what each service answered. It may reach targets beyond its flow for this run only."),
+            h("div", { class: "fx-acts" }, h("button", { class: "fx-btn small primary", type: "button", onclick: () => { close(); request("flow-subagent-trigger", "Run " + watcher.watcher_id + " now", { params: { watcher: watcher.watcher_id }, effect: "Runs its actions once on the machine that applies the request: " + ((watcher.config || {}).actions || []).join(", ") + ".", fields: [{ key: "beyond", label: "Also reach, for this run only (zone:ID or flow:ID, comma separated; optional)", hint: "zone:ledger" }], validate: (params) => { const targets = String(params.beyond || "").split(",").map((text) => text.trim()).filter(Boolean); const bad = targets.find((target) => !/^(zone|flow):[A-Za-z0-9_.-]+$/.test(target)); if (bad) return "'" + bad + "' must be zone:ID or flow:ID."; params.beyond = targets; return null; } }); } }, "Run now…"))) : null));
       document.body.append(back);
       back.querySelector("button").focus();
     }
@@ -1086,7 +1230,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
           { key: "config", label: "Configuration (JSON, optional; the flow's defaults otherwise)", kind: "textarea", hint: "{\"parameters\": {\"jira_issue\": \"PAY-12\"}, \"branch\": \"incident/checkout\"}" },
         ],
         shape: shapeChecks,
-        validate: (params) => {
+        validate: async (params) => {
           if (!params.subtype) return "Choose the subtype: Monitor or Incident.";
           if (params.subtype === "incident") params.checks = [];
           else if (!params.checks.length) return "A Monitor needs at least one check.";
@@ -1095,6 +1239,8 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
           try { patch = JSON.parse(params.config); } catch (error) { return "The configuration is not valid JSON: " + error.message; }
           const problems = (() => { try { return boundsProblems(params.subtype, mergeConfig({ ceiling: flow.ceiling, targets: ["flow:" + flow.id], actions: (catalog.actions || []).filter((action) => action.subtype === params.subtype && catalog.ceilings.indexOf(action.ceiling) <= catalog.ceilings.indexOf(flow.ceiling)).map((action) => action.id) }, patch), flow.id); } catch (error) { return [error.message]; } })();
           if (problems.length) { boundsError(problems); return "Outside the flow's bounds; see the list."; }
+          const { failed } = await checkUrls(urlsIn(patch));
+          if (failed.length) { urlError(failed); return "An address does not answer; see the list."; }
           params.config = patch;
           return null;
         },

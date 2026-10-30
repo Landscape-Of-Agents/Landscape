@@ -30,8 +30,9 @@ export interface OpResult {
 
 /** What the panels need from the rest of Landscape. */
 export interface PanelDeps {
-  /** Run Crane in the repository (undefined without one; code 126 when Crane cannot be used). */
-  crane(args: string[]): Promise<CraneResult | undefined>;
+  /** Run Crane in the repository (undefined without one; code 126 when Crane cannot be used);
+   * input is its standard input (credentials go only this way, never in arguments or logs). */
+  crane(args: string[], input?: string): Promise<CraneResult | undefined>;
   /** The governance graph, or why there is none. */
   graph(refresh: boolean): Promise<{ data?: GraphData; error?: string }>;
   /** The Zones and Flows of .crane/governance.yaml. */
@@ -47,11 +48,12 @@ export interface PanelDeps {
  * words a person can act on.
  * @param deps the extension side
  * @param args arguments after "crane"
+ * @param input standard input (credentials)
  * @returns the envelope, or the error
  */
-export async function call<T = Record<string, unknown>>(deps: PanelDeps, args: string[]): Promise<{ envelope?: Envelope<T>; error?: string }> {
+export async function call<T = Record<string, unknown>>(deps: PanelDeps, args: string[], input?: string): Promise<{ envelope?: Envelope<T>; error?: string }> {
   const full = args.includes("--format") ? args : args.concat(["--format", "json"]);
-  const result = await deps.crane(full);
+  const result = await deps.crane(full, input);
   if (!result) return { error: "Crane is not set up in this folder. Run 'Landscape: Set Up Crane in This Repository' first." };
   if (result.code === 126) return { error: friendlyError(result.stderr || "Crane cannot be used.") };
   const envelope = parseEnvelope<T>(result.stdout);

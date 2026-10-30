@@ -1681,3 +1681,77 @@ fn catalog_entries_verify_only_as_published() {
     )
     .is_err());
 }
+
+/** A connection set from DataSea carries only its non-secret settings, checked for kind; a manual
+ * trigger names its subagent and targets; both become the commands the machine runs
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn connection_and_trigger_requests_are_checked() {
+    use super::requests::{check, command, role, Role};
+    use serde_json::json;
+    assert_eq!(role("integration-set"), Some(Role::Admin));
+    assert_eq!(role("flow-subagent-trigger"), Some(Role::Admin));
+    let reason = "connect grafana";
+    assert!(check(
+        "integration-set",
+        &json!({"name": "teams", "settings": {"url": "https://x"}}),
+        reason
+    )
+    .unwrap_err()
+    .contains("cannot be set from DataSea"));
+    assert!(check(
+        "integration-set",
+        &json!({"name": "grafana", "settings": {"token": "glsa_x"}}),
+        reason
+    )
+    .unwrap_err()
+    .contains("credential"));
+    assert!(check(
+        "integration-set",
+        &json!({"name": "grafana", "settings": {"url": "http://grafana.acme"}}),
+        reason
+    )
+    .is_err());
+    let (args, _) = command(
+        "integration-set",
+        &json!({"name": "grafana", "settings": {"url": "https://grafana.acme.example"}}),
+        reason,
+        "@ana on DataSea, brq_1",
+        "f",
+    )
+    .unwrap();
+    assert_eq!(&args[..3], ["integrate", "grafana", "--settings"]);
+    assert!(args[3].contains("grafana.acme.example"));
+    // Settings the machine already keeps may complete a partial change
+    assert!(check(
+        "integration-set",
+        &json!({"name": "jira", "settings": {"project_key": "PAY"}}),
+        reason
+    )
+    .is_ok());
+    assert!(check(
+        "flow-subagent-trigger",
+        &json!({"watcher": "wat_1", "beyond": ["ledger"]}),
+        "drill"
+    )
+    .unwrap_err()
+    .contains("zone:ID or flow:ID"));
+    let (args, _) = command(
+        "flow-subagent-trigger",
+        &json!({"watcher": "wat_1", "beyond": ["zone:ledger"]}),
+        "drill",
+        "@ana on DataSea, brq_2",
+        "f",
+    )
+    .unwrap();
+    assert_eq!(&args[..4], ["flow", "subagent", "trigger", "wat_1"]);
+    assert!(
+        args.windows(2)
+            .any(|pair| pair[0] == "--beyond" && pair[1] == "zone:ledger"),
+        "{args:?}"
+    );
+}

@@ -100,7 +100,28 @@ pub(crate) fn request(
     headers: &[String],
     body: Option<&str>,
 ) -> Result<(u16, String), String> {
-    let mut config = config(method, url, headers, body, 20);
+    request_within(method, url, headers, body, 20)
+}
+
+/** Send a request and wait for the answer, at most a given time
+ * Input
+    - method: &str - GET or POST
+    - url: &str - endpoint
+    - headers: &[String] - headers, credentials included
+    - body: Option<&str> - request body
+    - seconds: u64 - time limit
+ * Output
+    - Result<(u16, String), String> status code and response body
+    - Error if curl is missing or the request could not be sent
+*/
+pub(crate) fn request_within(
+    method: &str,
+    url: &str,
+    headers: &[String],
+    body: Option<&str>,
+    seconds: u64,
+) -> Result<(u16, String), String> {
+    let mut config = config(method, url, headers, body, seconds);
     config.push_str("write-out = \"\\n%{http_code}\"\n");
     let output = spawn(&config, true)?
         .wait_with_output()

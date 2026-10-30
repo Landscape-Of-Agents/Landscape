@@ -97,7 +97,8 @@ pub(crate) const BRICKS_PATH: &str = ".crane/bricks.json";
 pub(crate) fn signed_path(op: &str) -> &'static str {
     match op {
         "flow-approve" => ".crane/governance.yaml",
-        flow if flow.starts_with("flow-") => ".crane/flows.json",
+        // A flow's subagents and the connections they use belong to the flow knowledge's owners
+        flow if flow.starts_with("flow-") || flow == "integration-set" => ".crane/flows.json",
         _ => BRICKS_PATH,
     }
 }

@@ -295,13 +295,45 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
     const signing = inbox.requests.filter((request) => chosen.includes(request.request_id) && request.role === "admin").length;
     if (!(await dialogs.confirm(`Apply ${chosen.length} change(s) from DataSea?`, signing ? `${signing} of them are signed changes: Crane signs them into .crane/bricks.json with your admin key.` : "They write drafts, which grant nothing until an admin activates them.", signing ? "Sign and apply" : "Apply"))) return CANCELLED;
     progress("Applying the changes from DataSea");
+    const chosenRequests = inbox.requests.filter((request) => chosen.includes(request.request_id));
     const applied = await call<{ results: { request_id: string; op: string; status: string; detail: string }[] }>(deps, ["brick", "inbox", "apply", ...chosen]);
     inbox.at = 0;
     if (!applied.envelope) return { ok: false, message: applied.error ?? "Crane printed no result." };
     const results = applied.envelope.data?.results ?? [];
     deps.record("FOXX_BRICK_COMMAND", { command: applied.envelope.command, status: applied.envelope.status.toUpperCase(), statement: applied.envelope.summary });
     const lines = results.map((result) => `${result.status === "APPLIED" ? "Applied" : "Failed"}: ${result.op} (${result.request_id}) — ${friendlyError(result.detail)}`);
+    // Connections set on DataSea carry no credentials: ask for the missing ones here, on this machine
+    const connected = results
+      .filter((result) => result.op === "integration-set" && result.status === "APPLIED")
+      .map((result) => inbox.requests.find((request) => request.request_id === result.request_id) ?? chosenRequests.find((request) => request.request_id === result.request_id))
+      .map((request) => (typeof request?.params?.name === "string" ? request.params.name : ""))
+      .filter(Boolean);
+    for (const name of [...new Set(connected)]) lines.push(await askCredentials(name));
     return succeeded(applied.envelope.status) ? { ok: true, message: applied.envelope.summary, problems: lines } : { ok: false, message: friendlyError(applied.envelope.summary), problems: lines };
+  }
+
+  /**
+   * Ask, in password boxes, for the credentials a connection still needs, and give them to Crane on
+   * its standard input ('crane integrate NAME --secrets-stdin'): they stay on this machine.
+   * @param name integration
+   * @returns one line about the outcome
+   */
+  async function askCredentials(name: string): Promise<string> {
+    const status = await call<{ integrations: Record<string, { connected: boolean; missing_secrets: string[] }>; schemas: { name: string; label: string; secrets: { key: string; label: string }[] }[] }>(deps, ["integrate", "--status"]);
+    const row = status.envelope?.data?.integrations?.[name];
+    if (!row) return `Connection ${name}: its status could not be read (${status.error ?? "no answer"}).`;
+    if (!row.missing_secrets.length) return `Connection ${name}: ${row.connected ? "connected" : "saved"}.`;
+    const schema = status.envelope?.data?.schemas?.find((entry) => entry.name === name);
+    const credentials: Record<string, string> = {};
+    for (const key of row.missing_secrets) {
+      const label = schema?.secrets.find((secret) => secret.key === key)?.label ?? key;
+      const value = await vscode.window.showInputBox({ title: `Connect ${schema?.label ?? name}`, prompt: `${label}: it stays on this machine and is never sent to DataSea`, password: true, ignoreFocusOut: true });
+      if (!value) return `Connection ${name}: settings saved; ${label} was not entered (add it later with 'crane integrate ${name} --secrets-stdin').`;
+      credentials[key] = value;
+    }
+    const saved = await call(deps, ["integrate", name, "--secrets-stdin"], JSON.stringify(credentials));
+    if (!saved.envelope) return `Connection ${name}: the credentials were refused: ${saved.error ?? "no answer"}`;
+    return `Connection ${name}: ${friendlyError(saved.envelope.summary)}`;
   }
 
   /**

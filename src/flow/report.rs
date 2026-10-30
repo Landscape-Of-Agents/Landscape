@@ -253,6 +253,10 @@ pub(crate) fn collect(workspace: &Workspace) -> Value {
         // The subtypes and actions subagents may have, and which integrations this machine has
         "subagent_catalog": super::subagent::catalog(),
         "connections": super::subagent::connections(workspace),
+        // Each connection's non-secret settings and the credentials still missing (never their
+        // values), with the fields DataSea asks for
+        "integrations": crate::integrations::status(workspace),
+        "integration_schemas": crate::integrations::schema::schemas_json(),
         "store_digest": state.flows_digest,
         "channel": super::agent::HELP,
     })

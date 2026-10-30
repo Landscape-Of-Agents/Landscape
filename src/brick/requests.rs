@@ -121,7 +121,17 @@ pub(crate) const OPERATIONS: &[(&str, Role, &str)] = &[
     (
         "flow-watch-edit",
         Role::Admin,
-        "Change a watcher's purpose or checks",
+        "Change a subagent's purpose, checks, or configuration",
+    ),
+    (
+        "flow-subagent-trigger",
+        Role::Admin,
+        "Run a subagent's actions now (a person's manual trigger)",
+    ),
+    (
+        "integration-set",
+        Role::Admin,
+        "Set an integration's connection settings (credentials stay on the machine)",
     ),
     (
         "flow-approve",
@@ -419,8 +429,63 @@ pub(crate) fn check(op: &str, params: &Value, reason: &str) -> Result<Value, Str
             json!({"ref": version("the Stack version", text("ref").trim_start_matches("stack:"), false)?})
         }
         flow if flow.starts_with("flow-") => flow_check(flow, params)?,
+        "integration-set" => integration_check(params)?,
         _ => unreachable!("every operation is listed"),
     })
+}
+
+/** Check a request to set an integration's connection settings: a known integration, its
+ * non-secret settings only, every value of the right kind (addresses are reached on the machine
+ * before they are kept, and by DataSea first when they are public)
+ * Input
+    - params: &Value - {name, settings}
+ * Output
+    - Result<Value, String>
+*/
+fn integration_check(params: &Value) -> Result<Value, String> {
+    let name = params["name"]
+        .as_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let schema = crate::integrations::schema::schema(&name).ok_or_else(|| {
+        format!(
+            "'{name}' cannot be set from DataSea; use one of {}",
+            crate::integrations::schema::SCHEMAS
+                .iter()
+                .map(|schema| schema.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })?;
+    let given = params["settings"]
+        .as_object()
+        .cloned()
+        .ok_or("give the settings as an object")?;
+    if given.is_empty() {
+        return Err("give at least one setting".into());
+    }
+    for (key, value) in &given {
+        if let Some(text) = value.as_str() {
+            no_secret(key, text)?;
+        }
+    }
+    // The syntax is checked here; the current settings and the addresses on the machine
+    crate::integrations::schema::merge_settings(schema, &serde_json::Map::new(), &given).or_else(
+        |error| {
+            // Settings the machine already keeps may complete these; only refuse what is wrong in
+            // what was given, not what is missing
+            if error
+                .lines()
+                .skip(1)
+                .all(|line| line.ends_with("is required"))
+            {
+                Ok(serde_json::Map::new())
+            } else {
+                Err(error)
+            }
+        },
+    )?;
+    Ok(json!({"name": name, "settings": given}))
 }
 
 /** The 'crane brick' command that carries out a request, after checking it again
@@ -557,6 +622,12 @@ pub(crate) fn command(
         ]),
         "stack-revoke" => owned(&["brick", "stack", "revoke", &text("ref"), "--reason", &why]),
         flow if flow.starts_with("flow-") => flow_command(flow, &params, &why),
+        "integration-set" => owned(&[
+            "integrate",
+            &text("name"),
+            "--settings",
+            &params["settings"].to_string(),
+        ]),
         _ => unreachable!("check() refuses the rest"),
     };
     args.extend(owned(&["--format", "json"]));
@@ -776,6 +847,26 @@ fn flow_check(op: &str, params: &Value) -> Result<Value, String> {
         "flow-watch-stop" => {
             json!({"watcher": name("watcher", params["watcher"].as_str().unwrap_or_default())?})
         }
+        "flow-subagent-trigger" => {
+            let beyond = params["beyond"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(|target| {
+                    let (kind, id) = target.split_once(':').unwrap_or_default();
+                    if kind == "zone" || kind == "flow" {
+                        name("target", id).map(|_| target.to_string())
+                    } else {
+                        Err(format!("target '{target}' must be zone:ID or flow:ID"))
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            json!({
+                "watcher": name("watcher", params["watcher"].as_str().unwrap_or_default())?,
+                "beyond": beyond,
+            })
+        }
         "flow-watch-edit" => {
             let checks = params["checks"]
                 .as_array()
@@ -913,6 +1004,27 @@ fn flow_command(op: &str, params: &Value, why: &str) -> Vec<String> {
             &text("purpose"),
         ]),
         "flow-watch-stop" => words(&["flow", "watch", "stop", &text("watcher")]),
+        "flow-subagent-trigger" => {
+            let mut trigger = words(&[
+                "flow",
+                "subagent",
+                "trigger",
+                &text("watcher"),
+                "--reason",
+                why,
+            ]);
+            let beyond = params["beyond"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>();
+            if !beyond.is_empty() {
+                trigger.push("--beyond".into());
+                trigger.push(beyond.join(","));
+            }
+            trigger
+        }
         "flow-watch-edit" => words(&["flow", "watch", "edit", &text("watcher")]),
         _ => Vec::new(),
     };

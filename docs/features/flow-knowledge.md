@@ -155,11 +155,49 @@ Landscape or with `crane flow subagent approve|reject`. Crane checks the bounds 
 
 **Runs.** When a Monitor's check starts firing, Crane raises one incident and tells the flow's
 people and the parent session. Monitors with actions then run them, and when one activates Incident
-subagents, those run too. Every run is recorded, action by action:
-- **Run for real:** Slack messages, reading a Jira issue, and context or RCA proposals.
-- **Recorded as prepared:** Datadog, Grafana, Google Meet, on-call paging, and GitHub pull requests.
-  They have connection settings (`crane integrate datadog|grafana|google_meet|oncall`), but Crane
-  does not call them yet.
+subagents, those run too. A person can also run a subagent now (`crane flow subagent trigger`, or
+**Run now** on DataSea). Every run is recorded, action by action, with what each service answered:
+
+| Action | What it calls |
+|---|---|
+| `check_metrics` | Datadog monitors tagged `flow:FLOW` and Grafana alerts firing for `flow="FLOW"` (parameters `datadog_monitor_tags`, `grafana_matcher`) |
+| `create_meeting` | A Google Meet: a Google Calendar event with a Meet conference (parameter `meeting_minutes`) |
+| `page_oncall` | PagerDuty Events v2, Opsgenie alerts, or any webhook, chosen by the connection's URL; one page per incident |
+| `open_pull_request` | The pull request of the designated branch into `base_branch` (default `main`); an open one is reported instead |
+| `review_edits` | That pull request's files, compared with the flow's traced files, posted as a comment when allowed |
+| `notify_people` | Slack, with the meeting and pull request links of the same run |
+| `read_jira_ticket` | The Jira issue in `parameters.jira_issue` |
+| `write_rca`, `update_flow_context` | Proposals a person approves |
+| `propose_code_change` | A request to the parent agent session to commit the change on the branch (a subagent has no model) |
+
+Opening and commenting on pull requests needs the GitHub connection's "What Crane may do" set to
+`pull_requests`, with a fine-grained token or the gh CLI.
+
+## Connections
+
+The services subagents use are connected per machine: Slack, Jira, GitHub, Datadog, Grafana,
+Google Meet, and on-call paging. Connect one on DataSea (Flows → Connections, **Connect…** beside
+an action, or People's connection pills), or on the machine:
+
+```
+crane integrate grafana --settings '{"url": "https://grafana.acme.com"}'
+crane integrate grafana --secrets-stdin      # reads {"token": "…"} from standard input
+crane integrate --status
+```
+
+**Every address is checked before it is kept.** It must be a full https URL (http only for
+localhost) and must answer as a service does: 2xx or 3xx, or the 401, 403, or 405 an API gives
+without credentials. No answer, a 404, or a 5xx is refused, and nothing is saved.
+- **DataSea** checks each address when you press **Check** and again before it sends the request. It
+  refuses private and internal addresses for itself, so it cannot reach inside its own network:
+  those are checked by the machine instead.
+- **The machine** checks the addresses again, from its own network, before it keeps them.
+- **Subagent parameters:** the same applies to addresses in a subagent's configuration.
+
+**Credentials never reach DataSea.** DataSea sends only the non-secret settings. When Landscape
+applies the request, it asks for the missing credentials in password boxes and gives them to Crane
+on standard input. Without Landscape, run `crane integrate NAME --secrets-stdin`.
+`crane integrate --status` and DataSea show what is still missing, never the values.
 
 **Removal.** When a flow or one of a subagent's zones is removed from governance, the subagent is
 terminated. Landscape asks for a confirmation that the removal is permanent, then runs
@@ -226,7 +264,8 @@ time range or event filters. It has three parts:
    background clears the selection.
 2. **The inspector,** under the map. Filter chips choose what it shows; clicking an item opens it
    in the smaller detail pane beside the list.
-   - **With nothing selected:** model routing, limits, proposals, incidents, and requests.
+   - **With nothing selected:** model routing, limits, Connections (each service subagents use,
+     whether it is connected, and Connect…), proposals, incidents, and requests.
    - **For a flow:** the chips are Overview (priority and model), Zones, Context, Tests, Agents
      (subagents and assigned agents), Trace, People, Proposals, and Bricks.
      - **Trace** shows the whole flow, from its first call to its last: the call stack (function
@@ -245,7 +284,10 @@ time range or event filters. It has three parts:
    - Crane's governance: its bounds, places, what it inherited, approval, and manual triggers;
    - its latest runs;
    - a JSON configuration editor. The JSON is merged and checked against the flow's bounds (a pop-up
-     lists every problem and how to resolve it) before the change is requested.
+     lists every problem and how to resolve it), and every address in it is checked, before the
+     change is requested;
+   - **Connect…** beside an action whose service is not connected, and **Run now** for an active
+     subagent.
 
    With a flow selected, **Add subagent** asks for the required subtype. Landscape approves every
    creation and change.
@@ -260,7 +302,8 @@ signed file. Drafts and watchers need write access.
 |---|---|
 | Tracing is lexical (names, not types): dynamic dispatch and calls through interfaces are listed as not followed | by design |
 | A subagent is Crane-run with no model; Crane cannot tell a Claude Code subagent apart from its parent session, so subagents an agent spawns itself share the parent's rules | partial |
-| Datadog, Grafana, Google Meet, on-call paging, and GitHub pull requests have connection settings, but subagent actions that use them are recorded as prepared, not run | to build |
+| The calls to Datadog, Grafana, Google Calendar, PagerDuty, Opsgenie, and GitHub follow their public APIs but were not run against live accounts when they were written | to verify |
+| A GitHub App cannot open pull requests from Crane yet (a fine-grained token or the gh CLI can) | to build |
 | Watchers, incidents, and test results are per machine (the dashboard shows the reporting machine's) | partial |
 | Metric and latency context is stated, not measured; no connector reads live values yet | to build |
 | Landscape's graph shows a flow's test scenarios and subagents (click a flow); the rest of the flow knowledge is on DataSea | partial |

@@ -6,6 +6,7 @@ pub(crate) mod git;
 pub(crate) mod glob;
 pub(crate) mod http;
 pub(crate) mod notes;
+pub(crate) mod probe;
 pub(crate) mod process;
 pub(crate) mod render;
 

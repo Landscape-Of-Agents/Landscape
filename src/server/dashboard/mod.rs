@@ -20,6 +20,7 @@ pub(crate) mod approve;
 pub(crate) mod auth;
 pub(crate) mod data;
 mod notifications;
+mod probe;
 pub(crate) mod stream;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -929,7 +930,48 @@ impl Dashboard {
             .map_err(|error| (400, format!("invalid Brick request: {error}")))?;
         let text = |key: &str| input[key].as_str().unwrap_or_default().to_string();
         match text("action").as_str() {
+            // Check one address as the person types it (before anything is staged)
+            "probe" => Ok(match probe::check(&text("url")) {
+                probe::Found::Answered(message) => {
+                    json!({"ok": true, "private": false, "message": message})
+                }
+                probe::Found::Private(message) => {
+                    json!({"ok": true, "private": true, "message": message})
+                }
+                probe::Found::Failed(message) => {
+                    json!({"ok": false, "private": false, "message": message})
+                }
+            }),
             "stage" => {
+                // Every address a request carries must point somewhere before it is staged (a
+                // private one is checked by the machine that applies it)
+                let op = text("op");
+                let carried = match op.as_str() {
+                    "integration-set" => {
+                        crate::platform::probe::urls_in(&input["params"]["settings"])
+                    }
+                    "flow-watch-add" | "flow-watch-edit" => {
+                        let config = match &input["params"]["config"] {
+                            Value::String(json_text) => {
+                                serde_json::from_str(json_text).unwrap_or(Value::Null)
+                            }
+                            other => other.clone(),
+                        };
+                        crate::platform::probe::urls_in(&config)
+                    }
+                    _ => Vec::new(),
+                };
+                let mut checked = Vec::new();
+                let mut later = Vec::new();
+                for url in carried.iter().take(20) {
+                    match probe::check(url) {
+                        probe::Found::Answered(message) => checked.push(message),
+                        probe::Found::Private(message) => later.push(message),
+                        probe::Found::Failed(message) => {
+                            return Err((400, format!("nothing was requested: an address does not point to a service: {message}")))
+                        }
+                    }
+                }
                 let (request_id, role) = self
                     .approvals
                     .stage_brick_request(
@@ -943,6 +985,8 @@ impl Dashboard {
                 Ok(json!({
                     "request_id": request_id,
                     "role": role,
+                    "checked": checked,
+                    "checked_on_machine": later,
                     "continue": format!("/auth/bricks?repository={}&request={request_id}", auth::encode(&repository)),
                 }))
             }
@@ -953,7 +997,7 @@ impl Dashboard {
                     .map_err(|message| (404, message))?;
                 Ok(json!({"ok": true, "request_id": request_id, "status": "CANCELLED"}))
             }
-            _ => Err((400, "action is stage or cancel".into())),
+            _ => Err((400, "action is probe, stage, or cancel".into())),
         }
     }
 

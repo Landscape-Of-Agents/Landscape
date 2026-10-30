@@ -1664,6 +1664,8 @@ fn watch_add(args: &[String]) -> Result<(), String> {
         config = subagent::merge(&config, &json_value(&patch)?)?;
     }
     subagent::check(&kind, &config, &checks, &bounds)?;
+    // Every address in the configuration must answer before it is kept
+    subagent::check_addresses(&config)?;
     let runtime = workspace.trust()?.runtime();
     let inherited = watch::inherit(&workspace, &book, &flow)?;
     let by = crate::platform::actor();
@@ -1818,6 +1820,8 @@ fn watch_edit(args: &[String]) -> Result<(), String> {
     let bounds = subagent::bounds_of(&workspace, &current.flow)?;
     let next_checks = checks.clone().unwrap_or_else(|| current.checks.clone());
     subagent::check(subagent::subtype(&current), &config, &next_checks, &bounds)?;
+    // Every address in the configuration must answer before it is kept
+    subagent::check_addresses(&config)?;
     let mut edited = None;
     watch::update_watchers(&runtime, |all| {
         let watcher = all

@@ -263,3 +263,117 @@ fn moved_repository_is_rebound_by_its_owner() {
     assert!(again.contains("already belongs to"), "{again}");
     assert!(fixture.ok(&["validate"]).contains("PASS"));
 }
+
+/** Answer HTTP requests on a local port with one status, for as many requests as come
+ * Input
+    - status: &'static str - status line, such as "200 OK"
+ * Output
+    - u16 the port
+*/
+fn local_service(status: &'static str) -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut stream = stream;
+            let mut buffer = [0u8; 2048];
+            let _ = std::io::Read::read(&mut stream, &mut buffer);
+            let _ = std::io::Write::write_all(
+                &mut stream,
+                format!("HTTP/1.1 {status}\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                    .as_bytes(),
+            );
+        }
+    });
+    port
+}
+
+/** An integration set without prompts keeps an address only after it answers, keeps nothing when
+ * one does not, takes credentials only on standard input, and reports what is still missing
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn integrations_keep_addresses_only_after_they_answer() {
+    let fixture = Fixture::ready();
+    let up = local_service("200 OK");
+    let missing = local_service("404 Not Found");
+    // A path with nothing at it is refused, and nothing is saved
+    let refused = fixture.run(&[
+        "integrate",
+        "grafana",
+        "--settings",
+        &format!("{{\"url\":\"http://127.0.0.1:{missing}/grafana\"}}"),
+    ]);
+    assert!(!refused.status.success());
+    assert!(text(&refused).contains("HTTP 404"), "{}", text(&refused));
+    assert!(
+        text(&refused).contains("nothing was saved"),
+        "{}",
+        text(&refused)
+    );
+    // An address that does not answer at all is refused too
+    let silent = fixture.run(&[
+        "integrate",
+        "grafana",
+        "--settings",
+        "{\"url\":\"http://127.0.0.1:1\"}",
+    ]);
+    assert!(!silent.status.success(), "{}", text(&silent));
+    let status = |fixture: &Fixture| {
+        serde_json::from_str::<serde_json::Value>(&fixture.ok(&["integrate", "--status", "--json"]))
+            .unwrap()["data"]["integrations"]["grafana"]
+            .clone()
+    };
+    assert_eq!(status(&fixture)["configured"], false, "nothing was kept");
+    // An address that answers is kept; the credential is still missing
+    let kept: serde_json::Value = serde_json::from_str(&fixture.ok(&[
+        "integrate",
+        "grafana",
+        "--settings",
+        &format!("{{\"url\":\"http://127.0.0.1:{up}\"}}"),
+        "--json",
+    ]))
+    .unwrap();
+    assert!(
+        kept["data"]["checked"][0]
+            .as_str()
+            .unwrap()
+            .contains("answered HTTP 200"),
+        "{kept}"
+    );
+    assert_eq!(kept["data"]["missing_secrets"][0]["key"], "token", "{kept}");
+    // Credentials come on standard input, never as arguments, and connect it
+    let connected = fixture.with_input(
+        &["integrate", "grafana", "--secrets-stdin", "--json"],
+        "{\"token\":\"glsa_test\"}",
+    );
+    assert!(connected.status.success(), "{}", text(&connected));
+    let answer: serde_json::Value = serde_json::from_slice(&connected.stdout).unwrap();
+    assert!(
+        answer["data"]["missing_secrets"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{answer}"
+    );
+    assert_eq!(status(&fixture)["connected"], true);
+    assert!(
+        status(&fixture).get("token").is_none(),
+        "credentials are never reported"
+    );
+    // A credential is refused among the settings
+    let leaked = fixture.run(&[
+        "integrate",
+        "grafana",
+        "--settings",
+        "{\"token\":\"glsa_x\"}",
+    ]);
+    assert!(
+        text(&leaked).contains("is a credential"),
+        "{}",
+        text(&leaked)
+    );
+}

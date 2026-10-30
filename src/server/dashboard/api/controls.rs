@@ -76,12 +76,14 @@ pub(super) fn bricks(context: &Context) -> Answer {
     view["requests"] = json!(context
         .brick_requests
         .iter()
-        .filter(|row| !row["op"].as_str().is_some_and(|op| op.starts_with("flow-")))
+        .filter(|row| !row["op"]
+            .as_str()
+            .is_some_and(|op| op.starts_with("flow-") || op.starts_with("integration-")))
         .collect::<Vec<_>>());
     view["catalog"] = json!(context.brick_catalog);
     view["operations"] = crate::brick::requests::OPERATIONS
         .iter()
-        .filter(|(op, _, _)| !op.starts_with("flow-"))
+        .filter(|(op, _, _)| !op.starts_with("flow-") && !op.starts_with("integration-"))
         .map(|(op, role, label)| json!({"op": op, "role": role.name(), "label": label}))
         .collect();
     (200, view, None)
@@ -135,11 +137,13 @@ pub(super) fn flows(context: &Context) -> Answer {
     view["requests"] = json!(context
         .brick_requests
         .iter()
-        .filter(|row| row["op"].as_str().is_some_and(|op| op.starts_with("flow-")))
+        .filter(|row| row["op"]
+            .as_str()
+            .is_some_and(|op| op.starts_with("flow-") || op.starts_with("integration-")))
         .collect::<Vec<_>>());
     view["operations"] = crate::brick::requests::OPERATIONS
         .iter()
-        .filter(|(op, _, _)| op.starts_with("flow-"))
+        .filter(|(op, _, _)| op.starts_with("flow-") || op.starts_with("integration-"))
         .map(|(op, role, label)| json!({"op": op, "role": role.name(), "label": label, "signed_file": super::super::auth::signed_path(op)}))
         .collect();
     (200, view, None)

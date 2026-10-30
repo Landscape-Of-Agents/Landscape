@@ -21,10 +21,12 @@
 // actions of its own but no volatile context: when it runs, the flow's common context is its
 // volatile context. When its flow or one of its zones is removed, the subagent is terminated.
 //
-// Actions run for real where Crane has the integration: Slack messages, reading a Jira issue, and
-// context or RCA proposals. Datadog, Grafana, Google Meet, on-call paging, and GitHub pull requests
-// have connection settings but are not called yet: those actions are recorded as prepared (or not
-// connected), never pretended.
+// Actions call the services this machine has connected (flow/actions.rs): Slack messages, the Jira
+// ticket, Datadog monitors and Grafana alerts, a Google Meet, an on-call page (PagerDuty, Opsgenie,
+// or a webhook), and the pull request of the designated branch on GitHub (opened, then reviewed
+// against the flow's traced files). RCA notes and flow context are proposals a person approves; a
+// code change is asked of the parent agent session (a subagent has no model to write code). Each
+// action reports exactly what the service answered, or that it is not connected.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -66,7 +68,7 @@ pub(crate) const TERMINATED: &str = "TERMINATED";
     - integration: Option<&'static str> - the integration it needs
     - ceiling: Ceiling - the least autonomy it needs
     - runs: &'static str - "crane" (Crane does it), "integration" (calls the service when Crane
-      can), or "prepared" (recorded for a person; the service is not called yet)
+      can; it reports what the service answered)
 */
 pub(crate) struct ActionSpec {
     pub(crate) id: &'static str,
@@ -93,7 +95,7 @@ pub(crate) static ACTIONS: &[ActionSpec] = &[
         label: "Read observability metrics and monitors (Datadog, Grafana)",
         integration: Some("datadog|grafana"),
         ceiling: Ceiling::Observe,
-        runs: "prepared",
+        runs: "integration",
     },
     ActionSpec {
         id: "create_meeting",
@@ -101,7 +103,7 @@ pub(crate) static ACTIONS: &[ActionSpec] = &[
         label: "Open a Google Meet for the incident",
         integration: Some("google_meet"),
         ceiling: Ceiling::Assisted,
-        runs: "prepared",
+        runs: "integration",
     },
     ActionSpec {
         id: "page_oncall",
@@ -109,7 +111,7 @@ pub(crate) static ACTIONS: &[ActionSpec] = &[
         label: "Trigger the on-call status (page the rotation)",
         integration: Some("oncall"),
         ceiling: Ceiling::Assisted,
-        runs: "prepared",
+        runs: "integration",
     },
     ActionSpec {
         id: "activate_incident",
@@ -165,15 +167,15 @@ pub(crate) static ACTIONS: &[ActionSpec] = &[
         label: "Open a pull request on the designated branch",
         integration: Some("github"),
         ceiling: Ceiling::Delegated,
-        runs: "prepared",
+        runs: "integration",
     },
     ActionSpec {
         id: "propose_code_change",
         subtype: "incident",
-        label: "Propose a code change on the designated branch",
-        integration: Some("github"),
+        label: "Ask the parent agent session for a code change on the designated branch",
+        integration: None,
         ceiling: Ceiling::Delegated,
-        runs: "prepared",
+        runs: "crane",
     },
     ActionSpec {
         id: "review_edits",
@@ -181,7 +183,7 @@ pub(crate) static ACTIONS: &[ActionSpec] = &[
         label: "Review edits made during the incident",
         integration: Some("github"),
         ceiling: Ceiling::Assisted,
-        runs: "prepared",
+        runs: "integration",
     },
     ActionSpec {
         id: "notify_people",
@@ -517,6 +519,12 @@ pub(crate) fn check(
             problems.push("a context item looks like it holds a secret".into());
         }
     }
+    // An address must be a full https URL (whether it answers is checked before it is kept)
+    for url in crate::platform::probe::urls_in(&Value::Object(config.parameters.clone())) {
+        if let Err(error) = crate::platform::probe::syntax(&url) {
+            problems.push(format!("parameter address: {error}"));
+        }
+    }
     let size = serde_json::to_vec(config)
         .map(|bytes| bytes.len())
         .unwrap_or(0);
@@ -814,7 +822,7 @@ pub(crate) fn terminate_orphans(
 
 /** Run a subagent's actions once: from a person's manual trigger (which may reach targets beyond
  * the flow for this run only) or from an incident of its flow. Actions run for real where Crane
- * has the integration; the others are recorded as prepared or not connected.
+ * has the integration, and each one reports what the service answered or that it is not connected.
  * Input
     - workspace: &Workspace - repository
     - runtime: &Path - runtime directory
@@ -848,10 +856,6 @@ pub(crate) fn run(
             status(&watcher)
         ));
     }
-    let connected = crate::integrations::configured(workspace)
-        .into_iter()
-        .map(|integration| integration.name)
-        .collect::<BTreeSet<_>>();
     // The flow's common context is the subagent's volatile context
     let common = book
         .flows
@@ -874,33 +878,73 @@ pub(crate) fn run(
             watcher.flow
         ),
     };
+    let connected = crate::integrations::status(workspace);
+    let is_connected = |name: &str| connected[name]["connected"] == true;
+    let trace_files = book
+        .flows
+        .get(&watcher.flow)
+        .and_then(|knowledge| knowledge.trace.as_ref())
+        .map(|trace| trace.files.clone())
+        .unwrap_or_default();
+    let job = super::actions::Job {
+        workspace,
+        flow: &watcher.flow,
+        watcher: id,
+        headline: &headline,
+        incident,
+        config: &watcher.config,
+        trace_files: &trace_files,
+    };
+    // Messages go last, so they carry the meeting and pull request links the other actions made
+    let mut ordered = watcher.config.actions.clone();
+    ordered.sort_by_key(|action| action.starts_with("notify_"));
     let mut outcomes = Vec::new();
-    for action in &watcher.config.actions {
-        let spec = actions_of(subtype(&watcher)).find(|spec| spec.id == action);
-        let needs = spec.and_then(|spec| spec.integration).unwrap_or("");
-        let have = needs.split('|').find(|name| connected.contains(*name));
-        let (result, detail) = match action.as_str() {
+    let mut links: Vec<String> = Vec::new();
+    for action in &ordered {
+        let with_links = |text: String| {
+            if links.is_empty() {
+                text
+            } else {
+                format!("{text} ({})", links.join(", "))
+            }
+        };
+        let (result, detail): (&str, String) = match action.as_str() {
             "watch_checks" => (
                 "RUNS",
                 "the checks run with every background sync".to_string(),
             ),
-            "notify_people" => match have {
-                Some(channel) => {
+            "check_metrics" | "create_meeting" | "page_oncall" | "open_pull_request"
+            | "review_edits" => {
+                let done = match action.as_str() {
+                    "check_metrics" => super::actions::check_metrics(&job),
+                    "create_meeting" => super::actions::create_meeting(&job),
+                    "page_oncall" => super::actions::page_oncall(&job),
+                    "open_pull_request" => super::actions::open_pull_request(&job),
+                    _ => super::actions::review_edits(&job),
+                };
+                if let Some(link) = done.link {
+                    links.push(link);
+                }
+                (done.result, done.detail)
+            }
+            "notify_people" => {
+                if is_connected("slack") {
                     let sent = crate::integrations::deliver_now(
                         workspace,
-                        channel,
-                        &format!("Crane: {headline}"),
+                        "slack",
+                        &with_links(format!("Crane: {headline}")),
                     );
                     (
                         "SENT",
                         sent["result"].as_str().unwrap_or_default().to_string(),
                     )
+                } else {
+                    (
+                        "NOT_CONNECTED",
+                        "connect Slack on DataSea or with 'crane integrate slack'".to_string(),
+                    )
                 }
-                None => (
-                    "NOT_CONNECTED",
-                    "connect Slack with 'crane integrate slack'".to_string(),
-                ),
-            },
+            }
             "notify_parent" => {
                 if watcher.parent.session.is_empty() {
                     (
@@ -911,7 +955,7 @@ pub(crate) fn run(
                     watch::notify_session(
                         runtime,
                         &watcher.parent.session,
-                        &format!("Subagent {id}: {headline}"),
+                        &with_links(format!("Subagent {id}: {headline}")),
                     )?;
                     ("SENT", format!("session {}", watcher.parent.session))
                 }
@@ -942,19 +986,39 @@ pub(crate) fn run(
                     .get("jira_issue")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                match (have, key.is_empty()) {
-                    (None, _) => (
+                match (is_connected("jira"), key.is_empty()) {
+                    (false, _) => (
                         "NOT_CONNECTED",
-                        "connect Jira with 'crane integrate jira'".to_string(),
+                        "connect Jira on DataSea or with 'crane integrate jira'".to_string(),
                     ),
                     (_, true) => (
                         "SKIPPED",
-                        "set parameters.jira_issue to the ticket's label".to_string(),
+                        "set parameters.jira_issue to the ticket".to_string(),
                     ),
-                    (Some(_), false) => (
+                    (true, false) => (
                         "READ",
                         format!("{:?}", crate::integrations::find_issue(workspace, key)),
                     ),
+                }
+            }
+            "propose_code_change" => {
+                // Without a model, the change is asked of the agent that works on the flow
+                let branch = watcher.config.branch.clone().unwrap_or_default();
+                if watcher.parent.session.is_empty() || branch.is_empty() {
+                    ("SKIPPED", "a code change is asked of the parent agent session on the designated branch; this subagent has no parent session or no branch".to_string())
+                } else {
+                    watch::notify_session(
+                        runtime,
+                        &watcher.parent.session,
+                        &format!("Subagent {id} asks for a code change on branch {branch} for flow {}: {headline}. Commit it there; the Incident subagent opens and reviews the pull request.", watcher.flow),
+                    )?;
+                    (
+                        "ASKED",
+                        format!(
+                            "asked session {} for a change on {branch}",
+                            watcher.parent.session
+                        ),
+                    )
                 }
             }
             "write_rca" | "update_flow_context" => {
@@ -1001,29 +1065,7 @@ pub(crate) fn run(
                     ),
                 )
             }
-            _ => match have {
-                Some(name) => (
-                    "PREPARED",
-                    format!(
-                        "{} is connected but Crane does not call it yet; recorded for a person{}",
-                        name,
-                        watcher
-                            .config
-                            .branch
-                            .as_ref()
-                            .map(|branch| format!(" (branch {branch})"))
-                            .unwrap_or_default()
-                    ),
-                ),
-                None => (
-                    "NOT_CONNECTED",
-                    format!(
-                        "connect {} with 'crane integrate {}'",
-                        needs.replace('|', " or "),
-                        needs.split('|').next().unwrap_or_default()
-                    ),
-                ),
-            },
+            other => ("SKIPPED", format!("{other} is not an action Crane runs")),
         };
         outcomes.push(json!({"action": action, "result": result, "detail": detail}));
     }
@@ -1144,10 +1186,9 @@ pub(crate) fn catalog() -> Value {
     - BTreeMap<String, bool>
 */
 pub(crate) fn connections(workspace: &Workspace) -> BTreeMap<String, bool> {
-    let configured = crate::integrations::configured(workspace)
-        .into_iter()
-        .map(|integration| integration.name)
-        .collect::<BTreeSet<_>>();
+    // Connected means its settings and every credential that applies are on this machine
+    let status = crate::integrations::status(workspace);
+    let whatsapp = crate::integrations::load(workspace, "whatsapp").is_some();
     [
         "slack",
         "jira",
@@ -1159,6 +1200,40 @@ pub(crate) fn connections(workspace: &Workspace) -> BTreeMap<String, bool> {
         "oncall",
     ]
     .iter()
-    .map(|name| (name.to_string(), configured.contains(*name)))
+    .map(|name| {
+        let connected = if *name == "whatsapp" {
+            whatsapp
+        } else {
+            status[*name]["connected"] == true
+        };
+        (name.to_string(), connected)
+    })
     .collect()
+}
+
+/** Check from this machine that every address in a configuration answers, before it is kept
+ * Input
+    - config: &SubagentConfig - configuration
+ * Output
+    - Result<Vec<String>, String> - what answered, or every address that does not
+*/
+pub(crate) fn check_addresses(config: &SubagentConfig) -> Result<Vec<String>, String> {
+    let addresses =
+        crate::platform::probe::urls_in(&serde_json::to_value(config).unwrap_or(Value::Null));
+    let mut answered = Vec::new();
+    let mut failed = Vec::new();
+    for url in addresses.iter().take(20) {
+        match crate::platform::probe::check(url) {
+            Ok(answer) => answered.push(answer),
+            Err(error) => failed.push(error),
+        }
+    }
+    if failed.is_empty() {
+        Ok(answered)
+    } else {
+        Err(format!(
+            "nothing was kept: an address in the configuration does not point to a service\n- {}",
+            failed.join("\n- ")
+        ))
+    }
 }

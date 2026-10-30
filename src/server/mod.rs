@@ -292,6 +292,39 @@ fn record_refusal(service: &Service, method: &str, path: &str, status: u16, dura
     service.log.record(spec, repository.as_deref(), None);
 }
 
+/** Turn a panic raised while answering a request into a logged JSON error
+ * Input
+    - panic: Box<dyn std::any::Any + Send> - the panic payload
+    - method: &str - HTTP method
+    - path: &str - path
+    - request_id: &str - correlation identifier
+ * Output
+    - Reply - 500 with the request identifier
+*/
+fn panicked(
+    panic: Box<dyn std::any::Any + Send>,
+    method: &str,
+    path: &str,
+    request_id: &str,
+) -> Reply {
+    let message = panic
+        .downcast_ref::<&str>()
+        .map(|text| text.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".into());
+    log::write(
+        "error",
+        "http",
+        Some(request_id),
+        "request_panicked",
+        json!({"method": method, "path": path, "error": message}),
+    );
+    Reply::json(
+        500,
+        json!({"error": format!("the service failed while answering (request {request_id})"), "request_id": request_id}),
+    )
+}
+
 /** Answer one request, logging it with its correlation identifier
  * Input
     - request: Request - the request
@@ -307,65 +340,71 @@ fn respond(mut request: Request, service: &Service) {
     let path = url.split('?').next().unwrap_or_default().to_string();
     // The service's own health check (also behind a path prefix), not the dashboard's /api/health
     let health = path == "/health" || (path.ends_with("/health") && !path.starts_with("/api/"));
-    let reply = if health {
-        let ping = database::ping(&service.database);
-        // F29.2: recorded when the health changes (checks arrive every few seconds)
-        static HEALTHY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-        let state = if ping.is_ok() { 1 } else { 2 };
-        if HEALTHY.swap(state, std::sync::atomic::Ordering::Relaxed) != state {
-            let mut checked = service_events::event("HEALTH_CHECKED", "F29", "HEALTH", "SERVICE");
-            checked
-                .respond(
-                    if ping.is_ok() { "OK" } else { "UNAVAILABLE" },
-                    if ping.is_ok() {
-                        "NA"
+    // A panic while answering becomes a JSON error for this request instead of a dropped
+    // connection (which the platform's proxy turns into a non-JSON error page) and a lost worker
+    let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if health {
+            let ping = database::ping(&service.database);
+            // F29.2: recorded when the health changes (checks arrive every few seconds)
+            static HEALTHY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+            let state = if ping.is_ok() { 1 } else { 2 };
+            if HEALTHY.swap(state, std::sync::atomic::Ordering::Relaxed) != state {
+                let mut checked =
+                    service_events::event("HEALTH_CHECKED", "F29", "HEALTH", "SERVICE");
+                checked
+                    .respond(
+                        if ping.is_ok() { "OK" } else { "UNAVAILABLE" },
+                        if ping.is_ok() {
+                            "NA"
+                        } else {
+                            "DATABASE_UNREACHABLE"
+                        },
+                        if ping.is_ok() {
+                            "Service healthy."
+                        } else {
+                            "Database unreachable; service unhealthy."
+                        },
+                    )
+                    .severity(
+                        if ping.is_ok() { "INFO" } else { "HIGH" },
+                        "OUTCOME",
+                        "NONE",
+                    )
+                    .set("bindings", "third_party", ["MONGODB", "RENDER"])
+                    .set("eval", "ping_ms", started.elapsed().as_millis() as u64);
+                service.log.record(checked, None, None);
+            }
+            match ping {
+                Ok(()) => Reply::json(
+                    200,
+                    json!({"status": "ok", "schema_version": database::SCHEMA_VERSION}),
+                ),
+                Err(_) => Reply::json(503, json!({"error": "the database is unavailable"})),
+            }
+        } else if !service.addresses.allow(&http::client_address(&request)) {
+            Reply::json(
+                429,
+                json!({"error": "too many requests from this address; try again in a minute"}),
+            )
+            .with_header("Retry-After", "60")
+        } else if !url.starts_with("/v1/") && !url.contains("/v1/repositories/") {
+            service.dashboard.handle(&mut request)
+        } else {
+            match ingest::handle(&mut request, service, &request_id) {
+                Ok(value) => Reply::json(200, value),
+                Err((status, message)) => {
+                    let reply =
+                        Reply::json(status, json!({"error": message, "request_id": request_id}));
+                    if status == 429 {
+                        reply.with_header("Retry-After", "60")
                     } else {
-                        "DATABASE_UNREACHABLE"
-                    },
-                    if ping.is_ok() {
-                        "Service healthy."
-                    } else {
-                        "Database unreachable; service unhealthy."
-                    },
-                )
-                .severity(
-                    if ping.is_ok() { "INFO" } else { "HIGH" },
-                    "OUTCOME",
-                    "NONE",
-                )
-                .set("bindings", "third_party", ["MONGODB", "RENDER"])
-                .set("eval", "ping_ms", started.elapsed().as_millis() as u64);
-            service.log.record(checked, None, None);
-        }
-        match ping {
-            Ok(()) => Reply::json(
-                200,
-                json!({"status": "ok", "schema_version": database::SCHEMA_VERSION}),
-            ),
-            Err(_) => Reply::json(503, json!({"error": "the database is unavailable"})),
-        }
-    } else if !service.addresses.allow(&http::client_address(&request)) {
-        Reply::json(
-            429,
-            json!({"error": "too many requests from this address; try again in a minute"}),
-        )
-        .with_header("Retry-After", "60")
-    } else if !url.starts_with("/v1/") && !url.contains("/v1/repositories/") {
-        service.dashboard.handle(&mut request)
-    } else {
-        match ingest::handle(&mut request, service, &request_id) {
-            Ok(value) => Reply::json(200, value),
-            Err((status, message)) => {
-                let reply =
-                    Reply::json(status, json!({"error": message, "request_id": request_id}));
-                if status == 429 {
-                    reply.with_header("Retry-After", "60")
-                } else {
-                    reply
+                        reply
+                    }
                 }
             }
         }
-    };
+    }))
+    .unwrap_or_else(|panic| panicked(panic, &method, &path, &request_id));
     // F09.4, F29.3, F29.4: refused uploads and limited or failed requests
     if !health && reply.status >= 400 && reply.status != 401
         || (!health && reply.status == 401 && url.contains("/v1/"))

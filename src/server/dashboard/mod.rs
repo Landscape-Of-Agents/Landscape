@@ -101,6 +101,8 @@ const CACHE_SIZE: usize = 16;
     - log: ServiceLog - records the dashboard's events (DASHBOARD.md F00, F02, F30)
     - auth: Option<Auth> - GitHub sign-in, None when not configured
     - cache: Mutex<HashMap<String, (Instant, Arc<Context>)>> - recently loaded repository views
+    - loads: Mutex<HashMap<String, Arc<Mutex<()>>>> - one lock per view being loaded, so requests
+      arriving together wait for one load instead of each loading the view
 */
 pub(crate) struct Dashboard {
     read: ReadOnly,
@@ -108,6 +110,7 @@ pub(crate) struct Dashboard {
     log: ServiceLog,
     auth: Option<Auth>,
     cache: Mutex<HashMap<String, (Instant, Arc<Context>)>>,
+    loads: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl Dashboard {
@@ -132,6 +135,7 @@ impl Dashboard {
             log,
             auth,
             cache: Mutex::new(HashMap::new()),
+            loads: Mutex::new(HashMap::new()),
         }
     }
 
@@ -2221,27 +2225,52 @@ impl Dashboard {
             "{repository}:{}",
             members.iter().cloned().collect::<Vec<_>>().join(",")
         );
+        if let Some(context) = self.cached(&key, repository) {
+            return Ok(context);
+        }
+        // One load per view: the page asks for several sections at once, and each full view is
+        // large, so the others wait for this load and then read it from the cache
+        let gate = match self.loads.lock() {
+            Ok(mut loads) => Arc::clone(loads.entry(key.clone()).or_default()),
+            Err(_) => Arc::new(Mutex::new(())),
+        };
+        let _loading = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(context) = self.cached(&key, repository) {
+            return Ok(context);
+        }
+        let loaded = data::load(&self.read, repository, remote, members).map(Arc::new);
+        if let Ok(context) = &loaded {
+            if let Ok(mut cache) = self.cache.lock() {
+                cache.retain(|_, (at, _)| at.elapsed() < CACHE_TTL);
+                if cache.len() >= CACHE_SIZE {
+                    cache.clear();
+                }
+                cache.insert(key.clone(), (Instant::now(), Arc::clone(context)));
+            }
+        }
+        if let Ok(mut loads) = self.loads.lock() {
+            loads.remove(&key);
+        }
+        loaded
+    }
+
+    /** Return a cached repository view that is still fresh
+     * Input
+        - key: &str - cache key (repository and members)
+        - repository: &str - repository identity
+     * Output
+        - Option<Arc<Context>> - None when not cached, expired, or older than the last upload
+    */
+    fn cached(&self, key: &str, repository: &str) -> Option<Arc<Context>> {
         // A view loaded before the repository's last upload is stale
         let uploaded = UPLOADS
             .lock()
             .ok()
             .and_then(|uploads| uploads.get(repository).copied());
-        if let Ok(cache) = self.cache.lock() {
-            if let Some((at, context)) = cache.get(&key) {
-                if at.elapsed() < CACHE_TTL && uploaded.is_none_or(|uploaded| uploaded < *at) {
-                    return Ok(Arc::clone(context));
-                }
-            }
-        }
-        let context = Arc::new(data::load(&self.read, repository, remote, members)?);
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.retain(|_, (at, _)| at.elapsed() < CACHE_TTL);
-            if cache.len() >= CACHE_SIZE {
-                cache.clear();
-            }
-            cache.insert(key, (Instant::now(), Arc::clone(&context)));
-        }
-        Ok(context)
+        let cache = self.cache.lock().ok()?;
+        let (at, context) = cache.get(key)?;
+        (at.elapsed() < CACHE_TTL && uploaded.is_none_or(|uploaded| uploaded < *at))
+            .then(|| Arc::clone(context))
     }
 }
 

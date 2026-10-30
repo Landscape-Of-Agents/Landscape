@@ -18,8 +18,13 @@ use crate::telemetry::events::{verify_retained, Event};
 use crate::telemetry::identity::{SessionRecord, TaskRecord};
 use crate::telemetry::ledger::{self, Entry};
 
-/** Most events loaded per member */
-const MAX_EVENTS: i64 = 100_000;
+/** Most events loaded per member, the most recent ones: a whole repository view is held in memory
+ * per request, so this bounds the service's memory on a small hosted instance */
+const MAX_EVENTS: i64 = 20_000;
+
+/** Most autonomy ledger entries loaded per member (the ledger is verified from its first entry, so
+ * it is loaded oldest first) */
+const MAX_LEDGER: i64 = 100_000;
 
 /** Minutes without any hook activity after which an open session without a signed attestation is
  * reported as stale (it stopped reporting: the agent was killed, the hooks were removed, or its
@@ -388,11 +393,14 @@ pub(crate) fn load(
     let mut truncated = false;
     for installation in &selected {
         let scope = doc! {"repository_id": repository, "installation": installation};
-        let found = read.find("events", scope.clone(), doc! {"sequence": 1}, MAX_EVENTS)?;
+        // The most recent events, put back in chain order (verify_retained accepts a chain that
+        // starts after event 1)
+        let mut found = read.find("events", scope.clone(), doc! {"sequence": -1}, MAX_EVENTS)?;
         truncated |= found.len() as i64 >= MAX_EVENTS;
+        found.reverse();
         let events: Vec<Event> = decode(found, "events")?;
         let entries: Vec<Entry> = decode(
-            read.find("autonomy_ledger", scope, doc! {"seq": 1}, MAX_EVENTS)?,
+            read.find("autonomy_ledger", scope, doc! {"seq": 1}, MAX_LEDGER)?,
             "autonomy_ledger",
         )?;
         chains.push(json!({

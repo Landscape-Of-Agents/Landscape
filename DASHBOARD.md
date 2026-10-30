@@ -3332,10 +3332,11 @@ fails the command, so a release step stops.
 - Response [response_status (OK, FAILED)]
 - Other [tests, passed, failed, required (required tests that did not pass)]
 
-#### F39.6 `FLOW_WATCHER_STARTED`, `FLOW_WATCHER_STOPPED`, `FLOW_WATCHERS_EVALUATED`
+#### F39.6 `FLOW_WATCHER_STARTED`, `FLOW_WATCHER_STOPPED`, `FLOW_WATCHER_EDITED`, `FLOW_WATCHERS_EVALUATED`
 A read-only watcher (a monitoring subagent) started on a flow: by an agent within the signed limits,
-or by a person. Or it stopped, or the watchers ran their checks (trace drift, required tests,
-denials) without a model.
+or by a person. Or it stopped, a person changed its purpose or checks ('crane flow watch edit',
+requested on DataSea by a code owner of .crane/flows.json), or the watchers ran their checks (trace
+drift, required tests, denials) without a model.
 - Response [response_status (OK, FIRING)]
 - Other [watcher, by (agent, person), checks, watchers, incidents]
 

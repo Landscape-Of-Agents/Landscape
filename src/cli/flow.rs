@@ -44,6 +44,7 @@ pub(crate) const USAGE: &str = "usage:
   crane flow tests run [ID] [--required]      (runs the tests' commands; fails when a required one fails)
   crane flow proposals [list] | proposals approve PROPOSAL [--required] | proposals reject PROPOSAL --reason TEXT
   crane flow watch list | watch add ID --purpose TEXT [--checks LIST] | watch stop WATCHER | watch run
+        | watch edit WATCHER [--purpose TEXT] [--checks LIST]
   crane flow incidents
   crane flow limit ID --watchers N | limit --session N
   crane flow models [list] | models add --provider P --model M --tier frontier|balanced|fast
@@ -88,6 +89,7 @@ pub(crate) fn flow(args: &[String]) -> Result<(), String> {
         ),
         ["watch", "list", ..] => watch_list(rest(2)),
         ["watch", "add", ..] => watch_add(rest(2)),
+        ["watch", "edit", ..] => watch_edit(rest(2)),
         ["watch", "stop", ..] => watch_stop(rest(2)),
         ["watch", "run", ..] => watch_run(rest(2)),
         ["incidents", ..] => incidents(rest(1)),
@@ -643,6 +645,7 @@ fn approve(args: &[String]) -> Result<(), String> {
         "active"
     };
     let (state, added) = store::approve(&workspace, &draft, status, &reason)?;
+    trace::save_approved(&workspace, id, &revision.graph)?;
     trace::remove(&workspace, id)?;
     crate::platform::notes::note(
         "FLOW_APPROVED",
@@ -1631,24 +1634,7 @@ fn watch_add(args: &[String]) -> Result<(), String> {
     declared(&workspace, &flow)?;
     let purpose = text(&args, "purpose", "why it watches")?;
     let checks = match args.value("checks") {
-        Some(list) => {
-            let wanted = list
-                .split(',')
-                .map(str::trim)
-                .filter(|item| !item.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>();
-            if let Some(bad) = wanted
-                .iter()
-                .find(|check| !watch::CHECKS.contains(&check.as_str()))
-            {
-                return Err(format!(
-                    "check '{bad}' is one of {}",
-                    watch::CHECKS.join(", ")
-                ));
-            }
-            wanted
-        }
+        Some(list) => watch_checks(&list)?,
         None => watch::CHECKS
             .iter()
             .map(|check| check.to_string())
@@ -1683,6 +1669,97 @@ fn watch_add(args: &[String]) -> Result<(), String> {
         "flow.watch.add",
         Status::Ok,
         format!("watcher {} watches {flow} read-only", watcher.watcher_id),
+    )
+    .data(json!({"watcher": watcher}));
+    finish(&args, response, &[])
+}
+
+/** Parse a comma-separated list of watcher checks
+ * Input
+    - list: &str - "trace_drift,required_tests"
+ * Output
+    - Result<Vec<String>, String>
+    - Error when a check is unknown or the list is empty
+*/
+fn watch_checks(list: &str) -> Result<Vec<String>, String> {
+    let wanted = list
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if let Some(bad) = wanted
+        .iter()
+        .find(|check| !watch::CHECKS.contains(&check.as_str()))
+    {
+        return Err(format!(
+            "check '{bad}' is one of {}",
+            watch::CHECKS.join(", ")
+        ));
+    }
+    if wanted.is_empty() {
+        return Err(format!(
+            "give at least one check: {}",
+            watch::CHECKS.join(", ")
+        ));
+    }
+    Ok(wanted)
+}
+
+/** Run 'crane flow watch edit WATCHER': change an active watcher's purpose or checks (it stays
+ * read-only and keeps what it inherited)
+ * Input
+    - args: &[String] - arguments
+ * Output
+    - Result<(), String>
+*/
+fn watch_edit(args: &[String]) -> Result<(), String> {
+    require_human("crane flow watch edit")?;
+    let args = parse(args, &["purpose", "checks"], &[])?;
+    args.expect_positional(
+        1,
+        "crane flow watch edit WATCHER [--purpose TEXT] [--checks trace_drift,required_tests,denials]",
+    )?;
+    let id = &args.positional[0];
+    let purpose = args
+        .value("purpose")
+        .map(|purpose| purpose.trim().to_string());
+    if purpose.as_deref() == Some("") {
+        return Err("the purpose cannot be empty".into());
+    }
+    let checks = args
+        .value("checks")
+        .map(|list| watch_checks(&list))
+        .transpose()?;
+    if purpose.is_none() && checks.is_none() {
+        return Err("change --purpose or --checks".into());
+    }
+    let workspace = Workspace::locate()?;
+    let runtime = workspace.trust()?.runtime();
+    let mut edited = None;
+    watch::update_watchers(&runtime, |all| {
+        let watcher = all
+            .iter_mut()
+            .find(|watcher| watcher.watcher_id == *id && watcher.active)
+            .ok_or_else(|| format!("{id} is not an active watcher"))?;
+        if let Some(purpose) = &purpose {
+            watcher.purpose = purpose.clone();
+        }
+        if let Some(checks) = &checks {
+            watcher.checks = checks.clone();
+        }
+        edited = Some(watcher.clone());
+        Ok(())
+    })?;
+    let watcher = edited.ok_or("the watcher was not changed")?;
+    crate::platform::notes::note(
+        "FLOW_WATCHER_EDITED",
+        json!({"flow": watcher.flow, "watcher": id, "by": "person", "checks": watcher.checks}),
+    );
+    let response = Response::new(
+        "flow.watch.edit",
+        Status::Ok,
+        format!("watcher {id} changed; it stays read-only"),
     )
     .data(json!({"watcher": watcher}));
     finish(&args, response, &[])

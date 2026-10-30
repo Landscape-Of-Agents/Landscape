@@ -121,6 +121,10 @@ When a check starts firing, Crane raises one incident. It notifies the flow's pe
 notice that the parent session receives with its next tool call. Watchers run with every
 background sync, or with `crane flow watch run`.
 
+A person changes what an active watcher is for, or which checks it runs, with
+`crane flow watch edit WATCHER --purpose TEXT --checks trace_drift,denials`. It stays read-only and
+keeps what it inherited. On DataSea, this request needs a code owner of `.crane/flows.json`.
+
 **Limits.** By default, an agent session starts at most 2 watchers and a flow has at most 3.
 These are signed limits, and only a person changes them: `crane flow limit --session N`,
 `crane flow limit --flow N`, `crane flow limit ID --watchers N`. A flow can lower the repository's
@@ -153,21 +157,30 @@ With each tool call that touches a flow, agents also receive a short form of its
 
 ## On DataSea: the Flows section
 
-The Flows section (Build → Flows) has three parts:
+The Flows section (Build → Flows) reads the repository's flow knowledge, not events, so it has no
+time range or event filters. It has three parts:
 
 1. **The map.** All flows, grouped by priority, and drafts waiting for review, above the zones,
-   grouped by criticality. A node shows only its name and a few signals: priority, drafts,
-   watchers (◉), and incidents (red dot). Lines from a flow to its zones appear only for the
-   selection, so the map stays readable with many flows.
-2. **Search.** It finds flows, zones, people, and symbols. `/` focuses the search, and Enter
-   selects the first match.
-3. **The lookout,** docked under the map. With nothing selected, it shows model routing, limits,
-   proposals, incidents, and requests.
-   - **For a flow:** tabs for Overview (priority and model), Trace (the call tree, revisions,
-     approve, retrace, rewind), Context, Tests (with proposals), People & agents (designated people,
-     watchers and their parents, the limit, assigned agents, incidents), and Bricks. The For agents
-     lens shows the text an agent receives and the requests it may make.
-   - **For a zone:** tabs for Overview, the flows through it, and Bricks.
+   grouped by criticality. A node shows only its name, a priority color, a red dot for incidents,
+   and an agent badge when a watcher or an assigned agent monitors it. Drag to pan, scroll to zoom,
+   or use the controls (zoom in and out, fit, reset to 100%, zoom to the selection, clear).
+   Selecting a node highlights it, draws lines to the zones or flows it is attached to, dims the
+   rest, and zooms to them. Escape or a click on the background clears the selection.
+2. **The inspector,** under the map. Filter chips choose what it shows; clicking an item opens it
+   in the smaller detail pane beside the list.
+   - **With nothing selected:** model routing, limits, proposals, incidents, and requests.
+   - **For a flow:** Overview (priority and model), Zones, Context, Tests, Agents (watchers and
+     assigned agents), Trace, People, Proposals, Bricks, and For agents (the text an agent
+     receives and the requests it may make). The Trace shows the traced functions as a **stack**
+     (one row per call depth) or a **waterfall** (one row per call, in order); click a function
+     for where it is, its callers, and its calls. It is the static call order, not timing.
+     Approval keeps the approved call graph in `.crane/traces/ID.json`. A flow approved before
+     graphs were kept shows its functions again once it is retraced and approved.
+   - **For a zone:** Overview, the flows through it, assigned agents, and Bricks.
+3. **Subagents.** The watchers that govern flows, filtered by all, active, firing, or the selected
+   flow. Each card shows its purpose, behavior, triggers (its checks), the flow it governs, what it
+   inherited, who started it, when it last ran, and the incidents it raised. Code owners edit or
+   stop it here.
 
 Every change on DataSea is a request. A person applies it on a machine, with
 `crane brick inbox apply` or one click in Landscape. Signed changes need the code owners of the

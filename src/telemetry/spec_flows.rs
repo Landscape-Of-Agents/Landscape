@@ -59,6 +59,11 @@ pub(crate) const KINDS: &[(&str, &str, &str)] = &[
     ),
     ("FLOW_WATCHER_STOPPED", "FLOW_WATCH", "A watcher stopped."),
     (
+        "FLOW_WATCHER_EDITED",
+        "FLOW_WATCH",
+        "A person changed a watcher's purpose or checks; it stays read-only.",
+    ),
+    (
         "FLOW_WATCHERS_EVALUATED",
         "FLOW_WATCH",
         "Flow watchers ran their read-only checks without a model.",

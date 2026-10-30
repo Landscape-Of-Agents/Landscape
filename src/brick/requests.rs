@@ -119,6 +119,11 @@ pub(crate) const OPERATIONS: &[(&str, Role, &str)] = &[
     ),
     ("flow-watch-stop", Role::Writer, "Stop a watcher"),
     (
+        "flow-watch-edit",
+        Role::Admin,
+        "Change a watcher's purpose or checks",
+    ),
+    (
         "flow-approve",
         Role::Admin,
         "Approve a traced flow into the knowledge base",
@@ -768,6 +773,32 @@ fn flow_check(op: &str, params: &Value) -> Result<Value, String> {
         "flow-watch-stop" => {
             json!({"watcher": name("watcher", params["watcher"].as_str().unwrap_or_default())?})
         }
+        "flow-watch-edit" => {
+            let checks = params["checks"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if let Some(bad) = checks
+                .iter()
+                .find(|check| !crate::flow::watch::CHECKS.contains(&check.as_str()))
+            {
+                return Err(format!(
+                    "check '{bad}' is one of {}",
+                    crate::flow::watch::CHECKS.join(", ")
+                ));
+            }
+            if checks.is_empty() {
+                return Err("a watcher needs at least one check".into());
+            }
+            json!({
+                "watcher": name("watcher", params["watcher"].as_str().unwrap_or_default())?,
+                "purpose": short(params, "purpose", REASON_LIMIT, true)?,
+                "checks": checks,
+            })
+        }
         _ => return Err(format!("'{op}' cannot be requested")),
     })
 }
@@ -846,6 +877,14 @@ fn flow_command(op: &str, params: &Value, why: &str) -> Vec<String> {
             &text("purpose"),
         ]),
         "flow-watch-stop" => words(&["flow", "watch", "stop", &text("watcher")]),
+        "flow-watch-edit" => words(&[
+            "flow",
+            "watch",
+            "edit",
+            &text("watcher"),
+            "--purpose",
+            &text("purpose"),
+        ]),
         _ => Vec::new(),
     };
     if op == "flow-limit" && !text("flow").is_empty() {
@@ -886,7 +925,7 @@ fn flow_command(op: &str, params: &Value, why: &str) -> Vec<String> {
             option("session", "--session");
             option("per_flow", "--flow");
         }
-        "flow-watch-add" => {
+        "flow-watch-add" | "flow-watch-edit" => {
             let checks = params["checks"]
                 .as_array()
                 .into_iter()

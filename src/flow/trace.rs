@@ -410,6 +410,53 @@ pub(crate) fn remove(workspace: &Workspace, id: &str) -> Result<(), String> {
     }
 }
 
+/** The file of an approved flow's call graph
+ * Input
+    - workspace: &Workspace - repository
+    - id: &str - flow id (validated as a name)
+ * Output
+    - Result<PathBuf, String>
+*/
+fn approved_file(workspace: &Workspace, id: &str) -> Result<PathBuf, String> {
+    crate::platform::validate_name("Flow", id)?;
+    Ok(workspace.crane.join("traces").join(format!("{id}.json")))
+}
+
+/** Keep the call graph of an approved trace (.crane/traces/ID.json), so people can read the
+ * functions it covers after its draft is gone; the signed knowledge holds its digest
+ * Input
+    - workspace: &Workspace - repository
+    - id: &str - flow id
+    - graph: &TraceGraph - the approved graph
+ * Output
+    - Result<(), String>
+*/
+pub(crate) fn save_approved(
+    workspace: &Workspace,
+    id: &str,
+    graph: &TraceGraph,
+) -> Result<(), String> {
+    let path = approved_file(workspace, id)?;
+    fs::create_dir_all(workspace.crane.join("traces")).map_err(io_error)?;
+    let text = serde_json::to_string_pretty(graph).map_err(io_error)? + "\n";
+    write_atomic(&path, text.as_bytes())
+}
+
+/** Read the kept call graph of an approved trace, only when it is the one approved
+ * Input
+    - workspace: &Workspace - repository
+    - id: &str - flow id
+    - digest: &str - the approved digest from the signed knowledge
+ * Output
+    - Option<TraceGraph> - None when missing, unreadable, or not the approved graph
+*/
+pub(crate) fn load_approved(workspace: &Workspace, id: &str, digest: &str) -> Option<TraceGraph> {
+    let text = fs::read_to_string(approved_file(workspace, id).ok()?).ok()?;
+    serde_json::from_str::<TraceGraph>(&text)
+        .ok()
+        .filter(|graph| graph.digest() == digest)
+}
+
 /** Every trace draft, by flow id
  * Input
     - workspace: &Workspace - repository

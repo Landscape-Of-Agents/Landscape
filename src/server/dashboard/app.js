@@ -1068,10 +1068,10 @@ function drawNav(page) {
   }));
 }
 function setBadge(page, text, tone, title) { badges[page] = text ? { text: String(text), tone, title } : null; drawNav(currentPage()); }
+/** The top bar's title: the page (and the session shown), nothing else */
 function drawCrumbs(page, extra) {
-  const entry = NAV.flatMap(([group, items]) => items.map((item) => [group, item])).find(([, [id]]) => id === page);
-  const repository = me && me.repositories.find((item) => item.id === scope.repository);
-  put(document.getElementById("crumbs"), [scope.account, repository ? repository.remote.replace(/^github\.com\/[^/]+\//, "") : null, entry ? entry[0] : null, entry ? h("b", {}, entry[1][1]) : null, extra ? h("b", {}, extra) : null].filter(Boolean).flatMap((part, position) => (position ? [h("span", { class: "sep" }, "›"), part] : [part])));
+  const entry = NAV.flatMap(([, items]) => items).find(([id]) => id === page);
+  put(document.getElementById("crumbs"), [entry ? h("b", {}, entry[1]) : null, extra ? h("span", { class: "sep" }, "›") : null, extra ? h("span", { class: "clip" }, shortIdentity(extra)) : null].filter(Boolean));
 }
 function watchZones() {
   if (zoneObserver) zoneObserver.disconnect();
@@ -1190,14 +1190,16 @@ async function controls() {
   if (!owned.some((repository) => repository.id === scope.repository)) { scope.repository = owned.length ? owned[0].id : ""; scope.member = ""; }
   members = [];
   if (scope.repository) { try { members = (await api("/api/members")).members; } catch (error) { members = []; } }
-  if (scope.member && !members.some((row) => row.member.key === scope.member)) scope.member = "";
+  // Every member's records are shown; the top bar holds only a repository switcher
+  scope.member = "";
   saveScope();
-  const labelled = (label, control) => h("label", {}, label, control);
   const changeScope = (changes) => { Object.assign(scope, changes); retentionInfo = null; saveScope(); render(); };
+  const groups = me.accounts.map((account) => ({ group: account.name, options: me.repositories.filter((repository) => repository.account === account.name).map((repository) => [repository.id, repository.remote.replace(/^github\.com\/[^/]+\//, "")]) })).filter((group) => group.options.length);
   put(document.getElementById("scope"),
-    labelled("Account", select("Account", scope.account, me.accounts.map((account) => [account.name, (account.kind === "personal" ? "Personal · " : "Org · ") + account.name]), (value) => changeScope({ account: value, repository: "", member: "" }))),
-    labelled("Repo", select("Repository", scope.repository, owned.length ? owned.map((repository) => [repository.id, repository.remote.replace(/^github\.com\//, "")]) : [["", "no repositories yet"]], (value) => changeScope({ repository: value, member: "" }))),
-    labelled("Member", select("Member", scope.member, [["", members.some((row) => row.linked_by) ? "All linked" : "All members"]].concat(members.map((row) => [row.member.key, row.member.actor + " (" + row.member.short + ")" + (row.linked_by ? " @" + row.linked_by : " · unlinked")])), (value) => changeScope({ member: value }))));
+    select("Repository", scope.repository, groups.length ? groups : [["", "No repositories yet"]], (value) => {
+      const repository = me.repositories.find((item) => item.id === value);
+      changeScope({ repository: value, account: repository ? repository.account : scope.account, member: "" });
+    }));
   put(document.getElementById("viewer"), h("div", { class: "who" }, h("span", { class: "avatar", "aria-hidden": "true" }, (me.login || "?").slice(0, 1).toUpperCase()), h("span", {}, "Signed in as ", h("b", {}, me.login))), h("a", { href: "/auth/logout" }, "Sign out"));
 }
 function signIn(message) {
@@ -1288,9 +1290,12 @@ async function render() {
     me = await api("/api/me");
     await controls();
     drawCrumbs(page, page === "sessions" && id ? decodeURIComponent(id) : null);
-    drawFilterBar();
+    // The Flows page reads the repository's flow knowledge, not events: no event filters there
+    const eventFilters = !["flows"].includes(page);
+    if (eventFilters) drawFilterBar(); else document.getElementById("filterbar").hidden = true;
+    document.getElementById("time").hidden = !eventFilters;
     put(main);
-    if (scope.repository && page !== "dashboard-agents") main.append(pageFilterBar(page));
+    if (scope.repository && eventFilters && page !== "dashboard-agents") main.append(pageFilterBar(page));
     if (approval) { main.append(h("div", { class: "notice" + (approval.ok ? " ok" : " error"), role: "status" }, approval.message)); approval = null; }
     const pages = Object.assign({}, window.FOXX_PAGES || {});
     if (page === "sessions" && id) await pages.session(main, decodeURIComponent(id));

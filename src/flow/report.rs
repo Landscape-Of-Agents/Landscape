@@ -1,7 +1,7 @@
 // The flow part of the repository status a machine reports to the DataSea dashboard (foxx::status):
 // every zone and flow with what the dashboard draws (stages, criticality, ceiling, status, Bricks
 // attached, files covered), each flow's knowledge (priority and routed model, people, context,
-// tests with their last results, approved trace), the trace drafts under review with the current
+// tests with their last results, approved trace and its kept call graph), the trace drafts under review with the current
 // revision's functions and calls and its difference from the revision before, the proposals agents
 // made, watchers, incidents, the organization's models, routing, and limits. Context and test text
 // that looks like it holds a secret is withheld, and long texts are cut.
@@ -35,6 +35,24 @@ fn shared(text: &str) -> Value {
         end -= 1;
     }
     json!({"text": &text[..end], "withheld": false, "truncated": end < text.len()})
+}
+
+/** A call graph as the dashboard receives it: at most MAX_NODES functions and the calls into them
+ * Input
+    - graph: &trace::TraceGraph - graph
+ * Output
+    - Value
+*/
+fn graph_view(graph: &trace::TraceGraph) -> Value {
+    let kept = graph.nodes.iter().take(MAX_NODES).collect::<Vec<_>>();
+    json!({
+        "entry_points": graph.entry_points,
+        "nodes": kept,
+        "edges": graph.edges.iter().filter(|edge| kept.iter().any(|node| node.id == edge.to)).collect::<Vec<_>>(),
+        "unresolved": graph.unresolved.iter().take(100).collect::<Vec<_>>(),
+        "files": graph.files, "status": graph.status,
+        "truncated": graph.nodes.len() > MAX_NODES,
+    })
 }
 
 /** A name of an enum value as serde writes it
@@ -157,6 +175,8 @@ pub(crate) fn collect(workspace: &Workspace) -> Value {
                 })).collect::<Vec<_>>(),
                 "tests": tests,
                 "trace": knowledge.trace,
+                // The approved trace's functions and calls (kept since graphs are kept at approval)
+                "graph": knowledge.trace.as_ref().and_then(|approved| trace::load_approved(workspace, &flow.id, &approved.digest)).map(|graph| graph_view(&graph)),
                 "watchers": {
                     "active": watchers.iter().filter(|watcher| watcher.active && watcher.flow == flow.id).count(),
                     "limit": book.watcher_limit(&flow.id),
@@ -186,14 +206,7 @@ pub(crate) fn collect(workspace: &Workspace) -> Value {
                     "nodes": revision.graph.nodes.len(), "edges": revision.graph.edges.len(), "files": revision.graph.files.len(),
                     "status": revision.graph.status, "by": revision.by, "reason": revision.reason, "traced_at": revision.traced_at,
                 })).collect::<Vec<_>>(),
-                "graph": current.map(|revision| json!({
-                    "entry_points": revision.graph.entry_points,
-                    "nodes": revision.graph.nodes.iter().take(MAX_NODES).collect::<Vec<_>>(),
-                    "edges": revision.graph.edges.iter().filter(|edge| revision.graph.nodes.iter().take(MAX_NODES).any(|node| node.id == edge.to)).collect::<Vec<_>>(),
-                    "unresolved": revision.graph.unresolved.iter().take(100).collect::<Vec<_>>(),
-                    "files": revision.graph.files, "status": revision.graph.status,
-                    "truncated": revision.graph.nodes.len() > MAX_NODES,
-                })),
+                "graph": current.map(|revision| graph_view(&revision.graph)),
                 "diff": match (previous, current) {
                     (Some(previous), Some(current)) => Some(trace::diff(&previous.graph, &current.graph)),
                     _ => None,

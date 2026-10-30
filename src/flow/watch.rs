@@ -70,6 +70,7 @@ pub(crate) struct Parent {
     - criticality: String - the flow's criticality
     - priority: Option<String> - the flow's priority
     - mode: String - always read_only
+    - stages: Vec<String> - the flow's zones when it started (removing one terminates it)
 */
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Inherited {
@@ -80,6 +81,8 @@ pub(crate) struct Inherited {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) priority: Option<String>,
     pub(crate) mode: String,
+    #[serde(default)]
+    pub(crate) stages: Vec<String>,
 }
 
 /** A watcher
@@ -96,8 +99,15 @@ pub(crate) struct Inherited {
     - checks: Vec<String> - the checks it runs
     - firing: Vec<String> - checks firing now
     - last_run: u64 - Unix milliseconds of its last run (0: never)
+    - subtype: String - monitor or incident (flow/subagent.rs; empty: a monitor written before)
+    - status: String - PENDING_APPROVAL, ACTIVE, STOPPED, or TERMINATED (empty: from active)
+    - config: SubagentConfig - actions, context, parameters, integrations, branch, ceiling, targets
+    - pending: Option<PendingChange> - a creation or configuration waiting for a person
+    - approved_by: Option<String> - who approved its configuration
+    - runs: Vec<Run> - its latest action runs (manual triggers and incidents)
+    - ended: Option<String> - why it was terminated
 */
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Watcher {
     pub(crate) watcher_id: String,
     pub(crate) flow: String,
@@ -114,6 +124,20 @@ pub(crate) struct Watcher {
     pub(crate) firing: Vec<String>,
     #[serde(default)]
     pub(crate) last_run: u64,
+    #[serde(default)]
+    pub(crate) subtype: String,
+    #[serde(default)]
+    pub(crate) status: String,
+    #[serde(default)]
+    pub(crate) config: super::subagent::SubagentConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pending: Option<super::subagent::PendingChange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) approved_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) runs: Vec<super::subagent::Run>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ended: Option<String>,
 }
 
 /** An incident a watcher or an agent raised
@@ -260,20 +284,14 @@ pub(crate) fn may_start(
     flow: &str,
     session: Option<&str>,
 ) -> Result<(), String> {
-    let on_flow = existing
-        .iter()
-        .filter(|watcher| watcher.active && watcher.flow == flow)
-        .count() as u32;
-    let limit = book.watcher_limit(flow);
-    if on_flow >= limit {
-        return Err(format!(
-            "flow {flow} already has {on_flow} active watcher(s), its limit; a person raises it with 'crane flow limit {flow} --watchers N' or stops one"
-        ));
-    }
+    // A flow holds at most 3 subagents, pending or active, and one created by an agent
+    super::subagent::has_room(book, existing, flow, session.is_some())?;
     if let Some(session) = session {
         let started = existing
             .iter()
-            .filter(|watcher| watcher.active && watcher.parent.session == session)
+            .filter(|watcher| {
+                super::subagent::holds_place(watcher) && watcher.parent.session == session
+            })
             .count() as u32;
         if started >= book.limits.max_watchers_per_session {
             return Err(format!(
@@ -332,6 +350,11 @@ pub(crate) fn inherit(
             .and_then(|knowledge| knowledge.priority)
             .map(|priority| priority.name().to_string()),
         mode: "read_only".into(),
+        stages: declared
+            .stages
+            .iter()
+            .map(|stage| stage.id.clone())
+            .collect(),
     })
 }
 
@@ -746,6 +769,10 @@ pub(crate) fn run(
         "FLOW_WATCHERS_EVALUATED",
         json!({"watchers": active, "incidents": raised.len(), "result": if raised.is_empty() { "OK" } else { "FIRING" }}),
     );
+    // Monitors with actions act on the incident, and may activate the Incident subagents
+    for incident in &raised {
+        super::subagent::on_incident(workspace, runtime, book, incident);
+    }
     Ok(raised)
 }
 
@@ -783,6 +810,8 @@ pub(crate) fn sync(workspace: &Workspace, runtime: &Path) {
     let Ok(book) = FlowBook::of(&state) else {
         return;
     };
+    // A subagent whose flow or zone was removed ends with it
+    let _ = super::subagent::terminate_orphans(workspace, runtime);
     if !watchers(runtime).iter().any(|watcher| watcher.active) {
         return;
     }

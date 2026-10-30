@@ -9,6 +9,9 @@
 //   store   - signed changes of the knowledge, and approving a draft into governance.yaml
 //   context - what agents receive about a flow, and the model-routing rule (tighten only)
 //   watch   - read-only watchers (monitoring subagents), incidents, and agents' proposals
+//   subagent - the subtypes (Monitor, Incident), actions, configuration, bounds, approval, and
+//             termination of a flow's subagents
+//   scenarios - test scenarios written from a flow's knowledge for a person to review
 //   agent   - the agent channel: 'crane-request …', answered by the hook, never executed
 //   report  - the flow part of the status a machine reports to the dashboard
 
@@ -16,7 +19,9 @@ pub(crate) mod agent;
 pub(crate) mod context;
 pub(crate) mod model;
 pub(crate) mod report;
+pub(crate) mod scenarios;
 pub(crate) mod store;
+pub(crate) mod subagent;
 pub(crate) mod trace;
 pub(crate) mod watch;
 

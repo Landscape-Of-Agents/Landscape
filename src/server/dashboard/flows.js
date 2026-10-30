@@ -1,14 +1,18 @@
 "use strict";
-// The DataSea Flows section: the repository's flows and zones as one quiet map you can pan and
-// zoom, with the knowledge of each one a click away. Nodes show a name, a priority color, a red dot
-// for incidents, and an agent badge when a watcher or an assigned agent monitors them; selecting
-// one highlights it with the zones or flows it is attached to and zooms to them. The inspector under
-// the map holds the selection, sorted by filter chips (overview, zones, context, tests, agents,
-// trace, ...): clicking an item opens it in the smaller detail pane beside the list. A flow's trace
-// reads as a stack (by call depth) or a waterfall (in call order). The Subagents section lists the
-// watchers that govern flows, with their behavior, triggers, and what they raised; code owners
-// change them. Every change is a request a person applies on a machine ('crane brick inbox apply',
-// or one click in Landscape), where Crane checks it and, for signed knowledge, signs it.
+// The DataSea Flows section: the repository's flows and zones as one map you can pan and zoom, laid
+// out in columns (flows, then each stage of zones, then zones in no flow) with each flow's path drawn
+// left to right. Nodes show a name, a priority stripe, a red dot for incidents, and an agent badge
+// when a subagent or an assigned agent monitors them; selecting one fills it with the accent, tints
+// its path, fades the rest, and zooms to them. The inspector under the map holds the selection,
+// sorted by filter chips (overview, zones, context, tests, agents, trace, people, ...): clicking an
+// item opens it in the smaller detail pane beside the list. A flow's trace reads from its first call
+// to its last as a call stack (names, left) beside a waterfall (right). People show whether Slack,
+// Jira, and GitHub are connected. The Subagents section shows each Monitor or Incident subagent as a
+// small tile; its info button opens its properties, actions, parameters, context, Crane's
+// governance, and a JSON configuration that is merged and checked against the flow's bounds before
+// it is requested (Landscape approves it). Every change is a request a person applies on a machine
+// ('crane brick inbox apply', or one click in Landscape), where Crane checks it and, for signed
+// knowledge, signs it.
 // Data: GET /api/flows (the last status a member's machine reported); changes: POST /api/flows.
 
 window.FOXX_PAGES = window.FOXX_PAGES || {};
@@ -51,15 +55,23 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
 .fx-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
 .fx-hint { position: absolute; right: 12px; bottom: 10px; font-size: 11px; color: var(--muted); pointer-events: none; }
 .fx-band { font: 700 10px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; fill: var(--muted); }
-.fx-node { cursor: pointer; outline: none; }
-.fx-node rect.card { fill: var(--panel); stroke: var(--line-2); stroke-width: 1; transition: stroke .12s, fill .12s; }
-.fx-node:hover rect.card { stroke: var(--accent); }
-.fx-node.selected rect.card { stroke: var(--accent); stroke-width: 2.4; fill: var(--accent-soft); }
-.fx-node.related rect.card { stroke: var(--accent); stroke-width: 1.6; }
-.fx-node.dim { opacity: .25; }
+.fx-node { cursor: pointer; outline: none; transition: opacity .15s; }
+.fx-node rect.card { fill: var(--panel); stroke: var(--line-2); stroke-width: 1.2; filter: drop-shadow(0 1px 2px rgba(40, 20, 10, .10)); transition: stroke .12s, fill .12s; }
+.fx-node:hover rect.card, .fx-node:focus-visible rect.card { stroke: var(--accent-2); stroke-width: 1.8; }
+.fx-node text.name { fill: var(--ink); font-size: 12.5px; font-weight: 600; }
+.fx-node text.glyph { fill: var(--muted); font-size: 12px; }
+.fx-node.zone text.glyph { fill: var(--low); }
+/* Selected: filled with the accent; along its path: tinted; everything else steps back */
+.fx-node.selected rect.card { fill: var(--accent); stroke: var(--ember); stroke-width: 2; filter: drop-shadow(0 3px 8px color-mix(in srgb, var(--accent) 45%, transparent)); }
+.fx-node.selected text.name, .fx-node.selected text.glyph { fill: var(--accent-ink); }
+.fx-node.selected rect.stripe { fill: var(--accent-ink); opacity: .85; }
+.fx-node.related rect.card { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.8; }
+.fx-node.related text.name { fill: var(--ember); }
+.fx-node.dim { opacity: .3; }
 .fx-node.draft rect.card { stroke-dasharray: 4 3; }
-.fx-node text.name { fill: var(--ink); font-size: 11.5px; font-weight: 600; }
-.fx-edge { fill: none; stroke: var(--accent); stroke-width: 1.6; opacity: .8; }
+.fx-edge { fill: none; stroke: color-mix(in srgb, var(--axis) 80%, var(--muted)); stroke-width: 1.5; opacity: .75; transition: opacity .15s, stroke .15s; }
+.fx-edge.lit { stroke: var(--accent); stroke-width: 2.6; opacity: 1; }
+.fx-edge.faded { opacity: .12; }
 .fx-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--muted); }
 
 /* The inspector: filter chips, the list or view of the chosen filter, and the smaller detail pane */
@@ -124,6 +136,42 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
 .fx-bar.on { outline: 2px solid var(--accent); outline-offset: 0; }
 .fx-bar.added { box-shadow: inset 0 -3px 0 var(--ok); }
 .fx-axis { display: flex; justify-content: space-between; font: 600 10px/1 var(--mono); color: var(--muted); padding: 0 2px; }
+.fx-trace { border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); overflow: hidden; }
+.fx-trace-head { display: grid; grid-template-columns: minmax(200px, 40%) minmax(0, 1fr); align-items: end; border-bottom: 1px solid var(--line); background: var(--panel); font: 700 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.fx-trace-head > span { padding: 8px 10px; border-right: 1px solid var(--line); }
+.fx-ticks { position: relative; height: 26px; margin-right: 10px; }
+.fx-ticks span { position: absolute; bottom: 6px; transform: translateX(-50%); font-size: 10px; letter-spacing: 0; text-transform: none; }
+.fx-ticks span:first-child { transform: none; } .fx-ticks span:last-child { transform: translateX(-100%); }
+.fx-trace-body { max-height: 460px; overflow: auto; }
+.fx-trace-row { display: grid; grid-template-columns: minmax(200px, 40%) minmax(0, 1fr); align-items: center; min-height: 26px; border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent); cursor: pointer; outline: none; }
+.fx-trace-row:hover, .fx-trace-row.on, .fx-trace-row:focus-visible { background: var(--accent-soft); }
+.fx-trace-row.added .sym { color: var(--ok); }
+.fx-stack-name { display: flex; align-items: center; gap: 5px; min-width: 0; padding: 4px 8px; border-right: 1px solid var(--line); font: 12px/1.2 var(--mono); color: var(--ink); white-space: nowrap; }
+.fx-stack-name .sym { overflow: hidden; text-overflow: ellipsis; }
+.fx-stack-name .loc { margin-left: auto; padding-left: 8px; color: var(--muted); font-size: 10.5px; flex: none; }
+.fx-stack-name .again, .fx-guide { color: var(--muted); }
+.fx-swatch { flex: none; width: 8px; height: 8px; border-radius: 2px; }
+.fx-trace .fx-bar { top: 5px; height: 16px; line-height: 14px; border-width: 1px; border-style: solid; font-size: 10px; color: var(--ink-2); }
+
+/* Subagents as small tiles; the info button opens everything about one */
+.fx-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+.fx-tile { display: flex; align-items: center; gap: 9px; padding: 8px 8px 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); min-width: 0; }
+.fx-tile.firing { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); }
+.fx-tile.stopped { opacity: .6; }
+.fx-tile .who { display: grid; gap: 2px; min-width: 0; flex: 1; }
+.fx-tile .name { font-weight: 650; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fx-tile .meta { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fx-avatar.small { width: 26px; height: 26px; border-radius: 8px; }
+.fx-avatar.small svg { width: 15px; height: 15px; }
+.fx-avatar.incident { background: color-mix(in srgb, var(--bad) 14%, var(--panel)); color: var(--bad); }
+.fx-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.fx-dot.active { background: var(--ok); } .fx-dot.pending_approval { background: var(--warn); } .fx-dot.terminated { background: var(--bad); }
+.fx-dialog form.fx-info { width: min(720px, 100%); }
+.fx-info h2 { margin: 2px 0; font-size: 16px; }
+.fx-json { min-height: 180px; font: 12px/1.5 var(--mono) !important; }
+.fx-verdict { font-size: 12.5px; min-height: 1.2em; } .fx-verdict .bad { color: var(--bad); } .fx-verdict .ok { color: var(--ok); }
+.fx-errors { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 12.5px; color: var(--bad); }
+.fx-conn { display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* Subagents */
 .fx-subs { display: grid; gap: 12px; }
@@ -256,41 +304,47 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
 
   // ---------------------------------------------------------------- the map's layout
 
-  const NODE = { w: 136, h: 30, gapX: 14, gapY: 14, band: 28, pad: 28 };
+  const NODE = { w: 168, h: 38, colGap: 88, rowGap: 16, pad: 32, head: 34 };
 
-  /** Lay out bands of nodes in rows that fit the width; returns positions, band labels, and size */
-  function layout(bands, width) {
-    const columns = Math.max(2, Math.floor((width - NODE.pad * 2 + NODE.gapX) / (NODE.w + NODE.gapX)));
+  /** Lay out the map in columns, left to right: flows (and drafts), then each stage column of
+   * zones, then the zones in no flow. Shorter columns are centered against the tallest one.
+   * columns: [{label, items}] in order; returns positions, column headers, and the size */
+  function layout(columns) {
     const positions = new Map();
-    const labels = [];
-    let y = NODE.pad;
-    for (const band of bands) {
-      if (!band.items.length) continue;
-      labels.push({ text: band.label + " · " + band.items.length, y: y + 10 });
-      y += NODE.band;
-      band.items.forEach((item, index) => {
-        const column = index % columns, row = Math.floor(index / columns);
-        positions.set(item.key, { x: NODE.pad + column * (NODE.w + NODE.gapX), y: y + row * (NODE.h + NODE.gapY), item });
-      });
-      y += Math.ceil(band.items.length / columns) * (NODE.h + NODE.gapY) + 8;
-    }
-    const used = Math.min(columns, Math.max(1, ...bands.map((band) => band.items.length)));
-    return { positions, labels, height: y + NODE.pad, width: NODE.pad * 2 + used * (NODE.w + NODE.gapX) - NODE.gapX };
+    const headers = [];
+    const tallest = Math.max(1, ...columns.map((column) => column.items.length));
+    columns.forEach((column, index) => {
+      const x = NODE.pad + index * (NODE.w + NODE.colGap);
+      const offset = ((tallest - column.items.length) * (NODE.h + NODE.rowGap)) / 2;
+      headers.push({ x, text: column.label + ' · ' + column.items.length });
+      column.items.forEach((item, row) => positions.set(item.key, { x, y: NODE.pad + NODE.head + offset + row * (NODE.h + NODE.rowGap), item }));
+    });
+    return { positions, headers, width: NODE.pad * 2 + columns.length * (NODE.w + NODE.colGap) - NODE.colGap, height: NODE.pad * 2 + NODE.head + tallest * (NODE.h + NODE.rowGap) - NODE.rowGap };
   }
 
-  /** One node: a name, a priority color, a red dot for incidents, an agent badge when monitored */
+  /** A curve from the right side of one node to the left side of the next; a link back to the left
+   * (or within a column) arcs under the nodes instead of through them */
+  function curve(a, b) {
+    const x1 = a.x + NODE.w, y1 = a.y + NODE.h / 2, x2 = b.x, y2 = b.y + NODE.h / 2;
+    if (x2 > x1 + 10) { const bend = Math.max(36, (x2 - x1) / 2); return 'M' + x1 + ' ' + y1 + ' C' + (x1 + bend) + ' ' + y1 + ' ' + (x2 - bend) + ' ' + y2 + ' ' + x2 + ' ' + y2; }
+    const drop = Math.max(a.y, b.y) + NODE.h + 28;
+    return 'M' + x1 + ' ' + y1 + ' C' + (x1 + 60) + ' ' + y1 + ' ' + (x1 + 60) + ' ' + drop + ' ' + (x1 + x2) / 2 + ' ' + drop + ' S' + (x2 - 60) + ' ' + y2 + ' ' + x2 + ' ' + y2;
+  }
+
+  /** One node: a kind stripe, the name, a red dot for incidents, an agent badge when monitored */
   function node(position, onPick) {
     const { x, y, item } = position;
-    const name = item.name.length > 17 ? item.name.slice(0, 16) + "…" : item.name;
-    const color = item.kind === "zone" ? "var(--low)" : item.draft ? "var(--muted)" : item.priority === "P0" ? "var(--bad)" : item.priority === "P1" ? "var(--warn)" : "var(--info)";
-    const label = (item.kind === "zone" ? "Zone " : item.draft ? "Draft flow " : "Flow ") + item.name + (item.monitors.length ? ", monitored by " + item.monitors.join(", ") : "") + (item.incidents ? ", " + item.incidents + " incident(s)" : "");
-    return svgNode("g", { class: "fx-node" + (item.draft ? " draft" : ""), tabindex: "0", role: "button", "aria-label": label, "data-key": item.key, transform: `translate(${x},${y})`, onclick: () => onPick(item.key), onkeydown: (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onPick(item.key); } } },
-      svgNode("title", {}, item.name + (item.title && item.title !== item.name ? " — " + item.title : "") + (item.monitors.length ? "\nMonitored by " + item.monitors.join(", ") : "")),
-      svgNode("rect", { class: "card", width: NODE.w, height: NODE.h, rx: 8 }),
-      svgNode("rect", { x: 0, y: 7, width: 3, height: NODE.h - 14, rx: 1.5, fill: color }),
-      svgNode("text", { class: "name", x: 12, y: NODE.h / 2 + 4 }, name),
-      item.incidents ? svgNode("circle", { cx: 2, cy: 2, r: 4, fill: "var(--bad)", stroke: "var(--panel)", "stroke-width": 1.5 }) : null,
-      item.monitors.length ? agentBadge(NODE.w - 9, -7) : null);
+    const name = item.name.length > 19 ? item.name.slice(0, 18) + '…' : item.name;
+    const color = item.kind === 'zone' ? 'var(--low)' : item.draft ? 'var(--muted)' : item.priority === 'P0' ? 'var(--bad)' : item.priority === 'P1' ? 'var(--warn)' : 'var(--info)';
+    const label = (item.kind === 'zone' ? 'Zone ' : item.draft ? 'Draft flow ' : 'Flow ') + item.name + (item.priority ? ', ' + item.priority : '') + (item.monitors.length ? ', monitored by ' + item.monitors.join(', ') : '') + (item.incidents ? ', ' + item.incidents + ' incident(s)' : '');
+    return svgNode('g', { class: 'fx-node ' + item.kind + (item.draft ? ' draft' : ''), tabindex: '0', role: 'button', 'aria-label': label, 'data-key': item.key, transform: 'translate(' + x + ',' + y + ')', onclick: () => onPick(item.key), onkeydown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onPick(item.key); } } },
+      svgNode('title', {}, item.name + (item.title && item.title !== item.name ? ' — ' + item.title : '') + (item.monitors.length ? ' · monitored by ' + item.monitors.join(', ') : '')),
+      svgNode('rect', { class: 'card', width: NODE.w, height: NODE.h, rx: 10 }),
+      svgNode('rect', { class: 'stripe', x: 0, y: 0, width: 5, height: NODE.h, rx: 2.5, fill: color }),
+      svgNode('text', { class: 'glyph', x: 15, y: NODE.h / 2 + 4 }, item.kind === 'zone' ? '▦' : '⇢'),
+      svgNode('text', { class: 'name', x: 31, y: NODE.h / 2 + 4.5 }, name),
+      item.incidents ? svgNode('circle', { cx: 4, cy: 4, r: 4.5, fill: 'var(--bad)', stroke: 'var(--panel)', 'stroke-width': 1.5 }) : null,
+      item.monitors.length ? agentBadge(NODE.w - 10, -8) : null);
   }
 
   /** A small agent badge over a node's corner */
@@ -358,15 +412,48 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
     const rank = { P0: 0, P1: 1, P2: 2, P3: 3 };
     const critical = { restricted: 0, critical: 1, sensitive: 2, routine: 3 };
     const zoneCriticality = new Map(data.zones.map((zone) => [zone.id, zone.criticality]));
-    const bands = [
-      ...["P0", "P1", "P2", "P3"].map((priority) => ({ label: "Flows · " + priority, items: items.filter((item) => item.kind === "flow" && item.priority === priority) })),
-      { label: "Flows · no priority", items: items.filter((item) => item.kind === "flow" && !item.priority) },
-      { label: "Drafts", items: items.filter((item) => item.kind === "draft") },
-      { label: "Zones", items: items.filter((item) => item.kind === "zone").sort((a, b) => (critical[zoneCriticality.get(a.id)] ?? 9) - (critical[zoneCriticality.get(b.id)] ?? 9) || a.name.localeCompare(b.name)) },
+    // Columns: flows by priority (then drafts); each zone in the column of the furthest stage it
+    // holds in any flow, ordered by the rows of what leads into it; zones in no flow last
+    const firstColumn = [
+      ...items.filter((item) => item.kind === "flow").sort((a, b) => (rank[a.priority] ?? 9) - (rank[b.priority] ?? 9) || a.name.localeCompare(b.name)),
+      ...items.filter((item) => item.kind === "draft"),
     ];
-    for (const band of bands) if (band.label.startsWith("Flows")) band.items.sort((a, b) => (rank[a.priority] ?? 9) - (rank[b.priority] ?? 9) || a.name.localeCompare(b.name));
+    const stageColumn = new Map();
+    for (const flow of data.flows) (flow.stages || []).forEach((stage, index) => stageColumn.set(stage, Math.max(stageColumn.get(stage) || 0, index + 1)));
+    const rowOf = new Map(firstColumn.map((item, index) => [item.key, index]));
+    const columns = [{ label: "Flows", items: firstColumn }];
+    const deepestStage = Math.max(0, ...stageColumn.values());
+    for (let column = 1; column <= deepestStage; column += 1) {
+      const zones = items.filter((item) => item.kind === "zone" && stageColumn.get(item.id) === column);
+      // The average row of what leads into each zone (the flow, or the stage before it)
+      const lead = (zone) => {
+        const rows = [];
+        for (const flow of data.flows) {
+          const index = (flow.stages || []).indexOf(zone.id);
+          if (index < 0) continue;
+          const before = index === 0 ? "flow:" + flow.id : "zone:" + flow.stages[index - 1];
+          if (rowOf.has(before)) rows.push(rowOf.get(before));
+        }
+        return rows.length ? rows.reduce((sum, row) => sum + row, 0) / rows.length : Infinity;
+      };
+      zones.sort((a, b) => lead(a) - lead(b) || a.name.localeCompare(b.name));
+      zones.forEach((zone, index) => rowOf.set(zone.key, index));
+      if (zones.length) columns.push({ label: "Stage " + column, items: zones });
+    }
+    const loose = items.filter((item) => item.kind === "zone" && !stageColumn.has(item.id)).sort((a, b) => (critical[zoneCriticality.get(a.id)] ?? 9) - (critical[zoneCriticality.get(b.id)] ?? 9) || a.name.localeCompare(b.name));
+    if (loose.length) columns.push({ label: "Not in a flow", items: loose });
+    // Links: each flow's path, flow → first stage → next stage …, with the flows that take it
+    const links = new Map();
+    for (const flow of data.flows) {
+      const path = ["flow:" + flow.id, ...(flow.stages || []).map((stage) => "zone:" + stage)];
+      for (let index = 0; index + 1 < path.length; index += 1) {
+        const id = path[index] + "|" + path[index + 1];
+        if (!links.has(id)) links.set(id, { from: path[index], to: path[index + 1], flows: new Set() });
+        links.get(id).flows.add(flow.id);
+      }
+    }
 
-    const state = { selected: null, filter: null, peek: null, nodes: new Map(), view: { x: 0, y: 0, k: 1 }, traceMode: recall("fx-trace-mode") || "waterfall", traceSource: null, subFilter: "all" };
+    const state = { selected: null, filter: null, peek: null, nodes: new Map(), view: { x: 0, y: 0, k: 1 }, traceSource: null, subFilter: "all" };
     const saved = recall("fx-selected");
     if (saved && byKey.has(saved)) state.selected = saved;
 
@@ -392,7 +479,9 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
     const edgeLayer = svgNode("g", { class: "fx-edges" });
     const nodeLayer = svgNode("g");
     viewport.append(edgeLayer, nodeLayer);
-    const svg = svgNode("svg", { role: "group", "aria-label": "Map of flows and zones: drag to pan, scroll to zoom" }, viewport);
+    const svg = svgNode("svg", { role: "group", "aria-label": "Map of flows and zones: drag to pan, scroll to zoom" },
+      svgNode("defs", {}, svgNode("marker", { id: "fx-arrow", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" }, svgNode("path", { d: "M0 0L10 5L0 10z", fill: "var(--accent)" }))),
+      viewport);
     const zoomText = h("div", { class: "fx-zoom", "aria-live": "polite" }, "100%");
     const tool = (name, label, run) => h("button", { class: "fx-tool", type: "button", title: label, "aria-label": label, onclick: run }, icon(ICONS[name]));
     const focusButton = tool("focus", "Zoom to the selection", () => focusSelection(true));
@@ -469,20 +558,37 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
       else if (event.key === "Escape") pick(null);
     });
 
+    const linkPaths = new Map();
     function drawMap(keepView) {
-      geometry = layout(bands, Math.max(560, size().width));
+      geometry = layout(columns);
       state.nodes = new Map();
       if (!items.length) {
         canvas.append(h("div", { class: "fx-empty" }, "No flows or zones yet. Trace a flow from its starting point; once a code owner approves it, it appears here."));
         return;
       }
+      linkPaths.clear();
+      put(edgeLayer, [...links.entries()].map(([id, link]) => {
+        const a = geometry.positions.get(link.from), b = geometry.positions.get(link.to);
+        if (!a || !b) return null;
+        const path = svgNode("path", { class: "fx-edge", d: curve(a, b) }, svgNode("title", {}, link.from.replace(/^\w+:/, "") + " → " + link.to.replace(/^\w+:/, "") + " (" + [...link.flows].join(", ") + ")"));
+        linkPaths.set(id, path);
+        return path;
+      }));
       put(nodeLayer,
-        geometry.labels.map((label) => svgNode("text", { class: "fx-band", x: NODE.pad, y: label.y }, label.text)),
+        geometry.headers.map((header) => svgNode("text", { class: "fx-band", x: header.x + 2, y: NODE.pad + 12 }, header.text)),
         [...geometry.positions.values()].map((position) => { const group = node(position, pick); state.nodes.set(position.item.key, group); return group; }));
       highlight();
       if (!keepView) { if (state.selected) focusSelection(false); else fit(false); }
     }
 
+    /** The flows a selection is about: the flow itself, or the flows through a zone */
+    function flowsOf(key) {
+      const item = byKey.get(key);
+      if (!item) return new Set();
+      if (item.kind === "flow") return new Set([item.id]);
+      if (item.kind === "zone") return new Set(items.filter((other) => other.kind === "flow" && other.zones.includes(item.id)).map((other) => other.id));
+      return new Set();
+    }
     function related(key) {
       const item = byKey.get(key);
       if (!item) return new Set();
@@ -493,25 +599,24 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
 
     function highlight() {
       const near = state.selected ? related(state.selected) : new Set();
+      const lit = state.selected ? flowsOf(state.selected) : new Set();
+      // Along the selected flow's path (or the flows through the selected zone), every zone lights up
+      const path = new Set();
+      for (const link of links.values()) if ([...link.flows].some((flow) => lit.has(flow))) { path.add(link.from); path.add(link.to); }
       for (const [key, group] of state.nodes) {
         group.classList.toggle("selected", key === state.selected);
-        group.classList.toggle("related", near.has(key));
-        group.classList.toggle("dim", Boolean(state.selected) && key !== state.selected && !near.has(key));
+        group.classList.toggle("related", key !== state.selected && (near.has(key) || path.has(key)));
+        group.classList.toggle("dim", Boolean(state.selected) && key !== state.selected && !near.has(key) && !path.has(key));
+      }
+      for (const [id, element] of linkPaths) {
+        const on = [...links.get(id).flows].some((flow) => lit.has(flow));
+        element.classList.toggle("lit", on);
+        element.classList.toggle("faded", Boolean(state.selected) && !on);
+        element.setAttribute("marker-end", on ? "url(#fx-arrow)" : "");
+        if (on) edgeLayer.append(element);
       }
       focusButton.disabled = !state.selected;
       clearButton.disabled = !state.selected;
-      const lines = [];
-      if (state.selected && geometry) {
-        const from = geometry.positions.get(state.selected);
-        for (const key of near) {
-          const to = geometry.positions.get(key);
-          if (!from || !to) continue;
-          const [a, b] = from.y <= to.y ? [from, to] : [to, from];
-          const x1 = a.x + NODE.w / 2, y1 = a.y + NODE.h, x2 = b.x + NODE.w / 2, y2 = b.y;
-          lines.push(svgNode("path", { class: "fx-edge", d: `M${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}` }));
-        }
-      }
-      put(edgeLayer, lines);
     }
 
     function pick(key, options) {
@@ -600,7 +705,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
       const monitored = watchers.some((watcher) => watcher.active) || agents.length;
       const head = h("div", { class: "fx-inspect-head" }, h("span", { class: "fx-kind" }, "Flow"), h("h2", { class: "fx-inspect-title" }, flow.id),
         flow.priority ? pill(flow.priority, tone(flow.priority)) : pill("no priority"), pill(flow.status), flow.trace ? pill("traced r" + flow.trace.revision, "ok") : pill("not traced"), draft ? pill("draft r" + draft.current, "accent") : null, monitored ? pill("monitored", "accent") : null, flow.incidents ? pill(flow.incidents + " incident(s)", "bad") : null);
-      const nav = chips([["overview", "Overview"], ["zones", "Zones", (flow.stages || []).length], ["context", "Context", (flow.context || []).length], ["tests", "Tests", (flow.tests || []).length], ["agents", "Agents", watchers.length + agents.length], ["trace", "Trace", flow.trace ? flow.trace.nodes : draft ? "draft" : 0], ["people", "People", (flow.people || []).length], ["proposals", "Proposals", proposals.length], ["bricks", "Bricks", (flow.bricks || []).length], ["agent-lens", "For agents"]]);
+      const nav = chips([["overview", "Overview"], ["zones", "Zones", (flow.stages || []).length], ["context", "Context", (flow.context || []).length], ["tests", "Tests", (flow.tests || []).length], ["agents", "Agents", watchers.length + agents.length], ["trace", "Trace", flow.trace ? flow.trace.nodes : draft ? "draft" : 0], ["people", "People", (flow.people || []).length], ["proposals", "Proposals", proposals.length], ["bricks", "Bricks", (flow.bricks || []).length]]);
       let pane;
       const graphs = { approved: flow.graph || null, draft: draft ? draft.graph : null };
       if (!state.traceSource || !graphs[state.traceSource]) state.traceSource = graphs.approved ? "approved" : graphs.draft ? "draft" : "approved";
@@ -614,7 +719,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
           list(tests.map((test) => itemRow({ type: "test", id: test.id, flow: flow.id }, test.name, test.path + (test.exists ? "" : " · missing") + (test.last_run ? " · ran " + dt(test.last_run) : ""), [test.required ? pill("required", "accent") : null, test.last_result ? pill(test.last_result, test.last_result === "PASSED" ? "ok" : test.last_result === "FAILED" ? "bad" : "") : pill("not run")])), "No tests yet.")];
       }
       else if (state.filter === "agents") pane = [
-        h("div", { class: "fx-section" }, h("h3", {}, "Subagents (watchers)"), list(watchers.map((watcher) => itemRow({ type: "watcher", id: watcher.watcher_id }, watcher.purpose, watcher.watcher_id + " · " + watcher.checks.length + " check(s)", [watcher.active ? pill("active", "ok") : pill("stopped"), ...(watcher.firing || []).map((code) => pill(code, "bad"))])), "No watcher yet. Agents start one with 'crane-request watch --flow " + flow.id + "' up to the limit.")),
+        h("div", { class: "fx-section" }, h("h3", {}, "Subagents"), list(watchers.map((watcher) => { const status = statusOf(watcher); return itemRow({ type: "watcher", id: watcher.watcher_id }, watcher.purpose, subtypeOf(watcher) + " · " + (watcher.created_by === "agent" ? "created by an agent" : "created by " + watcher.created_by) + " · " + watcher.watcher_id, [pill(status.replace("_", " ").toLowerCase(), status === "ACTIVE" ? "ok" : status === "PENDING_APPROVAL" ? "accent" : status === "TERMINATED" ? "bad" : ""), ...(watcher.firing || []).map((code) => pill(code, "bad"))]); }), "No subagent yet. Add one below, or let an agent ask for one ('crane-request watch --flow " + flow.id + " --type monitor').")),
         h("div", { class: "fx-section" }, h("h3", {}, "Agents assigned"), list(agents.map((assignment, index) => itemRow({ type: "assignment", id: index, key: "flow:" + flow.id }, assignment.agent, (assignment.targets || []).join(", "), chip(assignment.runtime_status || assignment.assignment_status))), "No agent is assigned to this flow (assign one on the Bricks page).")),
       ];
       else if (state.filter === "trace") pane = [
@@ -626,10 +731,13 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
         graph ? traceView(graph, diff) : note(flow.trace ? "This flow was approved before Crane kept call graphs. Retrace it and approve the draft to keep its functions and calls here." : "No trace yet. Retrace the flow from its starting points to see its functions and calls."),
         state.traceSource === "draft" && draft ? draftActions(draft) : null,
       ];
-      else if (state.filter === "people") pane = [h("div", { class: "fx-acts" }, personAdd(flow)), list((flow.people || []).map((person) => itemRow({ type: "person", id: person.id, flow: flow.id }, person.name, [person.github ? "@" + person.github : "", person.jira || "", person.slack || ""].filter(Boolean).join(" · ") || "from " + person.source, pill(person.role))), "Nobody is designated. 'crane flow people suggest " + flow.id + "' lists the Git authors of its files.")];
+      else if (state.filter === "people") pane = [
+        peopleConnections(),
+        h("div", { class: "fx-acts" }, personAdd(flow)),
+        list((flow.people || []).map((person) => itemRow({ type: "person", id: person.id, flow: flow.id }, person.name, [person.github ? "@" + person.github : "", person.jira || "", person.slack || ""].filter(Boolean).join(" · ") || "from " + person.source, [pill(person.role), ...reach(person).map(([name, ok]) => pill(name + (ok ? " ✓" : " ✗"), ok ? "ok" : "bad", ok ? name + " is connected and this person has an id there" : name + " id set, but " + name + " is not connected"))])), "Nobody is designated. 'crane flow people suggest " + flow.id + "' lists the Git authors of its files."),
+      ];
       else if (state.filter === "proposals") pane = list(proposals.map((proposal) => itemRow({ type: "proposal", id: proposal.proposal_id }, proposalTitle(proposal), "by " + ((proposal.proposed_by || {}).agent || "an agent") + " · " + dt(proposal.proposed_at), pill(proposal.kind))), "No proposals from agents are waiting for this flow.");
       else if (state.filter === "bricks") pane = bricksList(flow.bricks || []);
-      else if (state.filter === "agent-lens") pane = agentLens(flow, watchers);
       else pane = overviewPane(flow, watchers, agents);
       let peek = state.peek ? sharedPeek(state.peek, { graph, diff }) : null;
       if (!peek && state.filter === "overview") peek = [peekHead("At a glance", flow.id), field("Monitored by", monitorsOf("flow:" + flow.id, flow.id).join(", ") || "nobody"), field("Zones", (flow.stages || []).join(" → ")), field("Required tests", String((flow.tests || []).filter((test) => test.required).length)), field("Incidents", String(flow.incidents || 0))];
@@ -668,39 +776,50 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
       return h("button", { class: "fx-btn small primary", type: "button", onclick: () => request("flow-context-add", "Add context to " + flow.id, { params: { flow: flow.id }, effect: "Guidance agents receive when they work in this flow. It never authorizes anything; secrets are refused.", fields: [{ key: "kind", label: "Kind", kind: "select", value: "note", options: kinds }, { key: "title", label: "Title", required: true, max: 200 }, { key: "value", label: "Value (the query, number, note, or address)", kind: "textarea" }, { key: "unit", label: "Unit (ms for latency)", max: 20 }, { key: "threshold", label: "Keep within (a budget or limit)", kind: "number" }, { key: "file", label: "Repository file (optional)", hint: "app/pay.py" }, { key: "lines", label: "Lines (A-B)", max: 20 }] }) }, "Add context…");
     }
 
+    /** Which services incidents can reach people through, as the reporting machine has them */
+    function peopleConnections() {
+      const names = [["slack", "Slack"], ["jira", "Jira"], ["github", "GitHub"], ["whatsapp", "WhatsApp"]];
+      return h("div", { class: "fx-section" },
+        h("div", { class: "fx-conn" }, names.map(([key, label]) => pill(label + (connections[key] ? " · connected" : " · not connected"), connections[key] ? "ok" : "", connections[key] ? label + " is connected on the reporting machine" : "Run 'crane integrate " + key + "' to connect " + label))),
+        data.connections ? null : note("The reporting machine runs a Crane that does not report its connections; update Crane there."));
+    }
+    /** The services a person has an id in, each with whether that service is connected */
+    const reach = (person) => [["Slack", person.slack, "slack"], ["Jira", person.jira, "jira"], ["GitHub", person.github, "github"]].filter(([, id]) => id).map(([name, , key]) => [name, Boolean(connections[key])]);
+
     function personAdd(flow) {
       return h("button", { class: "fx-btn small", type: "button", onclick: () => request("flow-person-add", "Designate a person on " + flow.id, { params: { flow: flow.id }, effect: "They are told when a watcher raises an incident (Slack, and the Jira issue that names them).", fields: [{ key: "name", label: "Name", required: true, max: 120 }, { key: "role", label: "Role", kind: "select", value: "owner", options: [["author", "Author (wrote the code)"], ["owner", "Owner"], ["reviewer", "Reviewer"], ["oncall", "On call"]] }, { key: "github", label: "GitHub login" }, { key: "jira", label: "Jira account or issue (PAY-12)" }, { key: "slack", label: "Slack member id (U…)" }] }) }, "Designate…");
     }
 
-    // ---------------------------------------------------------------- the trace: stack or waterfall
+    // ---------------------------------------------------------------- the trace: call stack and waterfall
 
+    /** The whole flow from its first call to its last: the call stack (function names, indented by
+     * depth) on the left, and the waterfall (one bar per call, spanning the calls under it) on the
+     * right. It is the static call order the trace follows, not timing. */
     function traceView(graph, diff) {
-      if (!graph || !(graph.nodes || []).length) return note("The trace found no functions.");
+      if (!graph || !(graph.nodes || []).length) return note('The trace found no functions.');
       const rows = callRows(graph);
       const total = Math.max(1, rows.length);
+      const deepest = Math.max(...rows.map((row) => row.depth)) + 1;
       const added = new Set(((diff || {}).added_nodes) || []);
       const files = [...new Set((graph.nodes || []).map((entry) => entry.path))];
       const shade = (path) => FILE_TONES[files.indexOf(path) % FILE_TONES.length];
-      const pickNode = (row) => { state.peek = { type: "function", id: row.node.id, row: row.start }; drawInspector(); };
-      const isOn = (row) => state.peek && state.peek.type === "function" && state.peek.row === row.start;
-      const bar = (row, extra) => h("div", { class: "fx-bar" + (isOn(row) ? " on" : "") + (added.has(row.node.id) ? " added" : ""), role: "button", tabindex: "0", title: row.node.symbol + " — " + row.node.path + ":" + row.node.start_line + (row.again ? " (reached again)" : ""),
-        style: Object.assign({ left: (row.start / total) * 100 + "%", width: "calc(" + (row.size / total) * 100 + "% - 1px)", background: "color-mix(in srgb, " + shade(row.node.path) + " " + (row.again ? 14 : 30) + "%, var(--panel))" }, extra || {}),
-        onclick: (event) => { event.stopPropagation(); pickNode(row); }, onkeydown: (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); pickNode(row); } } }, row.node.symbol);
-      const mode = h("div", { class: "fx-seg", role: "group", "aria-label": "Trace view" }, [["stack", "Stack"], ["waterfall", "Waterfall"]].map(([id, label]) => h("button", { type: "button", "aria-pressed": String(state.traceMode === id), onclick: () => { state.traceMode = id; remember("fx-trace-mode", id); drawInspector(); } }, label)));
-      let body;
-      if (state.traceMode === "stack") {
-        const depth = Math.max(...rows.map((row) => row.depth)) + 1;
-        body = h("div", { class: "fx-stack", style: { height: depth * 26 + 6 + "px" }, role: "group", "aria-label": "Call stack: one row per call depth; a box spans the calls it makes" }, rows.map((row) => bar(row, { top: 3 + row.depth * 26 + "px" })));
-      } else {
-        body = h("div", { class: "fx-waterfall", role: "list", "aria-label": "Calls in order" }, rows.map((row) => h("div", { class: "fx-wf-row" + (isOn(row) ? " on" : ""), role: "listitem", onclick: () => pickNode(row) },
-          h("div", { class: "fx-wf-name", style: { paddingLeft: 8 + row.depth * 14 + "px" }, title: row.node.path + ":" + row.node.start_line }, (row.depth ? "└ " : "") + row.node.symbol, row.again ? h("span", { class: "again" }, " (above)") : null),
-          h("div", { class: "fx-wf-track" }, bar(row)))));
-      }
-      return h("div", { class: "fx-section" },
-        h("div", { class: "fx-trace-bar" }, mode, h("span", { class: "fx-note" }, state.traceMode === "stack" ? "Rows are call depth; each box spans the calls under it." : "Rows are calls in the order the trace follows them; each bar spans the calls under it."), h("span", { class: "fx-spacer" }), diff ? h("span", { class: "fx-note" }, "+" + diff.added_nodes.length + " / −" + diff.removed_nodes.length + " functions since the revision before (green edge)") : null),
-        body,
-        h("div", { class: "fx-axis" }, h("span", {}, "first call"), h("span", {}, "static call order, not timing · colors are files"), h("span", {}, rows.length + (graph.truncated || rows.length >= 400 ? "+ calls" : " calls"))),
-        (graph.unresolved || []).length ? h("details", {}, h("summary", { class: "fx-note" }, graph.unresolved.length + " call(s) not followed (external, dynamic, or ambiguous)"), h("div", { class: "fx-code" }, graph.unresolved.join("\n"))) : null);
+      const pickNode = (row) => { state.peek = { type: 'function', id: row.node.id, row: row.start }; drawInspector(); };
+      const isOn = (row) => state.peek && state.peek.type === 'function' && state.peek.row === row.start;
+      const onKey = (row) => (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pickNode(row); } };
+      const ticks = [0, 0.25, 0.5, 0.75, 1].map((at) => h('span', { style: { left: at * 100 + '%' } }, String(Math.round(at * total))));
+      return h('div', { class: 'fx-section' },
+        h('div', { class: 'fx-trace-bar' }, h('span', { class: 'fx-note' }, rows.length + ' calls through ' + files.length + ' file(s), ' + deepest + ' level(s) deep, from ' + ((graph.entry_points || []).join(', ') || 'its start') + ' to its last call. Click a call for where it is and what it calls.'), h('span', { class: 'fx-spacer' }), diff ? h('span', { class: 'fx-note' }, '+' + diff.added_nodes.length + ' / −' + diff.removed_nodes.length + ' functions since the revision before (green edge)') : null),
+        h('div', { class: 'fx-trace', role: 'table', 'aria-label': 'Call stack and waterfall of the flow' },
+          h('div', { class: 'fx-trace-head', role: 'row' }, h('span', { role: 'columnheader' }, 'Call stack'), h('div', { class: 'fx-ticks', role: 'columnheader', 'aria-label': 'Waterfall: calls in order' }, ticks)),
+          h('div', { class: 'fx-trace-body' }, rows.map((row) => h('div', { class: 'fx-trace-row' + (isOn(row) ? ' on' : '') + (added.has(row.node.id) ? ' added' : ''), role: 'row', tabindex: '0', title: row.node.symbol + ' — ' + row.node.path + ':' + row.node.start_line + '-' + row.node.end_line + (row.again ? ' (reached again; shown once above)' : ''), onclick: () => pickNode(row), onkeydown: onKey(row) },
+            h('div', { class: 'fx-stack-name', role: 'cell', style: { paddingLeft: 8 + row.depth * 14 + 'px' } },
+              row.depth ? h('span', { class: 'fx-guide' }, '└ ') : null,
+              h('i', { class: 'fx-swatch', style: { background: shade(row.node.path) } }),
+              h('span', { class: 'sym' }, row.node.symbol), row.again ? h('span', { class: 'again' }, ' ↺') : null,
+              h('span', { class: 'loc' }, row.node.path.split('/').pop() + ':' + row.node.start_line)),
+            h('div', { class: 'fx-wf-track', role: 'cell' }, h('div', { class: 'fx-bar' + (isOn(row) ? ' on' : ''), style: { left: (row.start / total) * 100 + '%', width: 'calc(' + (row.size / total) * 100 + '% - 1px)', background: 'color-mix(in srgb, ' + shade(row.node.path) + ' ' + (row.again ? 16 : 34) + '%, var(--panel))', borderColor: shade(row.node.path) } }, row.size > 1 ? row.size + ' calls' : '')))))),
+        h('div', { class: 'fx-axis' }, h('span', {}, 'first call'), h('span', {}, 'static call order, not timing · colors are files'), h('span', {}, rows.length + (graph.truncated || rows.length >= 400 ? '+ calls' : ' calls'))),
+        (graph.unresolved || []).length ? h('details', {}, h('summary', { class: 'fx-note' }, graph.unresolved.length + ' call(s) not followed (external, dynamic, or ambiguous)'), h('div', { class: 'fx-code' }, graph.unresolved.join('\n'))) : null);
     }
 
     function draftFacts(draft) {
@@ -753,12 +872,18 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
       if (peek.type === "person") {
         const flow = flowOf(peek.flow), person = flow && (flow.people || []).find((row) => row.id === peek.id);
         if (!person) return null;
-        return [peekHead("Person · " + person.role, person.name), field("GitHub", person.github ? "@" + person.github : ""), field("Jira", person.jira), field("Slack", person.slack), field("Source", person.source),
+        const linked = (name, value) => (value ? h("span", {}, value, " ", connections[name] ? pill("connected", "ok") : pill("not connected", "bad", "Run 'crane integrate " + name + "' on the reporting machine")) : "");
+        return [peekHead("Person · " + person.role, person.name), field("GitHub", linked("github", person.github ? "@" + person.github : "")), field("Jira", linked("jira", person.jira)), field("Slack", linked("slack", person.slack)), field("Source", person.source),
+          note(connections.slack || connections.jira ? "Incidents reach this person through the connected services." : "Neither Slack nor Jira is connected on the reporting machine: incidents cannot reach this person yet."),
           h("div", { class: "fx-acts" }, h("button", { class: "fx-btn small danger", type: "button", onclick: () => request("flow-person-remove", "Remove " + person.name, { params: { flow: flow.id, person: person.id } }) }, "Remove…"))];
       }
       if (peek.type === "watcher") {
         const watcher = data.watchers.find((row) => row.watcher_id === peek.id);
-        return watcher ? [peekHead("Subagent · watcher", watcher.purpose, watcher.active ? pill("active", "ok") : pill("stopped"), ...(watcher.firing || []).map((code) => pill(code, "bad"))), watcherProps(watcher), watcherActions(watcher)] : null;
+        if (!watcher) return null;
+        const status = watcher.status || (watcher.active ? "ACTIVE" : "STOPPED");
+        return [peekHead((watcher.subtype || "monitor") + " subagent", watcher.purpose, pill(status.replace("_", " ").toLowerCase(), status === "ACTIVE" ? "ok" : status === "PENDING_APPROVAL" ? "accent" : ""), ...(watcher.firing || []).map((code) => pill(code, "bad"))),
+          field("Created by", watcher.created_by === "agent" ? "an agent" : watcher.created_by), field("Ceiling", ((watcher.config || {}).ceiling) || (watcher.inherited || {}).ceiling), field("Actions", ((watcher.config || {}).actions || []).join(", ")), field("Last ran", watcher.last_run ? dt(watcher.last_run) : "not yet"),
+          h("div", { class: "fx-acts" }, h("button", { class: "fx-btn small", type: "button", onclick: () => subagentInfo(watcher) }, "Properties and configuration…"))];
       }
       if (peek.type === "assignment") {
         const assignment = assignedTo(peek.key)[peek.id];
@@ -807,81 +932,203 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
       return null;
     }
 
-    /** What an agent receives about the flow, and what it may ask */
-    function agentLens(flow, watchers) {
-      const lines = ["Flow " + flow.id + ": " + (flow.description || "no description") + " (criticality " + flow.criticality + ", autonomy ceiling " + flow.ceiling + ", " + flow.status + ")", "Starts at: " + (flow.entry_points || []).join(", ")];
-      if (flow.priority) lines.push("Priority " + flow.priority + ": model tiers " + ((flow.routed || {}).tiers || []).join(", ") + ((flow.routed || {}).model ? " (routed to " + flow.routed.model + " by " + flow.routed.provider + ")" : ""));
-      if (flow.trace) lines.push("Approved trace (revision " + flow.trace.revision + ", " + flow.trace.status + "): " + flow.trace.nodes + " functions, " + flow.trace.edges + " calls in " + flow.trace.files.length + " files");
-      if ((flow.people || []).length) lines.push("People: " + flow.people.map((person) => person.name + " (" + person.role + ")").join("; "));
-      for (const entry of flow.context || []) lines.push("Context [" + entry.kind + "] " + entry.title + ": " + plain(entry.value) + (entry.unit ? " " + entry.unit : "") + (!empty(entry.threshold) ? " (keep within " + entry.threshold + ")" : ""));
-      const tests = flow.tests || [];
-      if (tests.length) lines.push("Tests: " + tests.length + " approved, " + tests.filter((test) => test.required).length + " required for every release");
-      lines.push("Watchers: " + watchers.filter((watcher) => watcher.active).length + " active of " + ((flow.watchers || {}).limit || 0) + " allowed");
-      lines.push("This is guidance; it never authorizes anything. Crane decides every action.");
-      const asks = [
-        "crane-request flow " + flow.id,
-        "crane-request route --flow " + flow.id,
-        "crane-request test --flow " + flow.id + " --file PATH --name TEXT --description TEXT --assumptions 'A; B' --mock TEXT",
-        "crane-request context --flow " + flow.id + " --kind latency --title TEXT --value N --unit ms",
-        "crane-request watch --flow " + flow.id + " --purpose TEXT",
-        "crane-request incident --flow " + flow.id + " --summary TEXT",
-      ];
-      const copy = (text) => async (event) => { try { await navigator.clipboard.writeText(text); event.target.textContent = "Copied"; } catch (error) { event.target.textContent = "Select and copy"; } };
-      return [
-        note("What an agent receives when it asks for this flow (and, shorter, with each tool call that touches it). Rebuilt here from the last report; the machine's answer is the authority."),
-        h("div", { class: "fx-code" }, lines.join("\n")),
-        h("div", { class: "fx-section" }, h("h3", {}, "What an agent may ask"), h("div", { class: "fx-items" }, asks.map((ask) => h("div", { class: "fx-item", style: "cursor:default" }, h("code", { class: "t" }, ask), h("span", { class: "r" }, h("button", { class: "fx-btn small ghost", type: "button", onclick: copy(ask) }, "Copy")))))),
-        note("The hook answers these and stops the command: nothing runs. Traces, tests, and context are drafts and proposals a person approves; watchers are read-only and capped by the limits only a person changes."),
-      ];
-    }
-
     // ---------------------------------------------------------------- subagents
 
-    /** A watcher's properties: behavior, triggers, what it governs and inherits, and what it raised */
-    function watcherProps(watcher) {
-      const raised = data.incidents.filter((incident) => incident.watcher_id === watcher.watcher_id);
-      const started = watcher.created_by === "agent" ? "agent " + ((watcher.parent || {}).agent || "?") + " (session " + ((watcher.parent || {}).session || "?") + ((watcher.parent || {}).model ? ", " + watcher.parent.model : "") + ")" : watcher.created_by;
-      const inherited = watcher.inherited || {};
-      return h("dl", { class: "fx-props" },
-        h("dt", {}, "Governs"), h("dd", {}, h("button", { class: "fx-link", type: "button", onclick: () => pick("flow:" + watcher.flow, { scroll: true }) }, watcher.flow)),
-        h("dt", {}, "Behavior"), h("dd", {}, "Read-only checks, no model; raises incidents to the flow's people and its parent session"),
-        h("dt", {}, "Triggers"), h("dd", {}, (watcher.checks || []).map((check) => { const known = CHECKS.find(([key]) => key === check); return h("div", {}, known ? known[1] : check, known ? h("span", { class: "muted" }, " · " + known[2]) : null); })),
-        h("dt", {}, "Inherits"), h("dd", {}, ((inherited.bricks || []).length ? inherited.bricks.join(", ") : "no Bricks") + " · ceiling " + (inherited.ceiling || "—")),
-        h("dt", {}, "Started by"), h("dd", {}, started + " · " + dt(watcher.created_at)),
-        h("dt", {}, "Last ran"), h("dd", {}, watcher.last_run ? dt(watcher.last_run) : "not yet"),
-        h("dt", {}, "Insights"), h("dd", {}, raised.length ? raised.length + " incident(s) raised, last " + dt(Math.max(...raised.map((incident) => incident.raised_at))) + (watcher.firing && watcher.firing.length ? "; firing now: " + watcher.firing.join(", ") : "") : watcher.firing && watcher.firing.length ? "Firing now: " + watcher.firing.join(", ") : "Quiet: nothing raised"),
-        watcher.stopped_by ? h("dt", {}, "Stopped by") : null, watcher.stopped_by ? h("dd", {}, watcher.stopped_by) : null);
+    const catalog = data.subagent_catalog || { subtypes: ["monitor", "incident"], max_per_flow: 3, max_agent_per_flow: 1, actions: [], ceilings: ["observe", "assisted", "delegated", "autonomous"] };
+    const connections = data.connections || {};
+    const statusOf = (watcher) => watcher.status || (watcher.active ? "ACTIVE" : "STOPPED");
+    const holdsPlace = (watcher) => ["ACTIVE", "PENDING_APPROVAL"].includes(statusOf(watcher));
+    const subtypeOf = (watcher) => watcher.subtype || "monitor";
+    const actionSpec = (subtype, id) => (catalog.actions || []).find((action) => action.subtype === subtype && action.id === id);
+    const INFO = "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 11v5M12 8h.01";
+
+    /** A flow's bounds as the report states them: its ceiling and the targets a subagent may have */
+    function boundsOf(flowId) {
+      const flow = data.flows.find((row) => row.id === flowId);
+      return { ceiling: flow ? flow.ceiling : "observe", targets: flow ? ["flow:" + flow.id, ...(flow.stages || []).map((stage) => "zone:" + stage)] : [] };
     }
-    function watcherActions(watcher) {
-      if (!watcher.active) return null;
-      return h("div", { class: "fx-acts" },
-        h("button", { class: "fx-btn small", type: "button", onclick: () => request("flow-watch-edit", "Change " + watcher.watcher_id, { params: { watcher: watcher.watcher_id }, effect: "Changes what the subagent is for and what it checks. It stays read-only and keeps the Bricks and ceiling it inherited.", fields: [{ key: "purpose", label: "Why it watches", value: watcher.purpose, required: true }, ...checkFields(watcher.checks)], shape: shapeChecks, validate: (params) => (params.checks.length ? null : "Choose at least one check.") }) }, "Edit…"),
-        h("button", { class: "fx-btn small danger", type: "button", onclick: () => request("flow-watch-stop", "Stop " + watcher.watcher_id, { params: { watcher: watcher.watcher_id } }) }, "Stop…"));
+    /** Merge a JSON patch into a configuration, as Crane does: given fields replace, null resets,
+     * parameters merge key by key, unknown fields are refused */
+    function mergeConfig(base, patch) {
+      if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new Error("The configuration must be a JSON object.");
+      const known = ["actions", "context", "parameters", "integrations", "branch", "ceiling", "targets"];
+      const unknown = Object.keys(patch).find((key) => !known.includes(key));
+      if (unknown) throw new Error("Unknown configuration field '" + unknown + "' (use " + known.join(", ") + ").");
+      const merged = JSON.parse(JSON.stringify(base || {}));
+      for (const [key, value] of Object.entries(patch)) {
+        if (key === "parameters" && value && typeof value === "object" && !Array.isArray(value)) {
+          merged.parameters = merged.parameters || {};
+          for (const [name, item] of Object.entries(value)) { if (item === null) delete merged.parameters[name]; else merged.parameters[name] = item; }
+        } else if (value === null) delete merged[key];
+        else merged[key] = value;
+      }
+      return merged;
+    }
+    /** Every way a configuration asks for more than its flow allows (empty when within bounds) */
+    function boundsProblems(subtype, config, flowId) {
+      const bounds = boundsOf(flowId);
+      const order = catalog.ceilings || ["observe", "assisted", "delegated", "autonomous"];
+      const rank = (name) => order.indexOf(name);
+      const problems = [];
+      const ceiling = config.ceiling || bounds.ceiling;
+      if (rank(ceiling) < 0) problems.push("ceiling '" + ceiling + "' is one of " + order.join(", "));
+      else if (rank(ceiling) > rank(bounds.ceiling)) problems.push("its ceiling " + ceiling + " is above the flow's ceiling " + bounds.ceiling);
+      const allowed = Math.min(rank(ceiling) < 0 ? rank(bounds.ceiling) : rank(ceiling), rank(bounds.ceiling));
+      for (const id of config.actions || []) {
+        const spec = actionSpec(subtype, id);
+        if (!spec) problems.push("action '" + id + "' is not an action of a " + subtype + " subagent");
+        else if (rank(spec.ceiling) > allowed) problems.push("action '" + id + "' needs the " + spec.ceiling + " ceiling, more than the " + order[allowed] + " it may have");
+      }
+      if (!(config.actions || []).length) problems.push("give it at least one action");
+      for (const target of config.targets || []) if (!bounds.targets.includes(target)) problems.push("target '" + target + "' is outside the flow (it may act on " + bounds.targets.join(", ") + ")");
+      if (subtype === "monitor" && config.branch) problems.push("only an Incident subagent has a designated branch");
+      return problems;
+    }
+    const RESOLVE = "A subagent stays within its flow. To give it more, raise the flow's autonomy ceiling (or add the zone to the flow) in .crane/governance.yaml first, then configure the subagent again.";
+    /** A modal error that lists the problems and how to resolve them */
+    function boundsError(problems) {
+      const close = () => back.remove();
+      const back = h("div", { class: "fx-dialog", role: "alertdialog", "aria-modal": "true", "aria-label": "Outside the flow's bounds", onclick: (event) => { if (event.target === back) close(); }, onkeydown: (event) => { if (event.key === "Escape") close(); } },
+        h("form", { onsubmit: (event) => { event.preventDefault(); close(); } },
+          h("div", { class: "fx-kind", style: "color:var(--bad)" }, "Not within bounds"),
+          h("h2", {}, "The subagent asks for more than its flow allows"),
+          h("ul", { class: "fx-errors" }, problems.map((problem) => h("li", {}, problem))),
+          note(RESOLVE),
+          h("div", { class: "acts" }, h("button", { class: "fx-btn primary", type: "submit" }, "Got it"))));
+      document.body.append(back);
+      back.querySelector("button").focus();
+    }
+
+    /** The full view of a subagent: properties, actions, parameters, context, Crane's governance,
+     * runs, and a JSON configuration that is merged, checked against the flow, and requested */
+    function subagentInfo(watcher) {
+      const subtype = subtypeOf(watcher);
+      const status = statusOf(watcher);
+      const config = (watcher.pending && watcher.pending.config) || watcher.config || {};
+      const flow = data.flows.find((row) => row.id === watcher.flow);
+      const bounds = boundsOf(watcher.flow);
+      const onFlow = data.watchers.filter((other) => other.flow === watcher.flow && holdsPlace(other));
+      const common = flow ? (flow.context || []).length : 0;
+      const raised = data.incidents.filter((incident) => incident.watcher_id === watcher.watcher_id);
+      const started = watcher.created_by === "agent" ? "agent " + ((watcher.parent || {}).agent || "?") + " (session " + ((watcher.parent || {}).session || "?") + ((watcher.parent || {}).model ? ", " + watcher.parent.model : "") + ")" : "person · " + watcher.created_by;
+      const section = (title, ...children) => h("div", { class: "fx-section" }, h("h3", {}, title), ...children);
+      const props = (rows) => h("dl", { class: "fx-props" }, rows.filter(Boolean).flatMap(([key, value]) => [h("dt", {}, key), h("dd", {}, empty(value) ? h("span", { class: "muted" }, "—") : value)]));
+      const editor = h("textarea", { class: "fx-json", spellcheck: "false", "aria-label": "Configuration (JSON)" }, JSON.stringify(config, null, 2));
+      const verdict = h("div", { class: "fx-verdict", role: "status" });
+      const check = () => {
+        let patch;
+        try { patch = JSON.parse(editor.value); } catch (error) { put(verdict, h("span", { class: "bad" }, "Not valid JSON: " + error.message)); return null; }
+        let merged;
+        try { merged = mergeConfig(watcher.config || {}, patch); } catch (error) { put(verdict, h("span", { class: "bad" }, error.message)); return null; }
+        const problems = boundsProblems(subtype, merged, watcher.flow);
+        if (problems.length) { put(verdict, h("span", { class: "bad" }, problems.length + " problem(s): outside the flow's bounds")); boundsError(problems); return null; }
+        put(verdict, h("span", { class: "ok" }, "Within the flow's bounds. Crane checks it again on the machine and when it is approved."));
+        return patch;
+      };
+      const close = () => back.remove();
+      const back = h("div", { class: "fx-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Subagent " + watcher.watcher_id, onclick: (event) => { if (event.target === back) close(); }, onkeydown: (event) => { if (event.key === "Escape" && document.activeElement !== editor) close(); } },
+        h("form", { class: "fx-info", onsubmit: (event) => event.preventDefault() },
+          h("div", { class: "fx-card-head" }, h("span", { class: "fx-avatar" }, icon(ROBOT)), h("div", { class: "who" }, h("span", { class: "fx-kind" }, subtype + " subagent"), h("h2", {}, watcher.purpose), h("span", { class: "id" }, watcher.watcher_id)), h("button", { class: "fx-tool", type: "button", "aria-label": "Close", onclick: close }, icon(ICONS.clear))),
+          h("div", { class: "fx-acts" }, pill(status.replace("_", " ").toLowerCase(), status === "ACTIVE" ? "ok" : status === "PENDING_APPROVAL" ? "accent" : status === "TERMINATED" ? "bad" : ""), pill(watcher.created_by === "agent" ? "created by an agent" : "created by a person"), ...(watcher.firing || []).map((code) => pill(code, "bad"))),
+          section("Properties", props([
+            ["Subtype", subtype === "monitor" ? "Monitor: holds the monitoring, reads observability, opens a meeting, pages on-call, activates Incident subagents" : "Incident: reads the Jira ticket, writes RCA and flow context, prepares pull requests and reviews on the designated branch"],
+            ["Flow", h("button", { class: "fx-link", type: "button", onclick: () => { close(); pick("flow:" + watcher.flow, { scroll: true }); } }, watcher.flow)],
+            ["Started by", started + " · " + dt(watcher.created_at)],
+            ["Approved by", watcher.approved_by],
+            ["Ceiling", (config.ceiling || bounds.ceiling) + " (flow: " + bounds.ceiling + ")"],
+            ["Targets", (config.targets || []).join(", ")],
+            subtype === "incident" ? ["Branch", config.branch] : null,
+            ["Checks", (watcher.checks || []).join(", ")],
+            ["Last ran", watcher.last_run ? dt(watcher.last_run) : "not yet"],
+            watcher.ended ? ["Ended", watcher.ended] : null,
+          ])),
+          section("Actions", (config.actions || []).length ? h("div", { class: "fx-items" }, (config.actions || []).map((id) => {
+            const spec = actionSpec(subtype, id) || {};
+            const needs = spec.integration ? spec.integration.split("|") : [];
+            const linked = needs.some((name) => connections[name]);
+            return h("div", { class: "fx-item", style: "cursor:default" }, h("span", { class: "t" }, spec.label || id), h("span", { class: "m" }, id + " · needs " + (spec.ceiling || "?") + (needs.length ? " · " + needs.join(" or ") : "") + (spec.runs === "prepared" ? " · recorded for a person (not called yet)" : spec.runs === "integration" ? " · runs through the integration" : " · Crane does it")),
+              h("span", { class: "r" }, needs.length ? pill(linked ? "connected" : "not connected", linked ? "ok" : "") : pill("crane")));
+          })) : note("No actions.")),
+          section("Parameters", Object.keys(config.parameters || {}).length ? props(Object.entries(config.parameters).map(([key, value]) => [key, h("code", {}, typeof value === "string" ? value : JSON.stringify(value))])) : note("None. Incident subagents read parameters.jira_issue for the ticket.")),
+          section("Context", (config.context || []).length ? h("ul", { class: "fx-errors", style: "color:var(--ink)" }, config.context.map((item) => h("li", {}, item))) : note("No standing context of its own."), note("No volatile context of its own: when it runs, the flow's common context (" + common + " item" + (common === 1 ? "" : "s") + ") is its volatile context.")),
+          section("Governance via Crane", props([
+            ["Bounds", "Constrained to " + watcher.flow + ": ceiling at most " + bounds.ceiling + ", targets " + bounds.targets.join(", ")],
+            ["Places", onFlow.length + " of " + catalog.max_per_flow + " on this flow · " + onFlow.filter((other) => other.created_by === "agent").length + " of " + catalog.max_agent_per_flow + " created by an agent"],
+            ["Inherited", (((watcher.inherited || {}).bricks || []).join(", ") || "no Bricks") + " · ceiling " + ((watcher.inherited || {}).ceiling || "—") + " · " + ((watcher.inherited || {}).mode || "read_only")],
+            ["Approval", "Creating or configuring waits for a person's approval in Landscape, where the bounds are checked again"],
+            ["Beyond the flow", "Only a person's manual trigger ('crane flow subagent trigger … --beyond'), for that run only, recorded"],
+            ["Insights", raised.length ? raised.length + " incident(s) raised, last " + dt(Math.max(...raised.map((incident) => incident.raised_at))) : "nothing raised"],
+          ])),
+          (watcher.runs || []).length ? section("Latest runs", h("div", { class: "fx-items" }, watcher.runs.slice(-5).reverse().map((run) => h("div", { class: "fx-item", style: "cursor:default" }, h("span", { class: "t" }, run.reason || run.by), h("span", { class: "m" }, dt(run.at) + " · by " + run.by + (run.beyond && run.beyond.length ? " · beyond: " + run.beyond.join(", ") : "") + " · " + run.outcomes.map((outcome) => outcome.action + " " + outcome.result).join(", ")))))) : null,
+          watcher.pending ? section("Waiting for approval", note(watcher.pending.kind + " requested by " + watcher.pending.requested_by + " · " + dt(watcher.pending.requested_at) + ". A person approves it in Landscape.")) : null,
+          holdsPlace(watcher) ? section("Configuration",
+            note("Edit the JSON and merge it into the current configuration: fields you give replace theirs, null resets one, parameters merge key by key. Fields: actions, context, parameters, integrations, branch, ceiling, targets."),
+            editor, verdict,
+            h("div", { class: "fx-acts" },
+              h("button", { class: "fx-btn small", type: "button", onclick: check }, "Check bounds"),
+              h("button", { class: "fx-btn small primary", type: "button", onclick: () => { const patch = check(); if (!patch) return; close(); request("flow-watch-edit", "Change " + watcher.watcher_id, { params: { watcher: watcher.watcher_id, config: patch }, effect: "Merges the configuration into " + watcher.watcher_id + ". Crane checks the flow's bounds on the machine, and a person approves it in Landscape.", fields: [{ key: "purpose", label: "Purpose (leave as is to keep it)", value: watcher.purpose }] }); } }, "Merge and request…"),
+              h("span", { class: "fx-spacer" }),
+              h("button", { class: "fx-btn small danger", type: "button", onclick: () => { close(); request("flow-watch-stop", "Stop " + watcher.watcher_id, { params: { watcher: watcher.watcher_id } }); } }, "Stop…"))) : null));
+      document.body.append(back);
+      back.querySelector("button").focus();
+    }
+
+    /** Ask for a new subagent on a flow: the subtype is required, the configuration optional */
+    function addSubagent(flow) {
+      const defaults = h("span");
+      request("flow-watch-add", "Add a subagent to " + flow.id, {
+        params: { flow: flow.id },
+        effect: "A subagent is constrained to its flow. Crane checks the configuration against the flow's bounds, and a person approves it in Landscape before it acts.",
+        fields: [
+          { key: "subtype", label: "Subtype (required)", kind: "select", value: "", options: [["", "Choose a subtype…"], ["monitor", "Monitor: monitoring, observability, meeting, on-call, activates Incident"], ["incident", "Incident: Jira ticket, RCA, context, pull requests on a branch"]] },
+          { key: "purpose", label: "What it is for", required: true },
+          ...checkFields(null),
+          { key: "config", label: "Configuration (JSON, optional; the flow's defaults otherwise)", kind: "textarea", hint: "{\"parameters\": {\"jira_issue\": \"PAY-12\"}, \"branch\": \"incident/checkout\"}" },
+        ],
+        shape: shapeChecks,
+        validate: (params) => {
+          if (!params.subtype) return "Choose the subtype: Monitor or Incident.";
+          if (params.subtype === "incident") params.checks = [];
+          else if (!params.checks.length) return "A Monitor needs at least one check.";
+          if (!params.config) { delete params.config; return null; }
+          let patch;
+          try { patch = JSON.parse(params.config); } catch (error) { return "The configuration is not valid JSON: " + error.message; }
+          const problems = (() => { try { return boundsProblems(params.subtype, mergeConfig({ ceiling: flow.ceiling, targets: ["flow:" + flow.id], actions: (catalog.actions || []).filter((action) => action.subtype === params.subtype && catalog.ceilings.indexOf(action.ceiling) <= catalog.ceilings.indexOf(flow.ceiling)).map((action) => action.id) }, patch), flow.id); } catch (error) { return [error.message]; } })();
+          if (problems.length) { boundsError(problems); return "Outside the flow's bounds; see the list."; }
+          params.config = patch;
+          return null;
+        },
+      });
+      return defaults;
     }
 
     function drawSubagents() {
       const selected = state.selected && state.selected.startsWith("flow:") ? state.selected.slice(5) : null;
-      const filters = [["all", "All", data.watchers.length], ["active", "Active", data.watchers.filter((watcher) => watcher.active).length], ["firing", "Firing", data.watchers.filter((watcher) => (watcher.firing || []).length).length]];
+      const filters = [["all", "All", data.watchers.length], ["active", "Active", data.watchers.filter((watcher) => statusOf(watcher) === "ACTIVE").length], ["pending", "Waiting", data.watchers.filter((watcher) => statusOf(watcher) === "PENDING_APPROVAL").length], ["firing", "Firing", data.watchers.filter((watcher) => (watcher.firing || []).length).length]];
       if (selected) filters.push(["flow", "On " + selected, watchersOf(selected).length]);
       if (!filters.some(([id]) => id === state.subFilter)) state.subFilter = "all";
-      const shown = data.watchers.filter((watcher) => state.subFilter === "active" ? watcher.active : state.subFilter === "firing" ? (watcher.firing || []).length : state.subFilter === "flow" ? watcher.flow === selected : true)
-        .sort((a, b) => Number(b.active) - Number(a.active) || (b.firing || []).length - (a.firing || []).length || a.flow.localeCompare(b.flow));
+      const shown = data.watchers.filter((watcher) => state.subFilter === "active" ? statusOf(watcher) === "ACTIVE" : state.subFilter === "pending" ? statusOf(watcher) === "PENDING_APPROVAL" : state.subFilter === "firing" ? (watcher.firing || []).length : state.subFilter === "flow" ? watcher.flow === selected : true)
+        .sort((a, b) => Number(holdsPlace(b)) - Number(holdsPlace(a)) || (b.firing || []).length - (a.firing || []).length || a.flow.localeCompare(b.flow));
       const flow = selected ? data.flows.find((row) => row.id === selected) : null;
-      const limit = flow ? (flow.watchers || {}).limit || 0 : 0;
-      const running = flow ? watchersOf(flow.id).filter((watcher) => watcher.active).length : 0;
+      const taken = flow ? watchersOf(flow.id).filter(holdsPlace).length : 0;
       put(subagents,
         h("div", { class: "fx-subs-head" },
           h("h2", {}, "Subagents"),
-          h("span", { class: "fx-note" }, "Watchers that govern flows: read-only, no model, capped by the signed limits. Code owners of .crane/flows.json change them."),
+          h("span", { class: "fx-note" }, "Monitor and Incident subagents of each flow: at most " + catalog.max_per_flow + " per flow, " + catalog.max_agent_per_flow + " created by an agent. They act only within their flow; Landscape approves every change."),
           h("span", { class: "fx-spacer" }),
-          flow ? h("button", { class: "fx-btn small", type: "button", onclick: () => request("flow-limit", "Watcher limit of " + flow.id, { params: { flow: flow.id }, effect: "Only a person changes it; a flow cannot go above the repository's limit.", fields: [{ key: "watchers", label: "Watchers on this flow", kind: "number", value: limit }] }) }, "Limit " + running + "/" + limit + "…") : null,
-          flow ? h("button", { class: "fx-btn small primary", type: "button", disabled: running >= limit, title: running >= limit ? "At the limit; raise it first" : undefined, onclick: () => request("flow-watch-add", "Start a subagent on " + flow.id, { params: { flow: flow.id }, effect: "A read-only watcher runs Crane's checks of this flow without a model. It takes on the flow's Bricks and ceiling, and raises an incident to the designated people.", fields: [{ key: "purpose", label: "Why it watches", required: true }, ...checkFields(null)], shape: shapeChecks }) }, "Start a subagent…") : null),
+          flow ? h("button", { class: "fx-btn small primary", type: "button", disabled: taken >= catalog.max_per_flow, title: taken >= catalog.max_per_flow ? "The flow has its " + catalog.max_per_flow + " subagents" : undefined, onclick: () => addSubagent(flow) }, "Add subagent (" + taken + "/" + catalog.max_per_flow + ")…") : null),
         h("div", { class: "fx-chips", style: "padding:0;border:0", role: "toolbar", "aria-label": "Show subagents" }, filters.map(([id, label, count]) => h("button", { class: "fx-chip", type: "button", "aria-pressed": String(id === state.subFilter), onclick: () => { state.subFilter = id; drawSubagents(); } }, label, h("span", { class: "n" }, String(count))))),
-        shown.length ? h("div", { class: "fx-cards" }, shown.map((watcher) => h("article", { class: "fx-card" + ((watcher.firing || []).length ? " firing" : "") + (watcher.active ? "" : " stopped") },
-          h("div", { class: "fx-card-head" }, h("span", { class: "fx-avatar" }, icon(ROBOT)), h("div", { class: "who" }, h("span", { class: "name" }, watcher.purpose), h("span", { class: "id" }, watcher.watcher_id)), h("div", { class: "fx-acts" }, watcher.active ? pill("active", "ok") : pill("stopped"), ...(watcher.firing || []).map((code) => pill(code, "bad")))),
-          watcherProps(watcher),
-          watcherActions(watcher))))
-          : note(data.watchers.length ? "No subagent matches this filter." : "No subagents yet. Select a flow and start one, or let agents start them with 'crane-request watch --flow ID' up to the limit."));
+        shown.length ? h("div", { class: "fx-tiles" }, shown.map((watcher) => {
+          const status = statusOf(watcher);
+          const firing = (watcher.firing || []).length;
+          return h("div", { class: "fx-tile" + (firing ? " firing" : "") + (holdsPlace(watcher) ? "" : " stopped") },
+            h("span", { class: "fx-avatar small" + (subtypeOf(watcher) === "incident" ? " incident" : "") }, icon(ROBOT)),
+            h("div", { class: "who" },
+              h("span", { class: "name", title: watcher.purpose }, watcher.purpose),
+              h("span", { class: "meta" }, h("i", { class: "fx-dot " + status.toLowerCase() }), subtypeOf(watcher) + " · " + watcher.flow + (watcher.created_by === "agent" ? " · by agent" : "") + (firing ? " · firing" : ""))),
+            h("button", { class: "fx-tool", type: "button", title: "Properties and configuration of " + watcher.watcher_id, "aria-label": "Properties and configuration of " + watcher.watcher_id, onclick: () => subagentInfo(watcher) }, icon(INFO)));
+        }))
+          : note(data.watchers.length ? "No subagent matches this filter." : "No subagents yet. Select a flow and add one, or let an agent ask for one ('crane-request watch --flow ID --type monitor')."));
     }
 
     drawMap(false);

@@ -121,7 +121,8 @@ input.invalid { border-color: var(--bad); }
 .searchbox span { overflow: hidden; text-overflow: ellipsis; }
 .searchbox:hover { border-color: var(--accent-2); }
 kbd { font-family: var(--mono); font-size: 10px; border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; margin-left: auto; }
-fieldset.timepick { margin-left: auto; padding: 0; min-width: 0; display: flex; border: 1px solid var(--line-2); border-radius: 7px; overflow: hidden; }
+.topbar-spacer { flex: 1; }
+fieldset.timepick { padding: 0; min-width: 0; display: flex; border: 1px solid var(--line-2); border-radius: 7px; overflow: hidden; }
 .timepick button { border: 0; background: var(--panel); padding: 5px 9px; cursor: pointer; border-right: 1px solid var(--line); color: var(--muted); }
 .timepick button:last-of-type { border-right: 0; }
 .timepick button.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
@@ -584,10 +585,11 @@ pre.json { background: var(--panel-2); border: 1px solid var(--line); border-rad
       <div class="crumbs" id="crumbs"></div>
       <div id="scope" class="scope"></div>
       <button type="button" class="searchbox" id="search-open" aria-label="Search pages, agents, tools, sessions, flows, metrics">⌕ <span>Search</span><kbd>Ctrl K</kbd></button>
+      <span class="topbar-spacer"></span>
       <fieldset id="time" class="timepick"><legend class="visually-hidden">Time range</legend></fieldset>
+      <button type="button" class="icon-btn" id="details-toggle" title="Details and help (?)" aria-label="Details and help">☰</button>
       <button type="button" class="live" id="live" aria-pressed="false" title="Refresh this page every 30 seconds">● Live</button>
       <button type="button" class="icon-btn" id="theme" title="Theme: system, light, or dark" aria-label="Change theme">◐</button>
-      <button type="button" class="icon-btn" id="details-toggle" title="Details and help (?)" aria-label="Details and help">☰</button>
     </header>
     <div id="filterbar" class="filterbar" hidden></div>
     <main id="main"><p class="skeleton">Loading…</p></main>

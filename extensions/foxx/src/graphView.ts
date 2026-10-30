@@ -2,10 +2,14 @@
 // governance graph'), on a canvas beside the editor. Zones can be dragged anywhere (positions are
 // remembered per workspace), and linked by dragging from one zone's connector onto another: the
 // link becomes a flow's next stage in .crane/governance.yaml, signed by Crane. A zone or flow can
-// be removed from its × handle (a flow's zones stay as zones). Every link is
-// checked here first (no self links, no cycles, a flow stays one ordered path), then again by the
-// extension and by Crane. Hover a node for what it is and who is working there, click it to open
-// its code, filter the kinds from one menu.
+// be removed from its × handle after a confirmation that the removal is permanent (a flow's zones
+// stay as zones; the subagents acting on it are terminated). Every link is checked here first (no
+// self links, no cycles, a flow stays one ordered path), then again by the extension and by Crane.
+// Hover a node for what it is and who is working there, click a zone (or double-click a flow) to
+// open its code, filter the kinds from one menu. Clicking a flow opens a drawer under the graph: its
+// test scenarios as a searchable carousel of cards a person edits, accepts (one by one or all at
+// once), saves to .crane/scenarios, or downloads as text; and its subagents, whose pending
+// creations and configurations a person approves or rejects here.
 
 import * as vscode from "vscode";
 
@@ -30,10 +34,35 @@ export interface GraphHost {
   link(from: string, to: string): Promise<RunResult>;
   /** Remove the link between two consecutive zones of a flow. */
   unlink(from: string, to: string): Promise<RunResult>;
-  /** Remove a zone, or a flow (its zones stay). */
+  /** Remove a zone, or a flow (its zones stay); the subagents acting on it are terminated. */
   remove(kind: "zone" | "flow", id: string): Promise<RunResult>;
   /** Run a command of the extension (fix Crane, open output). */
   command(id: string): Promise<void>;
+  /** A flow's test scenarios: written from its knowledge (generate) or the saved ones (show). */
+  scenarios(flow: string, action: "generate" | "show"): Promise<{ scenarios?: unknown[]; error?: string }>;
+  /** Save reviewed scenarios to .crane/scenarios/FLOW.json. */
+  saveScenarios(flow: string, scenarios: unknown[]): Promise<RunResult>;
+  /** Ask where to save a text file, and write it. */
+  saveText(name: string, text: string): Promise<RunResult>;
+  /** A flow's subagents (all states) and the subagent catalog. */
+  subagents(flow: string): Promise<{ subagents?: unknown[]; catalog?: unknown; error?: string }>;
+  /** Approve or reject a subagent's pending change, or stop it. */
+  decide(id: string, decision: "approve" | "reject" | "stop"): Promise<RunResult>;
+}
+
+/** A message from the graph page. */
+interface GraphMessage {
+  type: string;
+  id?: string;
+  from?: string;
+  to?: string;
+  kind?: string;
+  flow?: string;
+  name?: string;
+  text?: string;
+  decision?: string;
+  scenarios?: unknown[];
+  positions?: Positions;
 }
 
 /** The governance graph panel (one per window). */
@@ -85,7 +114,32 @@ export class FoxxGraph {
   private constructor(private readonly panel: vscode.WebviewPanel, private readonly host: GraphHost, connect: boolean) {
     panel.webview.html = html(panel.webview.cspSource);
     panel.onDidDispose(() => (FoxxGraph.current = undefined));
-    panel.webview.onDidReceiveMessage(async (message: { type: string; id?: string; from?: string; to?: string; kind?: string; positions?: Positions }) => {
+    panel.webview.onDidReceiveMessage(async (message: GraphMessage) => {
+      const post = (reply: Record<string, unknown>) => void panel.webview.postMessage(reply);
+      if (message.type === "flow" && message.flow) {
+        const [tests, agents] = await Promise.all([this.host.scenarios(message.flow, "show"), this.host.subagents(message.flow)]);
+        post({ type: "flowData", flow: message.flow, scenarios: tests.scenarios ?? [], testsError: tests.error, subagents: agents.subagents ?? [], catalog: agents.catalog, agentsError: agents.error });
+        return;
+      }
+      if (message.type === "generate" && message.flow) {
+        const tests = await this.host.scenarios(message.flow, "generate");
+        post({ type: "scenarios", flow: message.flow, scenarios: tests.scenarios ?? [], error: tests.error });
+        return;
+      }
+      if (message.type === "saveScenarios" && message.flow && Array.isArray(message.scenarios)) {
+        post({ type: "result", op: "save", from: message.flow, to: "", result: await this.host.saveScenarios(message.flow, message.scenarios) });
+        return;
+      }
+      if (message.type === "saveText" && message.name && typeof message.text === "string") {
+        post({ type: "result", op: "download", from: message.name, to: "", result: await this.host.saveText(message.name, message.text) });
+        return;
+      }
+      if (message.type === "decide" && message.id && message.flow && (message.decision === "approve" || message.decision === "reject" || message.decision === "stop")) {
+        const result = await this.host.decide(message.id, message.decision);
+        const agents = await this.host.subagents(message.flow);
+        post({ type: "decided", flow: message.flow, id: message.id, decision: message.decision, result, subagents: agents.subagents ?? [], catalog: agents.catalog });
+        return;
+      }
       if (message.type === "ready" || message.type === "refresh") {
         if (message.type === "ready" && connect) void panel.webview.postMessage({ type: "hint" });
         const { data, error } = await this.host.load(message.type === "refresh");
@@ -229,6 +283,62 @@ svg.dim .edge-g:not(.lit) { opacity: .15; }
 .zoom button { width: 30px; height: 28px; border: 0; background: none; cursor: pointer; }
 .zoom button + button { border-top: 1px solid var(--line); }
 .zoom button:hover { background: var(--fox-soft); }
+/* The picked flow, and the drawer under the graph: its test scenarios and subagents */
+.node.picked rect.box { stroke: var(--fox); stroke-width: 2.6; fill: color-mix(in srgb, var(--fox) 22%, var(--node)); }
+.node.picked text { font-weight: 600; }
+.drawer { flex: none; height: clamp(280px, 46vh, 520px); display: flex; flex-direction: column; border-top: 2px solid var(--fox); background: var(--bg); min-height: 0; }
+.drawer-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--line); }
+.drawer-head .kind, .tcard .src, .scard .kind { font-size: 10px; letter-spacing: .7px; text-transform: uppercase; color: var(--muted); }
+.tabs { display: inline-flex; gap: 2px; margin-left: 8px; }
+.tab { border: 0; border-bottom: 2px solid transparent; background: none; padding: 4px 9px; cursor: pointer; color: var(--muted); }
+.tab[aria-selected=true] { color: var(--fg); border-bottom-color: var(--fox); }
+.tab .count { margin-left: 4px; }
+.drawer-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.ttools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px 12px; }
+.ttools input[type=search] { width: 170px; }
+.ttools .pos { font-size: 11px; color: var(--muted); min-width: 52px; text-align: center; }
+.btn.primary { background: var(--fox); border-color: var(--fox); color: #1a0d05; font-weight: 600; }
+.btn:disabled { opacity: .5; cursor: default; }
+.track { flex: 1; min-height: 0; display: flex; gap: 10px; padding: 2px 12px 12px; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; scroll-behavior: smooth; scrollbar-width: thin; }
+.tcard { flex: 0 0 min(420px, 86%); scroll-snap-align: start; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); overflow-y: auto; }
+.tcard.accepted { border-color: color-mix(in srgb, var(--ok) 60%, var(--line)); }
+.tcard header { display: flex; align-items: center; gap: 6px; }
+.tcard .ttitle { flex: 1; min-width: 0; font-weight: 600; padding: 3px 6px; border-radius: 5px; border: 1px solid transparent; background: transparent; }
+.tcard .ttitle:hover, .tcard .ttitle:focus { border-color: var(--line); background: var(--vscode-input-background); }
+.accept { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; white-space: nowrap; cursor: pointer; }
+.ttype { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; padding: 2px 6px; border-radius: 999px; background: var(--fox-soft); color: var(--fox); white-space: nowrap; }
+.ttype.negative { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
+.ttype.performance, .ttype.regression { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.ttype.integration, .ttype.contract { background: color-mix(in srgb, var(--zone) 18%, transparent); color: var(--zone); }
+.ttype.mocked, .ttype.smoke { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+.tdesc { margin: 0; font-size: 12px; color: var(--muted); }
+.tgrid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+.tgrid label { display: grid; gap: 2px; font-size: 10.5px; color: var(--muted); min-width: 0; }
+.tgrid .wide { grid-column: 1 / -1; }
+.tgrid input, .tgrid textarea, .tgrid select, .mjson { width: 100%; min-width: 0; padding: 4px 6px; border-radius: 5px; border: 1px solid var(--vscode-input-border, var(--line)); background: var(--vscode-input-background); color: var(--vscode-input-foreground); font: 12px var(--vscode-editor-font-family, monospace); }
+.tgrid textarea { resize: vertical; min-height: 34px; }
+.tgrid .bad { border-color: var(--bad); }
+.tgrid .why { color: var(--bad); font-size: 10.5px; }
+.tempty { flex: 1; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 16px; }
+.slist { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; padding: 8px 12px 12px; align-content: start; }
+.scard { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); font-size: 12px; }
+.scard.pending { border-color: color-mix(in srgb, var(--warn) 60%, var(--line)); }
+.scard b { font-size: 13px; }
+.scard .pills { display: flex; flex-wrap: wrap; gap: 4px; }
+.pill { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 50%, var(--line)); }
+.pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); }
+.pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
+.scard pre { margin: 0; max-height: 140px; overflow: auto; padding: 6px 8px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); font: 11px var(--vscode-editor-font-family, monospace); white-space: pre-wrap; }
+.scard .row, .modal .row { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+.scaps { padding: 6px 12px 0; font-size: 12px; color: var(--muted); }
+.modal { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, .45); }
+.modal .box { width: min(520px, 100%); max-height: calc(100vh - 32px); overflow: auto; display: grid; gap: 10px; padding: 16px; border-radius: 12px; border: 1px solid var(--line); background: var(--vscode-editorWidget-background, var(--bg)); box-shadow: 0 16px 40px rgba(0, 0, 0, .45); }
+.modal h2 { margin: 0; font-size: 15px; }
+.modal p { margin: 0; color: var(--muted); }
+.modal .err { white-space: pre-wrap; color: var(--fg); padding: 8px 10px; border-radius: 7px; border: 1px solid color-mix(in srgb, var(--bad) 55%, transparent); background: color-mix(in srgb, var(--bad) 12%, var(--bg)); font-size: 12px; }
+.confirm { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; margin: 0 0 10px; cursor: pointer; }
+@media (max-width: 640px) { .tgrid { grid-template-columns: 1fr 1fr; } }
 </style>
 </head>
 <body>
@@ -247,7 +357,7 @@ svg.dim .edge-g:not(.lit) { opacity: .15; }
   <button class="btn" id="arrange" title="Lay the graph out again, left to right">Arrange</button>
   <button class="btn" id="refresh" title="Ask Crane for the graph again">Refresh</button>
 </div>
-<div class="hint" id="hint"><span class="dot" aria-hidden="true"></span><span id="hint-text">Drag from a zone's right handle onto another zone to link them into a flow. Click a link to delete it. Hover a zone or flow and press × (or Delete) to remove it. Drag zones to move them.</span></div>
+<div class="hint" id="hint"><span class="dot" aria-hidden="true"></span><span id="hint-text">Drag from a zone's right handle onto another zone to link them into a flow. Click a link to delete it. Hover a zone or flow and press × (or Delete) to remove it. Drag zones to move them. Click a flow for its tests and subagents.</span></div>
 <div id="stage">
   <div class="notices" id="notices" aria-live="polite"></div>
   <svg id="canvas" role="application" aria-label="Governance graph canvas"><defs>
@@ -256,6 +366,20 @@ svg.dim .edge-g:not(.lit) { opacity: .15; }
   <div class="empty" id="empty" hidden></div>
   <div class="zoom"><button id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button><button id="zoom-out" title="Zoom out" aria-label="Zoom out">−</button><button id="fit" title="Fit the graph" aria-label="Fit the graph">⤢</button></div>
 </div>
+<section class="drawer" id="drawer" aria-label="Flow tests and subagents" hidden>
+  <div class="drawer-head">
+    <span class="kind">Flow</span><b id="drawer-title"></b>
+    <div class="tabs" role="tablist" aria-label="Show">
+      <button class="tab" role="tab" data-tab="tests" aria-selected="true">Tests <span class="count" id="test-count" hidden></span></button>
+      <button class="tab" role="tab" data-tab="subagents" aria-selected="false">Subagents <span class="count" id="sub-count" hidden></span></button>
+    </div>
+    <span class="grow"></span>
+    <button class="btn" id="drawer-open" title="Open the flow's code">Open code</button>
+    <button class="btn" id="drawer-close" aria-label="Close the drawer" title="Close">×</button>
+  </div>
+  <div class="drawer-body" id="drawer-body"></div>
+</section>
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" hidden></div>
 <div id="tip" role="tooltip"></div>
 <div class="edge-menu" id="edge-menu" role="dialog" aria-labelledby="edge-menu-title" hidden></div>
 <script nonce="${nonce}">
@@ -362,7 +486,7 @@ function draw() {
   $("nodes").innerHTML = nodes.map((node) => {
     const at = pos[node.id];
     const busy = activityOf(node.id);
-    const classes = ["node", node.status === "proposed" ? "proposed" : "", node.status === "UNRESOLVED" ? "unresolved" : "", q && (node.name + " " + node.id + " " + (node.description || "")).toLowerCase().includes(q) ? "match" : "", keyLink && keyLink === node.name && node.kind === "zone" ? "source" : ""].filter(Boolean).join(" ");
+    const classes = ["node", node.kind === "flow" && node.name === picked ? "picked" : "", node.status === "proposed" ? "proposed" : "", node.status === "UNRESOLVED" ? "unresolved" : "", q && (node.name + " " + node.id + " " + (node.description || "")).toLowerCase().includes(q) ? "match" : "", keyLink && keyLink === node.name && node.kind === "zone" ? "source" : ""].filter(Boolean).join(" ");
     const where = node.kind === "zone" ? placeOf(node.name) : null;
     const sub = node.kind === "selection" ? (node.operation || "") + (node.lines ? " · L" + node.lines[0] + "–" + node.lines[1] : " · unresolved") : node.kind === "zone" ? (where.flow ? "stage " + (where.index + 1) + " of " + where.flow : "zone") + (node.status ? " · " + node.status : "") : "flow · " + (node.stages || []).length + " stage" + ((node.stages || []).length === 1 ? "" : "s") + (node.status ? " · " + node.status : "");
     return '<g class="' + classes + '" tabindex="0" role="button" data-id="' + esc(node.id) + '" aria-label="' + esc(node.kind + " " + node.name + (node.kind === "zone" ? ". Press C to link it, Enter to open." : ". Enter to open.")) + '" transform="translate(' + at.x + " " + at.y + ')">' +
@@ -405,9 +529,12 @@ function openRemoveMenu(node, x, y) {
   const menu = $("edge-menu");
   const where = node.kind === "zone" ? placeOf(node.name) : null;
   const text = node.kind === "flow"
-    ? "Its " + (node.stages || []).length + " zone(s) stay as zones of their own. Bricks and resident agents attached to the flow stop applying. Crane validates and signs the change; you can undo it."
-    : (where && where.flow ? "Flow " + where.flow + " splits at this zone; the zones around it stay. " : "") + "Its own context pack goes with it. Bricks and resident agents attached to the zone stop applying. Crane validates and signs the change; you can undo it.";
-  menu.innerHTML = '<div class="kind">Remove ' + esc(node.kind) + '</div><b id="edge-menu-title">' + esc(node.name) + "</b><p>" + esc(text) + '</p><div class="row"><button class="btn danger" id="node-remove">' + TRASH + "Remove " + esc(node.kind) + '</button><button class="btn" id="node-cancel">Cancel</button></div>';
+    ? "Its " + (node.stages || []).length + " zone(s) stay as zones of their own. Bricks and resident agents attached to the flow stop applying, and every subagent of the flow is terminated."
+    : (where && where.flow ? "Flow " + where.flow + " splits at this zone; the zones around it stay, and the subagents of flow " + where.flow + " are terminated. " : "") + "Its own context pack goes with it. Bricks and resident agents attached to the zone stop applying.";
+  menu.innerHTML = '<div class="kind">Remove ' + esc(node.kind) + ' permanently</div><b id="edge-menu-title">' + esc(node.name) + "</b><p>" + esc(text) + " Crane validates and signs the change. Terminated subagents are not restarted, even if the governance change is undone.</p>" +
+    '<label class="confirm"><input type="checkbox" id="node-confirm"> I understand this removal is permanent and stops its subagents.</label>' +
+    '<div class="row"><button class="btn danger" id="node-remove" disabled>' + TRASH + "Remove " + esc(node.kind) + '</button><button class="btn" id="node-cancel">Cancel</button></div>';
+  $("node-confirm").addEventListener("change", (event) => { $("node-remove").disabled = !event.target.checked; });
   menu.hidden = false;
   menu.style.left = Math.max(8, Math.min(window.innerWidth - menu.offsetWidth - 8, x + 10)) + "px";
   menu.style.top = Math.max(8, Math.min(window.innerHeight - menu.offsetHeight - 8, y + 10)) + "px";
@@ -593,7 +720,12 @@ function endGesture(event) {
     const group = document.querySelector(".node.dragging");
     if (group) group.classList.remove("dragging");
     if (done.moved) vscode.postMessage({ type: "positions", positions: pos });
-    else if (event && event.type === "pointerup") { const node = nodeById(done.id); if (node && node.open) vscode.postMessage({ type: "open", id: node.id }); }
+    else if (event && event.type === "pointerup") {
+      // A flow opens its tests and subagents (double-click opens its code); a zone opens its code
+      const node = nodeById(done.id);
+      if (node && node.kind === "flow") pickFlow(node.name);
+      else if (node && node.open) vscode.postMessage({ type: "open", id: node.id });
+    }
   } else if (done.kind === "link") {
     $("temp").hidden = true;
     for (const group of document.querySelectorAll(".target-ok, .target-bad")) group.classList.remove("target-ok", "target-bad");
@@ -618,6 +750,7 @@ canvas.addEventListener("keydown", (event) => {
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
     if (keyLink && node.kind === "zone") { const from = keyLink; keyLink = null; setHint(DEFAULT_HINT, false); link(from, node.name); return; }
+    if (node.kind === "flow") { pickFlow(node.name); return; }
     if (node.open) vscode.postMessage({ type: "open", id: node.id });
   }
 });
@@ -647,8 +780,230 @@ $("zoom-out").addEventListener("click", () => zoomBy(1 / 1.2));
 $("fit").addEventListener("click", fit);
 document.addEventListener("click", (event) => { const command = event.target.closest("[data-command]"); if (command) vscode.postMessage({ type: "command", id: command.dataset.command }); });
 
+// ---------------------------------------------------------------- the drawer: a flow's tests and subagents
+// Click a flow to pick it. Its test scenarios (written by Crane from the flow's context, Bricks,
+// and zones) show as a carousel of cards a person edits and accepts, then saves to the repository
+// or downloads as text. Its subagents show with their pending changes to approve or reject.
+const NL = String.fromCharCode(10);
+let picked = null;
+let tab = "tests";
+let tests = [];
+let testQuery = "";
+let subagents = [];
+let catalog = null;
+let dirty = false;
+const TYPES = ["smoke", "mocked", "integration", "performance", "negative", "contract", "regression"];
+function pickFlow(name) {
+  if (picked !== name && dirty && !window.confirm("Leave the unsaved test edits of " + picked + "?")) return;
+  picked = name;
+  tests = []; subagents = []; catalog = null; dirty = false; testQuery = "";
+  $("drawer").hidden = false;
+  $("drawer-title").textContent = name;
+  $("drawer-body").innerHTML = '<div class="tempty">Loading ' + esc(name) + '…</div>';
+  draw();
+  vscode.postMessage({ type: "flow", flow: name });
+}
+function closeDrawer() {
+  if (dirty && !window.confirm("Leave the unsaved test edits of " + picked + "?")) return;
+  picked = null; dirty = false; $("drawer").hidden = true; draw();
+}
+function setTab(name) {
+  tab = name;
+  for (const button of document.querySelectorAll(".tab")) button.setAttribute("aria-selected", String(button.dataset.tab === name));
+  drawDrawer();
+}
+function counts() {
+  $("test-count").hidden = !tests.length; $("test-count").textContent = String(tests.length);
+  const waiting = subagents.filter((agent) => agent.status === "PENDING_APPROVAL" || agent.pending).length;
+  $("sub-count").hidden = !waiting; $("sub-count").textContent = String(waiting);
+}
+function drawDrawer() {
+  if (!picked) return;
+  counts();
+  if (tab === "tests") drawTests(); else drawSubagents();
+}
+// -------- tests
+const pretty = (value) => (value === null || value === undefined || (typeof value === "object" && !Array.isArray(value) && !Object.keys(value).length) ? "" : JSON.stringify(value, null, 2));
+function shown() {
+  const q = testQuery.trim().toLowerCase();
+  return tests.filter((item) => !q || [item.type, item.title, item.description, item.request && item.request.url, item.source].join(" ").toLowerCase().includes(q));
+}
+function drawTests() {
+  const list = shown();
+  const accepted = tests.filter((item) => item.accepted).length;
+  const body = $("drawer-body");
+  const tools = '<div class="ttools" role="toolbar" aria-label="Test scenarios">' +
+    '<input type="search" id="test-search" placeholder="Search tests…" aria-label="Search tests" value="' + esc(testQuery) + '">' +
+    '<button class="btn" id="test-prev" aria-label="Previous test" title="Previous">‹</button><span class="pos" id="test-pos" aria-live="polite"></span><button class="btn" id="test-next" aria-label="Next test" title="Next">›</button>' +
+    '<span class="muted" style="font-size:11px">' + accepted + " of " + tests.length + ' accepted' + (dirty ? " · unsaved" : "") + "</span>" +
+    '<span class="grow"></span>' +
+    '<button class="btn" id="test-generate" title="Write scenarios from the flow\\'s context, Bricks, and zones (saved edits are kept)">' + (tests.length ? "Generate again" : "Generate tests") + "</button>" +
+    '<button class="btn" id="test-accept-all"' + (tests.length && accepted < tests.length ? "" : " disabled") + ">I accept all…</button>" +
+    '<button class="btn primary" id="test-save"' + (tests.length ? "" : " disabled") + ' title="Save to .crane/scenarios/' + esc(picked) + '.json">Save to repository</button>' +
+    '<button class="btn" id="test-download"' + (tests.length ? "" : " disabled") + ">Download .txt</button></div>";
+  const cards = list.length ? '<div class="track" id="track">' + list.map(card).join("") + "</div>"
+    : '<div class="tempty"><div>' + (tests.length ? "No test matches the search." : "<b>No test scenarios yet</b><br>Generate them from the flow's starting points, context, Bricks, and zones; then review the values, accept them, and save.") + "</div></div>";
+  body.innerHTML = tools + cards;
+  wireTests();
+}
+function card(item) {
+  const request = item.request || {}, expect = item.expect || {};
+  const field = (label, key, value, kind, wide) => '<label' + (wide ? ' class="wide"' : "") + ">" + esc(label) +
+    (kind === "area" ? '<textarea data-f="' + key + '" rows="2" spellcheck="false">' + esc(value) + "</textarea>" : '<input data-f="' + key + '"' + (kind === "number" ? ' type="number"' : "") + ' value="' + esc(value) + '" spellcheck="false">') + '<span class="why" hidden></span></label>';
+  const outcome = '<label>Expect<select data-f="outcome">' + ["success", "blocked", "within"].map((name) => '<option value="' + name + '"' + (expect.outcome === name ? " selected" : "") + ">" + name + "</option>").join("") + "</select></label>";
+  return '<article class="tcard' + (item.accepted ? " accepted" : "") + '" data-id="' + esc(item.id) + '" aria-label="' + esc(item.type + " test " + item.title) + '">' +
+    '<header><select data-f="type" class="ttype ' + esc(item.type) + '" aria-label="Type">' + TYPES.map((name) => '<option value="' + name + '"' + (item.type === name ? " selected" : "") + ">" + name + "</option>").join("") + "</select>" +
+    '<input class="ttitle" data-f="title" value="' + esc(item.title) + '" aria-label="Title">' +
+    '<label class="accept" title="Accept this test"><input type="checkbox" data-f="accepted"' + (item.accepted ? " checked" : "") + "> Accepted</label></header>" +
+    (item.description ? '<p class="tdesc">' + esc(item.description) + "</p>" : "") +
+    '<div class="tgrid">' + field("Method", "method", request.method || "", "text") + field("URL or function", "url", request.url || "", "text") + outcome +
+    field("Parameters (JSON)", "params", pretty(request.params), "area", true) + field("Body (JSON)", "body", pretty(request.body), "area", true) +
+    field("Mocks (comma separated)", "mocks", (item.mocks || []).join(", "), "text", true) +
+    field("HTTP status", "status", expect.status == null ? "" : String(expect.status), "number") + field("Within ms", "latency", expect.latency_ms == null ? "" : String(expect.latency_ms), "number") + "<span></span>" +
+    field("Assertions (one per line)", "assertions", (expect.assertions || []).join(NL), "area", true) + "</div>" +
+    '<div class="src">from ' + esc(item.source || "a person") + " · " + esc(item.id) + (item.reviewed_by ? " · reviewed by " + esc(item.reviewed_by) : "") + "</div></article>";
+}
+function parseJsonField(text) {
+  if (!text.trim()) return { ok: true, value: null };
+  try { return { ok: true, value: JSON.parse(text) }; } catch (problem) { return { ok: false, why: "Not valid JSON: " + problem.message }; }
+}
+function wireTests() {
+  const search = $("test-search");
+  search.addEventListener("input", () => { testQuery = search.value; const at = search.selectionStart; drawTests(); const again = $("test-search"); again.focus(); again.setSelectionRange(at, at); });
+  $("test-generate").addEventListener("click", () => { $("test-generate").disabled = true; say("ok", "Writing test scenarios for " + picked + "…", 2000); vscode.postMessage({ type: "generate", flow: picked }); });
+  $("test-accept-all").addEventListener("click", () => openModal("Accept all test scenarios?", "All " + tests.length + " scenarios of " + picked + " will be marked accepted, with you as the reviewer once saved. Review the values first; you can still uncheck any of them before saving.", "I accept all", () => { for (const item of tests) item.accepted = true; dirty = true; drawTests(); }));
+  $("test-save").addEventListener("click", () => {
+    const broken = document.querySelector(".tgrid .bad");
+    if (broken) { openModal("Fix the values first", "A JSON field is not valid; it is outlined in red.", null, null); broken.focus(); return; }
+    vscode.postMessage({ type: "saveScenarios", flow: picked, scenarios: tests });
+  });
+  $("test-download").addEventListener("click", () => vscode.postMessage({ type: "saveText", name: picked + "-tests.txt", text: asText() }));
+  const track = $("track");
+  const step = (direction) => { if (!track) return; const width = track.querySelector(".tcard") ? track.querySelector(".tcard").offsetWidth + 10 : 300; track.scrollBy({ left: direction * width }); };
+  $("test-prev").addEventListener("click", () => step(-1));
+  $("test-next").addEventListener("click", () => step(1));
+  const position = () => { const list = shown(); if (!track || !list.length) { $("test-pos").textContent = list.length ? "" : "0 / 0"; return; } const width = (track.querySelector(".tcard").offsetWidth || 1) + 10; $("test-pos").textContent = Math.min(list.length, Math.round(track.scrollLeft / width) + 1) + " / " + list.length; };
+  if (track) { track.addEventListener("scroll", position, { passive: true }); track.addEventListener("keydown", (event) => { if (event.target === track && event.key === "ArrowRight") step(1); if (event.target === track && event.key === "ArrowLeft") step(-1); }); }
+  position();
+  for (const article of document.querySelectorAll(".tcard")) {
+    const item = tests.find((candidate) => candidate.id === article.dataset.id);
+    if (!item) continue;
+    for (const control of article.querySelectorAll("[data-f]")) {
+      const update = () => {
+        const key = control.dataset.f;
+        item.request = item.request || {}; item.expect = item.expect || {};
+        const why = control.parentElement.querySelector(".why");
+        control.classList.remove("bad"); if (why) why.hidden = true;
+        if (key === "accepted") { item.accepted = control.checked; article.classList.toggle("accepted", control.checked); if (!control.checked) item.reviewed_by = undefined; }
+        else if (key === "title" || key === "type") { item[key] = control.value; if (key === "type") control.className = "ttype " + control.value; }
+        else if (key === "method" || key === "url") item.request[key] = control.value.trim();
+        else if (key === "params" || key === "body") {
+          const parsed = parseJsonField(control.value);
+          if (!parsed.ok) { control.classList.add("bad"); if (why) { why.textContent = parsed.why; why.hidden = false; } return; }
+          if (key === "params" && parsed.value !== null && (typeof parsed.value !== "object" || Array.isArray(parsed.value))) { control.classList.add("bad"); if (why) { why.textContent = "Parameters must be a JSON object."; why.hidden = false; } return; }
+          item.request[key] = key === "params" ? (parsed.value || {}) : parsed.value;
+        }
+        else if (key === "mocks") item.mocks = control.value.split(",").map((text) => text.trim()).filter(Boolean);
+        else if (key === "outcome") item.expect.outcome = control.value;
+        else if (key === "status") item.expect.status = control.value === "" ? undefined : Number(control.value);
+        else if (key === "latency") item.expect.latency_ms = control.value === "" ? undefined : Number(control.value);
+        else if (key === "assertions") item.expect.assertions = control.value.split(NL).map((text) => text.trim()).filter(Boolean);
+        dirty = true;
+        const note = document.querySelector(".ttools .muted");
+        const accepted = tests.filter((test) => test.accepted).length;
+        if (note) note.textContent = accepted + " of " + tests.length + " accepted · unsaved";
+        $("test-accept-all").disabled = accepted === tests.length;
+      };
+      control.addEventListener(control.tagName === "SELECT" || control.type === "checkbox" ? "change" : "input", update);
+    }
+  }
+}
+function asText() {
+  const lines = ["Test scenarios of flow " + picked + " (" + tests.length + " total, " + tests.filter((item) => item.accepted).length + " accepted)", ""];
+  tests.forEach((item, index) => {
+    const request = item.request || {}, expect = item.expect || {};
+    lines.push((index + 1) + ". [" + item.type + "] " + item.title + (item.accepted ? " (accepted)" : ""));
+    lines.push("   id: " + item.id + " · from: " + (item.source || "a person"));
+    if (item.description) lines.push("   " + item.description);
+    if (request.method || request.url) lines.push("   request: " + (request.method || "") + " " + (request.url || ""));
+    if (request.params && Object.keys(request.params).length) lines.push("   params: " + JSON.stringify(request.params));
+    if (request.body !== null && request.body !== undefined) lines.push("   body: " + JSON.stringify(request.body));
+    if ((item.mocks || []).length) lines.push("   mocks: " + item.mocks.join(", "));
+    lines.push("   expect: " + (expect.outcome || "success") + (expect.status ? ", HTTP " + expect.status : "") + (expect.latency_ms ? ", within " + expect.latency_ms + " ms" : ""));
+    for (const assertion of expect.assertions || []) lines.push("   - " + assertion);
+    lines.push("");
+  });
+  return lines.join(NL);
+}
+// -------- subagents
+function drawSubagents() {
+  const body = $("drawer-body");
+  const holding = subagents.filter((agent) => agent.status === "PENDING_APPROVAL" || agent.status === "ACTIVE" || (!agent.status && agent.active));
+  const byAgent = holding.filter((agent) => agent.created_by === "agent").length;
+  const max = catalog ? catalog.max_per_flow : 3, maxAgent = catalog ? catalog.max_agent_per_flow : 1;
+  const caps = '<div class="scaps">' + holding.length + " of " + max + " places taken · " + byAgent + " of " + maxAgent + " created by an agent. Changes made on DataSea or the CLI wait here for your approval; Crane checks them against the flow's bounds again.</div>";
+  if (!subagents.length) { body.innerHTML = caps + '<div class="tempty">No subagents on this flow. Create one with \\'crane flow subagent add ' + esc(picked) + ' --type monitor|incident\\', on DataSea, or let an agent ask for one.</div>'; return; }
+  const label = (id) => { const action = catalog && catalog.actions.find((entry) => entry.id === id); return action ? action.label : id; };
+  body.innerHTML = caps + '<div class="slist">' + subagents.map((agent) => {
+    const status = agent.status || (agent.active ? "ACTIVE" : "STOPPED");
+    const tone = status === "ACTIVE" ? "ok" : status === "PENDING_APPROVAL" ? "warn" : status === "TERMINATED" ? "bad" : "";
+    const config = agent.config || {};
+    const pending = agent.pending;
+    return '<article class="scard' + (pending ? " pending" : "") + '"><div class="kind">' + esc((agent.subtype || "monitor") + " subagent · " + (agent.created_by === "agent" ? "created by an agent" : "created by " + agent.created_by)) + "</div>" +
+      "<b>" + esc(agent.purpose) + '</b><div class="pills"><span class="pill ' + tone + '">' + esc(status.replace("_", " ").toLowerCase()) + '</span><span class="pill">ceiling ' + esc(config.ceiling || (agent.inherited || {}).ceiling || "—") + "</span>" + (config.branch ? '<span class="pill">branch ' + esc(config.branch) + "</span>" : "") + ((agent.firing || []).map((code) => '<span class="pill bad">' + esc(code) + "</span>").join("")) + "</div>" +
+      '<div class="muted">' + esc((config.actions || []).map(label).join(" · ") || "no actions yet") + "</div>" +
+      (agent.ended ? '<div class="muted">Ended: ' + esc(agent.ended) + "</div>" : "") +
+      (pending ? "<div>Waiting for approval: <b>" + esc(pending.kind) + "</b> by " + esc(pending.requested_by) + "</div><pre>" + esc(JSON.stringify(Object.assign({}, pending.purpose ? { purpose: pending.purpose } : {}, pending.checks ? { checks: pending.checks } : {}, { config: pending.config }), null, 2)) + "</pre>" : "") +
+      '<div class="row">' + (pending ? '<button class="btn" data-decide="reject" data-id="' + esc(agent.watcher_id) + '">Reject</button><button class="btn primary" data-decide="approve" data-id="' + esc(agent.watcher_id) + '">Approve</button>' : "") +
+      (status === "ACTIVE" || status === "PENDING_APPROVAL" ? '<button class="btn" data-decide="stop" data-id="' + esc(agent.watcher_id) + '">Stop</button>' : "") + "</div></article>";
+  }).join("") + "</div>";
+  for (const button of body.querySelectorAll("[data-decide]")) button.addEventListener("click", () => {
+    const decision = button.dataset.decide, id = button.dataset.id;
+    const send = () => { for (const other of body.querySelectorAll("[data-decide]")) other.disabled = true; vscode.postMessage({ type: "decide", flow: picked, id, decision }); };
+    if (decision === "stop") openModal("Stop " + id + "?", "It stops acting on " + picked + " and gives its place back. Stopping cannot be undone; create a new one later if needed.", "Stop it", send); else send();
+  });
+}
+// -------- the modal
+function openModal(title, text, confirmLabel, onConfirm, error) {
+  const modal = $("modal");
+  modal.innerHTML = '<div class="box"><h2 id="modal-title">' + esc(title) + "</h2>" + (text ? "<p>" + esc(text) + "</p>" : "") + (error ? '<div class="err">' + esc(error) + "</div>" : "") +
+    '<div class="row"><button class="btn" id="modal-cancel">' + (confirmLabel ? "Cancel" : "Close") + "</button>" + (confirmLabel ? '<button class="btn primary" id="modal-ok">' + esc(confirmLabel) + "</button>" : "") + "</div></div>";
+  modal.hidden = false;
+  const close = () => { modal.hidden = true; modal.innerHTML = ""; };
+  $("modal-cancel").addEventListener("click", close);
+  if (confirmLabel) $("modal-ok").addEventListener("click", () => { close(); onConfirm(); });
+  modal.onclick = (event) => { if (event.target === modal) close(); };
+  modal.onkeydown = (event) => { if (event.key === "Escape") close(); };
+  (confirmLabel ? $("modal-ok") : $("modal-cancel")).focus();
+}
+$("drawer-close").addEventListener("click", closeDrawer);
+$("drawer-open").addEventListener("click", () => { const node = picked && nodeById("flow:" + picked); if (node && node.open) vscode.postMessage({ type: "open", id: node.id }); else say("bad", "No source location is known for " + picked + ".", 4000); });
+for (const button of document.querySelectorAll(".tab")) button.addEventListener("click", () => setTab(button.dataset.tab));
+canvas.addEventListener("dblclick", (event) => { const node = nodeOf(event.target); if (node && node.open) vscode.postMessage({ type: "open", id: node.id }); });
+
 window.addEventListener("message", (event) => {
   const message = event.data;
+  if (message.type === "flowData" && message.flow === picked) {
+    tests = message.scenarios || []; subagents = message.subagents || []; catalog = message.catalog || null;
+    if (message.testsError) say("bad", message.testsError, 8000);
+    if (message.agentsError) say("bad", message.agentsError, 8000);
+    drawDrawer();
+    return;
+  }
+  if (message.type === "scenarios" && message.flow === picked) {
+    if (message.error) say("bad", message.error, 9000);
+    else { tests = message.scenarios || []; dirty = true; say("ok", tests.length + " scenario(s) written from the flow's knowledge. Review and accept them, then save.", 5000); }
+    drawDrawer();
+    return;
+  }
+  if (message.type === "decided" && message.flow === picked) {
+    subagents = message.subagents || subagents; catalog = message.catalog || catalog;
+    const result = message.result;
+    if (result.ok) say("ok", result.message, 5000);
+    else openModal(message.decision === "approve" ? "The subagent was not approved" : "That did not work", message.decision === "approve" ? "A subagent always stays within its flow. To give it more, first raise the flow's ceiling (or add the zone to the flow) in .crane/governance.yaml, then configure the subagent again." : "", null, null, result.message + (result.hint ? NL + result.hint : ""));
+    drawDrawer();
+    return;
+  }
   if (message.type === "data") {
     const first = !data;
     data = message.data || null;
@@ -662,6 +1017,8 @@ window.addEventListener("message", (event) => {
     pending = pending.filter((item) => !(item.op === message.op && item.from === message.from && item.to === message.to));
     const result = message.result;
     say(result.ok ? "ok" : "bad", result.message + (result.hint && !result.ok ? " " + result.hint : ""), result.ok ? 4000 : 9000);
+    if (message.op === "save" && result.ok && message.from === picked) { dirty = false; vscode.postMessage({ type: "flow", flow: picked }); }
+    if (message.op === "remove" && result.ok && message.from === picked) { dirty = false; closeDrawer(); }
     draw();
   }
 });

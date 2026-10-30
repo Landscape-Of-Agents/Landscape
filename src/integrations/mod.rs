@@ -1,4 +1,5 @@
-// Integrations: Jira, WhatsApp (Cloud API), Slack, and GitHub. 'crane integrate NAME' asks for the
+// Integrations: Jira, WhatsApp (Cloud API), Slack, GitHub, and the connections flow subagents use
+// (Datadog, Grafana, Google Meet, on-call paging; settings only for now). 'crane integrate NAME' asks for the
 // parameters each service's API needs, validates them, and stores them in the trust directory:
 // non-secret settings in integrations/NAME.json and credentials in secrets/NAME.json (owner-only),
 // never in the repository, events, logs, or dashboard responses.
@@ -9,6 +10,7 @@
 
 mod github;
 mod jira;
+mod observability;
 pub(crate) mod prompt;
 mod slack;
 mod whatsapp;
@@ -104,6 +106,10 @@ pub(crate) static PROVIDERS: &[&dyn Provider] = &[
     &jira::Jira,
     &whatsapp::WhatsApp,
     &github::GitHub,
+    &observability::DATADOG,
+    &observability::GRAFANA,
+    &observability::GOOGLE_MEET,
+    &observability::ONCALL,
 ];
 
 /** Find a service by name
@@ -706,7 +712,19 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), PROVIDERS.len());
-        assert_eq!(names, ["github", "jira", "slack", "whatsapp"]);
+        assert_eq!(
+            names,
+            [
+                "datadog",
+                "github",
+                "google_meet",
+                "grafana",
+                "jira",
+                "oncall",
+                "slack",
+                "whatsapp"
+            ]
+        );
         assert!(provider("slack").is_some());
         assert!(provider("teams").is_none());
         assert!(severity_rank("CRITICAL") > severity_rank("high"));

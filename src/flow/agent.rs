@@ -30,7 +30,8 @@ crane-request trace --from SYMBOL[,SYMBOL] [--flow ID] [--depth N] [--descriptio
 crane-request retrace ID [--reason TEXT]
 crane-request test --flow ID --file PATH --name TEXT --description TEXT [--assumptions 'A; B'] [--mock TEXT] [--command TEXT]
 crane-request context --flow ID --kind query|metric|latency|file|note|link --title TEXT --value TEXT [--unit U] [--threshold N] [--file PATH] [--lines A-B]
-crane-request watch --flow ID --purpose TEXT [--checks trace_drift,required_tests,denials]
+crane-request watch --flow ID --type monitor|incident --purpose TEXT [--checks trace_drift,required_tests,denials]
+  (a subagent of the flow; one per flow from agents, it waits for a person's approval)
 crane-request unwatch WATCHER_ID
 crane-request incident --flow ID --summary TEXT [--detail TEXT]
 Traces, tests, and context are drafts and proposals a person approves; watchers are read-only.";
@@ -558,9 +559,12 @@ pub(crate) fn answer(
             ))
         }
         "watch" => {
-            let (_, values) = options(rest, &["flow", "purpose", "checks"])?;
+            let (_, values) = options(rest, &["flow", "purpose", "checks", "type"])?;
             let flow = values.get("flow").ok_or("name the flow: --flow ID")?;
             flow_exists(flow)?;
+            let kind = super::subagent::parse_subtype(
+                values.get("type").map(String::as_str).unwrap_or_default(),
+            )?;
             let purpose = values
                 .get("purpose")
                 .filter(|text| !text.trim().is_empty())
@@ -585,12 +589,18 @@ pub(crate) fn answer(
                     }
                     wanted
                 }
-                None => watch::CHECKS
+                None if kind == "monitor" => watch::CHECKS
                     .iter()
                     .map(|check| check.to_string())
                     .collect(),
+                None => Vec::new(),
             };
             let inherited = watch::inherit(workspace, &book, flow)?;
+            // An agent's subagent starts with its flow's default configuration and waits for a
+            // person's approval; it can never ask for more than the flow allows
+            let bounds = super::subagent::bounds_of(workspace, flow)?;
+            let config = super::subagent::default_config(&kind, flow, &bounds);
+            super::subagent::check(&kind, &config, &checks, &bounds)?;
             let watcher = Watcher {
                 watcher_id: watch::new_id("wat")?,
                 flow: flow.clone(),
@@ -598,12 +608,21 @@ pub(crate) fn answer(
                 parent: asker.parent(),
                 created_by: "agent".into(),
                 created_at: now,
-                active: true,
-                stopped_by: None,
+                active: false,
                 inherited,
-                checks,
-                firing: Vec::new(),
-                last_run: 0,
+                checks: checks.clone(),
+                subtype: kind.clone(),
+                status: super::subagent::PENDING.into(),
+                config: config.clone(),
+                pending: Some(super::subagent::PendingChange {
+                    kind: "create".into(),
+                    purpose: Some(purpose.trim().to_string()),
+                    checks: Some(checks),
+                    config,
+                    requested_by: by.clone(),
+                    requested_at: now,
+                }),
+                ..Watcher::default()
             };
             // The limit is checked under the same lock that adds the watcher
             watch::update_watchers(runtime, |all| {
@@ -613,12 +632,12 @@ pub(crate) fn answer(
             })?;
             crate::platform::notes::note(
                 "FLOW_WATCHER_STARTED",
-                json!({"flow": flow, "watcher": watcher.watcher_id, "by": "agent", "checks": watcher.checks}),
+                json!({"flow": flow, "watcher": watcher.watcher_id, "by": "agent", "checks": watcher.checks, "subtype": kind}),
             );
             Ok(format!(
-                "Watcher {} watches {flow} read-only ({}); it takes on this session's identity and the flow's Bricks ({}), ceiling {}. When a check starts firing, Crane tells this session with its next tool call and the flow's people.",
+                "{} subagent {} of {flow} waits for a person's approval in Landscape. It takes on this session's identity and the flow's Bricks ({}), ceiling {}, and acts only within the flow. Once active, Crane tells this session with its next tool call when it finds something.",
+                if kind == "monitor" { "Monitor" } else { "Incident" },
                 watcher.watcher_id,
-                watcher.checks.join(", "),
                 if watcher.inherited.bricks.is_empty() { "none".to_string() } else { watcher.inherited.bricks.join(", ") },
                 watcher.inherited.ceiling
             ))
@@ -630,14 +649,18 @@ pub(crate) fn answer(
             watch::update_watchers(runtime, |all| {
                 let watcher = all
                     .iter_mut()
-                    .find(|watcher| watcher.watcher_id == *id && watcher.active)
-                    .ok_or_else(|| format!("{id} is not an active watcher"))?;
+                    .find(|watcher| {
+                        watcher.watcher_id == *id && super::subagent::holds_place(watcher)
+                    })
+                    .ok_or_else(|| format!("{id} is not a pending or active subagent"))?;
                 if watcher.parent.session != asker.session {
                     return Err(
                         "an agent stops only the watchers its own session started".to_string()
                     );
                 }
                 watcher.active = false;
+                watcher.status = super::subagent::STOPPED.into();
+                watcher.pending = None;
                 watcher.stopped_by = Some(by.clone());
                 Ok(())
             })?;

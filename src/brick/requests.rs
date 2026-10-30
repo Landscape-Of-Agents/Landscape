@@ -768,7 +768,10 @@ fn flow_check(op: &str, params: &Value) -> Result<Value, String> {
                     crate::flow::watch::CHECKS.join(", ")
                 ));
             }
-            json!({"flow": flow()?, "purpose": short(params, "purpose", REASON_LIMIT, true)?, "checks": checks})
+            let subtype = crate::flow::subagent::parse_subtype(
+                params["subtype"].as_str().unwrap_or_default(),
+            )?;
+            json!({"flow": flow()?, "purpose": short(params, "purpose", REASON_LIMIT, true)?, "checks": checks, "subtype": subtype, "config": subagent_config(params)?})
         }
         "flow-watch-stop" => {
             json!({"watcher": name("watcher", params["watcher"].as_str().unwrap_or_default())?})
@@ -790,17 +793,50 @@ fn flow_check(op: &str, params: &Value) -> Result<Value, String> {
                     crate::flow::watch::CHECKS.join(", ")
                 ));
             }
-            if checks.is_empty() {
-                return Err("a watcher needs at least one check".into());
+            let config = subagent_config(params)?;
+            let purpose = short(params, "purpose", REASON_LIMIT, false)?;
+            if checks.is_empty() && config.is_null() && purpose.is_empty() {
+                return Err("change the purpose, the checks, or the configuration".into());
             }
             json!({
                 "watcher": name("watcher", params["watcher"].as_str().unwrap_or_default())?,
-                "purpose": short(params, "purpose", REASON_LIMIT, true)?,
+                "purpose": purpose,
                 "checks": checks,
+                "config": config,
             })
         }
         _ => return Err(format!("'{op}' cannot be requested")),
     })
+}
+
+/** A subagent configuration given with a request: a JSON object (or JSON text of one), merged on
+ * the machine into the current configuration, where its bounds are checked
+ * Input
+    - params: &Value - request parameters
+ * Output
+    - Result<Value, String> - the object, or null when none was given
+*/
+fn subagent_config(params: &Value) -> Result<Value, String> {
+    let config = match &params["config"] {
+        Value::Null => return Ok(Value::Null),
+        Value::String(text) if text.trim().is_empty() => return Ok(Value::Null),
+        Value::String(text) => serde_json::from_str(text)
+            .map_err(|error| format!("the configuration is not valid JSON: {error}"))?,
+        other => other.clone(),
+    };
+    if !config.is_object() {
+        return Err("the configuration must be a JSON object".into());
+    }
+    if serde_json::to_vec(&config).map_or(0, |bytes| bytes.len()) > 16 * 1024 {
+        return Err("the configuration is larger than 16 KB".into());
+    }
+    if crate::telemetry::redact::redact(&config.to_string()).1 > 0 {
+        return Err(
+            "the configuration looks like it holds a secret; keep credentials in 'crane integrate'"
+                .into(),
+        );
+    }
+    Ok(config)
 }
 
 /** The 'crane flow' command of a checked flow request
@@ -877,14 +913,7 @@ fn flow_command(op: &str, params: &Value, why: &str) -> Vec<String> {
             &text("purpose"),
         ]),
         "flow-watch-stop" => words(&["flow", "watch", "stop", &text("watcher")]),
-        "flow-watch-edit" => words(&[
-            "flow",
-            "watch",
-            "edit",
-            &text("watcher"),
-            "--purpose",
-            &text("purpose"),
-        ]),
+        "flow-watch-edit" => words(&["flow", "watch", "edit", &text("watcher")]),
         _ => Vec::new(),
     };
     if op == "flow-limit" && !text("flow").is_empty() {
@@ -926,6 +955,11 @@ fn flow_command(op: &str, params: &Value, why: &str) -> Vec<String> {
             option("per_flow", "--flow");
         }
         "flow-watch-add" | "flow-watch-edit" => {
+            if op == "flow-watch-add" {
+                option("subtype", "--type");
+            } else {
+                option("purpose", "--purpose");
+            }
             let checks = params["checks"]
                 .as_array()
                 .into_iter()
@@ -936,6 +970,10 @@ fn flow_command(op: &str, params: &Value, why: &str) -> Vec<String> {
             if !checks.is_empty() {
                 args.push("--checks".into());
                 args.push(checks);
+            }
+            if params["config"].is_object() {
+                args.push("--config".into());
+                args.push(params["config"].to_string());
             }
         }
         _ => {}

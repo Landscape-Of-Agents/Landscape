@@ -3,7 +3,9 @@
 // attached, files covered), each flow's knowledge (priority and routed model, people, context,
 // tests with their last results, approved trace and its kept call graph), the trace drafts under review with the current
 // revision's functions and calls and its difference from the revision before, the proposals agents
-// made, watchers, incidents, the organization's models, routing, and limits. Context and test text
+// made, subagents (watchers) with their subtype, configuration, pending change and runs, the
+// subagent catalog, which integrations this machine has connected, incidents, the organization's
+// models, routing, and limits. Context and test text
 // that looks like it holds a secret is withheld, and long texts are cut.
 
 use std::collections::BTreeMap;
@@ -248,6 +250,9 @@ pub(crate) fn collect(workspace: &Workspace) -> Value {
             json!({"priority": priority.name(), "tiers": tiers.iter().map(|tier| tier.name()).collect::<Vec<_>>(), "model": chosen.map(|entry| &entry.model)})
         }).collect::<Vec<_>>(),
         "limits": book.limits,
+        // The subtypes and actions subagents may have, and which integrations this machine has
+        "subagent_catalog": super::subagent::catalog(),
+        "connections": super::subagent::connections(workspace),
         "store_digest": state.flows_digest,
         "channel": super::agent::HELP,
     })

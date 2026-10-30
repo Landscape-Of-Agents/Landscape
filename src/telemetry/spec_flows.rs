@@ -61,7 +61,22 @@ pub(crate) const KINDS: &[(&str, &str, &str)] = &[
     (
         "FLOW_WATCHER_EDITED",
         "FLOW_WATCH",
-        "A person changed a watcher's purpose or checks; it stays read-only.",
+        "A person asked to change a subagent's purpose, checks, or configuration; it waits for approval.",
+    ),
+    (
+        "FLOW_SUBAGENT_APPROVED",
+        "FLOW_WATCH",
+        "A person approved or rejected a subagent's creation or configuration (bounds checked again).",
+    ),
+    (
+        "FLOW_SUBAGENT_RUN",
+        "FLOW_WATCH",
+        "A subagent ran its actions, from a person's manual trigger or an incident of its flow.",
+    ),
+    (
+        "FLOW_SUBAGENT_TERMINATED",
+        "FLOW_WATCH",
+        "A subagent was terminated because its flow or one of its zones was removed.",
     ),
     (
         "FLOW_WATCHERS_EVALUATED",
@@ -178,6 +193,7 @@ mod tests {
         let sources = [
             include_str!("../flow/agent.rs"),
             include_str!("../flow/watch.rs"),
+            include_str!("../flow/subagent.rs"),
             include_str!("../cli/flow.rs"),
             include_str!("../hooks/runtime/tools.rs"),
         ]

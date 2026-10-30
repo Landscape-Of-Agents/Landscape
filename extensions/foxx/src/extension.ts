@@ -357,9 +357,62 @@ const graphHost: GraphHost = {
   savePositions: (positions) => void extensionContext?.workspaceState.update("foxx.graph.positions", positions),
   link: (from, to) => editGraph("link zones", (text) => linkZones(text, from, to)),
   unlink: (from, to) => editGraph("unlink zones", (text) => unlinkZones(text, from, to)),
-  remove: (kind, id) => editGraph(`remove ${kind}`, (text) => (kind === "zone" ? removeZone(text, id) : removeFlow(text, id))),
+  remove: async (kind, id) => {
+    const result = await editGraph(`remove ${kind}`, (text) => (kind === "zone" ? removeZone(text, id) : removeFlow(text, id)));
+    if (!result.ok) return result;
+    // The subagents acting on what was removed end with it
+    const pruned = await craneJson<{ terminated?: unknown[] }>(["flow", "subagent", "prune"]);
+    const ended = pruned.data?.terminated?.length ?? 0;
+    return { ...result, message: `${result.message}${ended ? ` ${ended} subagent${ended === 1 ? "" : "s"} terminated.` : ""}${pruned.error ? ` (Subagents were not checked: ${pruned.error})` : ""}` };
+  },
   command: (id) => panelHost.command(id),
+  scenarios: async (flow, action) => {
+    const answer = await craneJson<{ scenarios?: unknown[] }>(["flow", "scenarios", action, flow]);
+    return { scenarios: answer.data?.scenarios, error: answer.error };
+  },
+  saveScenarios: async (flow, scenarios) => {
+    const answer = await craneJson<{ scenarios?: unknown[] }>(["flow", "scenarios", "save", flow, "--file", "-"], JSON.stringify({ scenarios }));
+    record("FOXX_ACTION_RUN", { status: answer.error ? "FAILED" : "OK", failure_state: answer.error ? failureOf(answer.error) : "NA", statement: answer.error ? "Test scenarios refused." : "Test scenarios saved.", panel_action: "SAVE_SCENARIOS" });
+    return answer.error ? { ok: false, message: answer.error } : { ok: true, message: answer.message ?? `Saved the scenarios of ${flow} to .crane/scenarios/${flow}.json; commit it with .crane.` };
+  },
+  saveText: async (name, text) => {
+    const directory = root();
+    const target = await vscode.window.showSaveDialog({ defaultUri: vscode.Uri.file(path.join(directory ?? os.homedir(), name)), filters: { Text: ["txt"] }, saveLabel: "Download" });
+    if (!target) return { ok: false, message: "Download cancelled." };
+    await vscode.workspace.fs.writeFile(target, Buffer.from(text, "utf8"));
+    return { ok: true, message: `Saved ${path.basename(target.fsPath)}.` };
+  },
+  subagents: async (flow) => {
+    const [listed, catalog] = await Promise.all([craneJson<{ watchers?: { flow: string }[] }>(["flow", "subagent", "list", "--all"]), craneJson<unknown>(["flow", "subagent", "catalog"])]);
+    return { subagents: listed.data?.watchers?.filter((watcher) => watcher.flow === flow), catalog: catalog.data, error: listed.error ?? catalog.error };
+  },
+  decide: async (id, decision) => {
+    const answer = await craneJson<unknown>(["flow", "subagent", decision, id]);
+    record("FOXX_ACTION_RUN", { status: answer.error ? "FAILED" : "OK", failure_state: answer.error ? failureOf(answer.error) : "NA", statement: answer.error ? "Subagent decision refused." : "Subagent decision kept.", panel_action: `SUBAGENT_${decision.toUpperCase()}` });
+    return answer.error ? { ok: false, message: answer.error } : { ok: true, message: answer.message ?? `${id}: ${decision} done.` };
+  },
 };
+
+/**
+ * Run a Crane command with JSON output in the repository and read its envelope.
+ * @param args arguments (--json is added)
+ * @param input standard input
+ * @returns the envelope's data and message, or why it failed
+ */
+async function craneJson<T>(args: string[], input = ""): Promise<{ data?: T; message?: string; error?: string }> {
+  const checked = await checkCrane();
+  if (checked.state !== "ok") return { error: checked.message ?? "Crane cannot be used." };
+  const directory = root();
+  if (!directory) return { error: "Open a repository folder first." };
+  const result = await runCrane(executable(), directory, [...args, "--json"], input);
+  const envelope = parseJson<{ data?: T; message?: string; summary?: string }>(result);
+  if (result.code !== 0 || !envelope) {
+    const message = (result.stderr || result.stdout).trim().replace(/^crane: /, "");
+    output.appendLine(`$ crane ${args.join(" ")} --json\n${message}`);
+    return { error: message || `crane ${args.slice(0, 3).join(" ")} failed` };
+  }
+  return { data: envelope.data, message: envelope.message ?? envelope.summary };
+}
 
 /**
  * Apply a link or unlink drawn on the graph to .crane/governance.yaml: validated and signed by

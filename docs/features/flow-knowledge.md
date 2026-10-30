@@ -101,34 +101,87 @@ crane flow tests run --required            # in CI or a release step: fails whil
 watchers' `required_tests` check reads. Add `crane flow tests run --required` to your release
 workflow so every release checks the required tests.
 
-## Watchers: monitoring subagents
+## Subagents: Monitor and Incident
 
-A watcher is a monitoring subagent of one flow. An agent starts it, or a person with
-`crane flow watch add`. It takes on its parent's properties:
+A subagent works on one flow. It is created by a person (`crane flow subagent add`, or on DataSea)
+or by an agent (`crane-request watch`), and it is one of two subtypes, which must be chosen:
 
-- the parent session, provider, and model;
-- the flow as its only target;
-- the flow's Bricks, autonomy ceiling, and criticality.
+- **Monitor** holds the monitoring of the flow. Crane runs its checks without a model:
+  - `trace_drift`: the call graph no longer matches the approved trace;
+  - `required_tests`: a required test failed its last run, or its file is gone;
+  - `denials`: agents were denied five times or more in the flow in the last hour.
 
-It is read-only by construction: Crane runs its checks without a model and writes nothing but its
-own results. The checks:
+  Its actions read observability metrics (Datadog, Grafana), open a Google Meet, trigger the on-call
+  status, activate the flow's Incident subagents, and tell the parent session and the flow's people.
+- **Incident** works an incident. Its actions read the Jira ticket of the task
+  (`parameters.jira_issue`), write RCA notes and flow context (as proposals a person approves),
+  prepare pull requests, code changes, and reviews on its designated branch, and tell the flow's
+  people.
 
-- `trace_drift`: the call graph no longer matches the approved trace;
-- `required_tests`: a required test failed its last run, or its file is gone;
-- `denials`: agents were denied five times or more in the flow in the last hour.
+`crane flow subagent catalog` lists every action with the ceiling it needs and the integration it
+uses.
 
-When a check starts firing, Crane raises one incident. It notifies the flow's people and leaves a
-notice that the parent session receives with its next tool call. Watchers run with every
-background sync, or with `crane flow watch run`.
+**Places.** A flow holds at most 3 subagents, pending or active, and at most one of them created by
+an agent. The signed limits (`crane flow limit`) can only lower this, and an agent session still
+starts at most 2 subagents across flows.
 
-A person changes what an active watcher is for, or which checks it runs, with
-`crane flow watch edit WATCHER --purpose TEXT --checks trace_drift,denials`. It stays read-only and
-keeps what it inherited. On DataSea, this request needs a code owner of `.crane/flows.json`.
+**Bounds.** A subagent is constrained to its flow:
+- its targets are the flow and the zones it runs through;
+- its autonomy ceiling is at most the flow's;
+- each of its actions needs no more than that ceiling.
 
-**Limits.** By default, an agent session starts at most 2 watchers and a flow has at most 3.
-These are signed limits, and only a person changes them: `crane flow limit --session N`,
-`crane flow limit --flow N`, `crane flow limit ID --watchers N`. A flow can lower the repository's
-limit but not raise it.
+A configuration that asks for more fails with every problem listed, and with how to resolve it:
+raise the flow's ceiling (or add the zone to the flow) in `.crane/governance.yaml` first, then
+configure the subagent again. Only a person's manual trigger reaches beyond the flow, for that one
+run, and it is recorded:
+
+```
+crane flow subagent trigger wat_… --reason "incident drill" --beyond zone:ledger
+```
+
+**Configuration.** A subagent has actions, standing context, parameters, integrations, a ceiling,
+targets, and (Incident) a branch. Change it with a JSON object merged into the current one:
+fields you give replace theirs, `null` resets one, and parameters merge key by key.
+
+```
+crane flow subagent configure wat_… --config '{"branch": "incident/checkout", "parameters": {"jira_issue": "PAY-12"}}'
+```
+
+It has no volatile context of its own: when it runs, the flow's common context is its volatile
+context.
+
+**Approval.** Creating a subagent or changing its configuration waits for a person's approval, in
+Landscape or with `crane flow subagent approve|reject`. Crane checks the bounds again then.
+
+**Runs.** When a Monitor's check starts firing, Crane raises one incident and tells the flow's
+people and the parent session. Monitors with actions then run them, and when one activates Incident
+subagents, those run too. Every run is recorded, action by action:
+- **Run for real:** Slack messages, reading a Jira issue, and context or RCA proposals.
+- **Recorded as prepared:** Datadog, Grafana, Google Meet, on-call paging, and GitHub pull requests.
+  They have connection settings (`crane integrate datadog|grafana|google_meet|oncall`), but Crane
+  does not call them yet.
+
+**Removal.** When a flow or one of a subagent's zones is removed from governance, the subagent is
+terminated. Landscape asks for a confirmation that the removal is permanent, then runs
+`crane flow subagent prune`, which every background sync also runs.
+
+`crane flow watch …` still works and manages the same subagents.
+
+## Test scenarios
+
+`crane flow scenarios generate ID` writes test scenarios for a flow by fixed rules (no model), from:
+- its starting points: smoke tests, and mocked tests whose mocks come from the approved call graph;
+- its zones: an end-to-end integration test;
+- its context: latency as performance tests, metrics as regression tests, queries and links as
+  integration tests, files as regression tests, notes as contract tests;
+- its Bricks: negative tests that the forbidden action is blocked;
+- critical zones (contract tests) and a strict ceiling.
+
+A person reviews them, edits URLs, parameters, JSON bodies, and expectations, accepts each one (or
+all of them), and saves them to `.crane/scenarios/ID.json` (`crane flow scenarios save ID --file
+PATH`). Generating again keeps the saved edits. `crane flow scenarios show ID --text` prints them as
+text. In Landscape, click a flow on the graph: the drawer under it shows the scenarios as a
+searchable carousel with Save to repository and Download .txt.
 
 ## How agents ask: `crane-request`
 
@@ -144,7 +197,7 @@ crane-request route --flow checkout
 crane-request trace --from app/pay.py:submit --flow checkout
 crane-request test --flow checkout --file tests/test_pay.py --name "charges once" --description "..." --assumptions "the gateway answers; amounts in cents" --mock "order 42 for 1000 cents"
 crane-request context --flow checkout --kind metric --title "Error rate" --value 0.2
-crane-request watch --flow checkout --purpose "watch the charge path"
+crane-request watch --flow checkout --type monitor --purpose "watch the charge path"
 crane-request incident --flow checkout --summary "charges doubled after the deploy"
 ```
 
@@ -160,27 +213,42 @@ With each tool call that touches a flow, agents also receive a short form of its
 The Flows section (Build → Flows) reads the repository's flow knowledge, not events, so it has no
 time range or event filters. It has three parts:
 
-1. **The map.** All flows, grouped by priority, and drafts waiting for review, above the zones,
-   grouped by criticality. A node shows only its name, a priority color, a red dot for incidents,
-   and an agent badge when a watcher or an assigned agent monitors it. Drag to pan, scroll to zoom,
-   or use the controls (zoom in and out, fit, reset to 100%, zoom to the selection, clear).
-   Selecting a node highlights it, draws lines to the zones or flows it is attached to, dims the
-   rest, and zooms to them. Escape or a click on the background clears the selection.
+1. **The map,** in columns from left to right:
+   - flows by priority, then drafts;
+   - each stage of zones;
+   - zones in no flow.
+
+   Each flow's path is drawn from the flow through its zones. A node shows only its name, a
+   priority stripe, a red dot for incidents, and an agent badge when a subagent or an assigned agent
+   monitors it. Drag to pan, scroll to zoom, or use the controls: zoom in and out, fit, reset to
+   100%, zoom to the selection, clear. Selecting a node fills it with the accent color, tints the
+   zones and lines along its path, fades the rest, and zooms to them. Escape or a click on the
+   background clears the selection.
 2. **The inspector,** under the map. Filter chips choose what it shows; clicking an item opens it
    in the smaller detail pane beside the list.
    - **With nothing selected:** model routing, limits, proposals, incidents, and requests.
-   - **For a flow:** Overview (priority and model), Zones, Context, Tests, Agents (watchers and
-     assigned agents), Trace, People, Proposals, Bricks, and For agents (the text an agent
-     receives and the requests it may make). The Trace shows the traced functions as a **stack**
-     (one row per call depth) or a **waterfall** (one row per call, in order); click a function
-     for where it is, its callers, and its calls. It is the static call order, not timing.
-     Approval keeps the approved call graph in `.crane/traces/ID.json`. A flow approved before
-     graphs were kept shows its functions again once it is retraced and approved.
+   - **For a flow:** the chips are Overview (priority and model), Zones, Context, Tests, Agents
+     (subagents and assigned agents), Trace, People, Proposals, and Bricks.
+     - **Trace** shows the whole flow, from its first call to its last: the call stack (function
+       names, indented by depth) on the left and the waterfall (one bar per call, spanning the calls
+       under it) on the right. Click a call for where it is, its callers, and its calls. It is the
+       static call order, not timing.
+     - Approval keeps the approved call graph in `.crane/traces/ID.json`. A flow approved before
+       graphs were kept shows its functions again once it is retraced and approved.
+     - **People** shows whether Slack, Jira, GitHub, and WhatsApp are connected on the reporting
+       machine, and whether each person can be reached through them.
    - **For a zone:** Overview, the flows through it, assigned agents, and Bricks.
-3. **Subagents.** The watchers that govern flows, filtered by all, active, firing, or the selected
-   flow. Each card shows its purpose, behavior, triggers (its checks), the flow it governs, what it
-   inherited, who started it, when it last ran, and the incidents it raised. Code owners edit or
-   stop it here.
+3. **Subagents.** Each Monitor or Incident subagent is a small tile, filtered by all, active,
+   waiting, firing, or the selected flow. Its info button opens:
+   - its properties, actions (and whether each one's integration is connected), parameters, and
+     context;
+   - Crane's governance: its bounds, places, what it inherited, approval, and manual triggers;
+   - its latest runs;
+   - a JSON configuration editor. The JSON is merged and checked against the flow's bounds (a pop-up
+     lists every problem and how to resolve it) before the change is requested.
+
+   With a flow selected, **Add subagent** asks for the required subtype. Landscape approves every
+   creation and change.
 
 Every change on DataSea is a request. A person applies it on a machine, with
 `crane brick inbox apply` or one click in Landscape. Signed changes need the code owners of the
@@ -191,7 +259,8 @@ signed file. Drafts and watchers need write access.
 | Gap | Status |
 |---|---|
 | Tracing is lexical (names, not types): dynamic dispatch and calls through interfaces are listed as not followed | by design |
-| A watcher is Crane-run and read-only; Crane cannot tell a Claude Code subagent apart from its parent session, so subagents an agent spawns itself share the parent's rules | partial |
+| A subagent is Crane-run with no model; Crane cannot tell a Claude Code subagent apart from its parent session, so subagents an agent spawns itself share the parent's rules | partial |
+| Datadog, Grafana, Google Meet, on-call paging, and GitHub pull requests have connection settings, but subagent actions that use them are recorded as prepared, not run | to build |
 | Watchers, incidents, and test results are per machine (the dashboard shows the reporting machine's) | partial |
 | Metric and latency context is stated, not measured; no connector reads live values yet | to build |
-| Landscape for VS Code shows flow requests in its inbox; its graph does not show flow knowledge yet | to build |
+| Landscape's graph shows a flow's test scenarios and subagents (click a flow); the rest of the flow knowledge is on DataSea | partial |

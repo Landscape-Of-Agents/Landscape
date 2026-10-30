@@ -3332,11 +3332,14 @@ fails the command, so a release step stops.
 - Response [response_status (OK, FAILED)]
 - Other [tests, passed, failed, required (required tests that did not pass)]
 
-#### F39.6 `FLOW_WATCHER_STARTED`, `FLOW_WATCHER_STOPPED`, `FLOW_WATCHER_EDITED`, `FLOW_WATCHERS_EVALUATED`
-A read-only watcher (a monitoring subagent) started on a flow: by an agent within the signed limits,
-or by a person. Or it stopped, a person changed its purpose or checks ('crane flow watch edit',
-requested on DataSea by a code owner of .crane/flows.json), or the watchers ran their checks (trace
-drift, required tests, denials) without a model.
+#### F39.6 `FLOW_WATCHER_STARTED`, `FLOW_WATCHER_STOPPED`, `FLOW_WATCHER_EDITED`, `FLOW_WATCHERS_EVALUATED`, `FLOW_SUBAGENT_APPROVED`, `FLOW_SUBAGENT_RUN`, `FLOW_SUBAGENT_TERMINATED`
+A subagent of a flow (a Monitor or an Incident subagent; at most 3 per flow, one created by an
+agent) was created by an agent or a person and waits for approval. Or it stopped; a person asked to
+change its purpose, checks, or configuration ('crane flow subagent configure', requested on DataSea
+by a code owner of .crane/flows.json); a person approved or rejected a pending change in Landscape
+(the bounds are checked again); it ran its actions from a manual trigger or an incident; it was
+terminated because its flow or zone was removed; or the subagents ran their checks (trace drift,
+required tests, denials) without a model.
 - Response [response_status (OK, FIRING)]
 - Other [watcher, by (agent, person), checks, watchers, incidents]
 

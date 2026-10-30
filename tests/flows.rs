@@ -261,35 +261,125 @@ fn flows_are_traced_approved_and_shared_with_agents() {
     assert_eq!(tests[0]["required"], true, "{knowledge}");
     assert_eq!(tests[0]["assumptions"].as_array().unwrap().len(), 2);
 
-    // Watchers: the agent starts them up to the signed limit (two per session by default)
+    // Subagents: a subtype is required; an agent creates one per flow, and it waits for a person
+    let (_, untyped) = ask(
+        &fixture,
+        "c4b",
+        "crane-request watch --flow checkout --purpose 'watch the charge path'",
+    );
+    assert!(untyped.contains("required"), "{untyped}");
     let (_, first) = ask(
         &fixture,
         "c5",
-        "crane-request watch --flow checkout --purpose 'watch the charge path'",
+        "crane-request watch --flow checkout --type monitor --purpose 'watch the charge path'",
     );
-    assert!(first.contains("read-only"), "{first}");
+    assert!(first.contains("waits for a person's approval"), "{first}");
     let (_, second) = ask(
         &fixture,
         "c6",
-        "crane-request watch --flow checkout --purpose second --checks trace_drift",
+        "crane-request watch --flow checkout --type incident --purpose second",
     );
-    assert!(second.contains("read-only"), "{second}");
-    let (_, third) = ask(
+    assert!(second.contains("created by an agent"), "{second}");
+    let (_, listed) = envelope(&fixture, &["flow", "subagent", "list", "--all"]);
+    let monitor = listed["data"]["watchers"][0].clone();
+    assert_eq!(monitor["status"], "PENDING_APPROVAL", "{listed}");
+    assert_eq!(monitor["inherited"]["mode"], "read_only");
+    let monitor_id = monitor["watcher_id"].as_str().unwrap().to_string();
+    let (code, approved) = envelope(&fixture, &["flow", "subagent", "approve", &monitor_id]);
+    assert_eq!(code, Some(0), "{approved}");
+    assert_eq!(approved["data"]["watcher"]["status"], "ACTIVE");
+    // A person's subagent may not ask for more than its flow allows
+    let greedy = fixture.run(&[
+        "flow",
+        "subagent",
+        "add",
+        "checkout",
+        "--type",
+        "incident",
+        "--purpose",
+        "rca",
+        "--config",
+        "{\"ceiling\":\"autonomous\",\"targets\":[\"flow:checkout\",\"zone:elsewhere\"]}",
+    ]);
+    assert!(!greedy.status.success());
+    assert!(
+        text(&greedy).contains("above the flow's ceiling"),
+        "{}",
+        text(&greedy)
+    );
+    assert!(
+        text(&greedy).contains("raise the flow's autonomy ceiling"),
+        "{}",
+        text(&greedy)
+    );
+    let (code, responder) = envelope(
         &fixture,
-        "c7",
-        "crane-request watch --flow checkout --purpose third",
+        &[
+            "flow",
+            "subagent",
+            "add",
+            "checkout",
+            "--type",
+            "incident",
+            "--purpose",
+            "rca",
+            "--config",
+            "{\"branch\":\"incident/checkout\",\"parameters\":{\"jira_issue\":\"PAY-1\"}}",
+        ],
     );
-    assert!(third.contains("limit"), "{third}");
+    assert_eq!(code, Some(0), "{responder}");
+    let responder_id = responder["data"]["watcher"]["watcher_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (code, _) = envelope(&fixture, &["flow", "subagent", "approve", &responder_id]);
+    assert_eq!(code, Some(0));
     let (_, watchers) = envelope(&fixture, &["flow", "watch", "list"]);
     assert_eq!(
         watchers["data"]["watchers"].as_array().unwrap().len(),
         2,
-        "{watchers} / {first} / {second} / {third}"
+        "{watchers}"
     );
-    assert_eq!(
-        watchers["data"]["watchers"][0]["inherited"]["mode"],
-        "read_only"
+    // A person triggers one by hand, reaching beyond the flow for that run only
+    let (code, ran) = envelope(
+        &fixture,
+        &[
+            "flow",
+            "subagent",
+            "trigger",
+            &responder_id,
+            "--reason",
+            "drill",
+            "--beyond",
+            "zone:ledger",
+        ],
     );
+    assert_eq!(code, Some(0), "{ran}");
+    assert_eq!(ran["data"]["run"]["beyond"][0], "zone:ledger");
+    // Test scenarios come from the flow's knowledge, and a reviewed set is saved with the repository
+    let (code, drafted) = envelope(&fixture, &["flow", "scenarios", "generate", "checkout"]);
+    assert_eq!(code, Some(0), "{drafted}");
+    let mut drafts = drafted["data"]["scenarios"].as_array().unwrap().clone();
+    assert!(
+        drafts.iter().any(|scenario| scenario["type"] == "smoke"),
+        "{drafted}"
+    );
+    drafts[0]["accepted"] = json!(true);
+    fixture.write("reviewed.json", &json!({"scenarios": drafts}).to_string());
+    let reviewed = fixture
+        .work
+        .join("reviewed.json")
+        .to_string_lossy()
+        .to_string();
+    let (code, saved) = envelope(
+        &fixture,
+        &["flow", "scenarios", "save", "checkout", "--file", &reviewed],
+    );
+    assert_eq!(code, Some(0), "{saved}");
+    assert!(fixture
+        .work
+        .join(".crane/scenarios/checkout.json")
+        .is_file());
     // Only a person raises the limit
     let (code, _) = envelope(&fixture, &["flow", "limit", "--session", "3"]);
     assert_eq!(code, Some(0));

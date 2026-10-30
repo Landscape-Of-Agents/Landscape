@@ -19,7 +19,7 @@ use crate::flow::model::{
     MAX_CONTEXT, MAX_PEOPLE, MAX_TESTS, MAX_TEXT,
 };
 use crate::flow::watch::{self, Proposal, Watcher};
-use crate::flow::{store, trace};
+use crate::flow::{scenarios, store, subagent, trace};
 use crate::governance::state::State;
 use crate::governance::workspace::Workspace;
 use crate::trust::require_human;
@@ -43,8 +43,13 @@ pub(crate) const USAGE: &str = "usage:
         [--mock TEXT] [--command TEXT] [--required] | test require ID TEST [--off] | test remove ID TEST
   crane flow tests run [ID] [--required]      (runs the tests' commands; fails when a required one fails)
   crane flow proposals [list] | proposals approve PROPOSAL [--required] | proposals reject PROPOSAL --reason TEXT
-  crane flow watch list | watch add ID --purpose TEXT [--checks LIST] | watch stop WATCHER | watch run
-        | watch edit WATCHER [--purpose TEXT] [--checks LIST]
+  crane flow subagent add ID --type monitor|incident --purpose TEXT [--checks LIST] [--config JSON|@FILE]
+        | subagent configure WATCHER [--purpose TEXT] [--checks LIST] [--config JSON|@FILE]
+        | subagent approve|reject|stop WATCHER | subagent trigger WATCHER --reason TEXT [--beyond TARGETS]
+        | subagent list [--all] | subagent prune | subagent catalog
+        (at most 3 per flow, one created by an agent; creating or configuring waits for approval)
+  crane flow watch list | watch add | watch edit | watch stop | watch run   (the same subagents)
+  crane flow scenarios generate|show ID [--text] | scenarios save ID --file PATH|-
   crane flow incidents
   crane flow limit ID --watchers N | limit --session N
   crane flow models [list] | models add --provider P --model M --tier frontier|balanced|fast
@@ -91,6 +96,16 @@ pub(crate) fn flow(args: &[String]) -> Result<(), String> {
         ["watch", "add", ..] => watch_add(rest(2)),
         ["watch", "edit", ..] => watch_edit(rest(2)),
         ["watch", "stop", ..] => watch_stop(rest(2)),
+        ["subagent", "list", ..] | ["subagents", ..] => watch_list(rest(2)),
+        ["subagent", "add", ..] => watch_add(rest(2)),
+        ["subagent", "configure", ..] => watch_edit(rest(2)),
+        ["subagent", "approve", ..] => subagent_decide(rest(2), true),
+        ["subagent", "reject", ..] => subagent_decide(rest(2), false),
+        ["subagent", "trigger", ..] => subagent_trigger(rest(2)),
+        ["subagent", "stop", ..] => watch_stop(rest(2)),
+        ["subagent", "prune", ..] => subagent_prune(rest(2)),
+        ["subagent", "catalog", ..] => subagent_catalog(rest(2)),
+        ["scenarios", ..] => scenarios_command(rest(1)),
         ["watch", "run", ..] => watch_run(rest(2)),
         ["incidents", ..] => incidents(rest(1)),
         ["limit", ..] => limit(rest(1)),
@@ -1617,44 +1632,63 @@ fn watch_list(args: &[String]) -> Result<(), String> {
     finish(&args, response, &detail)
 }
 
-/** Run 'crane flow watch add ID'
+/** Run 'crane flow watch add ID' (also 'crane flow subagent add ID'): create a subagent of a
+ * subtype, configured within its flow; it waits for a person's approval
  * Input
     - args: &[String] - arguments
  * Output
     - Result<(), String>
 */
 fn watch_add(args: &[String]) -> Result<(), String> {
-    let args = parse(args, &["purpose", "checks"], &[])?;
+    let args = parse(args, &["purpose", "checks", "type", "config"], &[])?;
     args.expect_positional(
         1,
-        "crane flow watch add ID --purpose TEXT [--checks trace_drift,required_tests,denials]",
+        "crane flow subagent add ID --type monitor|incident --purpose TEXT [--checks LIST] [--config JSON]",
     )?;
     let flow = args.positional[0].clone();
     let (workspace, _, book) = open()?;
     declared(&workspace, &flow)?;
-    let purpose = text(&args, "purpose", "why it watches")?;
-    let checks = match args.value("checks") {
-        Some(list) => watch_checks(&list)?,
-        None => watch::CHECKS
+    let kind = subagent::parse_subtype(&args.value("type").unwrap_or_default())?;
+    let purpose = text(&args, "purpose", "why it exists")?;
+    let checks = match (args.value("checks"), kind.as_str()) {
+        (Some(list), _) => watch_checks(&list)?,
+        (None, "monitor") => watch::CHECKS
             .iter()
             .map(|check| check.to_string())
             .collect(),
+        (None, _) => Vec::new(),
     };
+    let bounds = subagent::bounds_of(&workspace, &flow)?;
+    let mut config = subagent::default_config(&kind, &flow, &bounds);
+    if let Some(patch) = args.value("config") {
+        config = subagent::merge(&config, &json_value(&patch)?)?;
+    }
+    subagent::check(&kind, &config, &checks, &bounds)?;
     let runtime = workspace.trust()?.runtime();
     let inherited = watch::inherit(&workspace, &book, &flow)?;
+    let by = crate::platform::actor();
+    let now = crate::platform::now_millis();
     let watcher = Watcher {
         watcher_id: watch::new_id("wat")?,
         flow: flow.clone(),
-        purpose,
-        parent: Default::default(),
-        created_by: crate::platform::actor(),
-        created_at: crate::platform::now_millis(),
-        active: true,
-        stopped_by: None,
+        purpose: purpose.clone(),
+        created_by: by.clone(),
+        created_at: now,
+        active: false,
         inherited,
-        checks,
-        firing: Vec::new(),
-        last_run: 0,
+        checks: checks.clone(),
+        subtype: kind.clone(),
+        status: subagent::PENDING.into(),
+        config: config.clone(),
+        pending: Some(subagent::PendingChange {
+            kind: "create".into(),
+            purpose: Some(purpose),
+            checks: Some(checks),
+            config,
+            requested_by: by,
+            requested_at: now,
+        }),
+        ..Watcher::default()
     };
     watch::update_watchers(&runtime, |all| {
         watch::may_start(&book, all, &flow, None)?;
@@ -1663,15 +1697,33 @@ fn watch_add(args: &[String]) -> Result<(), String> {
     })?;
     crate::platform::notes::note(
         "FLOW_WATCHER_STARTED",
-        json!({"flow": flow, "watcher": watcher.watcher_id, "by": "person", "checks": watcher.checks}),
+        json!({"flow": flow, "watcher": watcher.watcher_id, "by": "person", "checks": watcher.checks, "subtype": kind}),
     );
     let response = Response::new(
-        "flow.watch.add",
+        "flow.subagent.add",
         Status::Ok,
-        format!("watcher {} watches {flow} read-only", watcher.watcher_id),
+        format!(
+            "{kind} subagent {} of {flow} waits for approval (Landscape, or 'crane flow subagent approve {}')",
+            watcher.watcher_id, watcher.watcher_id
+        ),
     )
     .data(json!({"watcher": watcher}));
     finish(&args, response, &[])
+}
+
+/** Read a JSON value given on the command line, or from a file with @PATH
+ * Input
+    - text: &str - JSON, or @PATH
+ * Output
+    - Result<Value, String>
+*/
+fn json_value(text: &str) -> Result<Value, String> {
+    let source = match text.strip_prefix('@') {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|error| format!("could not read {path}: {error}"))?,
+        None => text.to_string(),
+    };
+    serde_json::from_str(&source).map_err(|error| format!("invalid JSON: {error}"))
 }
 
 /** Parse a comma-separated list of watcher checks
@@ -1706,21 +1758,22 @@ fn watch_checks(list: &str) -> Result<Vec<String>, String> {
     Ok(wanted)
 }
 
-/** Run 'crane flow watch edit WATCHER': change an active watcher's purpose or checks (it stays
- * read-only and keeps what it inherited)
+/** Run 'crane flow watch edit WATCHER' (also 'crane flow subagent configure'): change a
+ * subagent's purpose, checks, or configuration (a JSON object merged into the current one). The
+ * bounds are checked now, and the change waits for a person's approval.
  * Input
     - args: &[String] - arguments
  * Output
     - Result<(), String>
 */
 fn watch_edit(args: &[String]) -> Result<(), String> {
-    require_human("crane flow watch edit")?;
-    let args = parse(args, &["purpose", "checks"], &[])?;
+    require_human("crane flow subagent configure")?;
+    let args = parse(args, &["purpose", "checks", "config"], &[])?;
     args.expect_positional(
         1,
-        "crane flow watch edit WATCHER [--purpose TEXT] [--checks trace_drift,required_tests,denials]",
+        "crane flow subagent configure WATCHER [--purpose TEXT] [--checks LIST] [--config JSON|@FILE]",
     )?;
-    let id = &args.positional[0];
+    let id = args.positional[0].clone();
     let purpose = args
         .value("purpose")
         .map(|purpose| purpose.trim().to_string());
@@ -1731,41 +1784,332 @@ fn watch_edit(args: &[String]) -> Result<(), String> {
         .value("checks")
         .map(|list| watch_checks(&list))
         .transpose()?;
-    if purpose.is_none() && checks.is_none() {
-        return Err("change --purpose or --checks".into());
+    let patch = args
+        .value("config")
+        .map(|text| json_value(&text))
+        .transpose()?;
+    if purpose.is_none() && checks.is_none() && patch.is_none() {
+        return Err("change --purpose, --checks, or --config".into());
     }
     let workspace = Workspace::locate()?;
     let runtime = workspace.trust()?.runtime();
+    let current = watch::watchers(&runtime)
+        .into_iter()
+        .find(|watcher| watcher.watcher_id == id && subagent::holds_place(watcher))
+        .ok_or_else(|| format!("{id} is not a pending or active subagent"))?;
+    // A pending change is replaced: its configuration is the base of the new one
+    let base = current
+        .pending
+        .as_ref()
+        .map_or(current.config.clone(), |pending| pending.config.clone());
+    let base = if base.actions.is_empty() {
+        subagent::default_config(
+            subagent::subtype(&current),
+            &current.flow,
+            &subagent::bounds_of(&workspace, &current.flow)?,
+        )
+    } else {
+        base
+    };
+    let config = match &patch {
+        Some(patch) => subagent::merge(&base, patch)?,
+        None => base,
+    };
+    let bounds = subagent::bounds_of(&workspace, &current.flow)?;
+    let next_checks = checks.clone().unwrap_or_else(|| current.checks.clone());
+    subagent::check(subagent::subtype(&current), &config, &next_checks, &bounds)?;
     let mut edited = None;
     watch::update_watchers(&runtime, |all| {
         let watcher = all
             .iter_mut()
-            .find(|watcher| watcher.watcher_id == *id && watcher.active)
-            .ok_or_else(|| format!("{id} is not an active watcher"))?;
-        if let Some(purpose) = &purpose {
-            watcher.purpose = purpose.clone();
-        }
-        if let Some(checks) = &checks {
-            watcher.checks = checks.clone();
-        }
+            .find(|watcher| watcher.watcher_id == id && subagent::holds_place(watcher))
+            .ok_or_else(|| format!("{id} is not a pending or active subagent"))?;
+        let kind = watcher
+            .pending
+            .as_ref()
+            .map_or("configure".to_string(), |pending| pending.kind.clone());
+        watcher.pending = Some(subagent::PendingChange {
+            kind,
+            purpose: purpose.clone(),
+            checks: checks.clone(),
+            config: config.clone(),
+            requested_by: crate::platform::actor(),
+            requested_at: crate::platform::now_millis(),
+        });
         edited = Some(watcher.clone());
         Ok(())
     })?;
-    let watcher = edited.ok_or("the watcher was not changed")?;
+    let watcher = edited.ok_or("the subagent was not changed")?;
     crate::platform::notes::note(
         "FLOW_WATCHER_EDITED",
-        json!({"flow": watcher.flow, "watcher": id, "by": "person", "checks": watcher.checks}),
+        json!({"flow": watcher.flow, "watcher": id, "by": "person", "checks": next_checks}),
     );
     let response = Response::new(
-        "flow.watch.edit",
+        "flow.subagent.configure",
         Status::Ok,
-        format!("watcher {id} changed; it stays read-only"),
+        format!("the new configuration of {id} is within its flow and waits for approval (Landscape, or 'crane flow subagent approve {id}')"),
     )
     .data(json!({"watcher": watcher}));
     finish(&args, response, &[])
 }
 
-/** Run 'crane flow watch stop WATCHER'
+/** Run 'crane flow subagent approve|reject WATCHER': a person decides a pending creation or
+ * configuration (Landscape runs this)
+ * Input
+    - args: &[String] - arguments
+    - approve: bool - approve (true) or reject
+ * Output
+    - Result<(), String>
+*/
+fn subagent_decide(args: &[String], approve: bool) -> Result<(), String> {
+    require_human("crane flow subagent approve")?;
+    let args = parse(args, &[], &[])?;
+    args.expect_positional(1, "crane flow subagent approve|reject WATCHER")?;
+    let id = &args.positional[0];
+    let workspace = Workspace::locate()?;
+    let runtime = workspace.trust()?.runtime();
+    let by = crate::platform::actor();
+    let watcher = if approve {
+        subagent::approve(&workspace, &runtime, id, &by)?
+    } else {
+        subagent::reject(&runtime, id, &by)?
+    };
+    let response = Response::new(
+        if approve {
+            "flow.subagent.approve"
+        } else {
+            "flow.subagent.reject"
+        },
+        Status::Ok,
+        if approve {
+            format!("{id} is active with its approved configuration")
+        } else {
+            format!("the pending change of {id} was rejected")
+        },
+    )
+    .data(json!({"watcher": watcher}));
+    finish(&args, response, &[])
+}
+
+/** Run 'crane flow subagent trigger WATCHER --reason TEXT [--beyond TARGET,...]': a person's
+ * manual trigger, which runs the subagent's actions once and may reach targets beyond its flow for
+ * this run only (recorded)
+ * Input
+    - args: &[String] - arguments
+ * Output
+    - Result<(), String>
+*/
+fn subagent_trigger(args: &[String]) -> Result<(), String> {
+    require_human("crane flow subagent trigger")?;
+    let args = parse(args, &["reason", "beyond"], &[])?;
+    args.expect_positional(
+        1,
+        "crane flow subagent trigger WATCHER --reason TEXT [--beyond zone:ID,flow:ID]",
+    )?;
+    let id = &args.positional[0];
+    let reason = text(&args, "reason", "why it is triggered by hand")?;
+    let beyond = args
+        .value("beyond")
+        .map(|list| {
+            list.split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if let Some(bad) = beyond
+        .iter()
+        .find(|target| !(target.starts_with("zone:") || target.starts_with("flow:")))
+    {
+        return Err(format!("target '{bad}' must be zone:ID or flow:ID"));
+    }
+    let (workspace, _, book) = open()?;
+    let runtime = workspace.trust()?.runtime();
+    let run = subagent::run(
+        &workspace,
+        &runtime,
+        &book,
+        id,
+        &crate::platform::actor(),
+        &reason,
+        &beyond,
+        None,
+    )?;
+    let detail = run
+        .outcomes
+        .iter()
+        .map(|outcome| {
+            format!(
+                "  {}: {} · {}",
+                outcome["action"].as_str().unwrap_or_default(),
+                outcome["result"].as_str().unwrap_or_default(),
+                outcome["detail"].as_str().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>();
+    let response = Response::new(
+        "flow.subagent.trigger",
+        Status::Ok,
+        format!(
+            "{id} ran {} action(s) by hand{}",
+            run.outcomes.len(),
+            if beyond.is_empty() {
+                String::new()
+            } else {
+                format!(", beyond its flow: {}", beyond.join(", "))
+            }
+        ),
+    )
+    .data(json!({"run": run}));
+    finish(&args, response, &detail)
+}
+
+/** Run 'crane flow subagent prune': terminate the subagents whose flow or zone was removed
+ * (Landscape runs this after removing one)
+ * Input
+    - args: &[String] - arguments
+ * Output
+    - Result<(), String>
+*/
+fn subagent_prune(args: &[String]) -> Result<(), String> {
+    let args = parse(args, &[], &[])?;
+    let workspace = Workspace::locate()?;
+    let ended = subagent::terminate_orphans(&workspace, &workspace.trust()?.runtime())?;
+    let detail = ended
+        .iter()
+        .map(|(id, why)| format!("  {id}: {why}"))
+        .collect::<Vec<_>>();
+    let response = Response::new(
+        "flow.subagent.prune",
+        Status::Ok,
+        format!("{} subagent(s) terminated", ended.len()),
+    )
+    .data(json!({"terminated": ended.iter().map(|(id, why)| json!({"watcher": id, "reason": why})).collect::<Vec<_>>()}));
+    finish(&args, response, &detail)
+}
+
+/** Run 'crane flow subagent catalog': the subtypes, their actions, and the caps
+ * Input
+    - args: &[String] - arguments
+ * Output
+    - Result<(), String>
+*/
+fn subagent_catalog(args: &[String]) -> Result<(), String> {
+    let args = parse(args, &[], &[])?;
+    let catalog = subagent::catalog();
+    let detail = subagent::ACTIONS
+        .iter()
+        .map(|action| {
+            format!(
+                "  {} · {} (ceiling {}{}): {}",
+                action.subtype,
+                action.id,
+                action.ceiling.name(),
+                action
+                    .integration
+                    .map(|name| format!(", needs {name}"))
+                    .unwrap_or_default(),
+                action.label
+            )
+        })
+        .collect::<Vec<_>>();
+    let response = Response::new(
+        "flow.subagent.catalog",
+        Status::Ok,
+        format!(
+            "subtypes {}; at most {} per flow, {} created by an agent",
+            subagent::SUBTYPES.join(", "),
+            subagent::MAX_PER_FLOW,
+            subagent::MAX_AGENT_PER_FLOW
+        ),
+    )
+    .data(catalog);
+    finish(&args, response, &detail)
+}
+
+/** Run 'crane flow scenarios generate|show|save ID': test scenarios written from the flow's
+ * knowledge, reviewed by a person, saved to .crane/scenarios/ID.json
+ * Input
+    - args: &[String] - arguments after "scenarios"
+ * Output
+    - Result<(), String>
+*/
+fn scenarios_command(args: &[String]) -> Result<(), String> {
+    let action = args.first().map(String::as_str).unwrap_or("generate");
+    let args = parse(args.get(1..).unwrap_or_default(), &["file"], &["text"])?;
+    args.expect_positional(
+        1,
+        "crane flow scenarios generate|show|save ID [--file PATH|-] [--text]",
+    )?;
+    let flow = args.positional[0].clone();
+    let (workspace, _, book) = open()?;
+    declared(&workspace, &flow)?;
+    let scenarios = match action {
+        "generate" => scenarios::generate(&workspace, &book, &flow)?,
+        "show" => scenarios::load(&workspace, &flow)?
+            .map(|file| file.scenarios)
+            .unwrap_or_default(),
+        "save" => {
+            require_human("crane flow scenarios save")?;
+            let path = args
+                .value("file")
+                .ok_or("give the reviewed scenarios: --file PATH (or - for standard input)")?;
+            let text = if path == "-" {
+                let mut text = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+                    .map_err(crate::platform::io_error)?;
+                text
+            } else {
+                std::fs::read_to_string(&path)
+                    .map_err(|error| format!("could not read {path}: {error}"))?
+            };
+            let value: Value =
+                serde_json::from_str(&text).map_err(|error| format!("invalid JSON: {error}"))?;
+            let list = value.get("scenarios").cloned().unwrap_or(value);
+            let parsed: Vec<scenarios::Scenario> = serde_json::from_value(list)
+                .map_err(|error| format!("invalid scenarios: {error}"))?;
+            scenarios::save(&workspace, &flow, parsed)?.scenarios
+        }
+        other => {
+            return Err(format!(
+                "unknown 'crane flow scenarios {other}'; use generate, show, or save"
+            ))
+        }
+    };
+    if args.flag("text") {
+        print!("{}", scenarios::to_text(&flow, &scenarios));
+        return Ok(());
+    }
+    let accepted = scenarios
+        .iter()
+        .filter(|scenario| scenario.accepted)
+        .count();
+    let detail = scenarios
+        .iter()
+        .map(|scenario| {
+            format!(
+                "  [{}] {}{}",
+                scenario.kind,
+                scenario.title,
+                if scenario.accepted { " (accepted)" } else { "" }
+            )
+        })
+        .collect::<Vec<_>>();
+    let response = Response::new(
+        "flow.scenarios",
+        Status::Ok,
+        match action {
+            "save" => format!("saved {} scenario(s) of {flow} ({accepted} accepted) to .crane/scenarios/{flow}.json; commit it with .crane", scenarios.len()),
+            _ => format!("{} scenario(s) of {flow} ({accepted} accepted)", scenarios.len()),
+        },
+    )
+    .data(json!({"flow": flow, "scenarios": scenarios, "types": scenarios::TYPES}));
+    finish(&args, response, &detail)
+}
+
+/** Run 'crane flow watch stop WATCHER' (also 'crane flow subagent stop'): a pending or active
+ * subagent stops
  * Input
     - args: &[String] - arguments
  * Output
@@ -1773,16 +2117,18 @@ fn watch_edit(args: &[String]) -> Result<(), String> {
 */
 fn watch_stop(args: &[String]) -> Result<(), String> {
     let args = parse(args, &[], &[])?;
-    args.expect_positional(1, "crane flow watch stop WATCHER")?;
+    args.expect_positional(1, "crane flow subagent stop WATCHER")?;
     let id = &args.positional[0];
     let workspace = Workspace::locate()?;
     let runtime = workspace.trust()?.runtime();
     watch::update_watchers(&runtime, |all| {
         let watcher = all
             .iter_mut()
-            .find(|watcher| watcher.watcher_id == *id && watcher.active)
-            .ok_or_else(|| format!("{id} is not an active watcher"))?;
+            .find(|watcher| watcher.watcher_id == *id && subagent::holds_place(watcher))
+            .ok_or_else(|| format!("{id} is not a pending or active subagent"))?;
         watcher.active = false;
+        watcher.status = subagent::STOPPED.into();
+        watcher.pending = None;
         watcher.stopped_by = Some(crate::platform::actor());
         Ok(())
     })?;

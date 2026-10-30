@@ -12,7 +12,9 @@ use super::model::{route, tier_of, FlowBook, FlowKnowledge, ModelEntry, Priority
 use super::store::{append_flow, NewFlow, NewPack};
 use super::trace::{add_revision, check_starts, diff, rewind, trace_index};
 use super::watch::{may_start, Parent, Watcher};
+use super::{scenarios, subagent};
 use crate::governance::flows::Index;
+use crate::governance::zones::Ceiling;
 
 /** A small repository: submit calls charge and audit; charge calls send
  * Input
@@ -331,8 +333,40 @@ fn requests_are_one_command() {
     assert_eq!(slug("9lives"), "flow-9lives");
 }
 
-/** Watchers are capped per flow and per agent session by the signed limits; a person is counted
- * only against the flow's limit, and a flow can only lower the repository's limit
+/** A subagent for the limit tests
+ * Input
+    - id: &str - id
+    - flow: &str - flow
+    - session: &str - parent session ("" for a person)
+    - status: &str - lifecycle state
+ * Output
+    - Watcher
+*/
+fn subagent_of(id: &str, flow: &str, session: &str, status: &str) -> Watcher {
+    Watcher {
+        watcher_id: id.into(),
+        flow: flow.into(),
+        purpose: "watch".into(),
+        parent: Parent {
+            session: session.into(),
+            ..Parent::default()
+        },
+        created_by: if session.is_empty() {
+            "ana".into()
+        } else {
+            "agent".into()
+        },
+        created_at: 1,
+        active: status == subagent::ACTIVE,
+        checks: vec!["denials".into()],
+        subtype: "monitor".into(),
+        status: status.into(),
+        ..Watcher::default()
+    }
+}
+
+/** A flow holds at most 3 subagents, pending or active, at most one created by an agent; agent
+ * sessions are capped by the signed limits, and a flow can only lower the repository's limit
  * Input
     - None
  * Output
@@ -342,43 +376,34 @@ fn requests_are_one_command() {
 fn watchers_are_capped_by_signed_limits() {
     let mut book = FlowBook::default();
     book.limits.max_watchers_per_session = 1;
-    book.limits.max_watchers_per_flow = 2;
-    let watcher = |id: &str, flow: &str, session: &str| Watcher {
-        watcher_id: id.into(),
-        flow: flow.into(),
-        purpose: "watch".into(),
-        parent: Parent {
-            session: session.into(),
-            ..Parent::default()
-        },
-        created_by: "agent".into(),
-        created_at: 1,
-        active: true,
-        stopped_by: None,
-        inherited: Default::default(),
-        checks: vec!["denials".into()],
-        firing: Vec::new(),
-        last_run: 0,
-    };
+    book.limits.max_watchers_per_flow = 9;
     let mut existing = Vec::new();
     assert!(may_start(&book, &existing, "checkout", Some("s1")).is_ok());
-    existing.push(watcher("w1", "checkout", "s1"));
-    assert!(may_start(&book, &existing, "checkout", Some("s1"))
+    existing.push(subagent_of("w1", "checkout", "s1", subagent::PENDING));
+    assert!(
+        may_start(&book, &existing, "checkout", Some("s2"))
+            .unwrap_err()
+            .contains("created by an agent"),
+        "one agent-created subagent per flow, pending ones included"
+    );
+    assert!(may_start(&book, &existing, "search", Some("s1"))
         .unwrap_err()
         .contains("this session"));
-    assert!(may_start(&book, &existing, "checkout", Some("s2")).is_ok());
-    existing.push(watcher("w2", "checkout", "s2"));
+    existing.push(subagent_of("w2", "checkout", "", subagent::ACTIVE));
+    existing.push(subagent_of("w3", "checkout", "", subagent::ACTIVE));
     assert!(
         may_start(&book, &existing, "checkout", None)
             .unwrap_err()
-            .contains("limit"),
-        "the flow is full, for people too"
+            .contains("at most 3"),
+        "a flow holds at most 3 subagents, whatever the repository's limit"
     );
-    existing[0].active = false;
+    existing[0].status = subagent::STOPPED.into();
     assert!(
         may_start(&book, &existing, "checkout", Some("s1")).is_ok(),
-        "stopped watchers do not count"
+        "stopped subagents do not count"
     );
+    existing[1].status = subagent::TERMINATED.into();
+    book.limits.max_watchers_per_flow = 2;
     book.flows.insert(
         "checkout".into(),
         FlowKnowledge {
@@ -394,4 +419,125 @@ fn watchers_are_capped_by_signed_limits() {
     book.flows.get_mut("checkout").unwrap().max_watchers = Some(0);
     assert!(may_start(&book, &[], "checkout", None).is_err());
     assert_eq!(json!(book.limits)["max_watchers_per_session"], 1);
+}
+
+/** The bounds of a flow with an assisted ceiling through zones web and payments
+ * Input
+    - None
+ * Output
+    - FlowBounds
+*/
+fn assisted_bounds() -> subagent::FlowBounds {
+    subagent::FlowBounds {
+        ceiling: Ceiling::Assisted,
+        targets: BTreeSet::from([
+            "flow:checkout".to_string(),
+            "zone:web".to_string(),
+            "zone:payments".to_string(),
+        ]),
+    }
+}
+
+/** A subagent's default configuration stays within its flow, and asking for more fails with every
+ * problem and how to resolve it (raise the flow first)
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn subagent_configurations_stay_within_their_flow() {
+    let bounds = assisted_bounds();
+    let incident = subagent::default_config("incident", "checkout", &bounds);
+    assert!(subagent::check("incident", &incident, &[], &bounds).is_ok());
+    assert!(
+        !incident
+            .actions
+            .iter()
+            .any(|action| action == "open_pull_request"),
+        "actions that need more than the flow's ceiling are left out"
+    );
+    assert_eq!(incident.ceiling, "assisted");
+    let mut greedy = incident.clone();
+    greedy.ceiling = "delegated".into();
+    greedy.actions.push("open_pull_request".into());
+    greedy.targets.push("zone:billing".into());
+    let error = subagent::check("incident", &greedy, &[], &bounds).unwrap_err();
+    assert!(
+        error.contains("above the flow's ceiling assisted"),
+        "{error}"
+    );
+    assert!(error.contains("open_pull_request"), "{error}");
+    assert!(
+        error.contains("zone:billing' is outside the flow"),
+        "{error}"
+    );
+    assert!(
+        error.contains("raise the flow's autonomy ceiling"),
+        "{error}"
+    );
+    let mut wrong = subagent::default_config("monitor", "checkout", &bounds);
+    wrong.actions.push("write_rca".into());
+    wrong.branch = Some("hotfix".into());
+    let error = subagent::check("monitor", &wrong, &["denials".into()], &bounds).unwrap_err();
+    assert!(error.contains("not an action of a monitor"), "{error}");
+    assert!(
+        error.contains("only an Incident subagent has a designated branch"),
+        "{error}"
+    );
+    assert!(subagent::parse_subtype("")
+        .unwrap_err()
+        .contains("required"));
+    assert_eq!(subagent::parse_subtype("Incident").unwrap(), "incident");
+}
+
+/** A JSON configuration merges into the current one: given fields replace, null resets,
+ * parameters merge key by key, unknown fields are refused
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn subagent_configurations_merge() {
+    let bounds = assisted_bounds();
+    let mut base = subagent::default_config("incident", "checkout", &bounds);
+    base.parameters.insert("jira_issue".into(), json!("PAY-1"));
+    base.parameters.insert("keep".into(), json!(true));
+    let merged = subagent::merge(&base, &json!({"branch": "incident/pay", "parameters": {"jira_issue": "PAY-2", "keep": null}, "context": ["refunds go through the ledger"]})).unwrap();
+    assert_eq!(merged.branch.as_deref(), Some("incident/pay"));
+    assert_eq!(merged.parameters["jira_issue"], json!("PAY-2"));
+    assert!(!merged.parameters.contains_key("keep"));
+    assert_eq!(merged.actions, base.actions, "fields not given stay");
+    assert!(subagent::merge(&base, &json!({"model": "x"}))
+        .unwrap_err()
+        .contains("unknown configuration field"));
+    assert!(subagent::merge(&base, &json!([1])).is_err());
+    let reset = subagent::merge(&merged, &json!({"branch": null})).unwrap();
+    assert!(reset.branch.is_none());
+}
+
+/** Reviewed scenarios are checked before they are saved
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn scenarios_are_validated_before_saving() {
+    let good = scenarios::Scenario {
+        id: "sc_1".into(),
+        kind: "smoke".into(),
+        title: "checkout answers".into(),
+        ..scenarios::Scenario::default()
+    };
+    assert!(scenarios::validate(std::slice::from_ref(&good)).is_ok());
+    let mut odd = good.clone();
+    odd.kind = "vibes".into();
+    assert!(scenarios::validate(&[odd]).unwrap_err().contains("type"));
+    assert!(scenarios::validate(&[good.clone(), good.clone()])
+        .unwrap_err()
+        .contains("unique"));
+    let text = scenarios::to_text("checkout", &[good]);
+    assert!(text.contains("[smoke] checkout answers"));
 }

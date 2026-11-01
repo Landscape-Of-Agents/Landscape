@@ -144,6 +144,77 @@ fn section(
     }
 }
 
+/** Read a file a Knowledge Brick delivers. A file agents may not read is not delivered through
+ * context either, through a link included; a link leading out of the repository, an oversized file,
+ * and text telling agents to set their instructions aside are withheld and reported. The file can
+ * change after the Brick was signed, so this is decided at each delivery
+ * Input
+    - root: &Path - repository root
+    - file: &str - repository-relative file
+    - unreadable: &[String] - deny_read patterns of the targets it is delivered to
+ * Output
+    - Result<String, Problem> content, or why it was withheld
+*/
+fn knowledge_file(root: &Path, file: &str, unreadable: &[String]) -> Result<String, Problem> {
+    let denied = |path: &str| {
+        unreadable
+            .iter()
+            .any(|pattern| crate::platform::glob::matches(pattern, path))
+    };
+    if denied(file) {
+        return Err(problem(
+            "CONTEXT_FILE_DENIED",
+            format!("{file} is unreadable under deny_read, so it was not delivered"),
+        ));
+    }
+    if !root.join(file).exists() {
+        return Err(problem(
+            "CONTEXT_FILE_MISSING",
+            format!("{file} could not be read"),
+        ));
+    }
+    let Some(real) = super::compose::contained(root, file) else {
+        return Err(problem(
+            "CONTEXT_FILE_OUTSIDE",
+            format!("{file} leads outside the repository, so it was not delivered"),
+        ));
+    };
+    let relative = root
+        .canonicalize()
+        .ok()
+        .and_then(|base| {
+            real.strip_prefix(base)
+                .ok()
+                .map(|path| path.to_string_lossy().replace('\\', "/"))
+        })
+        .unwrap_or_default();
+    if denied(&relative) {
+        return Err(problem(
+            "CONTEXT_FILE_DENIED",
+            format!("{file} leads to {relative}, which is unreadable under deny_read, so it was not delivered"),
+        ));
+    }
+    let size = fs::metadata(&real).map(|data| data.len()).unwrap_or(0);
+    if size > super::validate::MAX_CONTEXT_BYTES as u64 {
+        return Err(problem(
+            "CONTEXT_FILE_TOO_LARGE",
+            format!(
+                "{file} is {size} bytes, more than the {} a delivered file may hold",
+                super::validate::MAX_CONTEXT_BYTES
+            ),
+        ));
+    }
+    let content = fs::read_to_string(&real)
+        .map_err(|_| problem("CONTEXT_FILE_MISSING", format!("{file} could not be read")))?;
+    if let Some(phrase) = super::validate::injection_in(&content) {
+        return Err(problem(
+            "CONTEXT_FILE_OVERRIDES_INSTRUCTIONS",
+            format!("{file} says '{phrase}', so it was not delivered"),
+        ));
+    }
+    Ok(content)
+}
+
 /** Assemble the snapshot of a set of targets
  * Input
     - workspace: &Workspace - repository
@@ -242,7 +313,25 @@ pub(crate) fn assemble(
                 .into_iter()
                 .filter_map(|(label, value)| value.map(|value| format!("{value} {label}")))
                 .collect::<Vec<_>>();
-                parts.push(format!("per session at most {}", caps.join(", ")));
+                if !caps.is_empty() {
+                    parts.push(format!("per session at most {}", caps.join(", ")));
+                }
+                let daily = [
+                    ("tool calls", limits.max_tool_calls_per_day),
+                    ("files changed", limits.max_files_changed_per_day),
+                    ("lines changed", limits.max_lines_changed_per_day),
+                    ("commands", limits.max_commands_per_day),
+                    ("network calls", limits.max_network_calls_per_day),
+                ]
+                .into_iter()
+                .filter_map(|(label, value)| value.map(|value| format!("{value} {label}")))
+                .collect::<Vec<_>>();
+                if !daily.is_empty() {
+                    parts.push(format!(
+                        "per day, across sessions, at most {}",
+                        daily.join(", ")
+                    ));
+                }
             }
             if !combined.hide_env.is_empty() {
                 parts.push(format!(
@@ -265,6 +354,20 @@ pub(crate) fn assemble(
                         format!(" never {}", combined.network_deny.join(", "))
                     }
                 ));
+            }
+            for gate in &combined.commit_gates {
+                let needs = gate
+                    .trailer
+                    .iter()
+                    .map(|key| format!("trailer {key}"))
+                    .chain(
+                        gate.issue_pattern
+                            .iter()
+                            .map(|issue| format!("issue {issue}")),
+                    )
+                    .collect::<Vec<_>>()
+                    .join(" and ");
+                parts.push(format!("commit messages (-m) must carry {needs}"));
             }
             if !combined.direct.is_empty() {
                 parts.push(format!(
@@ -344,6 +447,10 @@ pub(crate) fn assemble(
         }
     }
     // 3. Brick Common and Current Context
+    let unreadable = targets
+        .iter()
+        .flat_map(|target| controls(store, target, &workspace.root).deny_read)
+        .collect::<Vec<_>>();
     for target in targets {
         for attachment in attachments_of(store, target) {
             for member in members(store, &attachment.subject) {
@@ -391,13 +498,13 @@ pub(crate) fn assemble(
                         text.push_str(&format!("- see {reference}\n"));
                     }
                     for file in &context.files {
-                        match fs::read_to_string(workspace.root.join(file)) {
+                        match knowledge_file(&workspace.root, file, &unreadable) {
                             Ok(content) => {
                                 text.push_str(&format!("[{file}]\n{}\n", content.trim_end()))
                             }
-                            Err(_) => gaps.push(problem(
-                                "CONTEXT_FILE_MISSING",
-                                format!("{reference}: {file} could not be read"),
+                            Err(gap) => gaps.push(problem(
+                                gap.code.as_str(),
+                                format!("{reference}: {}", gap.message),
                             )),
                         }
                     }

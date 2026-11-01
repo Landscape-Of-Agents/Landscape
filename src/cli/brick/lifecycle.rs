@@ -4,7 +4,10 @@
 // a repository with a single signer may, and the version records that it was self-reviewed.
 // Deprecation keeps existing pins working and refuses new attachments; revocation withdraws the
 // version: pins to it fail closed (changes in the target need approval) until an admin detaches or
-// upgrades them, so a revoked restriction never silently disappears.
+// upgrades them, so a revoked restriction never silently disappears. Destruction is the one way a
+// Brick leaves the store: every version and its draft go, and only a Brick nothing is connected to
+// can go, so it cannot lift a restriction a Zone or Flow still relies on. The audit chain keeps what
+// was destroyed, by whom, and why.
 
 use serde_json::json;
 
@@ -301,4 +304,112 @@ pub(super) fn withdraw(args: &[String], revoke: bool) -> Result<(), String> {
     .reference("brick_ref", references.join(","))
     .data(json!({"versions": affected, "pinned_attachments": pinned, "state": to}));
     finish(&args, response, &detail)
+}
+
+/** Run 'crane brick destroy': remove every version and the draft of a Brick nothing is connected
+ * to. A draft that was never activated is only a file, so nothing is signed for it
+ * Input
+    - args: &[String] - arguments after "destroy"
+ * Output
+    - Result<(), String>
+*/
+pub(super) fn destroy(args: &[String]) -> Result<(), String> {
+    crate::trust::require_human("crane brick destroy")?;
+    let args = parse(args, &["reason"], &["dry-run"])?;
+    args.expect_positional(1, "crane brick destroy ID --reason TEXT [--dry-run]")?;
+    let reason = args
+        .value("reason")
+        .filter(|reason| !reason.trim().is_empty())
+        .ok_or("--reason is required")?;
+    let (id, version) = versioned(&args.positional[0])?;
+    if version.is_some() {
+        return Err(format!(
+            "destroying removes every version of a Brick; name {id} without a version ('crane brick revoke {id}@N' withdraws one)"
+        ));
+    }
+    let repo = open()?;
+    let versions = repo
+        .store
+        .versions(&id)
+        .iter()
+        .map(|entry| (entry.brick.version, entry.digest.clone()))
+        .collect::<Vec<_>>();
+    let draft = store::brick_draft(&repo.workspace, &id)?.is_some();
+    if versions.is_empty() && !draft {
+        return Err(format!("{id} is not a Brick of this repository"));
+    }
+    let connected = repo.store.connections(&id);
+    if !connected.is_empty() {
+        let detail = connected
+            .iter()
+            .map(|connection| format!("  {connection}"))
+            .collect::<Vec<_>>();
+        let response = Response::new(
+            "brick.destroy",
+            Status::Denied,
+            format!("{id} is still connected; detach it and remove what uses it first"),
+        )
+        .reference("brick_id", id)
+        .reasons(["STILL_CONNECTED"])
+        .data(json!({"connected": connected}));
+        return finish(&args, response, &detail);
+    }
+    let what = if versions.is_empty() {
+        format!("the draft of {id}")
+    } else {
+        format!(
+            "{} version(s) of {id}{}",
+            versions.len(),
+            if draft { " and its draft" } else { "" }
+        )
+    };
+    if args.flag("dry-run") {
+        let response = Response::new(
+            "brick.destroy",
+            Status::Ok,
+            format!("would destroy {what}; this cannot be undone (dry run; nothing changed)"),
+        )
+        .reference("brick_id", id)
+        .data(json!({"dry_run": true, "versions": versions.len(), "draft": draft}));
+        return finish(&args, response, &[]);
+    }
+    if !versions.is_empty() {
+        require_verified(&repo)?;
+        let digests = versions
+            .iter()
+            .map(|(version, digest)| json!({"version": version, "digest": digest}))
+            .collect::<Vec<_>>();
+        store::change(
+            &repo.workspace,
+            "crane brick destroy",
+            "brick.destroyed",
+            json!({"brick_id": id, "versions": digests, "reason": reason}),
+            |store, _| {
+                // Checked again under the governance lock, on the state being signed
+                let connected = store.connections(&id);
+                if !connected.is_empty() {
+                    return Err(format!("{id} is still {}", connected.join("; ")));
+                }
+                store.bricks.retain(|entry| entry.brick.brick_id != id);
+                Ok(())
+            },
+        )?;
+    }
+    store::remove_draft(&repo.workspace, "bricks", &id);
+    crate::platform::notes::note(
+        "BRICK_DESTROYED",
+        json!({"brick": id, "versions": versions.len(), "draft": draft}),
+    );
+    let response = Response::new(
+        "brick.destroy",
+        Status::Ok,
+        if versions.is_empty() {
+            format!("destroyed {what}")
+        } else {
+            format!("destroyed {what}; commit .crane so the team shares it (the audit trail keeps the record)")
+        },
+    )
+    .reference("brick_id", id)
+    .data(json!({"versions": versions.len(), "draft": draft}));
+    finish(&args, response, &[])
 }

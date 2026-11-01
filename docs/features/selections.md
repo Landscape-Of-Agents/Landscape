@@ -18,12 +18,18 @@ crane target  app/refunds.py start-line 40 end-line 58 change_type logical_bn co
 crane selection inspect K7M2P9RX      # the signed record and where it is now
 crane selection validate [K7M2P9RX]   # the same verifier as 'crane validate' and the hooks
 crane selection repair K7M2P9RX       # markers lost? where its signed content appears now
+crane selection remove K7M2P9RX --reason TEXT [--dry-run]   # end the rule: markers, policy line, and record
 crane policy payments status          # every rule of a policy, simulated against the hooks
 ```
 
 `crane selection protect` and `crane selection target` are the same commands as `crane protect` and
 `crane target`. Every selection needs context: it is what the agent is told when it touches the
 code.
+
+Removing a selection takes out its two markers (the code between them stays), its line in the
+policy, and its signed record; the audit trail keeps the record of it. Only a person can: Crane
+refuses the command inside an agent session and the hooks deny it. A selection a zone or flow names
+in `selections:` is refused until governance.yaml stops naming it.
 
 ## What protects it
 

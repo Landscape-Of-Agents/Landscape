@@ -294,6 +294,7 @@ Bricks (reusable modules of a fixed type attached to flows and zones; 'crane bri
   crane brick activate|deprecate|revoke ... --reason TEXT  crane brick stack create|show|activate|revoke ...
   crane brick attach ID@N --target flow:ID [--context TEXT] [--dry-run]
   crane brick detach|upgrade ATTACHMENT ...               crane brick context set|preview|status ...
+  crane brick destroy ID --reason TEXT                    crane selection remove ID --reason TEXT
   crane brick assign|unassign|agents                      crane brick monitor run|status
   crane brick inbox [apply ID...|--all | dismiss ID... --reason TEXT]   (changes requested on DataSea)
 

@@ -48,17 +48,56 @@ Support levels: **enforced** (the guard decides with it before every agent tool 
 | Identity | `agents`, `models` (patterns), `on_other` (deny or ask) | Every tool call touching the target's files from another provider or model is refused (or held for a person). `crane scope` questions, which have no agent, are not decided by identity |
 | Access | `include`, `exclude`, `read_only`, `deny_read`, `write`, `create`, `update`, `delete`, `execute`, `network` (each auto, ask, deny) | Unreadable files refuse reads; read-only and out-of-scope files refuse changes; each operation is allowed, held for a person, or refused. `execute` applies to commands naming the target's files, `network` while the session works in the target |
 | Approval | `operations` (write, create, update, delete, execute, network, dependency_change, config_change, migration_change, test_change, git_commit, git_push, package_install, large_change), `paths`, `except`, `min_lines_changed`, `reason`, `approvers`, `min_approvals`, `distinct_approver`, `expires_minutes`, `scope_from` | A matching change needs a person. Commits, pushes, and package installs name no file, so they are held in every target whose Approval Bricks name them. The agent tool's own prompt answers; approvers and quorum apply to resident agents |
-| Limits | `max_tool_calls`, `max_runtime_minutes`, `max_files_changed`, `max_lines_changed`, `max_commands`, `max_network_calls`, `max_denials`, `max_retries`, `max_ceiling`, `min_criticality`, `on_exhausted`, `scope_from` | Counted per agent session and target before every call (`runtime/bricks/usage/`); at a cap the call is refused (stop) or held for a person (escalate). The ceiling and criticality fold into the per-file limits |
+| Limits | `max_tool_calls`, `max_runtime_minutes`, `max_files_changed`, `max_lines_changed`, `max_commands`, `max_network_calls`, `max_denials`, `max_tool_calls_per_day`, `max_files_changed_per_day`, `max_lines_changed_per_day`, `max_commands_per_day`, `max_network_calls_per_day`, `max_retries`, `max_ceiling`, `min_criticality`, `on_exhausted`, `scope_from` | Counted per agent session and target before every call (`runtime/bricks/usage/`), and per UTC day across every session (`runtime/bricks/daily.json`), so a new session does not reset a daily cap; at a cap the call is refused (stop) or held for a person (escalate). The ceiling and criticality fold into the per-file limits |
 | Environment | `profile`, `require_env`, `hide_env`, `credentials` (name, for), `network.allow`, `network.deny` | Commands that read a hidden variable (`$NAME`, `printenv`, environment dumps) and calls to unlisted or denied hosts are refused while the session works in the target; a missing required variable holds changes for a person; credentials reach only Crane-run operations |
 | Precondition | `checks` (file_exists, file_absent, file_contains, env_set, branch_is, branch_not, git_clean, time_window, command_available, credential_present, signed_state), `on_fail` (ask or deny) | File checks fold into the per-file limits; the others run before every change. While one fails, changes need a person or stop |
-| Verification | `checks` (every gate, plus policy_tests_pass, selections_resolved, http_ok, json_value, local_metric, command_succeeds), `checks_from` | Evaluated by `crane brick test` and the monitors. Endpoints and programs run only when a person runs `crane brick test` |
+| Verification | `checks` (every gate, plus policy_tests_pass, selections_resolved, http_ok, json_value, local_metric, command_succeeds), `checks_from` | Evaluated by `crane brick test` and the monitors. Endpoints and programs run only when a person runs `crane brick test`, and for an unsigned draft only after that person reviews them (see "What is checked") |
 | Action | `operations` (adapter, operation, max_per_day, dry_run_first, approval), `deny_direct` | Resident agents may only plan the steps an Action Brick lists. With `deny_direct`, agent shell commands that do the same operation (git commit/push/tag/merge/rebase/reset, gh pr/release/workflow, package installs, kubectl/terraform apply, docker push) are refused |
 | Recovery | `on_failure` (stop, escalate, retry), `max_retries` (≤3), `reconcile_before_retry`, `backoff_seconds`, `max_consecutive_failures`, `on_uncertain` | After that many failed agent tool calls in a row in the target, changes need a person. Retries and reconciliation apply to resident agents and skills |
-| Provenance | `require` (signed_state, audit_chain, decisions_recorded, commit_trailer, linked_issue), `trailer`, `issue_pattern`, `commits`, `scope_from` | Verified against the signed manifest, the audit chain, the local decisions, and the recent commits touching the target |
+| Provenance | `require` (signed_state, audit_chain, decisions_recorded, commit_trailer, linked_issue), `trailer`, `issue_pattern`, `commits`, `gate_commits` (ask, deny), `scope_from` | Verified against the signed manifest, the audit chain, the local decisions, and the recent commits touching the target. With `gate_commits`, an agent's `git commit` is held or refused when its `-m` message lacks the trailer or issue; every commit in the repository counts, as commits name no file |
 | Watch | `signals` (governance_integrity, selections_resolved, policy_tests, denials, preconditions, verification), `on_fire` (alert, pause, revoke_due, propose), `triggers`, `analyses`, `scope_from` | Deterministic checks on every background sync. When a signal starts firing it alerts through the integrations once; `pause` holds changes in the target for a person while it fires. `ci`, `metrics`, and `external` are reported as coverage gaps |
 
 Settings are checked against the kind's schema. Unknown fields, commands outside verification
 checks, paths outside the repository, and context that looks like it contains a secret are refused.
+
+## What is checked
+
+**A draft's commands.** A draft can come from anyone who can queue a request on DataSea or supply a
+library. `crane brick test` on a draft runs no `command_succeeds` and no `http_ok`. It lists what the
+draft would run with a token (`needs_review` in JSON); `--allow-commands TOKEN` runs them. The token
+covers exactly those checks, so a changed draft needs a new review, and a draft that does not validate
+is refused. Landscape shows the commands in a dialog before running them. A signed Brick runs without
+a token: the admin who signed it reviewed it.
+
+**For every Brick, draft or signed**, at validation and again at the run:
+- `command_succeeds` refuses shells, interpreters, and wrappers (`sh`, `powershell`, `python`, `node`,
+  `env`, `sudo`, `xargs`, `npx`, ...), shell characters and paths leading out of the repository in its
+  arguments, `git -c`, and `npm exec`.
+- `http_ok` is https only and refuses private, loopback, link-local, and internal addresses. The host
+  is resolved once, every address must be public, the connection is pinned to them, and redirects are
+  not followed. A check of an internal service is refused too; `command_succeeds` with your own client
+  covers that.
+
+**Knowledge** is checked at validation (secrets, size, and text telling agents to set their
+instructions or Crane aside, in common context, glossary, and references) and at each delivery, since
+a file can change after signing: a file under the target's `deny_read`, a link leading out of the
+repository or to a `deny_read` file, a file over 16 KB, and a file with such text are withheld and
+reported as a gap.
+
+**Commands** are read with their options removed, so `git -C x -c a=b push`, `/usr/bin/git push`, and
+`python -m pip install` count as `git push` and `pip install`. Words hidden by quotes, backslashes, line continuations, or a variable set in the same command (`g"i"t push`, `G=git; $G push`) are read as the shell would read them. Environment dumps count as part of a
+pipeline or in code (`env | cat`, `dict(os.environ)`, `node -p process.env`, `/proc/self/environ`). A
+command reaching a `deny_read` file by a pattern or a folder (`cat app/sec*`, `tar czf x app/secrets`)
+is refused; one computing what it reads (`cat $(...)`, `eval`, `cat $F`) waits for a person.
+
+**What this cannot catch.** Hooks read the text of a command, so a script, a Makefile, or a Git alias
+can still do an operation without naming it; hard guarantees need real isolation. Identity trusts the
+provider and model the hooks report. Provenance reports after the fact unless `gate_commits` is set, a person's own commits are not held,
+and trailers and issue links are text anyone can type. `crane brick test` says so where it applies.
+
+**Bricks signed earlier** are not re-validated while they stay active: a setting refused today (a `ci`
+signal, say) keeps its old behavior until the next version, except the run-time refusals above and
+what is decided at each call or delivery.
 
 ## Sharing configuration between Bricks
 
@@ -230,6 +269,7 @@ crane brick types | list | show ID[@N] | history [ID]
 crane brick create --type TYPE --name NAME [--intent ...] [--config JSON] [--context TEXT]   (or --file DRAFT.json)
 crane brick edit ID [...] | validate ID | test ID[@N] [--target flow:ID] [--call JSON|FILE] | migrate [--dry-run]
 crane brick activate ID --reason TEXT [--dry-run] | deprecate ID@N | revoke ID[@N] --reason TEXT
+crane brick destroy ID --reason TEXT [--dry-run]
 crane brick stack create --name NAME --members ID@N,ID@N | stack show ID | stack activate ID | stack revoke ID@N
 crane brick attach ID@N|stack:ID@N --target flow:ID [--context TEXT] [--dry-run]
 crane brick detach ATTACHMENT | upgrade ATTACHMENT --to ID@N | context set ATTACHMENT --text TEXT

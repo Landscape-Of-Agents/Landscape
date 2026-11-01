@@ -43,7 +43,7 @@ const USAGE: &str = "usage: crane brick types
        crane brick edit ID [the options of create, without --type]
        crane brick migrate [--dry-run]
        crane brick validate ID
-       crane brick test ID[@N] [--target flow:ID|zone:ID] [--call JSON|FILE]
+       crane brick test ID[@N] [--target flow:ID|zone:ID] [--call JSON|FILE] [--allow-commands TOKEN]
        crane brick activate ID --reason TEXT [--dry-run]
        crane brick deprecate ID@N --reason TEXT
        crane brick revoke ID[@N] --reason TEXT
@@ -58,6 +58,7 @@ const USAGE: &str = "usage: crane brick types
        crane brick context set ATTACHMENT (--text TEXT | --file FILE) [--dry-run]
        crane brick context preview --targets flow:ID,zone:ID
        crane brick context status
+       crane brick destroy ID --reason TEXT [--dry-run]
        crane brick assign AGENT --targets flow:ID,zone:ID [--paused]
        crane brick unassign AGENT --reason TEXT
        crane brick agents
@@ -88,6 +89,7 @@ pub(crate) fn brick(args: &[String]) -> Result<(), String> {
         ["activate", ..] => lifecycle::activate(rest(1)),
         ["deprecate", ..] => lifecycle::withdraw(rest(1), false),
         ["revoke", ..] => lifecycle::withdraw(rest(1), true),
+        ["destroy", ..] => lifecycle::destroy(rest(1)),
         ["stack", "create", ..] => stack::create(rest(2)),
         ["stack", "show" | "resolve", ..] => stack::show(rest(2)),
         ["stack", "activate", ..] => stack::activate(rest(2)),

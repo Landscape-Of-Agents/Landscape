@@ -2,7 +2,9 @@
 // pause of Recovery Bricks: tool calls, commands, network calls, denials, distinct files and lines
 // changed, and failures in a row. Kept per session in the runtime directory (never signed, never
 // uploaded), written by the hooks after each decision and outcome, and read before the next one.
-// A new session starts from zero; a session that ended long ago is pruned on the next write.
+// A new session starts from zero; a session that ended long ago is pruned on the next write. The
+// same counts are kept per UTC day across every session, so starting a new session does not reset
+// a daily cap.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -70,6 +72,73 @@ pub(crate) struct Counted {
     pub(crate) network: bool,
     pub(crate) denied: bool,
     pub(crate) changes: Vec<(String, String, u64)>,
+}
+
+/** What every session did in each target during one UTC day
+ * Fields
+    - day: u64 - days since the Unix epoch
+    - targets: BTreeMap<String, TargetUsage> - usage by target key
+*/
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct Daily {
+    pub(crate) day: u64,
+    pub(crate) targets: BTreeMap<String, TargetUsage>,
+}
+
+/** Milliseconds in a day */
+const DAY_MS: u64 = 86_400_000;
+
+/** Read the day's usage (empty on a new day, or when missing)
+ * Input
+    - runtime: &Path - runtime directory
+    - now: u64 - Unix milliseconds
+ * Output
+    - Daily
+*/
+pub(crate) fn load_daily(runtime: &Path, now: u64) -> Daily {
+    let day = now / DAY_MS;
+    fs::read_to_string(folder(runtime).join("daily.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Daily>(&text).ok())
+        .filter(|daily| daily.day == day)
+        .unwrap_or_else(|| Daily {
+            day,
+            ..Daily::default()
+        })
+}
+
+/** Count a decided call in the day's usage; sessions run side by side, so the update is locked
+ * Input
+    - runtime: &Path - runtime directory
+    - now: u64 - Unix milliseconds
+    - counted: &Counted - what it counts
+ * Output
+    - Result<(), String>
+*/
+fn record_daily(runtime: &Path, now: u64, counted: &Counted) -> Result<(), String> {
+    let _lock = crate::platform::files::Lock::acquire(&folder(runtime).join("daily.lock"))?;
+    let mut daily = load_daily(runtime, now);
+    for target in &counted.targets {
+        let entry = daily.targets.entry(target.clone()).or_default();
+        entry.calls += 1;
+        entry.commands += u64::from(counted.command);
+        entry.network += u64::from(counted.network);
+        entry.denials += u64::from(counted.denied);
+    }
+    if !counted.denied {
+        for (target, file, lines) in &counted.changes {
+            let entry = daily.targets.entry(target.clone()).or_default();
+            entry.files.insert(file.clone());
+            entry.lines += lines;
+        }
+    }
+    write_atomic(
+        &folder(runtime).join("daily.json"),
+        serde_json::to_string(&daily)
+            .map_err(crate::platform::io_error)?
+            .as_bytes(),
+    )
 }
 
 /** The usage file of a session
@@ -186,7 +255,8 @@ pub(crate) fn record(
             usage.pending.remove(&first);
         }
     }
-    save(runtime, &mut usage)
+    save(runtime, &mut usage)?;
+    record_daily(runtime, crate::platform::now_millis(), counted)
 }
 
 /** Record the outcome of a call (failures in a row per target)

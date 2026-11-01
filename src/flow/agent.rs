@@ -662,6 +662,7 @@ pub(crate) fn answer(
                 watcher.status = super::subagent::STOPPED.into();
                 watcher.pending = None;
                 watcher.stopped_by = Some(by.clone());
+                watcher.ended_at = Some(crate::platform::now_millis());
                 Ok(())
             })?;
             crate::platform::notes::note(

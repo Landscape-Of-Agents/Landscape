@@ -532,6 +532,11 @@ pub(crate) struct ApprovalConfig {
     - max_commands: Option<u64> - shell commands
     - max_network_calls: Option<u64> - calls reaching the network
     - max_denials: Option<u64> - denied calls before the session must stop in the target
+    - max_tool_calls_per_day: Option<u64> - tool calls in the target today, across every session
+    - max_files_changed_per_day: Option<u64> - distinct files changed today, across every session
+    - max_lines_changed_per_day: Option<u64> - lines changed today, across every session
+    - max_commands_per_day: Option<u64> - shell commands today, across every session
+    - max_network_calls_per_day: Option<u64> - calls reaching the network today, across every session
     - max_retries: Option<u32> - retries of a failed step (resident agents and skills)
     - max_ceiling: Option<Ceiling> - the highest autonomy agents get in the target
     - min_criticality: Option<Criticality> - the lowest criticality the target is treated with
@@ -548,6 +553,11 @@ pub(crate) struct LimitsConfig {
     pub(crate) max_commands: Option<u64>,
     pub(crate) max_network_calls: Option<u64>,
     pub(crate) max_denials: Option<u64>,
+    pub(crate) max_tool_calls_per_day: Option<u64>,
+    pub(crate) max_files_changed_per_day: Option<u64>,
+    pub(crate) max_lines_changed_per_day: Option<u64>,
+    pub(crate) max_commands_per_day: Option<u64>,
+    pub(crate) max_network_calls_per_day: Option<u64>,
     pub(crate) max_retries: Option<u32>,
     pub(crate) max_ceiling: Option<Ceiling>,
     pub(crate) min_criticality: Option<Criticality>,
@@ -571,6 +581,11 @@ impl Default for LimitsConfig {
             max_commands: None,
             max_network_calls: None,
             max_denials: None,
+            max_tool_calls_per_day: None,
+            max_files_changed_per_day: None,
+            max_lines_changed_per_day: None,
+            max_commands_per_day: None,
+            max_network_calls_per_day: None,
             max_retries: None,
             max_ceiling: None,
             min_criticality: None,
@@ -785,6 +800,8 @@ impl Default for RecoveryConfig {
     - trailer: Option<String> - the commit trailer key commit_trailer looks for ("Agent-Session")
     - issue_pattern: Option<String> - the issue pattern linked_issue looks for ("PROJ-*")
     - commits: u32 - how many recent commits touching the target are checked
+    - gate_commits: Option<Mode> - ask or deny an agent's 'git commit' whose message does not carry
+      the required trailer and issue (empty: report only)
     - scope_from: Option<String> - check only commits touching files of an Access Brick on the
       same target
 */
@@ -795,6 +812,7 @@ pub(crate) struct ProvenanceConfig {
     pub(crate) trailer: Option<String>,
     pub(crate) issue_pattern: Option<String>,
     pub(crate) commits: u32,
+    pub(crate) gate_commits: Option<Mode>,
     pub(crate) scope_from: Option<String>,
 }
 
@@ -811,6 +829,7 @@ impl Default for ProvenanceConfig {
             trailer: None,
             issue_pattern: None,
             commits: 20,
+            gate_commits: None,
             scope_from: None,
         }
     }
@@ -1022,6 +1041,176 @@ fn plain(text: &str, pattern: bool) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c) || (pattern && c == '*'))
 }
 
+/** Programs a verification check may never run: shells, interpreters, and wrappers that run
+ * anything they are handed (a command check proves an outcome, it is not a way to run a script) */
+const REFUSED_PROGRAMS: &[&str] = &[
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ash",
+    "ksh",
+    "fish",
+    "csh",
+    "tcsh",
+    "busybox",
+    "cmd",
+    "command",
+    "powershell",
+    "pwsh",
+    "python",
+    "py",
+    "node",
+    "nodejs",
+    "deno",
+    "bun",
+    "ruby",
+    "perl",
+    "php",
+    "lua",
+    "osascript",
+    "wscript",
+    "cscript",
+    "mshta",
+    "rundll32",
+    "regsvr32",
+    "env",
+    "sudo",
+    "doas",
+    "su",
+    "xargs",
+    "nohup",
+    "timeout",
+    "nice",
+    "time",
+    "watch",
+    "eval",
+    "exec",
+    "source",
+    "npx",
+    "pnpx",
+    "bunx",
+    "uvx",
+    "pipx",
+    "ssh",
+    "scp",
+    "curl",
+    "wget",
+    "nc",
+    "ncat",
+    "telnet",
+    "rm",
+    "dd",
+];
+
+/** Why a verification check may not run a program with these arguments. Validation refuses it, and
+ * the run refuses it again, so a Brick signed before this rule cannot run one either
+ * Input
+    - program: &str - program name
+    - args: &[String] - arguments
+ * Output
+    - Option<String> the reason, None when it may run
+*/
+pub(crate) fn command_problem(program: &str, args: &[String]) -> Option<String> {
+    let lower = program.trim().to_ascii_lowercase();
+    if !plain(&lower, false) || lower.starts_with('.') {
+        return Some("program is a program name on PATH (no paths, no shell)".into());
+    }
+    let name = [".exe", ".cmd", ".bat", ".com"]
+        .iter()
+        .find_map(|suffix| lower.strip_suffix(suffix))
+        .unwrap_or(&lower);
+    if REFUSED_PROGRAMS.contains(&name)
+        || name.starts_with("python")
+        || name.ends_with(".sh")
+        || name.ends_with(".ps1")
+        || name.ends_with(".py")
+    {
+        return Some(format!(
+            "'{program}' is a shell, an interpreter, or a wrapper; name the program that proves the outcome"
+        ));
+    }
+    if args.len() > 32 {
+        return Some("args has at most 32 entries".into());
+    }
+    for arg in args {
+        if arg.len() > 500 {
+            return Some("an argument is longer than 500 characters".into());
+        }
+        if arg.chars().any(|c| c.is_control() || ";|&`$<>".contains(c)) {
+            return Some(format!(
+                "'{arg}' holds a shell character; arguments are passed to the program as they are"
+            ));
+        }
+        let value = arg.split_once('=').map_or(arg.as_str(), |(_, value)| value);
+        let outside = value.starts_with('/')
+            || value.starts_with('\\')
+            || value.starts_with('~')
+            || value.contains(':')
+            || value.split(['/', '\\']).any(|segment| segment == "..");
+        if outside {
+            return Some(format!(
+                "'{arg}' reaches outside the repository; a check works on repository files"
+            ));
+        }
+    }
+    let first = args.first().map(String::as_str).unwrap_or_default();
+    if name == "git"
+        && args.iter().any(|arg| {
+            arg == "-c"
+                || arg.starts_with("--exec-path")
+                || arg.starts_with("--config-env")
+                || arg.starts_with("--upload-pack")
+                || arg.starts_with("--receive-pack")
+        })
+    {
+        return Some("git options that configure or run other programs are refused".into());
+    }
+    if matches!(name, "npm" | "pnpm" | "yarn") && matches!(first, "exec" | "x" | "dlx") {
+        return Some(format!(
+            "'{name} {first}' runs a package it fetches; refused"
+        ));
+    }
+    None
+}
+
+/** Report whether two checks of one list can never hold together
+ * Input
+    - checks: &[Check] - checks
+ * Output
+    - Vec<Problem>
+*/
+fn contradictions(checks: &[Check]) -> Vec<Problem> {
+    let mut found = Vec::new();
+    for check in checks {
+        match check {
+            Check::FileExists { path } | Check::FileContains { path, .. } => {
+                if checks.iter().any(
+                    |other| matches!(other, Check::FileAbsent { path: absent } if absent == path),
+                ) {
+                    found.push(problem(
+                        "CHECKS_CONTRADICT",
+                        format!("{path} cannot both exist and be absent"),
+                    ));
+                }
+            }
+            Check::BranchIs { patterns } => {
+                let refused = checks.iter().any(|other| {
+                    matches!(other, Check::BranchNot { patterns: not } if patterns.iter().all(|pattern| not.contains(pattern)))
+                });
+                if refused {
+                    found.push(problem(
+                        "CHECKS_CONTRADICT",
+                        format!("branch_is {} is refused by branch_not", patterns.join(", ")),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
 /** Validate one check
  * Input
     - field: &str - field name, for messages
@@ -1038,11 +1227,36 @@ fn check_problems(field: &str, check: &Check, gate: bool, problems: &mut Vec<Pro
             format!("{field}: {} is a verification check; a precondition runs before every change and may use file, env, branch, git_clean, time_window, command_available, credential_present, or signed_state checks", serial_kind(check)),
         ));
     }
+    if let Check::BranchIs { patterns } | Check::BranchNot { patterns } = check {
+        if let Some(bad) = patterns.iter().find(|pattern| {
+            pattern.is_empty()
+                || !pattern
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_./*".contains(c))
+        }) {
+            problems.push(problem(
+                "CHECK_PATTERN_INVALID",
+                format!("{field}: '{bad}' is not a branch name or pattern"),
+            ));
+        }
+    }
     match check {
         Check::FileExists { path }
         | Check::FileAbsent { path }
         | Check::FileContains { path, .. } => {
             problems.extend(path_problem(&format!("{field}.path"), path));
+            if path.contains('*') {
+                problems.push(problem(
+                    "CHECK_PATH_GLOB",
+                    format!("{field}: '{path}' names one file; a pattern would never match"),
+                ));
+            }
+            if matches!(check, Check::FileContains { text, .. } if text.trim().is_empty()) {
+                problems.push(problem(
+                    "CHECK_EMPTY",
+                    format!("{field}: file_contains needs text; empty text always holds"),
+                ));
+            }
         }
         Check::JsonValue { path, pointer, .. } => {
             problems.extend(path_problem(&format!("{field}.path"), path));
@@ -1080,6 +1294,11 @@ fn check_problems(field: &str, check: &Check, gate: bool, problems: &mut Vec<Pro
                     "TIME_WINDOW_INVALID",
                     format!("{field}: from and to are HH:MM"),
                 ));
+            } else if minutes_of(from) == minutes_of(to) {
+                problems.push(problem(
+                    "TIME_WINDOW_INVALID",
+                    format!("{field}: from and to are the same, so the window is never open"),
+                ));
             }
             if let Some(day) = days.iter().find(|day| weekday(day).is_none()) {
                 problems.push(problem(
@@ -1096,13 +1315,23 @@ fn check_problems(field: &str, check: &Check, gate: bool, problems: &mut Vec<Pro
         }
         Check::HttpOk {
             url,
+            status,
             timeout_seconds,
-            ..
         } => {
             if !url.starts_with("https://") {
                 problems.push(problem(
                     "HTTP_CHECK_NOT_HTTPS",
                     format!("{field}: '{url}' must be an https:// URL"),
+                ));
+            } else if let Err(error) = crate::platform::probe::syntax(url) {
+                problems.push(problem("HTTP_CHECK_NOT_HTTPS", format!("{field}: {error}")));
+            } else if let Some(reason) = crate::platform::probe::refused_address(url) {
+                problems.push(problem("HTTP_CHECK_PRIVATE", format!("{field}: {reason}")));
+            }
+            if status.is_some_and(|code| !(100..=599).contains(&code)) {
+                problems.push(problem(
+                    "HTTP_CHECK_STATUS_INVALID",
+                    format!("{field}: status is 100 to 599"),
                 ));
             }
             if timeout_seconds.is_some_and(|seconds| seconds == 0 || seconds > 60) {
@@ -1122,13 +1351,13 @@ fn check_problems(field: &str, check: &Check, gate: bool, problems: &mut Vec<Pro
         }
         Check::CommandSucceeds {
             program,
+            args,
             timeout_seconds,
-            ..
         } => {
-            if !plain(program, false) {
+            if let Some(reason) = command_problem(program, args) {
                 problems.push(problem(
                     "CHECK_PROGRAM_INVALID",
-                    format!("{field}: program is a program name on PATH (no paths, no shell)"),
+                    format!("{field}: {reason}"),
                 ));
             }
             if timeout_seconds.is_some_and(|seconds| seconds == 0 || seconds > 600) {
@@ -1180,10 +1409,79 @@ pub(crate) fn minutes_of(text: &str) -> Option<u32> {
 */
 pub(crate) fn weekday(text: &str) -> Option<u32> {
     let lower = text.trim().to_ascii_lowercase();
-    ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-        .iter()
-        .position(|day| lower.starts_with(day))
-        .map(|index| index as u32)
+    [
+        ("mon", "monday"),
+        ("tue", "tuesday"),
+        ("wed", "wednesday"),
+        ("thu", "thursday"),
+        ("fri", "friday"),
+        ("sat", "saturday"),
+        ("sun", "sunday"),
+    ]
+    .iter()
+    .position(|(short, full)| lower == *short || lower == *full)
+    .map(|index| index as u32)
+}
+
+/** Agent providers Crane knows, to catch a misspelled one (agent ids may be anything else) */
+const PROVIDERS: &[&str] = &["claude", "codex", "copilot", "gemini", "cursor", "windsurf"];
+
+/** Highest values of the Limits caps; above them a cap is no cap. (field, highest) */
+const CAP_BOUNDS: &[(&str, u64)] = &[
+    ("max_tool_calls", 100_000),
+    ("max_runtime_minutes", 7 * 24 * 60),
+    ("max_files_changed", 100_000),
+    ("max_lines_changed", 10_000_000),
+    ("max_commands", 100_000),
+    ("max_network_calls", 100_000),
+    ("max_denials", 10_000),
+    ("max_tool_calls_per_day", 1_000_000),
+    ("max_files_changed_per_day", 1_000_000),
+    ("max_lines_changed_per_day", 100_000_000),
+    ("max_commands_per_day", 1_000_000),
+    ("max_network_calls_per_day", 1_000_000),
+];
+
+/** Longest an approval stays usable, in minutes (a week) */
+const MAX_APPROVAL_MINUTES: u32 = 7 * 24 * 60;
+
+/** Most entries of a Knowledge Brick's lists */
+const MAX_KNOWLEDGE_ENTRIES: usize = 200;
+
+/** The number of single-character edits between two short names
+ * Input
+    - a: &str - name
+    - b: &str - name
+ * Output
+    - usize
+*/
+fn edits(a: &str, b: &str) -> usize {
+    let b = b.chars().collect::<Vec<_>>();
+    let mut row = (0..=b.len()).collect::<Vec<_>>();
+    for (i, left) in a.chars().enumerate() {
+        let mut previous = row[0];
+        row[0] = i + 1;
+        for (j, right) in b.iter().enumerate() {
+            let replaced = previous + usize::from(left != *right);
+            previous = row[j + 1];
+            row[j + 1] = replaced.min(row[j] + 1).min(row[j + 1] + 1);
+        }
+    }
+    row[b.len()]
+}
+
+/** Report whether a host entry is an exact host or "*.example.com" ("*" alone would match nothing)
+ * Input
+    - host: &str - entry
+ * Output
+    - bool
+*/
+fn host_entry_valid(host: &str) -> bool {
+    if host.contains('/') || host.contains(':') || !plain(host, true) {
+        return false;
+    }
+    let exact = host.strip_prefix("*.").unwrap_or(host);
+    !exact.is_empty() && !exact.contains('*')
 }
 
 /** Validate a parsed configuration (beyond its schema)
@@ -1216,6 +1514,34 @@ pub(crate) fn validate(
     match config {
         Config::Knowledge(config) => {
             paths(&mut problems, "files", &config.files);
+            for file in &config.files {
+                let name = file.rsplit('/').next().unwrap_or(file);
+                if file.contains('*') {
+                    problems.push(problem(
+                        "KNOWLEDGE_FILE_GLOB",
+                        format!("files: '{file}' names one file; patterns are not read"),
+                    ));
+                }
+                if file == ".crane"
+                    || file.starts_with(".crane/")
+                    || name == ".env"
+                    || name.starts_with(".env.")
+                {
+                    problems.push(problem(
+                        "KNOWLEDGE_FILE_PROTECTED",
+                        format!("files: '{file}' may not be delivered to agents"),
+                    ));
+                }
+            }
+            if config.files.len() > MAX_KNOWLEDGE_ENTRIES
+                || config.glossary.len() > MAX_KNOWLEDGE_ENTRIES
+                || config.references.len() > MAX_KNOWLEDGE_ENTRIES
+            {
+                problems.push(problem(
+                    "KNOWLEDGE_TOO_LARGE",
+                    format!("files, glossary, and references hold at most {MAX_KNOWLEDGE_ENTRIES} entries each"),
+                ));
+            }
             for (term, meaning) in &config.glossary {
                 if term.trim().is_empty() || meaning.trim().is_empty() {
                     problems.push(problem(
@@ -1223,6 +1549,16 @@ pub(crate) fn validate(
                         "every glossary term needs a meaning",
                     ));
                 }
+            }
+            if config
+                .references
+                .iter()
+                .any(|line| line.trim().is_empty() || line.contains('\n'))
+            {
+                problems.push(problem(
+                    "REFERENCE_INVALID",
+                    "a reference is one line: a title and a link",
+                ));
             }
         }
         Config::Identity(config) => {
@@ -1239,12 +1575,27 @@ pub(crate) fn validate(
                         format!("'{agent}' is not a provider name or agent id"),
                     ));
                 }
+                let lower = agent.to_ascii_lowercase();
+                if let Some(meant) = PROVIDERS
+                    .iter()
+                    .find(|known| **known != lower && lower.len() >= 4 && edits(known, &lower) <= 2)
+                {
+                    problems.push(problem(
+                        "IDENTITY_MISSPELLED",
+                        format!("'{agent}' looks like the provider '{meant}'; as written it would admit nobody"),
+                    ));
+                }
             }
             for model in &config.models {
                 if !plain(model, true) {
                     problems.push(problem(
                         "IDENTITY_INVALID",
                         format!("'{model}' is not a model name or pattern"),
+                    ));
+                } else if model.chars().all(|c| c == '*') {
+                    problems.push(problem(
+                        "IDENTITY_ADMITS_ALL",
+                        "models: '*' admits every model; leave models empty instead",
                     ));
                 }
             }
@@ -1263,6 +1614,32 @@ pub(crate) fn validate(
                 ("deny_read", &config.deny_read),
             ] {
                 paths(&mut problems, field, entries);
+            }
+            for entry in &config.include {
+                for (field, others) in [
+                    ("exclude", &config.exclude),
+                    ("read_only", &config.read_only),
+                    ("deny_read", &config.deny_read),
+                ] {
+                    if others.contains(entry) {
+                        problems.push(problem(
+                            "ACCESS_CONFLICT",
+                            format!("'{entry}' is in both include and {field}"),
+                        ));
+                    }
+                }
+            }
+            if let Some(entry) = config
+                .deny_read
+                .iter()
+                .find(|entry| entry.chars().all(|c| c == '*' || c == '/'))
+            {
+                problems.push(problem(
+                    "ACCESS_DENIES_EVERYTHING",
+                    format!(
+                        "deny_read '{entry}' makes every file unreadable; name the sensitive files"
+                    ),
+                ));
             }
             let modes = [
                 config.write,
@@ -1311,10 +1688,36 @@ pub(crate) fn validate(
                     "large_change needs min_lines_changed (at least 1)",
                 ));
             }
+            if config.min_lines_changed.is_some()
+                && !config.operations.contains(&ChangeClass::LargeChange)
+            {
+                problems.push(problem(
+                    "APPROVAL_SIZE_UNUSED",
+                    "min_lines_changed only applies with the large_change operation",
+                ));
+            }
             if config.min_approvals > 5 {
                 problems.push(problem(
                     "APPROVAL_QUORUM_INVALID",
                     "min_approvals is at most 5",
+                ));
+            }
+            if !config.approvers.is_empty()
+                && (config.min_approvals == 0
+                    || config.min_approvals as usize > config.approvers.len())
+            {
+                problems.push(problem(
+                    "APPROVAL_QUORUM_INVALID",
+                    "with approvers, min_approvals is at least 1 and at most the number of approvers",
+                ));
+            }
+            if config
+                .expires_minutes
+                .is_some_and(|minutes| minutes == 0 || minutes > MAX_APPROVAL_MINUTES)
+            {
+                problems.push(problem(
+                    "APPROVAL_EXPIRY_INVALID",
+                    format!("expires_minutes is 1 to {MAX_APPROVAL_MINUTES}"),
                 ));
             }
         }
@@ -1327,7 +1730,23 @@ pub(crate) fn validate(
                 config.max_commands,
                 config.max_network_calls,
                 config.max_denials,
+                config.max_tool_calls_per_day,
+                config.max_files_changed_per_day,
+                config.max_lines_changed_per_day,
+                config.max_commands_per_day,
+                config.max_network_calls_per_day,
             ];
+            for ((field, highest), value) in CAP_BOUNDS.iter().zip(caps) {
+                if value.is_some_and(|value| value > *highest) {
+                    problems.push(problem(
+                        "LIMITS_TOO_HIGH",
+                        format!("{field} is at most {highest}; a higher cap limits nothing"),
+                    ));
+                }
+            }
+            if config.max_retries.is_some_and(|retries| retries > 3) {
+                problems.push(problem("LIMITS_TOO_HIGH", "max_retries is at most 3"));
+            }
             if caps.iter().all(Option::is_none)
                 && config.max_retries.is_none()
                 && config.max_ceiling.is_none()
@@ -1368,6 +1787,22 @@ pub(crate) fn validate(
                     ));
                 }
             }
+            if let Some(name) = config.require_env.iter().find(|name| name.contains('*')) {
+                problems.push(problem(
+                    "ENV_NAME_INVALID",
+                    format!("require_env: '{name}' must be one variable's exact name"),
+                ));
+            }
+            if config
+                .hide_env
+                .iter()
+                .any(|name| name.chars().all(|c| c == '*'))
+            {
+                problems.push(problem(
+                    "ENV_HIDES_EVERYTHING",
+                    "hide_env '*' hides every variable, so any mention of one is refused; name the sensitive ones",
+                ));
+            }
             for credential in &config.credentials {
                 if crate::platform::validate_name("credential", &credential.name).is_err() {
                     problems.push(problem(
@@ -1378,14 +1813,37 @@ pub(crate) fn validate(
                         ),
                     ));
                 }
+                if let Some(bad) = credential
+                    .for_operations
+                    .iter()
+                    .find(|item| !plain(item, false))
+                {
+                    problems.push(problem(
+                        "CREDENTIAL_FOR_INVALID",
+                        format!(
+                            "'{bad}' is not an adapter or operation id, such as jira or git.push"
+                        ),
+                    ));
+                }
             }
             for host in config.network.allow.iter().chain(&config.network.deny) {
-                if host.contains('/') || host.contains(':') || !plain(host, true) {
+                if !host_entry_valid(host) {
                     problems.push(problem(
                         "NETWORK_HOST_INVALID",
                         format!("'{host}' is a host name such as api.example.com or *.example.com"),
                     ));
                 }
+            }
+            if let Some(host) = config
+                .network
+                .allow
+                .iter()
+                .find(|host| config.network.deny.contains(host))
+            {
+                problems.push(problem(
+                    "NETWORK_CONFLICT",
+                    format!("'{host}' is in both network.allow and network.deny"),
+                ));
             }
         }
         Config::Precondition(config) => {
@@ -1404,6 +1862,7 @@ pub(crate) fn validate(
             for check in &config.checks {
                 check_problems("checks", check, true, &mut problems);
             }
+            problems.extend(contradictions(&config.checks));
         }
         Config::Verification(config) => {
             if config.checks.is_empty() && config.checks_from.is_none() {
@@ -1415,6 +1874,7 @@ pub(crate) fn validate(
             for check in &config.checks {
                 check_problems("checks", check, false, &mut problems);
             }
+            problems.extend(contradictions(&config.checks));
         }
         Config::Action(config) => {
             let rules = config.rules();
@@ -1422,6 +1882,25 @@ pub(crate) fn validate(
                 problems.push(problem(
                     "ACTION_EMPTY",
                     "operations must name at least one registered operation",
+                ));
+            }
+            if config.deny_direct
+                && !rules.is_empty()
+                && !rules.iter().any(|rule| {
+                    super::guard::DIRECT.iter().any(|(adapter, operation, _)| {
+                        *adapter == rule.adapter && *operation == rule.operation
+                    })
+                })
+            {
+                problems.push(problem(
+                    "ACTION_DENY_DIRECT_UNUSED",
+                    "deny_direct keeps agents from direct operations such as git.push, and none is listed",
+                ));
+            }
+            if rules.iter().any(|rule| rule.max_per_day == Some(0)) {
+                problems.push(problem(
+                    "ACTION_CAP_ZERO",
+                    "max_per_day is at least 1; leave the operation out to forbid it",
                 ));
             }
             for rule in &rules {
@@ -1461,6 +1940,27 @@ pub(crate) fn validate(
                 problems.push(problem(
                     "RECOVERY_RETRY_WITHOUT_RETRIES",
                     "on_failure retry needs max_retries of at least 1",
+                ));
+            }
+            if config.max_retries > 0 && config.on_failure != Escalation::Retry {
+                problems.push(problem(
+                    "RECOVERY_RETRIES_UNUSED",
+                    "max_retries only applies with on_failure: retry",
+                ));
+            }
+            if config.backoff_seconds > 0 && config.max_retries == 0 {
+                problems.push(problem(
+                    "RECOVERY_RETRIES_UNUSED",
+                    "backoff_seconds only applies with retries",
+                ));
+            }
+            if config
+                .max_consecutive_failures
+                .is_some_and(|count| count > 1000)
+            {
+                problems.push(problem(
+                    "RECOVERY_TOO_MANY_FAILURES",
+                    "max_consecutive_failures is at most 1000",
                 ));
             }
             if config.backoff_seconds > 3600 {
@@ -1505,6 +2005,41 @@ pub(crate) fn validate(
                     "linked_issue needs issue_pattern, such as PROJ-*",
                 ));
             }
+            if config.issue_pattern.as_deref().is_some_and(|pattern| {
+                !pattern.trim().is_empty()
+                    && (pattern.contains(char::is_whitespace)
+                        || !pattern.chars().any(|c| c.is_ascii_alphabetic()))
+            }) {
+                problems.push(problem(
+                    "PROVENANCE_PATTERN_INVALID",
+                    "issue_pattern needs letters and no spaces, such as PROJ-*; a bare * would match every commit",
+                ));
+            }
+            if (config.trailer.is_some()
+                && !config.require.contains(&ProvenanceItem::CommitTrailer))
+                || (config.issue_pattern.is_some()
+                    && !config.require.contains(&ProvenanceItem::LinkedIssue))
+            {
+                problems.push(problem(
+                    "PROVENANCE_FIELD_UNUSED",
+                    "trailer applies with commit_trailer, and issue_pattern with linked_issue",
+                ));
+            }
+            if config.gate_commits == Some(Mode::Auto) {
+                problems.push(problem(
+                    "PROVENANCE_GATE_INVALID",
+                    "gate_commits is ask or deny; auto would hold nothing",
+                ));
+            }
+            if config.gate_commits.is_some()
+                && !config.require.contains(&ProvenanceItem::CommitTrailer)
+                && !config.require.contains(&ProvenanceItem::LinkedIssue)
+            {
+                problems.push(problem(
+                    "PROVENANCE_GATE_INVALID",
+                    "gate_commits reads the commit message, so require commit_trailer or linked_issue",
+                ));
+            }
             if config.commits == 0 || config.commits > 500 {
                 problems.push(problem("PROVENANCE_COMMITS_INVALID", "commits is 1 to 500"));
             }
@@ -1525,6 +2060,33 @@ pub(crate) fn validate(
                     problems.push(problem(
                         "MONITOR_THRESHOLD_MISSING",
                         "a denials signal needs a threshold",
+                    ));
+                }
+                if signal.every_minutes > 30 * 24 * 60 {
+                    problems.push(problem(
+                        "MONITOR_TOO_RARE",
+                        "every_minutes is at most 43200 (30 days)",
+                    ));
+                }
+                if !signal.source.supported() {
+                    problems.push(problem(
+                        "WATCH_SOURCE_UNSUPPORTED",
+                        format!(
+                            "{} has no connector in this version, so it would never fire; watch a local source",
+                            serial(&signal.source)
+                        ),
+                    ));
+                }
+                if signal.threshold == Some(0) {
+                    problems.push(problem(
+                        "MONITOR_THRESHOLD_INVALID",
+                        "threshold is at least 1; 0 would fire all the time",
+                    ));
+                }
+                if signal.threshold.is_some() && signal.source != SignalSource::Denials {
+                    problems.push(problem(
+                        "MONITOR_THRESHOLD_INVALID",
+                        "threshold applies to the denials signal only",
                     ));
                 }
             }

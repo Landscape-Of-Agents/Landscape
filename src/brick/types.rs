@@ -297,8 +297,8 @@ impl BrickType {
                 purpose: "Caps how much and how long agents work in the target in one session.",
                 unique: "The only kind that counts: tool calls, minutes, files and lines changed, commands, network calls, denials, and the autonomy ceiling.",
                 support: Support::Enforced,
-                runtime: "counted per session and target before every tool call; at a cap the call stops or needs a person (on_exhausted)",
-                fields: &["max_tool_calls", "max_runtime_minutes", "max_files_changed", "max_lines_changed", "max_commands", "max_network_calls", "max_denials", "max_retries", "max_ceiling", "min_criticality", "on_exhausted", "scope_from"],
+                runtime: "counted per session and per day in the target before every tool call; at a cap the call stops or needs a person (on_exhausted)",
+                fields: &["max_tool_calls", "max_runtime_minutes", "max_files_changed", "max_lines_changed", "max_commands", "max_network_calls", "max_denials", "max_tool_calls_per_day", "max_files_changed_per_day", "max_lines_changed_per_day", "max_commands_per_day", "max_network_calls_per_day", "max_retries", "max_ceiling", "min_criticality", "on_exhausted", "scope_from"],
             },
             Self::Environment => Info {
                 label_key: "environment",
@@ -324,7 +324,7 @@ impl BrickType {
                 purpose: "Proves the outcome after work: policy tests, files, network endpoints, metrics, and commands.",
                 unique: "The only kind that produces evidence after the fact: proven, contradicted, unknown, or not run.",
                 support: Support::Checked,
-                runtime: "checks run by 'crane brick test' and the monitors (commands only by 'crane brick test', run by a person)",
+                runtime: "checks run by 'crane brick test' and the monitors (commands and endpoints only by 'crane brick test', run by a person; a draft's only after that person reviews them)",
                 fields: &["checks", "checks_from"],
             },
             Self::Action => Info {
@@ -351,8 +351,8 @@ impl BrickType {
                 purpose: "Requires every outcome to be traceable: signed state, audit chain, commit trailers, linked issues.",
                 unique: "The only kind about lineage: it checks where changes came from, not whether they work.",
                 support: Support::Checked,
-                runtime: "verified by 'crane brick test' and the monitors against the signed manifest, the audit chain, and recent commits touching the target",
-                fields: &["require", "trailer", "issue_pattern", "commits", "scope_from"],
+                runtime: "verified by 'crane brick test' and the monitors against the signed manifest, the audit chain, and recent commits touching the target; with gate_commits, an agent's commit without the trailer or issue also needs a person or stops",
+                fields: &["require", "trailer", "issue_pattern", "commits", "gate_commits", "scope_from"],
             },
             Self::Watch => Info {
                 label_key: "watch",

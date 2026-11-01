@@ -646,3 +646,73 @@ fn selections_require_context() {
         "the signed record verifies"
     );
 }
+
+/** Removing a selection ends the rule: the markers and the policy command go, the code stays, the
+ * state still verifies, the audit trail records it, and an agent is refused
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn a_person_removes_a_selection_and_an_agent_cannot() {
+    let fixture = Fixture::ready();
+    let before = fixture.read("app/payments.py");
+    let id = fixture.protect(&["app/payments.py", "start-line", "1", "end-line", "4"]);
+    assert!(fixture.read("app/payments.py").contains(&id));
+
+    let refused = fixture.as_agent(&["selection", "remove", &id, "--reason", "gone"]);
+    assert!(
+        !refused.status.success() && text(&refused).contains("cannot be executed by an AI agent"),
+        "{}",
+        text(&refused)
+    );
+    assert!(fixture
+        .fails(&["selection", "remove", &id])
+        .contains("--reason"));
+
+    fixture.ok(&["selection", "remove", &id, "--reason", "gone", "--dry-run"]);
+    assert!(
+        fixture.read("app/payments.py").contains(&id),
+        "a dry run changes nothing"
+    );
+
+    fixture.ok(&["selection", "remove", &id, "--reason", "no longer audited"]);
+    assert_eq!(fixture.read("app/payments.py"), before);
+    assert!(fixture.crane_json("registry.json")["selections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|record| record["id"] != id.as_str()));
+    fixture.ok(&["validate"]);
+    assert!(fixture
+        .read(".crane/audit.jsonl")
+        .contains("selection.removed"));
+    assert!(fixture
+        .fails(&["selection", "remove", &id, "--reason", "again"])
+        .contains("not a registered selection"));
+}
+
+/** A selection a zone names stays until governance.yaml stops naming it
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn a_selection_a_zone_names_cannot_be_removed() {
+    let fixture = Fixture::ready();
+    let id = fixture.protect(&["app/payments.py", "start-line", "1", "end-line", "4"]);
+    fixture.write(
+        ".crane/governance.yaml",
+        &format!("version: 1\nzones:\n  - id: payments\n    description: Payment logic\n    selectors:\n      selections: [{id}]\n"),
+    );
+    fixture.ok(&["governance", "sign"]);
+    let output = fixture.run(&["selection", "remove", &id, "--reason", "gone"]);
+    assert!(
+        text(&output).contains("named in .crane/governance.yaml"),
+        "{}",
+        text(&output)
+    );
+    assert!(fixture.read("app/payments.py").contains(&id));
+}

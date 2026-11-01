@@ -180,6 +180,7 @@ pub(super) fn command(event: &Event) -> Vec<Spec> {
             | ("checkpoint", _)
             | ("protect", _)
             | ("target", _)
+            | ("selection", "remove")
             | ("create", "policy")
             | ("add", "policy")
             | ("--set", _)
@@ -322,6 +323,22 @@ pub(super) fn command(event: &Event) -> Vec<Spec> {
             spec.set("resource", "resource", ["CRANE_METADATA"])
                 .set("other", "policy_name", words.get(2))
                 .set("other", "policy_file", words.get(3));
+            specs.push(spec);
+        }
+        ("selection", "remove") => {
+            let mut spec = flow_event(
+                "SELECTION_REMOVED",
+                "F01",
+                "REMOVE",
+                "Selection removed: markers, policy line, and signed record.",
+            );
+            spec.set(
+                "resource",
+                "resource",
+                ["FILE_WRITE", "SELECTION", "CRANE_METADATA"],
+            )
+            .set("resource", "resource_ids", [word(2)])
+            .set("other", "selection_id", word(2));
             specs.push(spec);
         }
         ("protect" | "target", _) => {

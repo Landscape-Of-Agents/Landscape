@@ -137,6 +137,53 @@ pub(crate) fn request_within(
     }
 }
 
+/** Send a GET connected only to the addresses given, without a second lookup that could swap in
+ * another one (curl does not follow redirects here, so an answer cannot lead elsewhere)
+ * Input
+    - url: &str - endpoint
+    - host: &str - its host
+    - port: u16 - its port
+    - addresses: &[std::net::IpAddr] - where to connect
+    - seconds: u64 - time limit
+ * Output
+    - Result<u16, String> status code
+*/
+pub(crate) fn get_pinned(
+    url: &str,
+    host: &str,
+    port: u16,
+    addresses: &[std::net::IpAddr],
+    seconds: u64,
+) -> Result<u16, String> {
+    let list = addresses
+        .iter()
+        .map(|ip| match ip {
+            std::net::IpAddr::V6(v6) => format!("[{v6}]"),
+            std::net::IpAddr::V4(v4) => v4.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut config = config("GET", url, &[], None, seconds);
+    config.push_str(&format!(
+        "resolve = {}\noutput = {}\nwrite-out = \"%{{http_code}}\"\n",
+        quoted(&format!("{host}:{port}:{list}")),
+        quoted(if cfg!(windows) { "NUL" } else { "/dev/null" })
+    ));
+    let output = spawn(&config, true)?
+        .wait_with_output()
+        .map_err(|error| error.to_string())?;
+    match String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u16>()
+    {
+        Ok(status) if status > 0 => Ok(status),
+        _ => Err(format!(
+            "the request did not complete: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
+}
+
 /** Send a JSON POST without waiting for the answer (at most 10 seconds in the background)
  * Input
     - url: &str - endpoint

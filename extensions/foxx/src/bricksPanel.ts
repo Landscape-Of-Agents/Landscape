@@ -189,6 +189,7 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
       if (!reason) return CANCELLED;
       return signed(deps, ["brick", "detach", row.attachment_id, "--reason", reason], `Detach ${row.subject} from ${row.target}`, progress, dialogs);
     }
+    if (op === "destroy") return destroy(text(values.id), progress);
     if (op === "activate") {
       const id = text(values.id);
       const reason = await dialogs.reason(`Why activate ${id}? Activation is signed with an admin key.`);
@@ -231,6 +232,30 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
       return { ok: true, message: `${migrated.envelope.summary}${next.length ? " Activate each new draft from the Library, then move its attachments to it:" : ""}`, problems: next };
     }
     return { ok: false, message: `Landscape does not know the operation '${op}'.` };
+  }
+
+  /**
+   * Destroy a Brick: Crane says first what would go (or what still connects it, which it refuses),
+   * and the person confirms. Every version and the draft leave the store for good.
+   * @param id Brick id
+   * @param progress step reporter
+   * @returns result
+   */
+  async function destroy(id: string, progress: (text: string) => void): Promise<OpResult> {
+    const reason = await dialogs.reason(`Why destroy ${id}? It is kept in the audit trail.`);
+    if (!reason) return CANCELLED;
+    const args = ["brick", "destroy", id, "--reason", reason];
+    progress(`Checking what destroying ${id} would remove`);
+    const preview = await call<{ connected?: string[] }>(deps, args.concat(["--dry-run"]));
+    if (!preview.envelope) return { ok: false, message: preview.error ?? "Crane printed no result." };
+    if (!succeeded(preview.envelope.status)) return refused(preview.envelope, (preview.envelope.data?.connected ?? []).map((message) => ({ message })));
+    if (!(await dialogs.confirm(`Destroy ${id}?`, `${preview.envelope.summary}\n\nIt stops existing for this repository: nothing can attach it again, and a new Brick with this id starts over at version 1. The audit trail keeps the record.`, "Destroy", "danger"))) return CANCELLED;
+    progress(`Destroying ${id}`);
+    const result = await call(deps, args);
+    if (!result.envelope) return { ok: false, message: result.error ?? "Crane printed no result." };
+    if (!succeeded(result.envelope.status)) return refused(result.envelope);
+    deps.record("FOXX_BRICK_COMMAND", { command: result.envelope.command, status: result.envelope.status.toUpperCase(), statement: result.envelope.summary });
+    return { ok: true, message: result.envelope.summary };
   }
 
   /**
@@ -910,17 +935,20 @@ function renderLibrary() {
     const rows = S.bricks.filter(filter);
     if (!rows.length) return "";
     return "<h3 style=\\"margin:4px 0 8px\\">" + esc(title) + ' <span class="muted small">' + rows.length + '</span></h3><div class="list" style="margin-bottom:14px">' + rows.map((row) => {
-      const where = S.attachments.filter((item) => brickRef(item.subject) === row.ref).map((item) => item.target);
+      const where = S.attachments.filter((item) => brickRef(item.subject) === row.ref);
+      const pinned = S.attachments.filter((item) => brickRef(item.subject).split("@")[0] === row.brick_id);
       const id = row.state === "draft" ? row.brick_id : row.ref;
+      const destroy = '<button class="btn small danger" data-destroy="' + esc(row.brick_id) + '"' + (pinned.length ? ' disabled title="Attached to ' + esc(pinned.map((item) => item.target).join(", ")) + '. Detach it first."' : ' title="Remove every version of this Brick for good"') + ">Destroy…</button>";
       const actions = row.state === "draft"
         ? '<button class="btn small primary" data-activate="' + esc(row.brick_id) + '">Activate</button><button class="btn small" data-validate="' + esc(row.brick_id) + '">Check for problems</button><button class="btn small" data-test="' + esc(id) + '">Test…</button><button class="btn small" data-common="' + esc(id) + '">Edit common context</button>'
         : row.state === "active" ? '<button class="btn small primary" data-attach-brick="' + esc(row.ref) + '">Attach…</button><button class="btn small" data-test="' + esc(id) + '">Test…</button><button class="btn small" data-common="' + esc(id) + '">Edit common context</button>' : "";
+      const allActions = actions + destroy;
       const former = (S.legacy || {})[row.type];
       return '<div class="item"><div class="title"><b>' + esc(row.name) + "</b>" + infoButton(id, row.name) + '<span class="tag">' + esc(row.type) + "</span>" + (former ? '<span class="tag warn" title="Read as ' + esc(former) + '">former kind: now ' + esc(former) + "</span>" : "") + '<span class="tag ' + stateTone(row.state) + '">' + esc(row.state) + "</span>" + (row.validation && row.validation !== "passed" ? '<span class="tag bad">' + esc(row.validation) + "</span>" : "") + '<span class="muted small mono">' + esc(id) + "</span></div>" +
         (row.intent ? '<div class="muted small" style="margin-top:4px">' + esc(row.intent) + "</div>" : "") +
         '<div class="chips-row"><button type="button" class="chip-btn" data-kind="' + esc(former ? former.split(" ")[0] : row.type) + '"><span aria-hidden="true">?</span>What is a ' + esc(former ? former.split(" ")[0] : row.type) + " Brick?</button>" +
-        (where.length ? '<span class="muted small">Attached to</span>' + where.map((key) => '<button type="button" class="chip-btn" data-goto="' + esc(key) + '" title="Show it in the graph"><span aria-hidden="true">' + (key.startsWith("flow:") ? "⇢" : "▦") + "</span>" + esc(key.replace(/^[a-z]+:/, "")) + "</button>").join("") : "") + "</div>" +
-        (actions ? '<div class="actions">' + actions + "</div>" : "") + "</div>";
+        (where.length ? '<span class="muted small">Attached to</span>' + where.map((item) => { const key = item.target; return '<span class="attached"><button type="button" class="chip-btn" data-goto="' + esc(key) + '" title="Show it in the graph"><span aria-hidden="true">' + (key.startsWith("flow:") ? "⇢" : "▦") + "</span>" + esc(key.replace(/^[a-z]+:/, "")) + '</button><button type="button" class="chip-btn detach" data-detach="' + esc(item.attachment_id) + '" title="Detach from ' + esc(key) + '" aria-label="Detach from ' + esc(key) + '">×</button></span>'; }).join("") : "") + "</div>" +
+        '<div class="actions">' + allActions + "</div></div>";
     }).join("") + "</div>";
   }).join("");
   const formers = S.bricks.filter((row) => row.state === "active" && (S.legacy || {})[row.type]);
@@ -932,12 +960,14 @@ function renderLibrary() {
 
 // ---------------------------------------------------------------- buttons anywhere on the page
 document.addEventListener("click", async (event) => {
-  const el = event.target.closest("[data-volatile],[data-common],[data-activate],[data-validate],[data-attach-brick],[data-goto]");
+  const el = event.target.closest("[data-volatile],[data-common],[data-activate],[data-validate],[data-attach-brick],[data-goto],[data-destroy],[data-detach]");
   if (!el) return;
   event.preventDefault();
   const d = el.dataset;
   if (d.volatile) { selectTab("context"); $("v-attachment").value = d.volatile; loadVolatile(); $("v-text").focus(); }
   else if (d.common) { selectTab("context"); const select = $("k-brick"); const match = [...select.options].find((option) => option.value === d.common || option.value.split("@")[0] === d.common.split("@")[0]); if (match) { select.value = match.value; loadCommon(); } }
+  else if (d.destroy) perform(el, "destroy", { id: d.destroy });
+  else if (d.detach) perform(el, "detach", { attachment: d.detach });
   else if (d.activate) perform(el, "activate", { id: d.activate });
   else if (d.validate) perform(el, "validate", { id: d.validate });
   else if (d.attachBrick) { selectTab("attach"); $("a-subject").value = d.attachBrick; const picked = graph.picked(); if (picked && !picked.startsWith("item:")) setTarget(picked); $("a-target").focus(); }

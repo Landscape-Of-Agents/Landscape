@@ -2134,6 +2134,7 @@ fn watch_stop(args: &[String]) -> Result<(), String> {
         watcher.status = subagent::STOPPED.into();
         watcher.pending = None;
         watcher.stopped_by = Some(crate::platform::actor());
+        watcher.ended_at = Some(crate::platform::now_millis());
         Ok(())
     })?;
     crate::platform::notes::note(

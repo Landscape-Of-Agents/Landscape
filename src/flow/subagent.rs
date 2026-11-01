@@ -732,6 +732,7 @@ pub(crate) fn reject(runtime: &Path, id: &str, by: &str) -> Result<Watcher, Stri
             watcher.status = STOPPED.into();
             watcher.active = false;
             watcher.stopped_by = Some(by.to_string());
+            watcher.ended_at = Some(crate::platform::now_millis());
         }
         rejected = Some(watcher.clone());
         Ok(())
@@ -806,6 +807,7 @@ pub(crate) fn terminate_orphans(
                 watcher.pending = None;
                 watcher.firing.clear();
                 watcher.ended = Some(why.clone());
+                watcher.ended_at = Some(crate::platform::now_millis());
                 ended.push((watcher.watcher_id.clone(), why));
             }
         }

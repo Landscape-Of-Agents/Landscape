@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::model::{
-    Assignment, Attachment, Author, Brick, BrickEntry, BrickRef, Stack, StackEntry, Validation,
+    Assignment, Attachment, Author, Brick, BrickEntry, BrickRef, Stack, StackEntry, Subject,
+    Validation, VersionState,
 };
 use crate::governance::state::{commit, integrity, State, BRICKS_FILE};
 use crate::governance::workspace::Workspace;
@@ -146,6 +147,74 @@ impl BrickStore {
         self.stacks
             .iter()
             .find(|entry| entry.stack.stack_id == stack_id && entry.stack.version == version)
+    }
+
+    /** What still connects a Brick to the rest of the store, in words: attachments to any of its
+     * versions (directly or through a Stack), Stacks that are not revoked, and Bricks of another id
+     * that are not revoked and depend on it or share from it (a share that stops resolving fails
+     * closed). Drafts are not counted: they grant nothing and validate again when activated
+     * Input
+        - brick_id: &str - Brick
+     * Output
+        - Vec<String> empty when nothing connects it
+    */
+    pub(crate) fn connections(&self, brick_id: &str) -> Vec<String> {
+        let holds = |stack: &StackEntry| {
+            stack
+                .stack
+                .members
+                .iter()
+                .any(|member| member.brick_id == brick_id)
+        };
+        let mut found = Vec::new();
+        for attachment in &self.attachments {
+            let attached = match &attachment.subject {
+                Subject::Brick { brick_id: id, .. } => id == brick_id,
+                Subject::Stack { stack_id, version } => {
+                    self.stack(stack_id, *version).is_some_and(&holds)
+                }
+            };
+            if attached {
+                found.push(format!(
+                    "attached to {} ({})",
+                    attachment.target.key(),
+                    attachment.attachment_id
+                ));
+            }
+        }
+        for stack in self
+            .stacks
+            .iter()
+            .filter(|stack| stack.state != VersionState::Revoked && holds(stack))
+        {
+            found.push(format!(
+                "a member of Stack {}@{}",
+                stack.stack.stack_id, stack.stack.version
+            ));
+        }
+        for entry in self.bricks.iter().filter(|entry| {
+            entry.brick.brick_id != brick_id && entry.state != VersionState::Revoked
+        }) {
+            let reference = entry.brick.reference();
+            if entry
+                .brick
+                .dependencies
+                .iter()
+                .any(|dependency| dependency.brick_id == brick_id)
+            {
+                found.push(format!("a dependency of {reference}"));
+            }
+            let shares = super::config::parse(entry.brick.brick_type, &entry.brick.config)
+                .is_ok_and(|configs| {
+                    configs
+                        .iter()
+                        .any(|config| config.shares_from() == Some(brick_id))
+                });
+            if shares {
+                found.push(format!("shared from by {reference}"));
+            }
+        }
+        found
     }
 
     /** The next version number of a Brick or Stack id (activated versions and the draft considered)

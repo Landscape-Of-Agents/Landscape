@@ -15,7 +15,7 @@ use crate::brick::config::{self, Config, ProvenanceItem};
 use crate::brick::model::{
     Attachment, AttachmentState, Brick, BrickEntry, Subject, ValidationStatus, VersionState,
 };
-use crate::brick::runtime::{run_checks, CheckOutcome};
+use crate::brick::runtime::{run_checks, CheckOutcome, Reach};
 use crate::brick::store;
 use crate::brick::store::BrickStore;
 use crate::brick::types::Support;
@@ -306,15 +306,19 @@ fn trial(args: &Args, repo: &Repo, brick: &Brick, raw: &str) -> Result<(), Strin
     - Result<(), String>
 */
 pub(super) fn test(args: &[String]) -> Result<(), String> {
-    let args = parse(args, &["target", "flow", "zone", "call"], &[])?;
+    let args = parse(
+        args,
+        &["target", "flow", "zone", "call", "allow-commands"],
+        &[],
+    )?;
     args.expect_positional(
         1,
-        "crane brick test ID[@N] [--target flow:ID|zone:ID] [--call JSON|FILE]",
+        "crane brick test ID[@N] [--target flow:ID|zone:ID] [--call JSON|FILE] [--allow-commands TOKEN]",
     )?;
     let repo = open()?;
-    let brick = match find(&repo, &args.positional[0])? {
-        Found::Draft(draft) => draft.brick,
-        Found::Version(entry) => entry.brick,
+    let (brick, signed) = match find(&repo, &args.positional[0])? {
+        Found::Draft(draft) => (draft.brick, false),
+        Found::Version(entry) => (entry.brick, true),
     };
     if let Some(raw) = args.value("call") {
         return trial(&args, &repo, &brick, &raw);
@@ -350,6 +354,43 @@ pub(super) fn test(args: &[String]) -> Result<(), String> {
     }
     let mut effects = Vec::new();
     let info = brick.brick_type.catalog();
+    // A signed Brick was reviewed by the admin who signed it. A draft can come from anyone who can
+    // queue a request or supply a library, so what it would run is shown first, and it runs only
+    // when the person answers with the token of exactly those checks
+    let outside = outside_checks(&brick);
+    let token = consent_token(&outside);
+    let reach = if signed || outside.is_empty() {
+        Reach::Outside
+    } else {
+        match args.value("allow-commands") {
+            Some(given) if given != token => {
+                return Err(format!(
+                    "--allow-commands {given} does not match this draft's checks; run 'crane brick test {}' again and review what it would run",
+                    brick.brick_id
+                ))
+            }
+            Some(_) if validation.status != ValidationStatus::Passed => {
+                return Err(format!(
+                    "{} does not validate, so its commands and endpoints are not run",
+                    brick.brick_id
+                ))
+            }
+            Some(_) => Reach::Outside,
+            None => Reach::Unsigned,
+        }
+    };
+    let review = (reach == Reach::Unsigned).then(|| {
+        cases.push(case(
+            "review",
+            "NOT_RUN",
+            format!(
+                "this draft is unsigned and would run: {}. Nothing ran. If you trust them, run 'crane brick test {} --allow-commands {token}'",
+                outside.iter().map(crate::brick::compose::check_text).collect::<Vec<_>>().join("; "),
+                brick.brick_id
+            ),
+        ));
+        json!({"token": token, "checks": outside})
+    });
     match config::parse(brick.brick_type, &brick.config) {
         Err(problem) => cases.push(case("configuration", "FAIL", problem.message)),
         Ok(parsed) => {
@@ -364,7 +405,7 @@ pub(super) fn test(args: &[String]) -> Result<(), String> {
                 ));
             }
             for config in &parsed {
-                test_config(&repo, &brick, config, &on, &mut cases, &mut effects)?;
+                test_config(&repo, &brick, config, &on, reach, &mut cases, &mut effects)?;
             }
         }
     }
@@ -403,8 +444,45 @@ pub(super) fn test(args: &[String]) -> Result<(), String> {
         format!("{} {}: {} case(s)", brick.reference(), brick.brick_type.name(), cases.len()),
     )
     .reference("brick_ref", brick.reference().to_string())
-    .data(json!({"cases": cases, "effects": effects, "support": info.support, "runtime": info.runtime}));
+    .data(json!({"cases": cases, "effects": effects, "support": info.support, "runtime": info.runtime, "needs_review": review}));
     finish(&args, response, &detail)
+}
+
+/** The checks of a Brick that reach beyond the repository: endpoints and programs
+ * Input
+    - brick: &Brick - Brick
+ * Output
+    - Vec<config::Check>
+*/
+fn outside_checks(brick: &Brick) -> Vec<config::Check> {
+    config::parse(brick.brick_type, &brick.config)
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|parsed| match parsed {
+            Config::Verification(verification) => verification.checks,
+            Config::Precondition(precondition) => precondition.checks,
+            _ => Vec::new(),
+        })
+        .filter(|check| {
+            matches!(
+                check,
+                config::Check::HttpOk { .. } | config::Check::CommandSucceeds { .. }
+            )
+        })
+        .collect()
+}
+
+/** The token that answers for exactly these checks: a changed draft needs a new review
+ * Input
+    - checks: &[config::Check] - checks
+ * Output
+    - String
+*/
+fn consent_token(checks: &[config::Check]) -> String {
+    crate::trust::crypto::digest_json("bricks/test-review/v1", &json!(checks))
+        .chars()
+        .take(16)
+        .collect()
 }
 
 /** The kind a configuration belongs to, such as "access"
@@ -430,12 +508,72 @@ fn kind_of(config: &Config) -> &'static str {
     }
 }
 
+/** The settings a configuration sets that agent tools do not honor, said plainly so nobody takes
+ * them for a limit on those tools
+ * Input
+    - config: &Config - configuration
+ * Output
+    - Vec<(&'static str, &'static str)> setting and what it really does
+*/
+fn resident_only(config: &Config) -> Vec<(&'static str, &'static str)> {
+    let mut found = Vec::new();
+    match config {
+        Config::Approval(approval)
+            if !approval.approvers.is_empty()
+                || approval.min_approvals > 0
+                || approval.distinct_approver
+                || approval.expires_minutes.is_some() =>
+        {
+            found.push((
+                "approvers and quorum",
+                "apply to resident agents; an agent tool's own prompt answers its approvals",
+            ));
+        }
+        Config::Limits(limits) if limits.max_retries.is_some() => {
+            found.push((
+                "max_retries",
+                "applies to resident agents and skills, not to agent tools",
+            ));
+        }
+        Config::Action(action)
+            if action
+                .rules()
+                .iter()
+                .any(|rule| rule.max_per_day.is_some() || rule.dry_run_first) =>
+        {
+            found.push((
+                "max_per_day and dry_run_first",
+                "apply to resident agents and skills, not to agent tools",
+            ));
+        }
+        Config::Recovery(recovery) if recovery.max_retries > 0 => {
+            found.push((
+                "max_retries",
+                "applies to resident agents and skills, not to agent tools",
+            ));
+        }
+        Config::Provenance(provenance) => {
+            found.push(("provenance", if provenance.gate_commits.is_some() {
+                "gate_commits holds an agent's commit whose message lacks them; trailers and issue links are still text anyone can type"
+            } else {
+                "reports after the fact and blocks nothing unless gate_commits is set; trailers and issue links are text anyone can type"
+            }));
+        }
+        Config::Identity(_) => {
+            found.push(("identity", "trusts the provider and model the agent's hooks report; it is not proof of who is calling"));
+        }
+        _ => {}
+    }
+    found
+}
+
 /** The test cases of one configuration
  * Input
     - repo: &Repo - repository
     - brick: &Brick - the Brick tested
     - config: &Config - one of its configurations
     - on: &[String] - targets to simulate on
+    - reach: Reach - how far verification checks may reach
     - cases: &mut Vec<Value> - cases found
     - effects: &mut Vec<Value> - enforcement previews
  * Output
@@ -446,6 +584,7 @@ fn test_config(
     brick: &Brick,
     config: &Config,
     on: &[String],
+    reach: Reach,
     cases: &mut Vec<Value>,
     effects: &mut Vec<Value>,
 ) -> Result<(), String> {
@@ -505,13 +644,16 @@ fn test_config(
             effects.push(preview);
         }
     }
+    for (name, detail) in resident_only(config) {
+        cases.push(case(name, "UNKNOWN", detail));
+    }
     match config {
         Config::Precondition(precondition) => {
             for (check, outcome, detail) in run_checks(
                 &repo.workspace,
                 &precondition.checks,
                 on.first().map(String::as_str),
-                true,
+                Reach::Local,
             ) {
                 let holds = outcome == CheckOutcome::Proven;
                 cases.push(case(
@@ -564,7 +706,7 @@ fn test_config(
                 &repo.workspace,
                 &checks,
                 on.first().map(String::as_str),
-                true,
+                reach,
             ) {
                 cases.push(case(&check, outcome_word(outcome), detail));
             }
@@ -573,8 +715,12 @@ fn test_config(
             for item in &provenance.require {
                 let (status, detail) = match item {
                     ProvenanceItem::SignedState => {
-                        let outcome =
-                            run_checks(&repo.workspace, &[config::Check::SignedState], None, true);
+                        let outcome = run_checks(
+                            &repo.workspace,
+                            &[config::Check::SignedState],
+                            None,
+                            Reach::Local,
+                        );
                         (outcome_word(outcome[0].1), outcome[0].2.clone())
                     }
                     ProvenanceItem::AuditChain => {

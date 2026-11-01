@@ -420,3 +420,328 @@ fn libraries_import_as_drafts_and_mock_calls_are_decided() {
         "x = 1\n"
     );
 }
+
+/** A Brick is destroyed only once nothing is connected to it: an attached Brick is refused, a
+ * detached one leaves the store for good (the audit trail keeps it), a draft goes without signing,
+ * and an agent is refused
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn only_a_brick_nothing_is_connected_to_can_be_destroyed() {
+    let fixture = Fixture::ready();
+    fixture.write(
+        ".crane/governance.yaml",
+        "version: 1\nzones:\n  - id: payments\n    description: Payment logic\n    selectors:\n      files: [app/payments.py]\n    autonomy_ceiling: delegated\n    status: active\n",
+    );
+    fixture.ok(&["governance", "sign"]);
+    fixture.ok(&[
+        "brick",
+        "create",
+        "--type",
+        "limits",
+        "--name",
+        "Guard",
+        "--intent",
+        "Slow down",
+        "--config",
+        "{\"max_ceiling\": \"observe\"}",
+    ]);
+    fixture.ok(&["brick", "activate", "guard", "--reason", "needed"]);
+    let (code, attached) = envelope(
+        &fixture,
+        &["brick", "attach", "guard@1", "--target", "zone:payments"],
+    );
+    assert_eq!(code, Some(0), "{attached}");
+    let attachment = fixture.crane_json("bricks.json")["attachments"][0]["attachment_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (_, refused) = envelope(&fixture, &["brick", "destroy", "guard", "--reason", "done"]);
+    assert_eq!(refused["status"], "denied", "{refused}");
+    assert!(refused["data"]["connected"][0]
+        .as_str()
+        .unwrap()
+        .contains("zone:payments"));
+    assert!(fixture.read(".crane/bricks.json").contains("\"guard\""));
+
+    assert!(
+        text(&fixture.as_agent(&["brick", "destroy", "guard", "--reason", "done"]))
+            .contains("cannot be executed by an AI agent")
+    );
+    fixture.ok(&["brick", "detach", &attachment, "--reason", "done with it"]);
+    let (code, preview) = envelope(
+        &fixture,
+        &["brick", "destroy", "guard", "--reason", "done", "--dry-run"],
+    );
+    assert_eq!(code, Some(0), "{preview}");
+    assert!(fixture.read(".crane/bricks.json").contains("\"guard\""));
+
+    let (code, destroyed) = envelope(&fixture, &["brick", "destroy", "guard", "--reason", "done"]);
+    assert_eq!(code, Some(0), "{destroyed}");
+    assert!(!fixture.read(".crane/bricks.json").contains("\"guard\""));
+    fixture.ok(&["validate"]);
+    assert!(fixture
+        .read(".crane/audit.jsonl")
+        .contains("brick.destroyed"));
+    assert!(fixture
+        .fails(&["brick", "destroy", "guard", "--reason", "again"])
+        .contains("not a Brick"));
+
+    fixture.ok(&[
+        "brick",
+        "create",
+        "--type",
+        "limits",
+        "--name",
+        "Sketch",
+        "--intent",
+        "Try",
+        "--config",
+        "{\"max_ceiling\": \"observe\"}",
+    ]);
+    fixture.ok(&["brick", "destroy", "sketch", "--reason", "not needed"]);
+    assert!(!fixture
+        .work
+        .join(".crane/drafts/bricks/sketch.json")
+        .exists());
+}
+
+/** Testing an unsigned draft runs nothing until a person answers with the token of exactly what it
+ * would run; a changed draft needs a new review; a shell never runs, with or without a token; and
+ * once signed, the check runs like any signed Brick's
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn a_drafts_commands_run_only_after_review() {
+    let fixture = Fixture::ready();
+    fixture.ok(&["governance", "sign"]);
+    let check = |folder: &str| {
+        json!({"checks": [{"kind": "command_succeeds", "program": "git", "args": ["init", "-q", folder]}]}).to_string()
+    };
+    fixture.ok(&[
+        "brick",
+        "create",
+        "--type",
+        "verification",
+        "--name",
+        "Proof",
+        "--intent",
+        "Prove it",
+        "--config",
+        &check("first"),
+    ]);
+    let ran = |folder: &str| fixture.work.join(folder).exists();
+
+    // Nothing runs; the exact command and a token come back
+    let (_, tested) = envelope(&fixture, &["brick", "test", "proof"]);
+    assert!(!ran("first"), "{tested}");
+    let review = &tested["data"]["needs_review"];
+    assert_eq!(review["checks"][0]["program"], "git", "{tested}");
+    let token = review["token"].as_str().unwrap().to_string();
+    assert!(tested.to_string().contains("git init -q first"), "{tested}");
+
+    // A wrong token runs nothing
+    let wrong = fixture.run(&[
+        "brick",
+        "test",
+        "proof",
+        "--allow-commands",
+        "0000000000000000",
+    ]);
+    assert!(!wrong.status.success());
+    assert!(text(&wrong).contains("does not match"), "{}", text(&wrong));
+    assert!(!ran("first"));
+
+    // Changing what it runs voids the token
+    fixture.ok(&["brick", "edit", "proof", "--config", &check("second")]);
+    let stale = fixture.run(&["brick", "test", "proof", "--allow-commands", &token]);
+    assert!(!stale.status.success(), "{}", text(&stale));
+    assert!(!ran("second"));
+
+    // The token of what the person saw runs it
+    let (_, tested) = envelope(&fixture, &["brick", "test", "proof"]);
+    let token = tested["data"]["needs_review"]["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, answered) = envelope(
+        &fixture,
+        &["brick", "test", "proof", "--allow-commands", &token],
+    );
+    assert!(ran("second"), "{answered}");
+    assert!(answered["data"]["needs_review"].is_null(), "{answered}");
+
+    // A shell in a draft (a request or an imported library can supply one) never runs
+    fixture.ok(&[
+        "brick", "create", "--type", "verification", "--name", "Shell", "--intent", "Try",
+        "--config",
+        &json!({"checks": [{"kind": "command_succeeds", "program": "sh", "args": ["-c", "touch shell-ran"]}]}).to_string(),
+    ]);
+    let (_, tested) = envelope(&fixture, &["brick", "test", "shell"]);
+    assert!(
+        tested.to_string().contains("CHECK_PROGRAM_INVALID"),
+        "{tested}"
+    );
+    let token = tested["data"]["needs_review"]["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let refused = fixture.run(&["brick", "test", "shell", "--allow-commands", &token]);
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused).contains("does not validate"),
+        "{}",
+        text(&refused)
+    );
+    assert!(!ran("shell-ran"));
+
+    // A library cannot get around it: imported, it is a draft like any other
+    fixture.write(
+        "library.json",
+        &json!({"format": "crane-brick-library/v1", "bricks": [
+            {"ref": "lib@1", "state": "active", "type": "verification", "name": "Lib", "intent": "Prove",
+             "config": {"checks": [{"kind": "command_succeeds", "program": "git", "args": ["init", "-q", "imported"]}]},
+             "common_context": {"text": "", "sensitivity": "internal"}, "dependencies": []}
+        ]}).to_string(),
+    );
+    fixture.ok(&["brick", "import", "library.json"]);
+    let (_, tested) = envelope(&fixture, &["brick", "test", "lib"]);
+    assert!(!ran("imported"), "{tested}");
+    assert!(
+        tested["data"]["needs_review"]["token"].is_string(),
+        "{tested}"
+    );
+
+    // Signed by an admin, it runs without a token
+    fixture.ok(&["brick", "edit", "proof", "--config", &check("third")]);
+    fixture.ok(&["brick", "activate", "proof", "--reason", "reviewed"]);
+    let (_, signed) = envelope(&fixture, &["brick", "test", "proof@1"]);
+    assert!(ran("third"), "{signed}");
+    assert!(signed["data"]["needs_review"].is_null(), "{signed}");
+}
+
+/** The agent hook sees the checks too: a dump, a respelled push, and a computed path are decided
+ * through the real binary, and a new session does not reset a daily cap
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
+#[test]
+fn the_hook_enforces_the_new_checks() {
+    let fixture = Fixture::ready();
+    fixture.write(
+        ".crane/governance.yaml",
+        "version: 1\nzones:\n  - id: payments\n    description: Payment logic\n    selectors:\n      files: [app/payments.py, app/secret.txt]\n    autonomy_ceiling: delegated\n",
+    );
+    fixture.write("app/payments.py", "x = 1\n");
+    fixture.write("app/secret.txt", "s\n");
+    fixture.ok(&["governance", "sign"]);
+    for (name, kind, config) in [
+        ("Keep", "access", json!({"deny_read": ["app/secret.txt"]})),
+        ("Hide", "environment", json!({"hide_env": ["AWS_*"]})),
+        (
+            "Ops",
+            "action",
+            json!({"operations": [{"adapter": "git", "operation": "git.push"}], "deny_direct": true}),
+        ),
+    ] {
+        fixture.ok(&[
+            "brick",
+            "create",
+            "--type",
+            kind,
+            "--name",
+            name,
+            "--intent",
+            "Guard",
+            "--config",
+            &config.to_string(),
+        ]);
+        let id = name.to_ascii_lowercase();
+        fixture.ok(&["brick", "activate", &id, "--reason", "needed"]);
+        fixture.ok(&[
+            "brick",
+            "attach",
+            &format!("{id}@1"),
+            "--target",
+            "zone:payments",
+        ]);
+    }
+    let run = |session: &str, call: &str, command: &str| {
+        fixture.hook(
+            "claude",
+            "pre-tool-use",
+            &json!({"session_id": session, "tool_use_id": call, "cwd": fixture.work.to_string_lossy(), "tool_name": "Bash", "tool_input": {"command": command}}),
+        )
+    };
+    let denied = run("h1", "c1", "git -C . -c a=b push");
+    assert_eq!(denied.status.code(), Some(2), "{}", text(&denied));
+    assert!(text(&denied).contains("git.push"), "{}", text(&denied));
+    let glob = run("h1", "c2", "cat app/sec*");
+    assert_eq!(glob.status.code(), Some(2), "{}", text(&glob));
+    assert!(text(&glob).contains("may not be read"), "{}", text(&glob));
+    // The session has worked in the target, so hidden variables apply
+    let reading = fixture.hook(
+        "claude",
+        "pre-tool-use",
+        &json!({"session_id": "h1", "tool_use_id": "c3", "cwd": fixture.work.to_string_lossy(), "tool_name": "Read", "tool_input": {"file_path": fixture.work.join("app/payments.py").to_string_lossy()}}),
+    );
+    assert!(reading.status.success(), "{}", text(&reading));
+    let dump = run("h1", "c4", "env | cat");
+    assert_eq!(dump.status.code(), Some(2), "{}", text(&dump));
+    assert!(text(&dump).contains("whole environment"), "{}", text(&dump));
+    let computed = run("h1", "c5", "cat $(echo app/secret.txt)");
+    let answer: Value = serde_json::from_slice(&computed.stdout).unwrap_or(Value::Null);
+    assert!(
+        computed.status.code() == Some(2)
+            || answer["hookSpecificOutput"]["permissionDecision"] == "ask",
+        "{}",
+        text(&computed)
+    );
+
+    // A daily cap: two tool calls today, whichever session makes them
+    fixture.write(
+        ".crane/governance.yaml",
+        "version: 1\nzones:\n  - id: billing\n    description: Billing\n    selectors:\n      files: [billing/a.py]\n    autonomy_ceiling: delegated\n",
+    );
+    fixture.write("billing/a.py", "x = 1\n");
+    fixture.ok(&["governance", "sign"]);
+    fixture.ok(&[
+        "brick",
+        "create",
+        "--type",
+        "limits",
+        "--name",
+        "Daily",
+        "--intent",
+        "Pace",
+        "--config",
+        "{\"max_tool_calls_per_day\": 2}",
+    ]);
+    fixture.ok(&["brick", "activate", "daily", "--reason", "needed"]);
+    fixture.ok(&["brick", "attach", "daily@1", "--target", "zone:billing"]);
+    let read = |session: &str, call: &str| {
+        fixture.hook(
+            "claude",
+            "pre-tool-use",
+            &json!({"session_id": session, "tool_use_id": call, "cwd": fixture.work.to_string_lossy(), "tool_name": "Read", "tool_input": {"file_path": fixture.work.join("billing/a.py").to_string_lossy()}}),
+        )
+    };
+    assert!(read("d1", "r1").status.success());
+    assert!(read("d1", "r2").status.success());
+    let third = read("d2", "r3");
+    assert_eq!(third.status.code(), Some(2), "{}", text(&third));
+    assert!(
+        text(&third).contains("a day across sessions"),
+        "{}",
+        text(&third)
+    );
+}

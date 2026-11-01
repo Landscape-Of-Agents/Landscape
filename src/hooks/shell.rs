@@ -181,12 +181,52 @@ pub(super) fn names_crane_directory(text: &str) -> bool {
     - Vec<String> lowercase words
 */
 pub(crate) fn words(command: &str) -> Vec<String> {
+    word_parts(command).map(normal).collect()
+}
+
+/** Split a shell command at its separators and quotes, keeping each word as written
+ * Input
+    - command: &str - command text
+ * Output
+    - impl Iterator<Item = &str>
+*/
+fn word_parts(command: &str) -> impl Iterator<Item = &str> {
     command
         .split(|character: char| character.is_whitespace() || "&|;()`\"'<>{}".contains(character))
         .filter(|word| !word.is_empty())
-        .map(normal)
-        .collect()
 }
+
+/** Options of curl and wget that take the next word as their value */
+const VALUE_OPTIONS: &[&str] = &[
+    "-o",
+    "--output",
+    "-d",
+    "--data",
+    "-H",
+    "--header",
+    "-X",
+    "--request",
+    "-u",
+    "--user",
+    "-T",
+    "--upload-file",
+    "-A",
+    "--user-agent",
+    "-e",
+    "--referer",
+    "-b",
+    "--cookie",
+    "-c",
+    "--cookie-jar",
+    "-F",
+    "--form",
+    "-w",
+    "--write-out",
+    "-K",
+    "--config",
+    "-x",
+    "--proxy",
+];
 
 /** Find a Crane invocation anywhere in a shell command, a script, or inline code: a program named
  * crane or crane.exe (bare, by a Unix or Windows path, after env assignments, wrappers such as
@@ -269,7 +309,9 @@ pub(crate) fn network_destinations(texts: &[String]) -> Vec<String> {
             }
         }
     }
-    let joined = words(&texts.join(" "));
+    let text = texts.join(" ");
+    let joined = words(&text);
+    let spelled = word_parts(&text).map(str::to_string).collect::<Vec<_>>();
     for (index, word) in joined.iter().enumerate() {
         if matches!(word.as_str(), "ssh" | "scp" | "sftp" | "rsync") {
             if let Some(target) = joined[index + 1..].iter().find(|word| word.contains('@')) {
@@ -283,6 +325,33 @@ pub(crate) fn network_destinations(texts: &[String]) -> Vec<String> {
                 if !host.is_empty() {
                     found.insert(format!("ssh://{host}"));
                 }
+            }
+        }
+        if matches!(word.as_str(), "curl" | "wget" | "nc" | "ncat" | "telnet") {
+            // The first address of the call, when it is written without a scheme; options keep
+            // their case here, because curl's -o takes a value and its -O does not
+            let mut rest = spelled[index + 1..].iter();
+            while let Some(argument) = rest.next() {
+                if VALUE_OPTIONS.contains(&argument.as_str()) {
+                    rest.next();
+                    continue;
+                }
+                if argument.starts_with('-') {
+                    continue;
+                }
+                let host = argument
+                    .split(['/', ':', '?', '#'])
+                    .next()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                let top = host.rsplit('.').next().unwrap_or_default();
+                let hostlike = host.contains('.')
+                    && top.len() >= 2
+                    && top.chars().all(|c| c.is_ascii_alphabetic());
+                if !argument.contains("://") && hostlike {
+                    found.insert(host.clone());
+                }
+                break;
             }
         }
         if word == "git"

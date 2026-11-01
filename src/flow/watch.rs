@@ -106,6 +106,8 @@ pub(crate) struct Inherited {
     - approved_by: Option<String> - who approved its configuration
     - runs: Vec<Run> - its latest action runs (manual triggers and incidents)
     - ended: Option<String> - why it was terminated
+    - ended_at: Option<u64> - Unix milliseconds it stopped or was terminated (None: still running, or
+      ended before this was recorded)
 */
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Watcher {
@@ -138,6 +140,8 @@ pub(crate) struct Watcher {
     pub(crate) runs: Vec<super::subagent::Run>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) ended: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ended_at: Option<u64>,
 }
 
 /** An incident a watcher or an agent raised

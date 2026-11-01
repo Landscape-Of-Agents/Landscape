@@ -357,7 +357,8 @@ const graphHost: GraphHost = {
   savePositions: (positions) => void extensionContext?.workspaceState.update("foxx.graph.positions", positions),
   link: (from, to) => editGraph("link zones", (text) => linkZones(text, from, to)),
   unlink: (from, to) => editGraph("unlink zones", (text) => unlinkZones(text, from, to)),
-  remove: async (kind, id) => {
+  remove: async (kind, id, reason) => {
+    if (kind === "selection") return removeSelection(id, reason ?? "");
     const result = await editGraph(`remove ${kind}`, (text) => (kind === "zone" ? removeZone(text, id) : removeFlow(text, id)));
     if (!result.ok) return result;
     // The subagents acting on what was removed end with it
@@ -412,6 +413,28 @@ async function craneJson<T>(args: string[], input = ""): Promise<{ data?: T; mes
     return { error: message || `crane ${args.slice(0, 3).join(" ")} failed` };
   }
   return { data: envelope.data, message: envelope.message ?? envelope.summary };
+}
+
+/**
+ * Remove a preserve or target selection. Crane does the work and refuses it inside an agent session,
+ * so it only happens from a person's click here.
+ * @param id selection id
+ * @param reason why, for the audit trail
+ * @returns whether it was removed, and what to tell the person
+ */
+async function removeSelection(id: string, reason: string): Promise<RunResult> {
+  if (!reason.trim()) return { ok: false, message: "Say why the selection is removed; it is recorded." };
+  const checked = await checkCrane();
+  if (checked.state !== "ok") return { ok: false, message: checked.message ?? "Crane cannot be used.", actions: CRANE_FIXES };
+  const directory = root();
+  if (!directory) return { ok: false, message: "Open a repository folder first." };
+  const result = await runCrane(executable(), directory, ["selection", "remove", id, "--reason", reason, "--format", "json"]);
+  const envelope = parseJson<{ status?: string; summary?: string }>(result);
+  const ok = result.code === 0 && envelope?.status === "ok";
+  const message = envelope?.summary ?? ((result.stderr || result.stdout).trim().replace(/^crane: /, "") || `Crane could not remove ${id}.`);
+  remember("remove selection", ok, message);
+  record("FOXX_ACTION_RUN", { status: ok ? "OK" : "FAILED", failure_state: ok ? "NA" : failureOf(message), statement: ok ? "Selection removed." : "Selection removal refused.", panel_action: "REMOVE_SELECTION" });
+  return { ok, message };
 }
 
 /**

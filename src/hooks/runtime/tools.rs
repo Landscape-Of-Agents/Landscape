@@ -77,6 +77,8 @@ impl Hook {
             Some(&self.stores.directory),
         );
         let usage = crate::brick::usage::load(&self.stores.directory, &session.foxx_session_id);
+        let daily =
+            crate::brick::usage::load_daily(&self.stores.directory, crate::platform::now_millis());
         let agent_id = session.agent_id.clone();
         let model = self
             .provider
@@ -102,6 +104,7 @@ impl Hook {
                 model: model.as_deref(),
                 started_at: Some(session.started_at),
                 usage: Some(&usage),
+                daily: Some(&daily),
             },
             bricks: Some(&bricks),
         };

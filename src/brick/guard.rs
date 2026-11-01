@@ -13,10 +13,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::compose::{controls, Controls};
+use super::compose::{controls, CommitGate, Controls};
 use super::config::{ChangeClass, Escalation, Mode};
 use super::store::BrickStore;
-use super::usage::{Counted, Usage};
+use super::usage::{Counted, Daily, TargetUsage, Usage};
 use crate::governance::state::State;
 use crate::governance::workspace::Workspace;
 use crate::governance::zones::Limits;
@@ -202,6 +202,7 @@ pub(crate) struct Change {
     - model: Option<&'a str> - model
     - started_at: Option<u64> - session start, Unix milliseconds
     - usage: Option<&'a Usage> - what the session did so far
+    - daily: Option<&'a Daily> - what every session did today
     - now: u64 - Unix milliseconds
 */
 pub(crate) struct Call<'a> {
@@ -217,6 +218,7 @@ pub(crate) struct Call<'a> {
     pub(crate) model: Option<&'a str>,
     pub(crate) started_at: Option<u64>,
     pub(crate) usage: Option<&'a Usage>,
+    pub(crate) daily: Option<&'a Daily>,
     pub(crate) now: u64,
 }
 
@@ -287,6 +289,188 @@ fn has(words: &[String], sequence: &[&str]) -> bool {
                 .zip(sequence)
                 .all(|(word, wanted)| word == wanted)
         })
+}
+
+/** Options a tool takes before its subcommand that also take a value, by tool; a tool not listed
+ * here is left as written */
+fn options_with_values(tool: &str) -> Option<&'static [&'static str]> {
+    Some(match tool {
+        "git" => &[
+            "-c",
+            "--git-dir",
+            "--work-tree",
+            "--namespace",
+            "--config-env",
+            "--super-prefix",
+        ],
+        "gh" => &["-r", "--repo"],
+        "kubectl" => &[
+            "-n",
+            "--namespace",
+            "--context",
+            "--kubeconfig",
+            "--cluster",
+            "--user",
+            "-s",
+            "--server",
+        ],
+        "docker" => &[
+            "-c",
+            "--context",
+            "-h",
+            "--host",
+            "--config",
+            "-l",
+            "--log-level",
+        ],
+        "terraform" | "brew" | "choco" | "winget" | "gem" | "pipx" | "apt" | "apt-get" => {
+            &["-c", "-o", "-t"]
+        }
+        "npm" | "pnpm" | "yarn" => &[
+            "-c",
+            "--prefix",
+            "--dir",
+            "--cwd",
+            "--filter",
+            "-f",
+            "-w",
+            "--workspace",
+        ],
+        "pip" | "pip3" => &[
+            "--python",
+            "--proxy",
+            "--log",
+            "--cache-dir",
+            "--retries",
+            "--timeout",
+        ],
+        "uv" => &[
+            "--directory",
+            "--project",
+            "--python",
+            "-p",
+            "--config-file",
+        ],
+        "poetry" => &["-c", "--directory", "-p", "--project"],
+        "cargo" => &["--config", "-z", "--color"],
+        "go" => &["-c"],
+        "bundle" | "composer" => &["-d", "--working-dir"],
+        _ => return None,
+    })
+}
+
+/** Rewrite command words so the same operation reads the same however it is spelled: a program by
+ * its path or with .exe is its name, options between a tool and its subcommand are dropped
+ * ('git -C x -c a=b push' is 'git push'), and 'python -m pip' is 'pip'. Words are text: a script, an
+ * alias, or a Makefile can still do the operation without naming it
+ * Input
+    - words: &[String] - lowercase command words
+ * Output
+    - Vec<String>
+*/
+fn normalized(words: &[String]) -> Vec<String> {
+    let mut output = Vec::with_capacity(words.len());
+    let mut index = 0;
+    while index < words.len() {
+        let word = &words[index];
+        index += 1;
+        let name = word.rsplit('/').next().unwrap_or(word);
+        let name = name.strip_suffix(".exe").unwrap_or(name);
+        if (name.starts_with("python") || name == "py")
+            && words.get(index).is_some_and(|next| next == "-m")
+        {
+            index += 1;
+            continue;
+        }
+        let Some(valued) = options_with_values(name) else {
+            output.push(word.clone());
+            continue;
+        };
+        output.push(name.to_string());
+        while let Some(next) = words.get(index) {
+            let toolchain = name == "cargo" && next.starts_with('+');
+            if !next.starts_with('-') && !toolchain {
+                break;
+            }
+            index += 1;
+            if valued.contains(&next.as_str()) {
+                index += 1;
+            }
+        }
+    }
+    output
+}
+
+/** A command as the shell would read it after the tricks that hide a word from plain matching:
+ * line continuations, quotes and backslashes inside a word (g"i"t, gi\\t), and variables set in
+ * the same command (G=git; $G push). None when the command holds no such thing
+ * Input
+    - command: &str - shell command
+ * Output
+    - Option<String>
+*/
+fn unmasked(command: &str) -> Option<String> {
+    let mut text = command
+        .replace("\\\r\n", " ")
+        .replace("\\\n", " ")
+        .replace(['"', '\'', '\\'], "");
+    let assigned = text
+        .split(|c: char| c.is_whitespace() || ";&|".contains(c))
+        .filter_map(|word| word.split_once('='))
+        .filter(|(name, value)| {
+            !value.is_empty()
+                && !name.is_empty()
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && !name.starts_with(|c: char| c.is_ascii_digit())
+        })
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect::<Vec<_>>();
+    for (name, value) in assigned {
+        text = text
+            .replace(&format!("${{{name}}}"), &value)
+            .replace(&format!("${name}"), &value);
+    }
+    (text != command).then_some(text)
+}
+
+/** What an agent's commit message lacks for a Provenance gate, reading the message from the command
+ * itself. A message the command does not show (an editor, -F, --no-edit) counts as lacking: the
+ * person it goes to can look
+ * Input
+    - command: &str - shell command
+    - gate: &CommitGate - the gate
+ * Output
+    - Vec<String>
+*/
+fn commit_lacks(command: &str, gate: &CommitGate) -> Vec<String> {
+    let lower = command.to_ascii_lowercase();
+    let mut lacks = Vec::new();
+    if let Some(key) = &gate.trailer {
+        let key = key.to_ascii_lowercase();
+        let colon = format!("{key}:");
+        let written = lower.match_indices(&colon).any(|(start, _)| {
+            lower[start + colon.len()..]
+                .trim_start_matches([' ', '\t'])
+                .starts_with(|c: char| c.is_ascii_alphanumeric())
+        });
+        let flag = lower.match_indices("--trailer").any(|(start, _)| {
+            lower[start + "--trailer".len()..]
+                .trim_start_matches([' ', '=', '"', '\''])
+                .starts_with(&key)
+        });
+        if !written && !flag {
+            lacks.push(format!("the trailer '{key}: VALUE'"));
+        }
+    }
+    if let Some(pattern) = &gate.issue_pattern {
+        let named = command
+            .split(|c: char| c.is_whitespace() || "\"'()[]{},;:.".contains(c))
+            .any(|word| !word.is_empty() && glob::matches(pattern, word));
+        if !named {
+            lacks.push(format!("an issue matching {pattern}"));
+        }
+    }
+    lacks
 }
 
 /** The approval classes a changed file falls into
@@ -408,37 +592,90 @@ fn host_of(destination: &str) -> String {
     authority.split(':').next().unwrap_or(authority).to_string()
 }
 
+/** Report whether a command prints or reads the whole environment: a dump as one part of a
+ * pipeline, chain, or redirection ('env | cat', 'set > out'), or code that takes all of it
+ * ('dict(os.environ)', 'node -p process.env', /proc/self/environ)
+ * Input
+    - command: &str - shell command
+ * Output
+    - bool
+*/
+fn dumps_environment(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    for part in lower.split(|c: char| "|;&\n<>()`".contains(c)) {
+        let words = part
+            .split_whitespace()
+            .map(|word| word.trim_matches(|c| c == '"' || c == '\''))
+            .collect::<Vec<_>>();
+        let Some((first, rest)) = words.split_first() else {
+            continue;
+        };
+        let name = first.rsplit(['/', '\\']).next().unwrap_or(first);
+        let name = name.strip_suffix(".exe").unwrap_or(name);
+        let dump = match name {
+            // 'env A=1 tool' runs a tool, and 'printenv NAME' reads one variable
+            "env" => rest
+                .iter()
+                .all(|word| word.starts_with('-') || word.contains('=')),
+            "printenv" => rest.iter().all(|word| word.starts_with('-')),
+            "set" => rest.is_empty(),
+            "export" | "declare" | "typeset" => {
+                rest.is_empty() || rest.iter().all(|word| matches!(*word, "-p" | "-x" | "-px"))
+            }
+            "compgen" => rest.contains(&"-e"),
+            "get-childitem" | "gci" | "dir" | "ls" => rest
+                .iter()
+                .any(|word| word.trim_end_matches(['/', '\\']) == "env:"),
+            _ => false,
+        };
+        if dump {
+            return true;
+        }
+    }
+    if [
+        "/environ",
+        "getenvironmentvariables",
+        "system.getenv()",
+        "env.to_h",
+    ]
+    .iter()
+    .any(|text| lower.contains(text))
+    {
+        return true;
+    }
+    // The whole object, not one variable of it: process.env.X and os.environ["X"] name theirs
+    [("process.env", ".["), ("os.environ", "[")]
+        .iter()
+        .any(|(object, one)| {
+            lower.match_indices(object).any(|(start, _)| {
+                let after = &lower[start + object.len()..];
+                let next = after.chars().next();
+                match next {
+                    Some(c) if c.is_ascii_alphanumeric() || c == '_' => false,
+                    Some(c) if one.contains(c) => false,
+                    Some('.') => !after.starts_with(".get(") && !after.starts_with(".getenv("),
+                    _ => true,
+                }
+            })
+        })
+}
+
 /** The hidden variable a command or its arguments reveal, if any: a read of a variable matching a
  * pattern ($NAME, ${NAME}, %NAME%, $env:NAME, process.env.NAME, getenv/environ with the name), or a
  * dump of the whole environment
  * Input
     - texts: &[&str] - command and arguments
-    - words: &[String] - lowercase command words
+    - command: Option<&str> - the shell command
     - patterns: &[String] - hidden variable patterns
  * Output
     - Option<String>
 */
-fn reveals(texts: &[&str], words: &[String], patterns: &[String]) -> Option<String> {
+fn reveals(texts: &[&str], command: Option<&str>, patterns: &[String]) -> Option<String> {
     if patterns.is_empty() {
         return None;
     }
-    let dumps: &[&[&str]] = &[
-        &["env"],
-        &["printenv"],
-        &["set"],
-        &["export", "-p"],
-        &["get-childitem", "env:"],
-        &["gci", "env:"],
-        &["dir", "env:"],
-        &["ls", "env:"],
-    ];
-    if let Some(first) = words.first() {
-        let alone = dumps
-            .iter()
-            .any(|dump| words.len() == dump.len() && has(words, dump));
-        if alone || (first == "printenv" && words.len() == 1) {
-            return Some("the whole environment".into());
-        }
+    if command.is_some_and(dumps_environment) {
+        return Some("the whole environment".into());
     }
     for text in texts {
         let markers = ["$", "%", "getenv", "environ", "printenv", "env:", "env."];
@@ -458,6 +695,87 @@ fn reveals(texts: &[&str], words: &[String], patterns: &[String]) -> Option<Stri
         }
     }
     None
+}
+
+/** Programs that read the files named to them */
+const READERS: &[&str] = &[
+    "cat",
+    "less",
+    "more",
+    "head",
+    "tail",
+    "type",
+    "base64",
+    "xxd",
+    "od",
+    "strings",
+    "grep",
+    "rg",
+    "sed",
+    "awk",
+    "cp",
+    "mv",
+    "tar",
+    "zip",
+    "scp",
+    "rsync",
+    "source",
+    "get-content",
+    "gc",
+];
+
+/** Programs that read whole folders */
+const FOLDER_READERS: &[&str] = &["grep", "rg", "tar", "zip", "cp", "rsync", "scp"];
+
+/** Report whether command words reach a file without naming it: a pattern matching it, or a folder
+ * holding it given to a program that reads whole folders
+ * Input
+    - words: &[String] - lowercase command words
+    - file: &str - repository-relative file
+ * Output
+    - bool
+*/
+fn reaches_without_naming(words: &[String], file: &str) -> bool {
+    let file = file.to_ascii_lowercase();
+    let folder_reader = words
+        .iter()
+        .any(|word| FOLDER_READERS.contains(&word.rsplit('/').next().unwrap_or(word)));
+    words.iter().any(|word| {
+        let word = word.trim_start_matches("./");
+        if word.contains(['*', '?']) {
+            return glob::matches(word, &file);
+        }
+        if word == file {
+            return true;
+        }
+        let folder = word.trim_end_matches('/');
+        folder_reader && !folder.is_empty() && file.starts_with(&format!("{folder}/"))
+    })
+}
+
+/** Report whether a command works out a path while it runs: command substitution, eval, or a
+ * variable handed to a program that reads files. Substitutions that only read the date, the
+ * current folder, or a Git revision are fine
+ * Input
+    - command: &str - shell command
+    - words: &[String] - lowercase command words
+ * Output
+    - bool
+*/
+fn computes_a_path(command: &str, words: &[String]) -> bool {
+    let lower = command.to_ascii_lowercase();
+    let harmless = ["date", "pwd", "whoami", "git rev-parse", "git branch"];
+    let substitution = lower.match_indices("$(").any(|(start, _)| {
+        let inside = lower[start + 2..].trim_start();
+        !harmless.iter().any(|safe| inside.starts_with(safe))
+    });
+    substitution
+        || lower.contains('`')
+        || words.iter().any(|word| word == "eval")
+        || words.windows(2).any(|pair| {
+            READERS.contains(&pair[0].rsplit('/').next().unwrap_or(&pair[0]))
+                && pair[1].starts_with('$')
+        })
 }
 
 /** Turn a mode into a finding
@@ -503,13 +821,22 @@ pub(crate) fn decide(
     call: &Call,
 ) -> Outcome {
     let mut outcome = Outcome::default();
-    let words = call
+    let spelled = call
         .command
-        .map(crate::hooks::shell::words)
+        .map(|command| {
+            let mut found = crate::hooks::shell::words(command);
+            found.extend(
+                unmasked(command)
+                    .map(|text| crate::hooks::shell::words(&text))
+                    .unwrap_or_default(),
+            );
+            found
+        })
         .unwrap_or_default()
         .into_iter()
         .map(|word| word.to_ascii_lowercase())
         .collect::<Vec<_>>();
+    let words = normalized(&spelled);
     let of = |files: &[String]| {
         files
             .iter()
@@ -750,6 +1077,52 @@ pub(crate) fn decide(
                 |(_, value, cap)| matches!((value, cap), (Some(value), Some(cap)) if value > cap),
             );
             let denied_out = limits.max_denials.is_some_and(|cap| used.denials >= cap);
+            // The same counts across every session today: a new session does not reset them
+            let today = call
+                .daily
+                .and_then(|daily| daily.targets.get(target))
+                .cloned()
+                .unwrap_or_else(TargetUsage::default);
+            let mut files_today = today.files.clone();
+            files_today.extend(
+                changed
+                    .iter()
+                    .filter(|(owner, _)| owner == target)
+                    .map(|(_, change)| change.path.clone()),
+            );
+            let lines_today = today.lines
+                + changed
+                    .iter()
+                    .filter(|(owner, _)| owner == target)
+                    .map(|(_, change)| change.lines)
+                    .sum::<u64>();
+            let daily_exhausted = [
+                ("tool calls", today.calls + 1, limits.max_tool_calls_per_day),
+                (
+                    "files changed",
+                    files_today.len() as u64,
+                    limits.max_files_changed_per_day,
+                ),
+                (
+                    "lines changed",
+                    lines_today,
+                    limits.max_lines_changed_per_day,
+                ),
+                (
+                    "commands",
+                    today.commands + u64::from(call.operation == Operation::Execute),
+                    limits.max_commands_per_day,
+                ),
+                (
+                    "network calls",
+                    today.network + u64::from(!call.network.is_empty()),
+                    limits.max_network_calls_per_day,
+                ),
+            ]
+            .into_iter()
+            .find_map(|(what, value, cap)| {
+                cap.filter(|cap| value > *cap).map(|cap| (what, value, cap))
+            });
             if let Some((what, Some(value), Some(cap_value))) = exhausted {
                 push(by_mode(
                     if limits.on_exhausted == Escalation::Escalate {
@@ -773,6 +1146,19 @@ pub(crate) fn decide(
                     format!(
                         "{target} stops a session after {} denied calls",
                         used.denials
+                    ),
+                    "BRICK_LIMIT",
+                    cap.source.clone(),
+                ));
+            } else if let Some((what, value, cap_value)) = daily_exhausted {
+                push(by_mode(
+                    if limits.on_exhausted == Escalation::Escalate {
+                        Mode::Ask
+                    } else {
+                        Mode::Deny
+                    },
+                    format!(
+                        "{target} allows {cap_value} {what} a day across sessions; this call makes {value}"
                     ),
                     "BRICK_LIMIT",
                     cap.source.clone(),
@@ -903,7 +1289,7 @@ pub(crate) fn decide(
                 }
             }
         }
-        if let Some(name) = reveals(&texts, &words, &controls.hide_env) {
+        if let Some(name) = reveals(&texts, call.command, &controls.hide_env) {
             push(Some(Finding {
                 decision: Decision::Deny,
                 reason: format!(
@@ -915,7 +1301,7 @@ pub(crate) fn decide(
                         .hide_env
                         .iter()
                         .filter(|pattern| {
-                            reveals(&texts, &words, std::slice::from_ref(pattern)).is_some()
+                            reveals(&texts, call.command, std::slice::from_ref(pattern)).is_some()
                         })
                         .map(|pattern| format!("hide_env:{pattern}")),
                 ),
@@ -924,6 +1310,78 @@ pub(crate) fn decide(
     }
     // Repository-wide commands: commit, push, installs, and deployments name no file
     if call.operation == Operation::Execute {
+        // Provenance: a commit message carrying what the target's records must show
+        if has(&words, &["git", "commit"]) {
+            let command = call.command.unwrap_or_default();
+            let text = unmasked(command).unwrap_or_else(|| command.to_string());
+            for (target, controls) in &rules.targets {
+                for gate in &controls.commit_gates {
+                    let lacks = commit_lacks(&text, gate);
+                    if !lacks.is_empty() {
+                        push(by_mode(
+                            gate.mode,
+                            format!(
+                                "a commit needs {} in its message ({target}); write it with -m so it can be read",
+                                lacks.join(" and ")
+                            ),
+                            "BRICK_PROVENANCE",
+                            gate.source.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+        // Unreadable files reached without being named: by a pattern, a folder, or a computed path
+        for (target, controls) in rules
+            .targets
+            .iter()
+            .filter(|(_, controls)| !controls.deny_read.is_empty())
+        {
+            let denied = limits
+                .iter()
+                .filter(|(file, limit)| {
+                    limit.entities.contains(target)
+                        && controls
+                            .deny_read
+                            .iter()
+                            .any(|pattern| glob::matches(pattern, file))
+                })
+                .map(|(file, _)| file.as_str())
+                .collect::<Vec<_>>();
+            if let Some(file) = denied
+                .iter()
+                .find(|file| reaches_without_naming(&spelled, file))
+            {
+                push(Some(Finding {
+                    decision: Decision::Deny,
+                    reason: format!(
+                        "the command reaches {file}, which may not be read in {target}"
+                    ),
+                    rule: "BRICK_DENY_READ",
+                    brick: controls.origin(
+                        controls
+                            .deny_read
+                            .iter()
+                            .filter(|pattern| glob::matches(pattern, file))
+                            .map(|pattern| format!("deny_read:{pattern}")),
+                    ),
+                }));
+            } else if computes_a_path(call.command.unwrap_or_default(), &spelled) {
+                push(Some(Finding {
+                    decision: Decision::RequireApproval,
+                    reason: format!(
+                        "the command computes what it reads, so Crane cannot tell whether it reaches files of {target} agents may not read"
+                    ),
+                    rule: "BRICK_DENY_READ",
+                    brick: controls.origin(
+                        controls
+                            .deny_read
+                            .iter()
+                            .map(|pattern| format!("deny_read:{pattern}")),
+                    ),
+                }));
+            }
+        }
         for (target, controls) in &rules.targets {
             if touched.contains(target) {
                 continue;

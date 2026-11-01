@@ -4,4 +4,5 @@
 pub(crate) mod anchors;
 pub(crate) mod create;
 pub(crate) mod registry;
+pub(crate) mod remove;
 pub(crate) mod tracker;

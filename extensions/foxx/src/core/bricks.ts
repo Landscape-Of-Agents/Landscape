@@ -182,6 +182,8 @@ export const BRICK_GUIDE: Record<CurrentType, BrickGuide> = {
     example: { story: "In the experiments Zone a session gets 200 tool calls, 30 minutes, and 10 changed files; after 5 denials it stops; a person decides whether to go on.", name: "Experiments budget", intent: "Keep experiment sessions small and short", config: { max_tool_calls: 200, max_runtime_minutes: 30, max_files_changed: 10, max_denials: 5, on_exhausted: "escalate" } },
     settings: [
       { name: "max_tool_calls / max_commands / max_network_calls", meaning: "Calls touching the target per session.", values: "whole numbers" },
+      { name: "max_tool_calls_per_day / max_commands_per_day / max_network_calls_per_day", meaning: "The same calls per UTC day across every session; a new session does not reset them.", values: "whole numbers" },
+      { name: "max_files_changed_per_day / max_lines_changed_per_day", meaning: "Files and lines changed per UTC day across every session.", values: "whole numbers" },
       { name: "max_runtime_minutes", meaning: "Minutes since the session started.", values: "whole number" },
       { name: "max_files_changed / max_lines_changed", meaning: "Distinct files and total lines changed per session.", values: "whole numbers" },
       { name: "max_denials", meaning: "Denied calls before the session stops in the target.", values: "whole number" },
@@ -257,6 +259,7 @@ export const BRICK_GUIDE: Record<CurrentType, BrickGuide> = {
       { name: "require", meaning: "Records every outcome must trace to.", values: "signed_state, audit_chain, decisions_recorded, commit_trailer, linked_issue" },
       { name: "trailer", meaning: "The commit trailer key commit_trailer looks for.", values: "e.g. Agent-Session" },
       { name: "issue_pattern", meaning: "The issue id linked_issue looks for in commit messages.", values: "e.g. PROJ-*" },
+      { name: "gate_commits", meaning: "Hold or refuse an agent's git commit whose message lacks the trailer or issue. Without it, Provenance only reports.", values: "ask, deny" },
       { name: "commits", meaning: "How many recent commits touching the target are checked.", values: "1-500" },
       SCOPE_FROM,
     ],

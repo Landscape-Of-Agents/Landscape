@@ -490,6 +490,9 @@ header.top b { font-size: 14px; }
 .chip-btn { display: inline-flex; align-items: center; gap: 5px; padding: 1px 9px 1px 7px; border-radius: 999px; border: 1px solid var(--line); background: var(--raised); color: var(--fg); font: inherit; font-size: 11.5px; line-height: 1.6; cursor: pointer; white-space: nowrap; vertical-align: middle; }
 .chip-btn:hover, .chip-btn:focus-visible { border-color: var(--fox); color: var(--fox); background: var(--fox-soft); }
 .chip-btn > span[aria-hidden] { color: var(--fox); font-weight: 700; }
+.attached { display: inline-flex; gap: 2px; }
+.chip-btn.detach { padding: 1px 7px; color: var(--muted); }
+.chip-btn.detach:hover, .chip-btn.detach:focus-visible { color: var(--bad); border-color: var(--bad); background: transparent; }
 .chips-row { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
 .tabs { display: flex; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--line); overflow-x: auto; }
 .tabs button { border: 0; background: none; padding: 9px 12px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; white-space: nowrap; }

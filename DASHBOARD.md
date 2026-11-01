@@ -401,6 +401,11 @@ The rules folder was created and generation 1 signed.
 - Telemetry [(common)]
 - Other [policy_name (string), policy_file (string)]
 
+#### F01.5a `SELECTION_REMOVED`
+A person removed a selection with `crane selection remove`: its markers, its policy line, and its
+signed record. The audit trail keeps the record of it. Agents cannot run the command.
+- Other [selection_id]
+
 #### F01.5 `SELECTION_CREATED`
 A block was marked as preserved or targeted (`crane protect` / `crane target`, or the Foxx panel).
 - Action [action_type (PRESERVE, TARGET) (enum)]
@@ -1613,7 +1618,7 @@ Common attributes
 - Severity [severity_status (INFO), severity_basis (FIXED), alert_kind (NONE)]
 - Bindings [(common)]
 - Telemetry [(common)]
-- Other [audit_action (GOVERNANCE_INITIALIZED, CHECKPOINT_CREATED, SELECTION_CREATED, SELECTION_RELOCATED, SELECTION_POLICY_CHANGED, POLICY_CREATED, DEFAULT_POLICY_SET, DEFAULT_CHECKPOINT_SET, CONTEXT_ADDED, GOVERNANCE_ADMIN_ADDED, GOVERNANCE_ADMIN_REMOVED, GOVERNANCE_SIGNED) (enum), audit_head (digest)]
+- Other [audit_action (GOVERNANCE_INITIALIZED, CHECKPOINT_CREATED, SELECTION_CREATED, SELECTION_REMOVED, SELECTION_RELOCATED, SELECTION_POLICY_CHANGED, POLICY_CREATED, DEFAULT_POLICY_SET, DEFAULT_CHECKPOINT_SET, CONTEXT_ADDED, GOVERNANCE_ADMIN_ADDED, GOVERNANCE_ADMIN_REMOVED, GOVERNANCE_SIGNED) (enum), audit_head (digest)]
 
 ---
 
@@ -3090,6 +3095,11 @@ An admin signed a version into `.crane/bricks.json`, deprecated it, or revoked i
 to a revoked version fail closed: changes in the target need approval until it is detached or
 upgraded).
 - Other [brick, type, digest, self_reviewed, pinned_attachments]
+
+#### F37.2a `BRICK_DESTROYED`
+A person destroyed a Brick nothing was connected to: every version and its draft left the store. The
+audit trail keeps its digests and the reason.
+- Other [brick, versions, draft]
 
 #### F37.3 `BRICK_STACK_SAVED`, `BRICK_STACK_RESOLVED`, `BRICK_STACK_ACTIVATED`, `BRICK_STACK_REVOKED`
 A Brick Stack (a version-pinned composition, never a type) was drafted, resolved, activated, or revoked.

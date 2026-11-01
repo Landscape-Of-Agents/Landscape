@@ -280,6 +280,21 @@ pub(crate) struct GateRule {
     pub(crate) source: String,
 }
 
+/** A Provenance Brick's hold on agent commits
+ * Fields
+    - mode: Mode - ask or deny
+    - trailer: Option<String> - the trailer key the message must carry
+    - issue_pattern: Option<String> - the issue pattern the message must name
+    - source: String - Brick reference
+*/
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct CommitGate {
+    pub(crate) mode: Mode,
+    pub(crate) trailer: Option<String>,
+    pub(crate) issue_pattern: Option<String>,
+    pub(crate) source: String,
+}
+
 /** The combined controls of every Brick on a target
  * Fields
     - ceiling: Option<Ceiling> - lowest ceiling a Limits Brick sets
@@ -300,6 +315,7 @@ pub(crate) struct GateRule {
     - preconditions: Vec<String> - failing file preconditions that ask
     - blocked: Vec<String> - failing file preconditions that deny
     - gates: Vec<GateRule> - gates checked on every call
+    - commit_gates: Vec<CommitGate> - what an agent's commit message must carry
     - direct: Vec<(String, String)> - operations agents may not do themselves (adapter, operation)
     - operations: Vec<(String, String)> - operations Crane may run for the target (empty: no Action
       Brick)
@@ -335,6 +351,7 @@ pub(crate) struct Controls {
     pub(crate) preconditions: Vec<String>,
     pub(crate) blocked: Vec<String>,
     pub(crate) gates: Vec<GateRule>,
+    pub(crate) commit_gates: Vec<CommitGate>,
     pub(crate) direct: Vec<(String, String)>,
     pub(crate) operations: Vec<(String, String)>,
     pub(crate) max_consecutive_failures: Option<u32>,
@@ -391,6 +408,7 @@ impl Controls {
             || !self.network_allow.is_empty()
             || !self.network_deny.is_empty()
             || !self.gates.is_empty()
+            || !self.commit_gates.is_empty()
             || !self.direct.is_empty()
             || self.max_consecutive_failures.is_some()
             || !self.watch_pause.is_empty()
@@ -481,6 +499,20 @@ fn file_based(check: &Check) -> bool {
     )
 }
 
+/** The real location of a repository path, when it stays inside the repository once links are
+ * followed; a check or a delivered file can never read through a link leading out of it
+ * Input
+    - root: &Path - repository root
+    - path: &str - repository-relative path
+ * Output
+    - Option<PathBuf> None when it does not exist or leads outside
+*/
+pub(crate) fn contained(root: &Path, path: &str) -> Option<std::path::PathBuf> {
+    let real_root = root.canonicalize().ok()?;
+    let real = root.join(path).canonicalize().ok()?;
+    real.starts_with(&real_root).then_some(real)
+}
+
 /** Evaluate a file precondition against the working tree (no Git, no policy evaluation)
  * Input
     - root: &Path - repository root
@@ -490,11 +522,15 @@ fn file_based(check: &Check) -> bool {
 */
 pub(crate) fn cheap_check(root: &Path, check: &Check) -> Option<bool> {
     match check {
-        Check::FileExists { path } => Some(root.join(path).is_file()),
-        Check::FileAbsent { path } => Some(!root.join(path).exists()),
+        Check::FileExists { path } => {
+            Some(contained(root, path).is_some_and(|file| file.is_file()))
+        }
+        // Anything at the path counts as present, a link leading out of the repository included
+        Check::FileAbsent { path } => Some(std::fs::symlink_metadata(root.join(path)).is_err()),
         Check::FileContains { path, text } => Some(
-            std::fs::read_to_string(root.join(path))
-                .is_ok_and(|content| content.contains(text.as_str())),
+            contained(root, path)
+                .and_then(|file| std::fs::read_to_string(file).ok())
+                .is_some_and(|content| content.contains(text.as_str())),
         ),
         // Integrity failures already stop every agent change, so a precondition on it never loosens
         Check::SignedState => Some(true),
@@ -585,6 +621,11 @@ pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Con
                     limits.max_commands,
                     limits.max_network_calls,
                     limits.max_denials,
+                    limits.max_tool_calls_per_day,
+                    limits.max_files_changed_per_day,
+                    limits.max_lines_changed_per_day,
+                    limits.max_commands_per_day,
+                    limits.max_network_calls_per_day,
                 ];
                 if counts.iter().any(Option::is_some) {
                     controls.caps.push(CapRule {
@@ -736,9 +777,16 @@ pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Con
                     enforced = false;
                 }
             }
-            Config::Knowledge(_) | Config::Verification(_) | Config::Provenance(_) => {
-                enforced = false
-            }
+            Config::Provenance(provenance) => match provenance.gate_commits {
+                Some(mode) => controls.commit_gates.push(CommitGate {
+                    mode,
+                    trailer: provenance.trailer,
+                    issue_pattern: provenance.issue_pattern,
+                    source: reference.clone(),
+                }),
+                None => enforced = false,
+            },
+            Config::Knowledge(_) | Config::Verification(_) => enforced = false,
         }
         if enforced {
             controls.sources.insert(reference.clone());

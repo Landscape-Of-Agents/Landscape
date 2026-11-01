@@ -6,7 +6,7 @@
 // hosted dashboard checks with its own client and refuses private, loopback, and link-local
 // addresses (server/dashboard/probe.rs), so it cannot be used to reach anything inside its network.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, ToSocketAddrs};
 
 use serde_json::Value;
 
@@ -120,7 +120,6 @@ pub(crate) fn check(url: &str) -> Result<String, String> {
  * Output
     - bool
 */
-#[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the hosted dashboard's check
 pub(crate) fn is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
@@ -149,6 +148,74 @@ pub(crate) fn is_public(ip: IpAddr) -> bool {
                 || first == 0x2001 && v6.segments()[1] == 0x0db8)
         }
     }
+}
+
+/** Why an address may not be probed for a Brick check, judged from its text alone: credentials in
+ * it, or a host that is internal by its name or a private literal address (numeric forms of an
+ * address, such as 2130706433 or 0x7f.1, count as literal)
+ * Input
+    - url: &str - address (syntax already checked)
+ * Output
+    - Option<String> the reason
+*/
+pub(crate) fn refused_address(url: &str) -> Option<String> {
+    let authority = url.trim().split_once("://")?.1;
+    let authority = authority.split(['/', '?', '#']).next()?;
+    if authority.contains('@') {
+        return Some(format!(
+            "'{url}' holds credentials; a check names only the address"
+        ));
+    }
+    let (host, _) = host_and_port(url)?;
+    let lower = host.to_ascii_lowercase();
+    let internal = lower == "localhost"
+        || [
+            ".localhost",
+            ".internal",
+            ".local",
+            ".lan",
+            ".home",
+            ".intranet",
+            ".corp",
+        ]
+        .iter()
+        .any(|suffix| lower.ends_with(suffix));
+    let private = lower.parse::<IpAddr>().is_ok_and(|ip| !is_public(ip));
+    let last = lower.rsplit('.').next().unwrap_or_default();
+    let numeric = !lower.contains(':')
+        && lower.parse::<IpAddr>().is_err()
+        && (last.starts_with("0x") || last.chars().all(|c| c.is_ascii_digit()));
+    (internal || private || numeric).then(|| format!("{host} is a private or internal address"))
+}
+
+/** Resolve an address once for a Brick check; every address it resolves to must be public, so a
+ * check cannot be used to reach inside the network of the person running it
+ * Input
+    - url: &str - address
+ * Output
+    - Result<(String, u16, Vec<IpAddr>), String> host, port, and the addresses to connect to
+*/
+pub(crate) fn public_addresses(url: &str) -> Result<(String, u16, Vec<IpAddr>), String> {
+    syntax(url)?;
+    if !url.trim().starts_with("https://") {
+        return Err(format!("'{}' must be an https:// URL", url.trim()));
+    }
+    if let Some(reason) = refused_address(url) {
+        return Err(reason);
+    }
+    let (host, port) = host_and_port(url).ok_or_else(|| format!("'{url}' has no host"))?;
+    let addresses = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|error| format!("{host} does not resolve: {error}"))?
+        .map(|address| address.ip())
+        .collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err(format!("{host} does not resolve"));
+    }
+    if let Some(private) = addresses.iter().find(|ip| !is_public(**ip)) {
+        return Err(format!("{host} resolves to the private address {private}"));
+    }
+    Ok((host, port, addresses))
 }
 
 /** Every string in a JSON value that is an address (starts with http:// or https://)
@@ -205,6 +272,16 @@ mod tests {
         assert!(!is_public("::1".parse().unwrap()));
         assert!(!is_public("::ffff:192.168.1.1".parse().unwrap()));
         assert!(is_public("140.82.112.3".parse().unwrap()));
+        assert!(refused_address("https://127.0.0.1/x").is_some());
+        assert!(refused_address("https://[::1]/x").is_some());
+        assert!(refused_address("https://169.254.169.254/latest").is_some());
+        assert!(refused_address("https://grafana.internal/x").is_some());
+        assert!(refused_address("https://2130706433/x").is_some());
+        assert!(refused_address("https://0x7f.1/x").is_some());
+        assert!(refused_address("https://good.example@10.0.0.1/x").is_some());
+        assert!(refused_address("https://api.example.com/health").is_none());
+        assert!(public_addresses("http://localhost:3000").is_err());
+        assert!(public_addresses("https://10.1.2.3/x").is_err());
         let urls = urls_in(
             &serde_json::json!({"a": "https://x.example", "b": ["http://localhost:1", 3], "c": "plain"}),
         );

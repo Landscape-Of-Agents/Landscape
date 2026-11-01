@@ -20,7 +20,7 @@ use super::shell::{
     MUTATING_WORDS, NETWORK_WORDS,
 };
 use crate::brick::guard::{self as brick_guard, Call, Change as BrickChange, Rules};
-use crate::brick::usage::{Counted, Usage};
+use crate::brick::usage::{Counted, Daily, Usage};
 use crate::governance::config::Costs;
 use crate::governance::state::State;
 use crate::governance::workspace::Workspace;
@@ -103,6 +103,7 @@ pub(crate) struct Guard<'a> {
     - model: Option<&'a str> - model
     - started_at: Option<u64> - session start, Unix milliseconds
     - usage: Option<&'a Usage> - what the session did so far
+    - daily: Option<&'a Daily> - what every session did today
 */
 #[derive(Default, Clone, Copy)]
 pub(crate) struct Caller<'a> {
@@ -111,6 +112,7 @@ pub(crate) struct Caller<'a> {
     pub(crate) model: Option<&'a str>,
     pub(crate) started_at: Option<u64>,
     pub(crate) usage: Option<&'a Usage>,
+    pub(crate) daily: Option<&'a Daily>,
 }
 
 impl Guard<'_> {
@@ -449,6 +451,7 @@ impl Guard<'_> {
             model: self.caller.model,
             started_at: self.caller.started_at,
             usage: self.caller.usage,
+            daily: self.caller.daily,
             now: crate::platform::now_millis(),
         };
         let outcome = brick_guard::decide(rules, limits, self.workspace, &call);

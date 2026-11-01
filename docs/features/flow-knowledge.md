@@ -44,6 +44,11 @@ On DataSea, approving needs a code owner of `.crane/governance.yaml` (or a repos
 CODEOWNERS does not cover it). Every other knowledge change needs a code owner of
 `.crane/flows.json`.
 
+On DataSea, the Trace button is enabled once a flow is selected. It opens a panel from the right with
+the call stack beside a waterfall, and the function, RPC, and external calls in it. This is the
+static call order, not timing, and "RPC" is read from the names of calls and files: the call graph
+is lexical and does not know what a call does at runtime.
+
 ## Context, priority, people
 
 ```

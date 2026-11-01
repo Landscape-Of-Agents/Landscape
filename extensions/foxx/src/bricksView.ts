@@ -140,6 +140,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     register("foxx.bricks.upgrade", (node) => this.upgrade(node as BrickNode | undefined));
     register("foxx.bricks.editContext", (node) => this.editContext(node as BrickNode | undefined));
     register("foxx.bricks.revoke", (node) => this.revoke(node as BrickNode | undefined));
+    register("foxx.bricks.destroy", (node) => this.destroy(node as BrickNode | undefined));
     register("foxx.bricks.preview", (node) => this.preview(node as BrickNode | undefined));
     register("foxx.runControl", (family) => this.runControl(typeof family === "string" ? family : undefined));
     register("foxx.residents.show", (node) => this.showResident(node as BrickNode | undefined));
@@ -647,8 +648,19 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     if (target === undefined) return;
     const args = ["brick", "test", row.state === "draft" ? row.brick_id : row.ref];
     if (!target.startsWith("(")) args.push("--target", target);
-    const result = await this.envelope<{ cases: { name: string; status: string; detail: string }[] }>(args);
+    let result = await this.envelope<{ cases: { name: string; status: string; detail: string }[]; needs_review?: { token: string; checks: { kind: string; program?: string; args?: string[]; url?: string }[] } | null }>(args);
     if (!result) return;
+    // An unsigned draft runs nothing until the person has seen exactly what it would run
+    const review = result.data.needs_review;
+    if (review) {
+      const lines = review.checks.map((check) => (check.kind === "http_ok" ? `GET ${check.url}` : [check.program, ...(check.args ?? [])].join(" ")));
+      const answer = await vscode.window.showWarningMessage(`${row.brick_id} is an unsigned draft and wants to run this on your machine`, { modal: true, detail: lines.join("\n") }, "Run them");
+      if (answer === "Run them") {
+        const reviewed = await this.envelope<typeof result.data>([...args, "--allow-commands", review.token]);
+        if (!reviewed) return;
+        result = reviewed;
+      }
+    }
     for (const item of result.data.cases ?? []) this.host.output.appendLine(`  [${item.status}] ${item.name} — ${item.detail}`);
     await this.report(result, "Test Brick", false);
   }
@@ -780,6 +792,21 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     if (go !== "Revoke") return;
     const result = await this.envelope(["brick", "revoke", row.ref, "--reason", reason]);
     if (result) await this.report(result, "Revoke Brick", true);
+  }
+
+  /**
+   * Destroy a Brick nothing is connected to: every version and its draft leave the store for good.
+   * @param node the Brick
+   */
+  async destroy(node?: BrickNode): Promise<void> {
+    const row = await this.brickOf(node, () => true, "Destroy which Brick? (detach it first)");
+    if (!row) return;
+    const reason = await this.inputBox({ prompt: `Why destroy ${row.brick_id}? It is kept in the audit trail.`, validateInput: (value) => (value.trim() ? undefined : "A reason is required") });
+    if (!reason) return;
+    const go = await this.modal(`Landscape: destroy ${row.brick_id}?`, { modal: true, detail: "Every version and its draft leave the store for good. Crane refuses while anything is connected to it." }, "Destroy");
+    if (go !== "Destroy") return;
+    const result = await this.envelope(["brick", "destroy", row.brick_id, "--reason", reason]);
+    if (result) await this.report(result, "Destroy Brick", true);
   }
 
   /**

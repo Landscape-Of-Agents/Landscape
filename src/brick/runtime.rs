@@ -43,6 +43,21 @@ pub(crate) enum CheckOutcome {
     NotRun,
 }
 
+/** How far a run of checks may reach beyond the repository
+ * Variants
+    - Local - no endpoints and no programs (the monitors, and checks that need neither)
+    - Unsigned - a person tests a draft nobody signed: endpoints and programs are listed for them
+      to review, and not run
+    - Outside - a person tests a signed Brick, or a draft after reviewing what it runs: endpoints
+      and programs run, within the rules that hold for everyone (no shells, no private addresses)
+*/
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reach {
+    Local,
+    Unsigned,
+    Outside,
+}
+
 /** Evaluate a gate check (a precondition): cheap, local, and deterministic
  * Input
     - workspace: &Workspace - repository
@@ -195,13 +210,13 @@ fn count_events(runtime: &Path, target: &str, metric: config::LocalMetric, since
     }
 }
 
-/** Evaluate checks against the working tree, the signed state, local events, and (when a person
- * asked) endpoints and programs; the policy evaluation is run at most once and only when needed
+/** Evaluate checks against the working tree, the signed state, local events, and (when the reach
+ * allows) endpoints and programs; the policy evaluation is run at most once and only when needed
  * Input
     - workspace: &Workspace - repository
     - checks: &[Check] - checks
     - target: Option<&str> - the target the checks are for (local metrics)
-    - person: bool - a person asked (programs and endpoints run only then)
+    - reach: Reach - how far the checks may reach
  * Output
     - Vec<(String, CheckOutcome, String)> check, outcome, detail
 */
@@ -209,7 +224,7 @@ pub(crate) fn run_checks(
     workspace: &Workspace,
     checks: &[Check],
     target: Option<&str>,
-    person: bool,
+    reach: Reach,
 ) -> Vec<(String, CheckOutcome, String)> {
     let mut report = None;
     let now = crate::platform::now_millis();
@@ -286,9 +301,19 @@ pub(crate) fn run_checks(
                         None => (text, CheckOutcome::NotRun, String::new()),
                     }
                 }
-                Check::HttpOk { url, status, .. } if person => {
-                    match crate::platform::http::request("GET", url, &[], None) {
-                        Ok((code, _)) => {
+                Check::HttpOk {
+                    url,
+                    status,
+                    timeout_seconds,
+                } if reach == Reach::Outside => {
+                    let seconds = u64::from(timeout_seconds.unwrap_or(20));
+                    let answer = crate::platform::probe::public_addresses(url).and_then(
+                        |(host, port, addresses)| {
+                            crate::platform::http::get_pinned(url, &host, port, &addresses, seconds)
+                        },
+                    );
+                    match answer {
+                        Ok(code) => {
                             let holds =
                                 status.map_or((200..300).contains(&code), |wanted| wanted == code);
                             (text, outcome(holds), format!("answered {code}"))
@@ -299,7 +324,10 @@ pub(crate) fn run_checks(
                 Check::HttpOk { .. } => (
                     text,
                     CheckOutcome::NotRun,
-                    "endpoints are checked by 'crane brick test', run by a person".into(),
+                    not_run(
+                        reach,
+                        "endpoints are checked by 'crane brick test', run by a person",
+                    ),
                 ),
                 Check::JsonValue {
                     path,
@@ -307,8 +335,12 @@ pub(crate) fn run_checks(
                     op,
                     value,
                 } => {
-                    let found = std::fs::read_to_string(workspace.root.join(path))
-                        .map_err(|error| format!("{path}: {error}"))
+                    let found = super::compose::contained(&workspace.root, path)
+                        .ok_or_else(|| format!("{path} is not a file inside the repository"))
+                        .and_then(|file| {
+                            std::fs::read_to_string(file)
+                                .map_err(|error| format!("{path}: {error}"))
+                        })
                         .and_then(|text| {
                             serde_json::from_str::<Value>(&text)
                                 .map_err(|error| format!("{path}: {error}"))
@@ -363,7 +395,14 @@ pub(crate) fn run_checks(
                     program,
                     args,
                     timeout_seconds,
-                } if person => {
+                } if reach == Reach::Outside => {
+                    if let Some(reason) = config::command_problem(program, args) {
+                        return (
+                            text,
+                            CheckOutcome::Contradicted,
+                            format!("refused: {reason}"),
+                        );
+                    }
                     let timeout = u64::from(timeout_seconds.unwrap_or(120));
                     match run_program(&workspace.root, program, args, timeout) {
                         Ok(code) => (text, outcome(code == 0), format!("exit code {code}")),
@@ -373,7 +412,10 @@ pub(crate) fn run_checks(
                 Check::CommandSucceeds { .. } => (
                     text,
                     CheckOutcome::NotRun,
-                    "programs run only in 'crane brick test', run by a person".into(),
+                    not_run(
+                        reach,
+                        "programs run only in 'crane brick test', run by a person",
+                    ),
                 ),
                 gate => match gate_holds(workspace, gate, now) {
                     Some(holds) => (text, outcome(holds), String::new()),
@@ -382,6 +424,21 @@ pub(crate) fn run_checks(
             }
         })
         .collect()
+}
+
+/** Why an endpoint or a program was not run
+ * Input
+    - reach: Reach - the reach of this run
+    - local: &str - the reason when it is a local run
+ * Output
+    - String
+*/
+fn not_run(reach: Reach, local: &str) -> String {
+    if reach == Reach::Unsigned {
+        "not run: this draft is unsigned, so a person reviews it first".into()
+    } else {
+        local.into()
+    }
 }
 
 /** One monitor's remembered state
@@ -631,7 +688,7 @@ pub(crate) fn evaluate_monitors(
                     workspace,
                     &[Check::SelectionsResolved, Check::PolicyTestsPass],
                     None,
-                    false,
+                    Reach::Local,
                 )
             });
             let index = usize::from(check == Check::PolicyTestsPass);
@@ -683,11 +740,12 @@ pub(crate) fn evaluate_monitors(
                         "no verification Brick is attached to the target".into(),
                     )
                 } else {
-                    let contradicted = run_checks(workspace, &checks, Some(&item.target), false)
-                        .into_iter()
-                        .filter(|(_, outcome, _)| *outcome == CheckOutcome::Contradicted)
-                        .map(|(check, _, _)| check)
-                        .collect::<Vec<_>>();
+                    let contradicted =
+                        run_checks(workspace, &checks, Some(&item.target), Reach::Local)
+                            .into_iter()
+                            .filter(|(_, outcome, _)| *outcome == CheckOutcome::Contradicted)
+                            .map(|(check, _, _)| check)
+                            .collect::<Vec<_>>();
                     if contradicted.is_empty() {
                         ("OK", "every verification check holds".into())
                     } else if item.kind == "trigger" {

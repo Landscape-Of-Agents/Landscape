@@ -3,8 +3,11 @@
 // remembered per workspace), and linked by dragging from one zone's connector onto another: the
 // link becomes a flow's next stage in .crane/governance.yaml, signed by Crane. A zone or flow can
 // be removed from its × handle after a confirmation that the removal is permanent (a flow's zones
-// stay as zones; the subagents acting on it are terminated). Every link is checked here first (no
-// self links, no cycles, a flow stays one ordered path), then again by the extension and by Crane.
+// stay as zones; the subagents acting on it are terminated), and the flow picked on the canvas from
+// the toolbar too. A preserve or target selection is removed the same way: its markers, policy line,
+// and signed record go, and only a person can, because Crane refuses the command inside an agent
+// session. Every link is checked here first (no self links, no cycles, a flow stays one ordered
+// path), then again by the extension and by Crane.
 // Hover a node for what it is and who is working there, click a zone (or double-click a flow) to
 // open its code, filter the kinds from one menu. Clicking a flow opens a drawer under the graph: its
 // test scenarios as a searchable carousel of cards a person edits, accepts (one by one or all at
@@ -34,8 +37,8 @@ export interface GraphHost {
   link(from: string, to: string): Promise<RunResult>;
   /** Remove the link between two consecutive zones of a flow. */
   unlink(from: string, to: string): Promise<RunResult>;
-  /** Remove a zone, or a flow (its zones stay); the subagents acting on it are terminated. */
-  remove(kind: "zone" | "flow", id: string): Promise<RunResult>;
+  /** Remove a zone, a flow (its zones stay; the subagents acting on it are terminated), or a selection. */
+  remove(kind: "zone" | "flow" | "selection", id: string, reason?: string): Promise<RunResult>;
   /** Run a command of the extension (fix Crane, open output). */
   command(id: string): Promise<void>;
   /** A flow's test scenarios: written from its knowledge (generate) or the saved ones (show). */
@@ -60,6 +63,7 @@ interface GraphMessage {
   flow?: string;
   name?: string;
   text?: string;
+  reason?: string;
   decision?: string;
   scenarios?: unknown[];
   positions?: Positions;
@@ -147,8 +151,8 @@ export class FoxxGraph {
       } else if (message.type === "open" && message.id) await this.host.open(message.id);
       else if (message.type === "positions" && message.positions) this.host.savePositions(message.positions);
       else if (message.type === "command" && message.id) await this.host.command(message.id);
-      else if (message.type === "remove" && message.id && (message.kind === "zone" || message.kind === "flow")) {
-        const result = await this.host.remove(message.kind, message.id);
+      else if (message.type === "remove" && message.id && (message.kind === "zone" || message.kind === "flow" || message.kind === "selection")) {
+        const result = await this.host.remove(message.kind, message.id, message.reason);
         void panel.webview.postMessage({ type: "result", op: "remove", from: message.id, to: "", result });
         const { data, error } = await this.host.load(true);
         FoxxGraph.update(data, error);
@@ -261,6 +265,10 @@ svg#canvas.linking { cursor: crosshair; }
 .remove path { stroke: var(--bad); stroke-width: 1.6; stroke-linecap: round; }
 .node:hover .remove, .node.focus .remove, .remove:focus { opacity: 1; }
 .remove:hover circle { fill: var(--bad); } .remove:hover path { stroke: #fff; }
+.btn.remove-flow:not(:disabled) { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+.btn.remove-flow:not(:disabled):hover { background: var(--bad); border-color: var(--bad); color: #fff; }
+.edge-menu input[type=text] { width: 100%; margin: 0 0 8px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--vscode-input-border, var(--line)); background: var(--vscode-input-background); color: var(--vscode-input-foreground); }
+.edge-menu label.field { display: block; margin-bottom: 2px; font-size: 11px; color: var(--muted); }
 .node:hover .port.out, .port.out:focus { r: 7.5; fill: var(--zone); }
 svg.linking .port.in { opacity: 1; }
 .pulse { fill: var(--ok); animation: pulse 1.6s ease-in-out infinite; }
@@ -354,10 +362,13 @@ svg.dim .edge-g:not(.lit) { opacity: .15; }
     <label role="menuitemcheckbox"><input type="checkbox" data-kind="flow" checked><i style="background:var(--flow)"></i>Flows<small id="count-flow"></small></label>
     <label role="menuitemcheckbox"><input type="checkbox" data-kind="selection" checked><i style="background:var(--preserve)"></i>Selections<small id="count-selection"></small></label>
   </div>
+  <button class="btn remove-flow" id="remove-flow" disabled title="Click a flow on the graph first">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg><span>Remove flow</span>
+  </button>
   <button class="btn" id="arrange" title="Lay the graph out again, left to right">Arrange</button>
   <button class="btn" id="refresh" title="Ask Crane for the graph again">Refresh</button>
 </div>
-<div class="hint" id="hint"><span class="dot" aria-hidden="true"></span><span id="hint-text">Drag from a zone's right handle onto another zone to link them into a flow. Click a link to delete it. Hover a zone or flow and press × (or Delete) to remove it. Drag zones to move them. Click a flow for its tests and subagents.</span></div>
+<div class="hint" id="hint"><span class="dot" aria-hidden="true"></span><span id="hint-text">Drag from a zone's right handle onto another zone to link them into a flow. Click a link to delete it. Hover a zone, flow, preserve, or target and press × (or Delete) to remove it. Drag zones to move them. Click a flow for its tests and subagents.</span></div>
 <div id="stage">
   <div class="notices" id="notices" aria-live="polite"></div>
   <svg id="canvas" role="application" aria-label="Governance graph canvas"><defs>
@@ -460,6 +471,9 @@ function edgeKey(edge) { return edge.from + "|" + edge.to; }
 
 function draw() {
   notices();
+  const removable = picked && nodeById("flow:" + picked);
+  $("remove-flow").disabled = !removable;
+  $("remove-flow").title = removable ? "Remove flow " + picked : "Click a flow on the graph first";
   const empty = $("empty");
   for (const kind of ["zone", "flow", "selection"]) $("count-" + kind).textContent = data ? String(data.nodes.filter((node) => node.kind === kind).length) : "";
   const hidden = Object.values(kinds).filter((on) => !on).length;
@@ -494,7 +508,7 @@ function draw() {
       '<text x="14" y="19">' + esc(glyph(node) + " " + clip(node.name, 21)) + '</text><text class="sub" x="14" y="34">' + esc(clip(sub, 30)) + "</text>" +
       (busy && busy.active ? '<circle class="pulse" cx="' + (W - 14) + '" cy="12" r="4"><title>agent active now</title></circle>' : "") +
       (node.kind === "zone" ? '<circle class="port in" cx="0" cy="' + H / 2 + '" r="6"></circle><circle class="port out" tabindex="-1" data-port="' + esc(node.name) + '" cx="' + W + '" cy="' + H / 2 + '" r="6"><title>Drag onto another zone to link</title></circle>' : "") +
-      (node.kind === "zone" || node.kind === "flow" ? '<g class="remove" data-remove="' + esc(node.id) + '" transform="translate(' + (W - 10) + ' -6)"><title>Remove this ' + node.kind + '</title><circle r="7.5"></circle><path d="M-3 -3L3 3M3 -3L-3 3"></path></g>' : "") + "</g>";
+      (node.kind === "zone" || node.kind === "flow" || node.kind === "selection" ? '<g class="remove" data-remove="' + esc(node.id) + '" transform="translate(' + (W - 10) + ' -6)"><title>Remove this ' + (node.kind === "selection" ? node.operation || "selection" : node.kind) + '</title><circle r="7.5"></circle><path d="M-3 -3L3 3M3 -3L-3 3"></path></g>' : "") + "</g>";
   }).join("");
   apply();
 }
@@ -526,6 +540,7 @@ function openEdgeMenu(edge, x, y) {
 function closeEdgeMenu() { $("edge-menu").hidden = true; }
 // What removing a zone or flow does, said before it is done
 function openRemoveMenu(node, x, y) {
+  if (node.kind === "selection") { openSelectionMenu(node, x, y); return; }
   const menu = $("edge-menu");
   const where = node.kind === "zone" ? placeOf(node.name) : null;
   const text = node.kind === "flow"
@@ -545,6 +560,30 @@ function openRemoveMenu(node, x, y) {
   });
   $("node-cancel").addEventListener("click", closeEdgeMenu);
   $("node-cancel").focus();
+}
+// Removing a preserve or target: what goes, why, and that only a person can do it
+function openSelectionMenu(node, x, y) {
+  const menu = $("edge-menu");
+  const kind = node.operation === "target" ? "target" : "preserve";
+  menu.innerHTML = '<div class="kind">Remove ' + kind + ' permanently</div><b id="edge-menu-title">' + esc(node.name) + "</b><p>" +
+    (kind === "preserve" ? "These lines stop being protected." : "These lines stop being a required change.") + " The two markers, the policy line, and the signed record go; the code between the markers stays. Only a person can do this: Crane refuses it from an AI agent.</p>" +
+    '<label class="field" for="selection-reason">Why (kept in the audit trail)</label><input type="text" id="selection-reason" maxlength="300" autocomplete="off">' +
+    '<label class="confirm"><input type="checkbox" id="node-confirm"> I am a person and I understand this ends the rule.</label>' +
+    '<div class="row"><button class="btn danger" id="node-remove" disabled>' + TRASH + "Remove " + kind + '</button><button class="btn" id="node-cancel">Cancel</button></div>';
+  const ready = () => { $("node-remove").disabled = !$("node-confirm").checked || !$("selection-reason").value.trim(); };
+  $("node-confirm").addEventListener("change", ready);
+  $("selection-reason").addEventListener("input", ready);
+  menu.hidden = false;
+  menu.style.left = Math.max(8, Math.min(window.innerWidth - menu.offsetWidth - 8, x + 10)) + "px";
+  menu.style.top = Math.max(8, Math.min(window.innerHeight - menu.offsetHeight - 8, y + 10)) + "px";
+  $("node-remove").addEventListener("click", () => {
+    const reason = $("selection-reason").value.trim();
+    closeEdgeMenu();
+    say("ok", "Removing " + kind + " " + node.name + "…", 2500);
+    vscode.postMessage({ type: "remove", kind: "selection", id: node.selection, reason });
+  });
+  $("node-cancel").addEventListener("click", closeEdgeMenu);
+  $("selection-reason").focus();
 }
 // Move one node without redrawing everything: its transform and the edges that touch it
 function moveNode(id) {
@@ -745,7 +784,7 @@ canvas.addEventListener("keydown", (event) => {
   if (event.key === "Escape") { closeEdgeMenu(); keyLink = null; selectedEdge = null; if (gesture && gesture.kind === "link") endGesture(null); setHint(DEFAULT_HINT, false); draw(); return; }
   if ((event.key === "Delete" || event.key === "Backspace") && selectedEdge && selectedEdge.kind === "next") { event.preventDefault(); closeEdgeMenu(); unlink(selectedEdge); return; }
   if (!node) return;
-  if ((event.key === "Delete" || event.key === "Backspace") && (node.kind === "zone" || node.kind === "flow")) { event.preventDefault(); const box = event.target.getBoundingClientRect(); openRemoveMenu(node, box.left, box.bottom); return; }
+  if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); const box = event.target.getBoundingClientRect(); openRemoveMenu(node, box.left, box.bottom); return; }
   if ((event.key === "c" || event.key === "C") && node.kind === "zone") { keyLink = node.name; setHint("Linking from " + node.name + ": focus another zone and press Enter. Esc cancels.", true); draw(); focusAgain(node.id); return; }
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
@@ -773,6 +812,12 @@ for (const box of filterMenu.querySelectorAll("input[data-kind]")) {
   box.addEventListener("change", () => { kinds[box.dataset.kind] = box.checked; persist(); draw(); });
 }
 $("search").addEventListener("input", (event) => { query = event.target.value; draw(); });
+$("remove-flow").addEventListener("click", () => {
+  const node = picked && nodeById("flow:" + picked);
+  if (!node) return;
+  const box = $("remove-flow").getBoundingClientRect();
+  openRemoveMenu(node, box.left - 10, box.bottom - 4);
+});
 $("arrange").addEventListener("click", () => { if (!data) return; const { nodes, edges } = visible(); place(nodes, edges, true); vscode.postMessage({ type: "positions", positions: pos }); draw(); fit(); });
 $("refresh").addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
 $("zoom-in").addEventListener("click", () => zoomBy(1.2));

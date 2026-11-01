@@ -39,6 +39,11 @@ pub(crate) const KINDS: &[(&str, &str, &str)] = &[
         "Brick Stack draft saved.",
     ),
     (
+        "BRICK_DESTROYED",
+        "BRICK_DESTROY",
+        "Brick removed: every version and its draft; the audit trail keeps the record.",
+    ),
+    (
         "BRICK_STACK_RESOLVED",
         "BRICK_STACK_RESOLVE",
         "Brick Stack resolved.",
@@ -153,7 +158,7 @@ pub(super) fn spec(event: &Event, kind: &str, note: &Value) -> Option<Spec> {
     let attention = failing
         || matches!(
             kind,
-            "BRICK_REVOKED" | "BRICK_IDENTITY_MISMATCH" | "BRICK_DETACHED"
+            "BRICK_REVOKED" | "BRICK_IDENTITY_MISMATCH" | "BRICK_DETACHED" | "BRICK_DESTROYED"
         )
         || note["conflicts"].as_u64().is_some_and(|count| count > 0);
     let mut spec = base(event, kind, "F37");

@@ -385,6 +385,7 @@ pub(crate) fn run(
         model: model.as_deref(),
         started_at: Some(now.saturating_sub(minutes.saturating_mul(60_000))),
         usage: Some(&usage),
+        daily: None,
         now,
     };
     let outcome = decide(&rules, &limits, workspace, &mock);

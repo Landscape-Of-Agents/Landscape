@@ -222,6 +222,11 @@
         "category": "Landscape"
       },
       {
+        "command": "foxx.bricks.destroy",
+        "title": "Destroy Brick",
+        "category": "Landscape"
+      },
+      {
         "command": "foxx.bricks.preview",
         "title": "Preview Effective Context",
         "category": "Landscape",
@@ -475,6 +480,11 @@
           "command": "foxx.bricks.revoke",
           "when": "view == foxx.bricks && viewItem =~ /^(brick-active|brick-deprecated)$/",
           "group": "4_withdraw@1"
+        },
+        {
+          "command": "foxx.bricks.destroy",
+          "when": "view == foxx.bricks && viewItem =~ /^brick-/",
+          "group": "4_withdraw@2"
         },
         {
           "command": "foxx.bricks.editContext",

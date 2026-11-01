@@ -171,7 +171,7 @@ impl BrickStore {
             let attached = match &attachment.subject {
                 Subject::Brick { brick_id: id, .. } => id == brick_id,
                 Subject::Stack { stack_id, version } => {
-                    self.stack(stack_id, *version).is_some_and(&holds)
+                    self.stack(stack_id, *version).is_some_and(holds)
                 }
             };
             if attached {

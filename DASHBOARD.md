@@ -3377,12 +3377,14 @@ the zones are listed under the page in the rail. Every panel has:
 - an info icon (hover for the explanation, click for the details sidebar);
 - a funnel that says in words which events it counts: the time range, every global condition, its
   own conditions, its grouping, or that it shows state that no filter narrows;
-- its own conditions (`+ filter`), added to the global filter for that panel only;
-- refresh, the lens (a right sidebar with the chart large, its metrics, its properties and filter in
-  words, what it is, and an interpretation generated from what it drew), expand, monitor view (full
-  screen, refreshed every 30 seconds), and collapse.
+- the lens (a right sidebar with the chart large, its metrics, its properties and filter in words,
+  what it is, and an interpretation generated from what it drew) and expand (shown on hover);
+- a `⋯` menu with its own conditions (added to the global filter for that panel only), refresh,
+  monitor view (full screen, refreshed every 30 seconds), agent context, and collapse (double-clicking
+  the title also collapses it).
 
-Every time is shown as `YYYY:MM:DD:HH:MM:SS:MMM` (local time). Colors follow the Foxx logo (fox orange, ember, cream on
+Every time is shown as `YYYY:MM:DD:HH:MM:SS:MMM` (local time); chart axes shorten it to `HH:MM` with
+the date `YYYY:MM:DD` under the first tick of each day, and their tooltips keep the full time. Colors follow the Foxx logo (fox orange, ember, cream on
 warm charcoal); series use a categorical order led by the Foxx orange that was checked for
 color-blind separation in both themes, and states use reserved status colors. The theme is the
 system's, or light or dark when chosen.

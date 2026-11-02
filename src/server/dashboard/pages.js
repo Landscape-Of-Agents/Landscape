@@ -69,7 +69,7 @@ async function overview(main) {
   main.append(zone("recent", "Recent findings", "The newest violations (confirmed bypasses and violations after effect) and alerts.",
     panel("Recent violations", { span: 6, flush: true, info: "value:VIOLATION", scope: { what: "The newest violations" } }, async (body, big, ctx) => { ctx.record("rows", data.recent_violations || []); put(body, eventsTable(data.recent_violations || [], { pageSize: 8, noTools: true, empty: "No violations in this range: the healthy state." })); }),
     panel("Recent alerts", { span: 6, flush: true, info: "flow:F14", scope: { kind: "state", what: "The newest alerts" } }, async (body, big, ctx) => { ctx.record("rows", data.recent_alerts || []); put(body, dataTable([
-      { label: "Time", get: (row) => row.at, render: (row) => h("span", { class: "mono" }, dt(row.at * 1000)) }, { label: "Alert", get: (row) => row.title }, { label: "Severity", get: (row) => row.severity, render: (row) => chip(row.severity) }, { label: "Member", render: (row) => member(row.member) },
+      { label: "Time", width: "196px", get: (row) => row.at, render: (row) => h("span", { class: "mono" }, dt(row.at * 1000)) }, { label: "Alert", get: (row) => row.title }, { label: "Severity", get: (row) => row.severity, render: (row) => chip(row.severity) }, { label: "Member", render: (row) => member(row.member) },
     ], data.recent_alerts || [], { noTools: true, sort: 0, pageSize: 8, empty: "No alerts." })); })));
   main.append(zone("evals", "All evals", "Every number the dashboard computes from the events in range and filter.",
     panel("Operational scorecard", { span: 12, info: { title: "Operational scorecard", text: "A quick review of volume, enforcement, reliability, and observability. Select a metric to open its supporting events." } }, async (body, big, ctx) => {
@@ -584,8 +584,8 @@ async function logs(main) {
     cursor = page.next_cursor;
     ctx.record("rows", rows, { summary: compact(page.total) + " log lines match; " + rows.length + " loaded." });
     const columns = [
-      { label: "", render: sevBar },
-      { label: "Time", get: (row) => row.occurred_at, render: (row) => h("span", { class: "mono" }, dt(row.occurred_at)), csv: (row) => dt(row.occurred_at) },
+      { label: "", width: "30px", render: sevBar },
+      { label: "Time", width: "196px", get: (row) => row.occurred_at, render: (row) => h("span", { class: "mono" }, dt(row.occurred_at)), csv: (row) => dt(row.occurred_at) },
       { label: "Severity", get: (row) => (row.severity || {}).severity_status, render: (row) => chip((row.severity || {}).severity_status), filter: true, info: "facet:severity" },
       { label: "Flow", get: (row) => row.flow, render: (row) => h("span", {}, row.flow, info("flow:" + row.flow)), filter: true, info: "facet:flow" },
       { label: "Event", get: (row) => row.event_name, render: (row) => h("code", {}, row.event_name), filter: true, info: "facet:event" },
@@ -632,8 +632,8 @@ async function traces(main) {
       numberInput("min_ms", "min duration ms"), numberInput("max_ms", "max duration ms"), numberInput("min_spans", "min events"),
       h("button", { class: "btn link", type: "button", onclick: () => { Object.keys(state).forEach((key) => { state[key] = ""; }); tablePanel.refresh(); } }, "Reset"), h("span", { class: "count" }, compact(data.total) + " traces"));
     put(body, filters, dataTable([
-      { label: "", render: (row) => h("span", { class: "sev", style: "background:" + color(row.severity, 0) }) },
-      { label: "Start", get: (row) => row.start, render: (row) => h("span", { class: "mono" }, dt(row.start)), csv: (row) => dt(row.start) },
+      { label: "", width: "30px", render: (row) => h("span", { class: "sev", style: "background:" + color(row.severity, 0) }) },
+      { label: "Start", width: "196px", get: (row) => row.start, render: (row) => h("span", { class: "mono" }, dt(row.start)), csv: (row) => dt(row.start) },
       { label: "Duration", get: (row) => row.duration_ms, render: (row) => duration(row.duration_ms), num: true, bar: true, format: duration },
       { label: "Kind", get: (row) => row.kind, render: (row) => chip(row.kind), filter: true },
       { label: "Trace", get: (row) => row.root, render: (row) => h("div", {}, h("code", {}, row.root), h("div", { class: "muted" }, row.events.join(" → "))) },

@@ -43,7 +43,7 @@ async function alerting(main) {
   if (ruleNames.length) valuePanel.controls.append(select("Rule", chosen.rule, ruleNames.map((name) => [name, name]), (value) => { chosen.rule = value; valuePanel.refresh(); }));
   main.append(zone("rule-values", "Rule values", "", valuePanel));
   main.append(zone("firings", "Firings", "Every notification a rule sent: firing, still firing (reminder), resolved, or test.", panel("Firings", { span: 12, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.firings); put(body, dataTable([
-    { label: "Time", get: (row) => row.at, render: (row) => h("span", { class: "mono" }, dt(row.at)), csv: (row) => dt(row.at) },
+    { label: "Time", width: "196px", get: (row) => row.at, render: (row) => h("span", { class: "mono" }, dt(row.at)), csv: (row) => dt(row.at) },
     { label: "Rule", get: (row) => row.rule, filter: true },
     { label: "State", get: (row) => (row.reminder ? "REMINDER" : row.state), render: (row) => chip(row.reminder ? "REMINDER" : row.state), filter: true },
     { label: "Value", get: (row) => row.value, render: (row) => fmt(row.value) + " (threshold " + fmt(row.threshold) + ")" },
@@ -56,7 +56,7 @@ async function alerting(main) {
   main.append(zone("deliveries", "Deliveries", "Every message sent to Slack or WhatsApp, with the channel's answer.",
     panel("Delivery outcomes", { span: 4, scope: report }, async (body, big, ctx) => { const items = Object.entries(outcomes).map(([value, count]) => ({ value, count })); ctx.record("items", items, { unit: "deliveries" }); put(body, charts.donut(items, { unit: "deliveries", explain: explained, hint: "" })); }),
     panel("Delivery log", { span: 8, flush: true, scope: report }, async (body, big, ctx) => { ctx.record("rows", data.deliveries); put(body, dataTable([
-      { label: "Time", get: (row) => row.at, render: (row) => h("span", { class: "mono" }, dt(row.at)), csv: (row) => dt(row.at) },
+      { label: "Time", width: "196px", get: (row) => row.at, render: (row) => h("span", { class: "mono" }, dt(row.at)), csv: (row) => dt(row.at) },
       { label: "Rule", get: (row) => row.rule, filter: true }, { label: "Channel", get: (row) => row.channel, filter: true },
       { label: "Outcome", get: (row) => row.outcome, render: (row) => chip(row.outcome), filter: true }, { label: "HTTP", get: (row) => row.status, num: true }, { label: "Took", get: (row) => row.ms, render: (row) => (row.ms === null || row.ms === undefined ? "—" : duration(row.ms)), num: true },
       { label: "Answer", get: (row) => row.result },
@@ -73,7 +73,7 @@ async function alerting(main) {
       const list = hooks.alerts.filter((alert) => alert.kind !== "rule");
       ctx.record("rows", list);
       put(body, dataTable([
-        { label: "Time", get: (row) => row.at, render: (row) => h("span", { class: "mono" }, dt(row.at * 1000)) }, { label: "Alert", get: (row) => row.title }, { label: "Kind", get: (row) => row.kind, filter: true },
+        { label: "Time", width: "196px", get: (row) => row.at, render: (row) => h("span", { class: "mono" }, dt(row.at * 1000)) }, { label: "Alert", get: (row) => row.title }, { label: "Kind", get: (row) => row.kind, filter: true },
         { label: "Severity", get: (row) => row.severity, render: (row) => chip(row.severity), filter: true }, { label: "State", get: (row) => row.state, render: (row) => chip(row.state), filter: true },
         { label: "Member", get: (row) => (row.member ? row.member.actor : ""), render: (row) => member(row.member), filter: true },
         { label: "Session", get: (row) => row.session, render: (row) => sessionLink(row.session) },
@@ -184,7 +184,7 @@ async function audit(main) {
       const data = { rows: actors.map((actor) => ({ key: actor, label: actor, total: trail.filter((entry) => entry.actor === actor).length })), cols: actions.map((action) => ({ key: action, label: action, total: 0 })), cells: actors.map((actor) => actions.map((action) => trail.filter((entry) => entry.actor === actor && entry.action === action).length)), rows_by: "actor", cols_by: "action" };
       data.max = Math.max(0, ...data.cells.flat());
       ctx.record("matrix", data, {});
-      put(body, charts.heatmap(data, { unit: "changes", onPick: (actor, action) => details.open(actor + " · " + action, dataTable([{ label: "#", get: (row) => row.seq, num: true }, { label: "Time", get: when, render: (row) => h("span", { class: "mono" }, dt(when(row))) }, { label: "Detail", get: (row) => JSON.stringify(row.detail) }], trail.filter((entry) => entry.actor === actor && entry.action === action), { noTools: true, sort: 1 }), { kind: "Audit" }) }));
+      put(body, charts.heatmap(data, { unit: "changes", onPick: (actor, action) => details.open(actor + " · " + action, dataTable([{ label: "#", get: (row) => row.seq, num: true }, { label: "Time", width: "196px", get: when, render: (row) => h("span", { class: "mono" }, dt(when(row))) }, { label: "Detail", get: (row) => JSON.stringify(row.detail) }], trail.filter((entry) => entry.actor === actor && entry.action === action), { noTools: true, sort: 1 }), { kind: "Audit" }) }));
     }),
     panel("Kinds of change", { span: 5, scope: report }, async (body, big, ctx) => {
       const items = actions.map((action) => ({ value: action, count: trail.filter((entry) => entry.action === action).length })).sort((a, b) => b.count - a.count);
@@ -202,7 +202,7 @@ async function audit(main) {
   const openChange = (row) => details.open("Governance change #" + row.seq, h("div", {}, h("div", { class: "kv" }, [["Time", dt(when(row))], ["Actor", row.actor], ["Action", row.action]].map(([key, value]) => [h("div", {}, key), h("div", {}, value)])), h("h4", {}, "Detail"), h("pre", { class: "json" }, JSON.stringify(row.detail, null, 2))), { kind: "Audit" });
   main.append(zone("audit-trail", "Governance changes", "Every signed change, newest first; open one for its detail.", panel("Governance audit trail", { span: 12, flush: true, info: "flow:F13", scope: report }, async (body, big, ctx) => { ctx.record("rows", trail); put(body, governance ? dataTable([
     { label: "#", get: (row) => row.seq, num: true },
-    { label: "Time", get: when, render: (row) => h("span", { class: "mono" }, dt(when(row))), csv: (row) => dt(when(row)) },
+    { label: "Time", width: "196px", get: when, render: (row) => h("span", { class: "mono" }, dt(when(row))), csv: (row) => dt(when(row)) },
     { label: "Actor", get: (row) => row.actor, filter: true }, { label: "Action", get: (row) => row.action, render: (row) => h("code", {}, row.action), filter: true },
     { label: "Detail", get: (row) => JSON.stringify(row.detail), render: (row) => h("span", { class: "muted clip" }, fmt(row.detail)) },
   ], trail, { sort: 0, dir: -1, placeholder: "Search actors, actions, details…", empty: "No governance changes recorded.", name: "foxx-governance-audit", onRow: openChange })

@@ -172,15 +172,21 @@
     for (const step of [1, 2, 2.5, 5, 10]) if (step * power >= raw) return step * power * 4;
     return 40 * power;
   }
-  /** Time labels along an axis, two lines each (date, time) */
+  /** Time labels along an axis, two lines each: the time (HH:MM, or HH:MM:SS for short ranges),
+   * and below it the date (YYYY:MM:DD) where it changes; the tooltip keeps the full timestamp */
   function timeAxis(group, start, end, left, width, y, count) {
-    const labels = Math.max(2, Math.min(count || 8, Math.floor(width / 120)));
+    const labels = Math.max(2, Math.min(count || 8, Math.floor(width / 110)));
+    const digits = end - start < 10 * 60e3 ? 8 : 5;
+    let previous = "";
     for (let index = 0; index < labels; index += 1) {
       const t = start + ((end - start) * index) / (labels - 1);
       const x = left + (width * index) / (labels - 1);
       const [date, time] = Foxx.dtParts(t);
+      const day = date.replace(/:$/, "");
       const anchor = index === 0 ? "start" : index === labels - 1 ? "end" : "middle";
-      group.append(Foxx.svg("text", { x, y, "text-anchor": anchor }, date), Foxx.svg("text", { x, y: y + 11, "text-anchor": anchor }, time));
+      group.append(Foxx.svg("text", { x, y, "text-anchor": anchor }, time.slice(0, digits)));
+      if (day !== previous) group.append(Foxx.svg("text", { x, y: y + 12, "text-anchor": anchor, class: "axis-date" }, day));
+      previous = day;
     }
   }
   /** Horizontal gridlines with value labels */
@@ -350,7 +356,8 @@
     const format = options.format || Foxx.compact;
     return Foxx.h("div", { class: "toplist" }, items.map((item, index) => Foxx.h("div", { class: "row", role: "button", tabindex: "0", title: options.hint || "Open these events", onclick: () => options.onPick && options.onPick(item.value), onkeydown: (event) => { if (event.key === "Enter" && options.onPick) options.onPick(item.value); } },
       Foxx.h("span", { class: "name", title: item.label || item.value }, item.label || item.value, options.explain ? options.explain(item.value) : null),
-      Foxx.h("div", { class: "track" }, Foxx.h("div", { class: "fill", style: "width:" + Math.max(2, (item.count / max) * 100) + "%;background:" + (options.color || (options.byValue ? Foxx.hashColor(item.value) : Foxx.PALETTE[0])) })),
+      // Bar length carries the magnitude: one accent color, unless the value names a state
+      Foxx.h("div", { class: "track" }, Foxx.h("div", { class: "fill", style: "width:" + Math.max(2, (item.count / max) * 100) + "%;background:" + (options.color || (options.byValue && Foxx.NAMED[item.value]) || Foxx.PALETTE[0]) })),
       Foxx.h("span", { class: "num" }, format(item.count)))));
   };
   charts.sparkline = function sparkline(points, color) {

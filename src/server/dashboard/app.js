@@ -233,6 +233,9 @@ function consumedCreditsBy(entries, calls, dimension) {
 const is = (path, value) => ({ path, op: "is", values: [value] });
 const SVG_ICON = (d) => svg("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" }, svg("path", { d }));
 const FUNNEL = "M3 5h18l-7 8v6l-4 2v-8z", LENS = "M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zM20 20l-4-4M8 11h6M11 8v6";
+const FUNNEL_PLUS = "M3 5h14l-5.5 6.5V18l-3 1.5v-8zM19 13v6M16 16h6", EXPAND = "M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7", REFRESH = "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7";
+const MONITOR = "M3 4h18v12H3zM8 20h8M12 16v4", CHEVRON = "M6 9l6 6 6-6", SPARK = "M12 3l1.8 4.7 4.7 1.8-4.7 1.8L12 16l-1.8-4.7-4.7-1.8 4.7-1.8zM19 15l.8 2.2 2.2.8-2.2.8L19 21l-.8-2.2-2.2-.8 2.2-.8z";
+const MORE = "M5 11a1 1 0 1 0 0 2 1 1 0 0 0 0-2zM12 11a1 1 0 1 0 0 2 1 1 0 0 0 0-2zM19 11a1 1 0 1 0 0 2 1 1 0 0 0 0-2z";
 
 // ---------------------------------------------------------------- explanations (info icons)
 
@@ -457,7 +460,7 @@ function areaConditions(page, zoneId) {
 function scopeFilterRow(list, title, note, apply) {
   const row = h("div", { class: "area-filter" });
   const target = { list, title, note, apply: () => { persistAreaFilters(); draw(); apply(); } };
-  const draw = () => put(row, h("button", { class: "btn small", type: "button", onclick: (event) => builder(event.currentTarget, -1, target) }, "+ Add filter"),
+  const draw = () => put(row, h("button", { class: "btn small ghost add-filter", type: "button", title: note, onclick: (event) => builder(event.currentTarget, -1, target) }, SVG_ICON(FUNNEL_PLUS), "Filter"),
     list.map((clause, index) => h("span", { class: "pill" + (clause.exclude ? " not" : "") },
       h("button", { type: "button", class: "pill-text", title: "Edit this scoped filter", onclick: (event) => builder(event.currentTarget, index, target) }, clauseText(clause)),
       h("button", { type: "button", "aria-label": "Remove " + clauseText(clause), onclick: () => { list.splice(index, 1); persistAreaFilters(); draw(); apply(); } }, "×"))));
@@ -573,16 +576,23 @@ function panel(title, options, draw) {
   };
   const drawFilterRow = () => put(filterRow, local.map((clause, index) => h("span", { class: "pill" + (clause.exclude ? " not" : "") }, h("button", { type: "button", class: "pill-text", title: "Edit this panel condition", onclick: (event) => builder(event.currentTarget, index, panelTarget) }, clauseText(clause)), h("button", { type: "button", "aria-label": "Remove " + clauseText(clause), onclick: () => { local.splice(index, 1); drawFilterRow(); node.refresh(); } }, "×"))));
   const panelTarget = { list: local, title: "Condition for this panel only", note: "Added to the global filter for this panel; other panels are not affected.", apply: () => { drawFilterRow(); node.refresh(); } };
+  // The funnel and the lens stay in view; expand shows on hover; the rest sit in the ⋯ menu
+  const more = h("button", { class: "icon-btn", type: "button", title: "More actions", "aria-label": "More actions for " + title, "aria-haspopup": "true", onclick: () => {
+    const item = (icon, label, action) => h("button", { class: "menu-item", type: "button", onclick: () => { document.querySelectorAll(".menu").forEach((open) => open.remove()); action(); } }, SVG_ICON(icon), label);
+    const collapsed = node.classList.contains("collapsed");
+    menu(more, h("div", { class: "menu-list" },
+      options.filterable ? item(FUNNEL_PLUS, "Add a condition for this panel", () => builder(more, -1, panelTarget)) : null,
+      item(REFRESH, "Refresh", () => node.refresh()),
+      options.noExpand ? null : item(MONITOR, "Monitor view (full screen, live)", () => overlay(title, (target) => run(target, true), true)),
+      item(SPARK, "Agent context", () => openAgentContext(node).catch((error) => { if (error instanceof SignedOut) signIn(); else details.open("Agent context unavailable", h("div", { class: "notice error" }, error.message), { kind: "API error" }); })),
+      item(CHEVRON, collapsed ? "Show panel" : "Collapse panel", () => node.classList.toggle("collapsed"))), "compact");
+  } }, SVG_ICON(MORE));
   const tools = h("div", { class: "tools" },
     scopeIcon(() => node.scopeSpec(), () => lens(node, "properties")),
-    h("button", { class: "icon-btn", type: "button", title: "Open this component's filtered context for an agent", "aria-label": "Agent context for " + title, onclick: () => openAgentContext(node).catch((error) => { if (error instanceof SignedOut) signIn(); else details.open("Agent context unavailable", h("div", { class: "notice error" }, error.message), { kind: "API error" }); }) }, "AI"),
-    options.filterable ? h("button", { class: "icon-btn", type: "button", title: "Add a condition for this panel only", "aria-label": "Filter " + title, onclick: (event) => builder(event.currentTarget, -1, panelTarget) }, "+ filter") : null,
-    h("button", { class: "icon-btn", type: "button", title: "Refresh", "aria-label": "Refresh " + title, onclick: () => node.refresh() }, "↻"),
     options.noExpand ? null : h("button", { class: "icon-btn", type: "button", title: "Lens: the chart with its metrics, properties, and interpretation", "aria-label": "Lens on " + title, onclick: () => lens(node) }, SVG_ICON(LENS)),
-    options.noExpand ? null : h("button", { class: "icon-btn", type: "button", title: "Expand", "aria-label": "Expand " + title, onclick: () => overlay(title, (target) => run(target, true), false) }, "⤢"),
-    options.noExpand ? null : h("button", { class: "icon-btn", type: "button", title: "Monitor view: full screen, refreshed every 30 seconds", "aria-label": "Monitor " + title, onclick: () => overlay(title, (target) => run(target, true), true) }, "▣"),
-    h("button", { class: "icon-btn", type: "button", title: "Collapse", "aria-label": "Collapse " + title, "aria-expanded": "true", onclick: (event) => { const collapsed = node.classList.toggle("collapsed"); event.currentTarget.setAttribute("aria-expanded", String(!collapsed)); event.currentTarget.textContent = collapsed ? "▸" : "▾"; } }, "▾"));
-  put(node, h("header", {}, h("h3", {}, title, options.info ? (typeof options.info === "string" ? info(options.info) : info("", options.info)) : null), controls, tools), filterRow, body);
+    options.noExpand ? null : h("button", { class: "icon-btn reveal", type: "button", title: "Expand", "aria-label": "Expand " + title, onclick: () => overlay(title, (target) => run(target, true), false) }, SVG_ICON(EXPAND)),
+    more);
+  put(node, h("header", {}, h("h3", { ondblclick: () => node.classList.toggle("collapsed"), title: "Double-click to collapse or show" }, title, options.info ? (typeof options.info === "string" ? info(options.info) : info("", options.info)) : null), controls, tools), filterRow, body);
   node.controls = controls;
   node.body = body;
   queueMicrotask(() => run(body));
@@ -897,7 +907,7 @@ function dataTable(columns, rows, options) {
     state.page = Math.min(state.page, pages - 1);
     const shown = list.slice(state.page * size, state.page * size + size);
     const cols = columns.map((column, index) => [column, index]).filter(([, index]) => !state.hidden.has(index));
-    const head = h("tr", {}, cols.map(([column, index]) => h("th", { class: column.get ? "sortable" : "", scope: "col", "aria-sort": state.sort === index ? (state.dir > 0 ? "ascending" : "descending") : null, onclick: (event) => { if (!column.get || event.target.closest(".info-icon")) return; if (state.sort === index) state.dir = -state.dir; else { state.sort = index; state.dir = column.num ? -1 : 1; } draw(); } }, column.label, column.info ? info(column.info) : null, state.sort === index ? h("span", { class: "arrow" }, state.dir > 0 ? "▲" : "▼") : null)));
+    const head = h("tr", {}, cols.map(([column, index]) => h("th", { class: column.get ? "sortable" : "", scope: "col", style: column.width ? "width:" + column.width : null, "aria-sort": state.sort === index ? (state.dir > 0 ? "ascending" : "descending") : null, onclick: (event) => { if (!column.get || event.target.closest(".info-icon")) return; if (state.sort === index) state.dir = -state.dir; else { state.sort = index; state.dir = column.num ? -1 : 1; } draw(); } }, column.label, column.info ? info(column.info) : null, state.sort === index ? h("span", { class: "arrow" }, state.dir > 0 ? "▲" : "▼") : null)));
     const body = shown.length ? shown.map((row) => h("tr", { class: options.onRow ? "clickable" : "", tabindex: options.onRow ? "0" : null, onclick: options.onRow ? (event) => { if (!event.target.closest("a,button,input,select")) options.onRow(row); } : undefined, onkeydown: options.onRow ? (event) => { if (event.key === "Enter") options.onRow(row); } : undefined },
       cols.map(([column]) => {
         if (column.bar) { const value = Number(column.get(row)) || 0; return h("td", { class: "num" }, h("div", { class: "bar-cell" }, h("i", { style: "width:" + Math.round((value / maxima.get(column)) * 60) + "px" }), column.render ? column.render(row) : (column.format || compact)(value))); }
@@ -913,10 +923,10 @@ function dataTable(columns, rows, options) {
   draw();
   return h("div", {}, options.noTools ? null : tools, holder);
 }
-/** A small popover menu next to an element */
-function menu(anchor, content) {
+/** A small popover menu next to an element; variant (wide, compact) is applied before it is placed */
+function menu(anchor, content, variant) {
   document.querySelectorAll(".menu").forEach((node) => node.remove());
-  const node = h("div", { class: "menu", role: "dialog" }, content);
+  const node = h("div", { class: "menu" + (variant ? " " + variant : ""), role: "dialog" }, content);
   document.body.append(node);
   const box = anchor.getBoundingClientRect();
   node.style.left = Math.max(8, Math.min(box.left, window.innerWidth - node.offsetWidth - 8)) + "px";
@@ -927,8 +937,8 @@ function menu(anchor, content) {
 const sevBar = (row) => h("span", { class: "sev", style: "background:" + color((row.severity || {}).severity_status, 0), title: (row.severity || {}).severity_status });
 function eventsTable(events, options) {
   return dataTable([
-    { label: "", render: sevBar },
-    { label: "Time", get: (row) => row.occurred_at, render: (row) => h("span", { class: "mono" }, dt(row.occurred_at)), csv: (row) => dt(row.occurred_at) },
+    { label: "", width: "30px", render: sevBar },
+    { label: "Time", width: "196px", get: (row) => row.occurred_at, render: (row) => h("span", { class: "mono" }, dt(row.occurred_at)), csv: (row) => dt(row.occurred_at) },
     { label: "Event", get: (row) => row.event_name, render: (row) => h("div", {}, h("code", {}, row.event_name), h("div", { class: "muted" }, (row.response || {}).response_statement || "")) },
     { label: "Flow", get: (row) => row.flow, render: (row) => h("span", {}, row.flow, info("flow:" + row.flow)), filter: true, info: "facet:flow" },
     { label: "Severity", get: (row) => (row.severity || {}).severity_status, render: (row) => chip((row.severity || {}).severity_status), filter: true, info: "facet:severity" },
@@ -1044,7 +1054,7 @@ async function builder(anchor, index, target) {
     if (current) current.scrollIntoView({ block: "nearest" });
   };
   draw();
-  menu(anchor, body).classList.add("wide");
+  menu(anchor, body, "wide");
 }
 
 // ---------------------------------------------------------------- chrome: rail, crumbs, scope, time, filter bar, search
@@ -1226,7 +1236,9 @@ function rangeLabel() {
   return filter.range === "All" ? "all time" : "last " + filter.range;
 }
 function hero(title, subtitle, facts, actions) {
-  return h("div", { class: "hero" }, h("div", { style: "position:relative;z-index:1" }, h("h1", {}, title), h("div", { class: "sub" }, subtitle)), h("div", { class: "facts" }, facts.map(([label, value, key]) => h("div", { class: "fact" }, h("span", {}, label, key ? info(key) : null), h("b", {}, value)))), actions ? h("div", { class: "hero-actions" }, actions) : null);
+  return h("div", { class: "hero" },
+    h("div", { class: "hero-top" }, h("div", { class: "hero-title" }, h("h1", {}, title), h("div", { class: "sub" }, subtitle)), actions ? h("div", { class: "hero-actions" }, actions) : null),
+    facts && facts.length ? h("div", { class: "facts" }, facts.map(([label, value, key]) => h("div", { class: "fact" }, h("span", {}, label, key ? info(key) : null), h("b", {}, value)))) : null);
 }
 function evalsTable(evals) {
   const rows = Object.entries(evals || {}).filter(([, value]) => value !== null && !(typeof value === "object" && !Array.isArray(value) && !Object.keys(value).length));
@@ -1235,8 +1247,8 @@ function evalsTable(evals) {
 /** The tool call table: every call with its tool, decision, time, tokens, and trace */
 function callsTable(calls, options) {
   return dataTable([
-    { label: "", render: (row) => h("span", { class: "sev", style: "background:" + color(row.severity, 0) }) },
-    { label: "Start", get: (row) => row.start, render: (row) => h("span", { class: "mono" }, dt(row.start)), csv: (row) => dt(row.start) },
+    { label: "", width: "30px", render: (row) => h("span", { class: "sev", style: "background:" + color(row.severity, 0) }) },
+    { label: "Start", width: "196px", get: (row) => row.start, render: (row) => h("span", { class: "mono" }, dt(row.start)), csv: (row) => dt(row.start) },
     { label: "Tool", get: (row) => row.tool, render: (row) => h("code", {}, row.tool || "—"), filter: true, info: "facet:tool" },
     { label: "Decision", get: (row) => row.decision, render: (row) => chip(row.decision), filter: true, info: "facet:decision" },
     { label: "Outcome", get: (row) => row.outcome, render: (row) => chip(row.outcome), filter: true },

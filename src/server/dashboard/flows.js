@@ -1,5 +1,5 @@
 "use strict";
-// The DataSea Flows section. Numbers on top, then every flow as a card with its stages, then the map
+// The DataSea Flows section, under Engineering. Numbers on top, then every flow as a card with its stages, then the map
 // of flows and zones you can pan and zoom, laid out in columns (flows, then each stage of zones, then
 // zones in no flow) with each flow's path drawn left to right. Selecting a flow fills it with the
 // accent, tints its path, fades the rest, zooms to them, and enables the Trace button: the trace slides
@@ -471,7 +471,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
         submit.disabled = true;
         try {
           const staged = await apiWrite("/api/flows", { action: "stage", op, params, reason: reason.value.trim() });
-          location.href = staged.continue + "&page=flows";
+          location.href = staged.continue;
         } catch (problem) { submit.disabled = false; error.textContent = problem.message; }
       } },
         h("div", { class: "fx-kind" }, SIGNED.has(op) ? "Signed change · request" : OWNERS.has(op) ? "Code owners · request" : "Request"),
@@ -1475,7 +1475,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
           if (failed.length) { submit.disabled = false; submit.textContent = "Check and continue with GitHub"; urlError(failed); return; }
           try {
             const staged = await apiWrite("/api/flows", { action: "stage", op: "integration-set", params: { name, settings }, reason: reason.value.trim() });
-            location.href = staged.continue + "&page=flows";
+            location.href = staged.continue;
           } catch (problem) { submit.disabled = false; submit.textContent = "Check and continue with GitHub"; error.textContent = problem.message; }
         } },
           h("div", { class: "fx-kind" }, "Code owners · request"),

@@ -1,50 +1,64 @@
 # The dashboard
 
-The hosted dashboard ([dashboard.agentslandscape.cloud](https://dashboard.agentslandscape.cloud)) shows
-a team's agents in one place. Machines upload signed, redacted records to the DataSea service; the
-dashboard reads them. Enforcement never depends on it: it all happens on each machine.
+DataSea, the hosted dashboard ([dashboard.agentslandscape.cloud](https://dashboard.agentslandscape.cloud)),
+gathers what each part of the organization knows, section by section. Machines upload signed,
+redacted reports to the DataSea service; the dashboard reads them. Enforcement never depends on
+it: it all happens on each machine.
 
 ## Sign in and visibility
 
-Sign in with GitHub. You see the repositories GitHub lets you see; there is no separate user
-administration. Each machine is linked to a person once (`crane agent link`).
+The landing page and the section pages are open to anyone. Flows needs a GitHub sign-in. You see the
+repositories GitHub lets you see; there is no separate user administration. Each machine is linked
+to a person once (`crane agent link`). Once a machine is linked, Flows shows only what linked
+machines reported.
 
 ## What is on it
 
 | Area | What you see | Status |
 |---|---|---|
-| **Activity** | Every decision and effect: who, which agent, which rule, what changed | exists |
-| **Agents and sessions** | Each agent's state (active, degraded, quarantined, stale) and its timeline | exists |
-| **Govern** | Zones, flows, and call graphs; the audit trail of rule changes; compliance posture | exists |
-| **Operate** | Alert rules, credits, Dashboard Agents (team monitors), incidents | exists |
-| **Approvals** | Quarantines and their releases, confirmed against GitHub admin rights | exists |
-| **Reports** | CSV exports; the agent-context API for tools | exists |
-| **Flows** (Build) | A map of every flow (by priority) and draft above the zones (by criticality), with search; selecting one opens the lookout: trace and draft revisions (approve, retrace, rewind), typed context, priority and the routed model, tests with assumptions and mock data (required ones), designated people, watchers with their parent agents and the limit, assigned agents, incidents, Bricks, and what agents receive; every change is a request a person applies on a machine. See [features/flow-knowledge.md](../features/flow-knowledge.md) | exists (as last reported by a member's machine) |
-| **Bricks** | A graph of which Bricks apply on which Zones and Flows; the library by type and state (with each Brick's configuration and Common Context, and a download as a draft or of the whole library); the organization catalog (import a published Brick here as a draft); the fixed types and what each does today, attachments with their Current Context, Stacks, assigned agents (assignment and runtime status), monitors and coverage gaps, context snapshots, signed history, F37 events; every change (create, edit, activate, attach, detach, upgrade, context, deprecate, revoke, assign, unassign, Stacks, migrate) as a request GitHub (and, for signed changes, the CODEOWNERS of .crane/bricks.json) authorizes and a person applies on a machine (`crane brick inbox apply` or Landscape) | exists (as last reported by a member's machine) |
-| **Brick draft builder** | Plain form: type, intent, Common Context, settings; downloads a draft a member imports with `crane brick create --file` | partial: the dashboard cannot validate or sign |
-| **Resident agents** | Assignments with lifecycle and derived status (idle, investigating, awaiting approval, degraded), the review inbox, each activation from trigger to verified outcome with Crane's decision per step, idle cost (model calls while idle) and health, plan-only test reports, F38 events | exists (as last reported by a member's machine) |
-| **Resident agent decisions** | Approve, deny, or answer a waiting step, cancel an activation, pause or revoke an assignment, after GitHub confirms you administer the repository; the machine applies it at its next sync with Crane's checks | exists (approvals and answers only when the definition allows dashboard decisions) |
-| **Resident agent wizard** | Eight steps (goal, target, context, triggers, actions and limits, RCA, verification, review); downloads the definition and assignment drafts, and test events, a member imports | partial: the dashboard cannot validate, activate, or approve |
-| **Skill Builder** | Plain forms to draft skills; drafts are proposals a signer activates | to build (decided) |
-| **Near misses, replay, role views** | The Black Box views | to build |
-| **Receipts** | Proof per pull request | to build |
+| **Landing page** | What DataSea is, every section with its subsections, and how changes reach a machine | exists |
+| **Engineering** | Its subsections | exists |
+| **Engineering › Flows** | A map of every flow (by priority) and draft above the zones, each flow's trace and draft revisions (approve, retrace, rewind), typed context, priority and the routed model, tests with assumptions and mock data (required ones), designated people, subagents, assigned agents, incidents, and Bricks. Every change is a request a person applies on a machine. See [features/flow-knowledge.md](../features/flow-knowledge.md) | exists (as last reported by a member's machine) |
+| **Product, Sales, Marketing, Finance, Human Resources, Operations, Legal** | The section and its purpose | sections exist; no subsections yet |
+
+The metric pages (activity, agents and sessions, governance, operate, compliance, reports), the
+Bricks and Resident agents pages, Dashboard Agents, credit grants, and resident-agent decisions
+were removed. Their data was removed from the service too (schema 14). Bricks and resident agents
+are still managed on each machine (`crane brick`, `crane resident`) and in Landscape.
 
 ## What the dashboard may change
 
-Only narrow, repository-scoped writes: linking a machine to a person, confirming the owner key,
-granting credits, Dashboard Agent settings and incidents, quarantine requests, context
-proposals, and resident-agent decisions (which the machine applies and checks again). Sensitive ones need a fresh GitHub check that you are a repository admin. It cannot sign
-rules: signing needs an owner or admin key on a machine.
+Only narrow, repository-scoped writes:
 
-## Stopping an agent
+- linking a machine to a person;
+- confirming the owner key;
+- the change requests made in Flows.
 
-A remote quarantine (by agent, session, or tool) makes that agent's hooks deny further actions. With
-uploads on, an unreachable service also means "deny", so an outage stops agent work on those
-machines (a known availability trade-off).
+GitHub decides each one. A signed flow change needs a code owner of the signed file, or a
+repository admin when no CODEOWNERS line covers it. A request waits for a person to apply it on a
+machine (`crane brick inbox apply` or one click in Landscape), where Crane checks and signs it. The
+dashboard cannot sign rules: signing needs an owner or admin key on a machine.
+
+## What the service keeps
+
+The service keeps only what Flows and the machines need:
+
+- repositories with their verified remotes;
+- each member's latest repository status;
+- how far each machine's uploads arrived;
+- approval requests;
+- Brick and flow change requests;
+- the organization catalog of Bricks.
+
+Machines still upload events, ledger entries, governance changes, and alerts. The service records
+only how far each of these arrived, so nothing is uploaded twice. Released Crane versions still ask
+for remote quarantines, credit grants, and resident-agent decisions. The service answers with
+empty lists.
 
 ## Turning uploads off
 
-`CRANE_INGEST_URL=off` keeps everything local. The dashboard then shows nothing for that machine,
-and remote quarantines cannot reach it.
+`CRANE_INGEST_URL=off` keeps everything local. Flows then shows nothing reported by that machine.
+With uploads on, the hook still checks the service before tool calls, and an unreachable service
+still means "deny" on those machines (a known availability trade-off).
 
-Every event the dashboard shows follows the specification in [DASHBOARD.md](../../DASHBOARD.md).
+The events machines record follow the specification in [DASHBOARD.md](../../DASHBOARD.md).

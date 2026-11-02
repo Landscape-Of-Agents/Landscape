@@ -1,8 +1,7 @@
-// Read models shared by the task and session commands and the hosted DataSea dashboard: sessions,
-// tasks, agents, and tool calls with their evals (DASHBOARD.md), built from the specification
-// events of the local runtime stores or, on the service, of the uploaded records.
+// Read models of the task and session commands: sessions, tasks, and tool calls with their evals
+// (DASHBOARD.md), built from the specification events of the local runtime stores.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use serde_json::{json, Value};
 
@@ -21,7 +20,6 @@ use crate::telemetry::Stores;
     - ledger: Vec<Entry> - every ledger entry
     - sessions: Vec<SessionRecord> - sessions, most recent first
     - tasks: Vec<TaskRecord> - tasks, most recent first
-    - alerts: Vec<Value> - alerts, newest first
 */
 #[derive(Debug, Default)]
 pub(crate) struct Snapshot {
@@ -29,8 +27,6 @@ pub(crate) struct Snapshot {
     pub(crate) ledger: Vec<Entry>,
     pub(crate) sessions: Vec<SessionRecord>,
     pub(crate) tasks: Vec<TaskRecord>,
-    #[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the hosted dashboard
-    pub(crate) alerts: Vec<Value>,
 }
 
 impl Snapshot {
@@ -47,22 +43,7 @@ impl Snapshot {
             ledger: stores.ledger.entries()?,
             sessions: stores.identity.sessions(),
             tasks: stores.identity.tasks(),
-            alerts: crate::telemetry::alerts::list(&stores),
         })
-    }
-
-    /** Events of one session
-     * Input
-        - session: &str - canonical session
-     * Output
-        - Vec<&Event>
-    */
-    #[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the hosted dashboard
-    pub(crate) fn session_events(&self, session: &str) -> Vec<&Event> {
-        self.events
-            .iter()
-            .filter(|event| event.scope.foxx_session_id.as_deref() == Some(session))
-            .collect()
     }
 
     /** Every specification event of the stores: those stored with each event (projected now for
@@ -256,41 +237,4 @@ pub(crate) fn session_view_with(
         "credits": balance,
         "evals": summarize(&events),
     })
-}
-
-/** Build the per-agent longitudinal view: every agent identity with its sessions and evals
- * Input
-    - snapshot: &Snapshot - stores
-    - specs: &[Value] - every specification event
- * Output
-    - Vec<Value>
-*/
-#[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the hosted dashboard
-pub(crate) fn agents(snapshot: &Snapshot, specs: &[Value]) -> Vec<Value> {
-    let mut by_agent: BTreeMap<String, Vec<&SessionRecord>> = BTreeMap::new();
-    for session in &snapshot.sessions {
-        by_agent
-            .entry(session.agent_id.clone())
-            .or_default()
-            .push(session);
-    }
-    by_agent
-        .into_iter()
-        .map(|(agent, sessions)| {
-            let ids = sessions.iter().map(|session| session.foxx_session_id.clone()).collect::<BTreeSet<_>>();
-            let events = specs
-                .iter()
-                .filter(|spec| spec["session"]["session_id"].as_str().is_some_and(|id| ids.contains(id)))
-                .collect::<Vec<_>>();
-            json!({
-                "agent_id": agent,
-                "provider": sessions[0].provider,
-                "sessions": sessions.len(),
-                "first_seen": iso_time(sessions.iter().map(|session| session.started_at).min().unwrap_or(0)),
-                "last_seen": iso_time(sessions.iter().map(|session| session.last_seen_at).max().unwrap_or(0)),
-                "quarantined_sessions": sessions.iter().filter(|session| format!("{:?}", session.safety) == "Quarantined").count(),
-                "evals": summarize(&events),
-            })
-        })
-        .collect()
 }

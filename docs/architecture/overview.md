@@ -116,7 +116,7 @@ them makes the rest of this document predictable.
 | **Crane CLI** | Set up a repository, sign rules, protect and target code, define zones and flows, install agent hooks, validate and test policies, run Work Capture and the capability pipeline | [src/](../../src) | Live, released for Linux, Windows, macOS |
 | **Crane hooks** (part of the CLI) | Nothing; they run automatically on every agent action | [src/hooks/](../../src/hooks) | Live for Claude Code, Codex, Copilot CLI, Gemini CLI, plus a generic profile |
 | **Landscape for VS Code** | Do all of the above from the editor; see the governance graph; see live agent context next to the code | [extensions/foxx/](../../extensions/foxx) | Live on the VS Code Marketplace (`agentscript.foxx`) and Open VSX |
-| **DataSea service and dashboard** | Sign in with GitHub, see every teammate's agents, decisions, incidents, tokens, compliance; configure Dashboard Agents; approve quarantines and links | [src/server/](../../src/server) (`crane server`, cargo feature `server`) | Live, hosted on Render with MongoDB |
+| **DataSea service and dashboard** | A landing page and the organization's sections; Engineering holds Flows. Sign in with GitHub; approve machine links and the owner key; request flow changes a person applies on a machine | [src/server/](../../src/server) (`crane server`, cargo feature `server`) | Live, hosted on Render with MongoDB |
 | **Landing page** | Download releases, send feedback | [landing/](../../landing) | Static site (Render Blueprint in [render.yaml](../../render.yaml)) |
 | **Capability Compiler** (components 1–7) | Investigate work, compile, validate, discover, invoke, and evolve capabilities | [src/capture/](../../src/capture), [src/capability/](../../src/capability), [src/compiler/](../../src/compiler), [src/capability_lab/](../../src/capability_lab), [src/discovery/](../../src/discovery), [src/invocation/](../../src/invocation), [src/evolution/](../../src/evolution) | Fully implemented and tested logic; most external connectors are deterministic fixtures (see §15) |
 | **Insight** (component 8) | See patterns across all kept work (evidence gaps, unanswered questions, trust, outcomes, recurring agent work) and turn them into proposals people review | [src/insight/](../../src/insight) | Implemented and tested over Work Capture's store (see §11.5) |
@@ -997,7 +997,7 @@ flowchart LR
 | `.crane/audit.jsonl` | Governance change history | `commit()` | hash chain, manifest |
 | `~/.crane-trust/` | Signing keys, pinned keys, rollback anchors, upload key, integration secrets, alert rules | Crane only | outside the repository; agents refused |
 | `~/.crane-trust/…/runtime/` | Event store, credit ledger, sessions, alerts, sync state, capture (with checklist proposals) / capability / compiler / lab / discovery / invocation / evolution stores, insight reports | hooks, Crane | hash chains, digests, locks |
-| MongoDB (`foxx` database) | Every installation's uploaded records, repository status, Dashboard Agents, incidents, approvals | the service only | signed requests, read-only dashboard handle |
+| MongoDB (`foxx` database) | Repositories, each member's repository status, upload positions, approvals, Brick and flow change requests, the Brick catalog (telemetry is no longer stored) | the service only | signed requests, read-only dashboard handle |
 
 ---
 
@@ -1032,7 +1032,7 @@ flowchart LR
 |---|---|---|
 | Signed rules, selections, policies, zones, flows, teams | Fully working | — |
 | Hook enforcement (4 agent tools + generic) | Fully working, fail-closed | Confidentiality of the trust directory against a same-user shell needs a sandbox (§8.5) |
-| Telemetry, upload, hosted dashboard, Dashboard Agents, quarantine | Fully working, hosted | The built-in ingest URL still points at the Render host while the custom domain is being set up |
+| Upload and hosted dashboard (landing page, sections, Flows) | Fully working, hosted | The built-in ingest URL still points at the Render host while the custom domain is being set up |
 | Landscape for VS Code | Published | — |
 | Work Capture | Live connectors for Git, DataSea, Landscape, Crane, and GitHub (pull requests, commit files, check runs) | Deployments, logs, and metrics are fixtures only; GitHub has no test-report API |
 | Capability Registry, Compiler, Lab, Discovery | Fully implemented and tested logic over real stores | Fed mostly by fixture-based episodes until hosted connectors exist |

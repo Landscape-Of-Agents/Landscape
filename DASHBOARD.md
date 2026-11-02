@@ -12,6 +12,15 @@ from the same event evidence.
   every event with all 13 groups.
 - Part 3 maps the events to the dashboard tabs.
 
+> **Status (2026-11-02, DataSea revamp, service schema 14).** DataSea is now a landing page and
+> the organization's sections, with Flows under Engineering
+> ([docs/surfaces/dashboard.md](docs/surfaces/dashboard.md)). Machines still record and upload
+> the machine events of Part 2. The service no longer stores them: it keeps only how far each
+> stream arrived. It no longer records service or dashboard events (`origin` `SERVICE`), and
+> derives none (`DERIVED`). The dashboard tabs of Part 3 were removed, and so were Dashboard
+> Agents, quarantines, credit grants, resident-agent decisions, retention, and the metric
+> routes of Part 4. Those parts are kept below as history.
+
 Notation: `name (VALUE_A, VALUE_B) (type)`. Types are `enum`, `list of enums`, `string`, `integer`,
 `number`, `boolean`, `timestamp` (ISO 8601, UTC), `duration_ms` (integer milliseconds), `digest`
 (128 hex characters, SHA-512), `key` (64 hex characters, Ed25519 public key), `null` (allowed
@@ -3462,6 +3471,9 @@ returned through the Dashboard Agents API only after the same admin check approv
 quarantine and context approval/rejection decisions appear in the incident's 3A timeline. These are
 service-side context attachments, not edits to `.crane/governance.yaml`.
 
+> Retired with schema 14: the service no longer runs Dashboard Agents or sends their
+> notifications, and the `CRANE_DASHBOARD_AGENT_*` settings are no longer read.
+
 New incidents attempt Slack and email delivery using server-side configuration. Delivery outcomes
 are recorded in service events, never include credentials, and do not roll back incident creation.
 The service does not read developer-machine integration secrets. Configure the following in the
@@ -3608,6 +3620,10 @@ in compliance; memory is.
 number (`files_changed`), so tool time and tokens are counted once per call.
 
 ### Data retention
+
+> Retired with schema 14: no telemetry is stored, so nothing expires, and
+> `CRANE_MONGODB_RETENTION_DAYS` is no longer read. The upload positions moved to
+> `ingestion_checkpoints` (streams `events`, `ledger`, `audit`, `alerts`).
 
 MongoDB keeps telemetry for the retention period, 30 days by default
 (`CRANE_MONGODB_RETENTION_DAYS`, fractions allowed; `CRANE_MONGODB_EVENT_RETENTION_DAYS` is still

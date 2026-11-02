@@ -17,7 +17,7 @@ without evidence.
 | **Black Box** | The paid flight recorder. Every agent attempt, near miss, and what stopped it, kept tamper-evident. |
 | **Evidence Receipts** | The paid proof per change. What is proven, contradicted, or unknown (and why), for every pull request. |
 | **Landscape** | The whole system's name, and the VS Code extension that authors rules (`foxx`). |
-| **Dashboard** | The hosted web app where a team sees agents, decisions, incidents, and approvals (served by DataSea). |
+| **Dashboard** | DataSea, the hosted web app: a landing page and the organization's sections; Engineering holds Flows. |
 | **DataSea** | The hosted service that receives signed uploads from machines and serves the dashboard. |
 | **CLI** | The `crane` command. Only people run it; agents never do. |
 
@@ -177,7 +177,7 @@ without evidence.
 | **RCA graph** | A versioned graph of signals, causes, checks, remediations, and verifications, each with how it is known. Proposed until a person reviews it. |
 | **Supported cause** | A cause this activation's checks support. Not the same as confirmed. |
 | **Step type** | One of twelve fixed kinds of plan step (`READ_CHECK`, `NOTIFY_SLACK`, `VERIFY`, …). One without an adapter is unavailable and never counts as done. |
-| **Dashboard decision** | An approval, denial, answer, cancel, pause, or revoke a GitHub-verified repository admin makes on the dashboard. The machine applies it at its next sync with Crane's own checks. Approvals and answers count only when the definition allows it. |
+| **Dashboard decision** | Retired: a resident-agent decision once made on the dashboard. DataSea no longer makes them; decide on the machine (`crane resident`) or in Landscape. |
 | **Separation of duties** | A definition option: the person who activated an assignment cannot approve its steps. |
 | **Idle** | Active with no activation running. No model call; shown as ACTIVE_IDLE, or DEGRADED when Crane would not admit it now. |
 
@@ -241,7 +241,7 @@ sandbox (not available yet).
 | **Eval** | A measured quantity, such as the denial rate. Missing data is "unmeasured", never zero. |
 | **Alert rule** | A threshold on an eval that notifies Slack or WhatsApp when crossed. |
 | **Compliance control** | A requirement (for example from SOC 2) and the evidence that it holds. |
-| **Dashboard Agent** | A team-wide monitor on the dashboard that opens an incident when a threshold is crossed. |
+| **Dashboard Agent** | Retired: a team-wide monitor the dashboard once ran. Removed with the DataSea revamp; its quarantines no longer exist. |
 | **Incident** | An event worth a person's attention, with its timeline. |
 | **Remote quarantine** | An admin stops an agent from the dashboard. Its hooks deny further actions. |
 | **Read-only handle** | Dashboard pages read through a connection that cannot write. |

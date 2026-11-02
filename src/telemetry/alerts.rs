@@ -174,18 +174,6 @@ fn try_raise(
     append_line(&path, &record.to_string())
 }
 
-/** Read the recorded alerts, newest first
- * Input
-    - stores: &Stores - runtime stores
- * Output
-    - Vec<Value>
-*/
-pub(crate) fn list(stores: &Stores) -> Vec<Value> {
-    let mut alerts = read_lines(&stores.directory.join("alerts.jsonl")).unwrap_or_default();
-    alerts.reverse();
-    alerts
-}
-
 /** Report whether alert delivery is configured, for compliance evidence
  * Input
     - workspace: &Workspace - repository

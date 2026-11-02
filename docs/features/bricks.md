@@ -257,10 +257,9 @@ copying files, use the **organization catalog** on DataSea:
    (`--as ID` picks another id). It grants nothing until an admin here activates it, so each
    repository stays the authority for what applies in it.
 
-`crane brick import FILE` also reads a draft file, a catalog entry, or the library file that
-"Download the library" on DataSea saves. An import is all or nothing: if one Brick cannot become a
-draft (its id has a draft already, or a different kind), nothing is saved. On DataSea, each Brick
-also has "Download as draft", for `crane brick create --file FILE` in any repository.
+`crane brick import FILE` also reads a draft file, a catalog entry, or a library file (one the
+retired DataSea Bricks page saved). An import is all or nothing: if one Brick cannot become a
+draft (its id has a draft already, or a different kind), nothing is saved.
 
 ## Commands
 
@@ -291,11 +290,9 @@ of them.
   migrate, and the changes requested on DataSea). Signing changes are previewed with `--dry-run`
   and need your confirmation. See
   [surfaces/vscode.md](../surfaces/vscode.md).
-- **Dashboard**: the Bricks page (Govern), with a graph of which Bricks apply where, the library
-  (configuration and Common Context per Brick, downloads), the organization catalog, kinds,
-  attachments with their Current Context, Stacks, agents, monitors, snapshots, signed
-  history, F37 events, the requests made there, and actions for every change (see above). See
-  [surfaces/dashboard.md](../surfaces/dashboard.md).
+- **Dashboard**: the Bricks page was removed from DataSea on 2026-11-02. The Flows section
+  (Engineering) still lists each flow's Bricks. `crane brick inbox` still applies requests,
+  which DataSea now makes only for flows. See [surfaces/dashboard.md](../surfaces/dashboard.md).
 - **Events**: F37 in [DASHBOARD.md](../../DASHBOARD.md). A decision the guard made because of a
   Brick carries `brick:ID@N` next to its Zones and Flows, and its rule (`BRICK_IDENTITY`,
   `BRICK_DENY_READ`, `BRICK_ACCESS_MODE`, `BRICK_APPROVAL`, `BRICK_LIMIT`, `BRICK_NETWORK`,

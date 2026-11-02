@@ -307,6 +307,45 @@ pub fn request(method: &str, url: &str, headers: &[(&str, &str)]) -> Fetched {
     }
 }
 
+/** POST a JSON body with a session cookie, without following redirects
+ * Input
+    - url: &str - address
+    - cookie: &str - Cookie header value
+    - body: &serde_json::Value - the JSON body
+ * Output
+    - Fetched
+*/
+pub fn post_json(url: &str, cookie: &str, body: &serde_json::Value) -> Fetched {
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let response = match agent
+        .post(url)
+        .set("Cookie", cookie)
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string())
+    {
+        Ok(response) | Err(ureq::Error::Status(_, response)) => response,
+        Err(error) => panic!("POST {url}: {error}"),
+    };
+    Fetched {
+        status: response.status(),
+        cookies: response
+            .all("set-cookie")
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        location: response.header("location").map(String::from),
+        headers: response
+            .headers_names()
+            .into_iter()
+            .map(|name| {
+                let value = response.header(&name).unwrap_or_default().to_string();
+                (name, value)
+            })
+            .collect(),
+        body: response.into_string().unwrap_or_default(),
+    }
+}
+
 /** GET with an optional session cookie
  * Input
     - url: &str - address
@@ -381,7 +420,7 @@ pub fn approve(base: &str, user: &str, action: &str, code: &str) -> (bool, Strin
     )
 }
 
-/** Start any approval path on the dashboard (an approval code or a credit grant) as a stand-in
+/** Start any approval path on the dashboard (an approval code or a change request) as a stand-in
  * GitHub user, and finish the GitHub sign-in it starts
  * Input
     - base: &str - service URL

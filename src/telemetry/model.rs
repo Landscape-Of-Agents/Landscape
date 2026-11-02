@@ -130,25 +130,6 @@ pub(crate) enum Domain {
     AuditCompliance,
 }
 
-impl Domain {
-    /** Every domain, in reporting order */
-    #[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the hosted dashboard
-    pub(crate) const ALL: [Domain; 12] = [
-        Self::IdentityProvenance,
-        Self::AuthenticationDelegation,
-        Self::Authorization,
-        Self::DataAccessPrivacy,
-        Self::SecretsCredentials,
-        Self::RuntimeIntegrity,
-        Self::NetworkExfiltration,
-        Self::PromptInjection,
-        Self::ResourceAbuse,
-        Self::PolicyIntegrity,
-        Self::RecoveryOversight,
-        Self::AuditCompliance,
-    ];
-}
-
 /** Event severity
  * Variants
     - Info - routine activity

@@ -342,7 +342,7 @@ Agent
 Integrations
   crane integrate jira|whatsapp|slack|github
 
-Alert rules (evaluated by the background sync; shown on the dashboard)
+Alert rules (evaluated by the background sync)
   crane alert add NAME metric METRIC above|at_least|below|at_most|equals N [window 15m]
                   [channels slack,whatsapp] [severity high] [cooldown 30]
                   [where PATH OPERATOR VALUES]... [quiet-resolve]

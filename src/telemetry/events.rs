@@ -590,58 +590,6 @@ pub(crate) fn verify_chain(events: &[Event]) -> ChainStatus {
     }
 }
 
-/** Verify the part of a chain the service still holds after its oldest events expired: from the
- * oldest event held (trusting its link to the expired one before it), sequences without gaps,
- * every digest correct and chained. A gap after the oldest event is still a break
- * Input
-    - events: &[Event] - events in order
- * Output
-    - ChainStatus, with expired_before set when the chain starts after event 1
-*/
-#[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the hosted dashboard
-pub(crate) fn verify_retained(events: &[Event]) -> ChainStatus {
-    let Some(first) = events.first().filter(|event| event.sequence > 1) else {
-        return verify_chain(events);
-    };
-    let mut previous = first.previous_digest.clone();
-    for (index, event) in events.iter().enumerate() {
-        let expected = first.sequence + index as u64;
-        let problem = if event.sequence != expected {
-            Some(format!(
-                "event {expected} has sequence {} (gap, insertion, or deletion)",
-                event.sequence
-            ))
-        } else if event.previous_digest != previous {
-            Some(format!(
-                "event {expected} does not chain from the event before it"
-            ))
-        } else if event.compute_digest() != event.digest {
-            Some(format!(
-                "event {expected} was modified after it was recorded"
-            ))
-        } else {
-            None
-        };
-        if problem.is_some() {
-            return ChainStatus {
-                status: "broken".into(),
-                length: events.len(),
-                head: None,
-                problem,
-                expired_before: Some(first.sequence - 1),
-            };
-        }
-        previous = event.digest.clone();
-    }
-    ChainStatus {
-        status: "verified".into(),
-        length: events.len(),
-        head: Some(previous),
-        problem: None,
-        expired_before: Some(first.sequence - 1),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -675,30 +623,6 @@ mod tests {
         let mut gap = store.read_all().unwrap();
         gap.remove(0);
         assert_eq!(verify_chain(&gap).status, "broken");
-        // The service expires the oldest events: what remains still verifies from its start
-        let retained = verify_retained(&gap);
-        assert_eq!(
-            (retained.status.as_str(), retained.expired_before),
-            ("verified", Some(1))
-        );
-        assert_eq!(
-            verify_retained(&store.read_all().unwrap()).expired_before,
-            None
-        );
-        store
-            .append(Event::new("y", Domain::AuditCompliance, "repo", "k3"))
-            .unwrap();
-        store
-            .append(Event::new("z", Domain::AuditCompliance, "repo", "k4"))
-            .unwrap();
-        let mut hole = store.read_all().unwrap();
-        hole.remove(0);
-        hole.remove(1);
-        assert_eq!(
-            verify_retained(&hole).status,
-            "broken",
-            "a gap after the oldest event held is still a break"
-        );
     }
 
     /** Check that fractional measurements survive the write and read round trip exactly, so a

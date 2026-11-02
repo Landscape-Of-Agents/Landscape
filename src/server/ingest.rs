@@ -1,8 +1,10 @@
 // The signed upload API (/v1): every request carries a machine's upload key, a timestamp within
 // five minutes of the service clock, and an Ed25519 signature over the method, path, timestamp,
 // and body digest (see telemetry/ingest.rs). Uploads pass the limits (limits.rs) before they are
-// stored (store.rs). Positions and batch handle evidence uploads; the sole policy read returns
-// active repository quarantine rules, never telemetry or incident records.
+// stored (store.rs). Positions and batch handle uploads (only the repository, its status, and the
+// positions are kept). Released Crane versions also ask for Dashboard Agent quarantines, credit
+// grants, and resident decisions; DataSea no longer makes them, so those routes answer with empty
+// lists and accept the (empty) results.
 
 use std::io::Read;
 
@@ -136,15 +138,6 @@ fn admit(
             ),
         ));
     }
-    if quota.events + batch.events.len() as u64 > limits.max_events_per_installation {
-        return Err((
-            507,
-            format!(
-                "this installation reached its quota of {} stored events",
-                limits.max_events_per_installation
-            ),
-        ));
-    }
     Ok(())
 }
 
@@ -263,49 +256,7 @@ pub(super) fn handle(
             let batch: Batch = serde_json::from_slice(&body)
                 .map_err(|error| (400, format!("invalid batch: {error}")))?;
             admit(service, &repository, &installation, &batch)?;
-            let before = super::observe::before(database, &repository, &installation);
-            let stored = store::ingest(
-                database,
-                &service.settings,
-                &repository,
-                &installation,
-                &batch,
-            );
-            if let Ok(stored) = &stored {
-                super::dashboard::uploaded(&repository);
-                if let Err(error) = service.agent_wake.try_send(repository.clone()) {
-                    let (level, message) = match error {
-                        std::sync::mpsc::TrySendError::Full(_) => (
-                            "warn",
-                            "agent evaluation queue is full; the periodic sweep will recover it",
-                        ),
-                        std::sync::mpsc::TrySendError::Disconnected(_) => (
-                            "error",
-                            "agent evaluation worker is unavailable; check service health",
-                        ),
-                    };
-                    log::write(
-                        level,
-                        "dashboard_agents",
-                        None,
-                        "upload_evaluation_enqueue_failed",
-                        json!({"repository_id": repository, "reason": message}),
-                    );
-                }
-                let verified = !batch.root_commits.is_empty()
-                    && batch.remote.is_some()
-                    && identity(&batch.root_commits, batch.remote.as_deref()) == repository;
-                super::observe::batch(
-                    &service.log,
-                    &repository,
-                    &installation,
-                    &batch,
-                    before,
-                    stored,
-                    verified,
-                );
-            }
-            stored
+            store::ingest(database, &repository, &installation, &batch)
         }
         ("POST", operation @ ("link" | "owner")) => {
             let approval: ApprovalRequest = serde_json::from_slice(&body)
@@ -314,23 +265,13 @@ pub(super) fn handle(
             store::hold_approval(database, &repository, &installation, operation, &approval)
         }
         ("GET", "owner") => store::confirmed_owner(database, &repository),
-        ("GET", "agent-policy") => dashboard_agent_policy(database, &repository),
-        // Credit grants an admin approved on the dashboard, for this machine only
-        ("GET", "grants") => store::pending_grants(database, &repository, &installation),
-        ("POST", "grants") => {
-            let results: Value = serde_json::from_slice(&body)
-                .map_err(|error| (400, format!("invalid grant results: {error}")))?;
-            store::settle_grants(database, &repository, &installation, &results)
-        }
-        // Resident-agent decisions an admin made on the dashboard, for this machine only
-        ("GET", "resident-decisions") => {
-            store::pending_resident_decisions(database, &repository, &installation)
-        }
-        ("POST", "resident-decisions") => {
-            let results: Value = serde_json::from_slice(&body)
-                .map_err(|error| (400, format!("invalid decision results: {error}")))?;
-            store::settle_resident_decisions(database, &repository, &installation, &results)
-        }
+        // DataSea no longer quarantines, grants credits, or decides for resident agents; released
+        // Crane versions still ask, and find nothing to apply
+        ("GET", "agent-policy") => Ok(json!({"quarantines": []})),
+        ("GET", "grants") => Ok(json!({"grants": []})),
+        ("POST", "grants") => Ok(json!({"settled": 0})),
+        ("GET", "resident-decisions") => Ok(json!({"decisions": []})),
+        ("POST", "resident-decisions") => Ok(json!({"settled": 0})),
         // The org catalog of Bricks (brick/share.rs): an admin's machine publishes an activated
         // version, signed; the account is the owner of the remote this machine verified
         ("POST", "brick-catalog") => {
@@ -354,11 +295,7 @@ pub(super) fn handle(
                     {
                         return Err((409, format!("the catalog of {account} holds {} entries, the most it keeps", crate::brick::share::MAX_ENTRIES)));
                     }
-                    let kept = store::keep_catalog_entry(database, &account, &remote, &repository, &brick, &entry);
-                    if kept.is_ok() {
-                        super::observe::brick_published(&service.log, &repository, &installation, &account, &reference);
-                    }
-                    kept
+                    store::keep_catalog_entry(database, &account, &remote, &repository, &brick, &entry)
                 }
             }
         }
@@ -391,17 +328,7 @@ pub(super) fn handle(
         ("POST", "brick-requests") => {
             let results: Value = serde_json::from_slice(&body)
                 .map_err(|error| (400, format!("invalid Brick request results: {error}")))?;
-            let settled =
-                store::settle_brick_requests(database, &repository, &installation, &results);
-            if let Ok(settled) = &settled {
-                super::observe::brick_requests_settled(
-                    &service.log,
-                    &repository,
-                    &installation,
-                    settled,
-                );
-            }
-            settled
+            store::settle_brick_requests(database, &repository, &installation, &results)
         }
         ("POST", "clear") => {
             let request: Value = serde_json::from_slice(&body)
@@ -444,7 +371,6 @@ pub(super) fn handle(
                 }
             };
             result["authorized_as"] = json!(login);
-            super::dashboard::uploaded(&repository);
             Ok(result)
         }
         (
@@ -476,34 +402,4 @@ pub(super) fn handle(
             "the record could not be stored; try again later".to_string(),
         )
     })
-}
-
-/** Return only active quarantine rules; telemetry remains unavailable to installations. */
-fn dashboard_agent_policy(
-    database: &mongodb::sync::Database,
-    repository: &str,
-) -> Result<Value, String> {
-    let documents = database
-        .collection::<mongodb::bson::Document>("dashboard_quarantines")
-        .find(mongodb::bson::doc! {
-            "repository_id": repository,
-            "state": "ACTIVE",
-        })
-        .projection(mongodb::bson::doc! {
-            "_id": 0,
-            "quarantine_id": 1,
-            "kind": 1,
-            "target_id": 1,
-            "scope_session_id": 1,
-            "reason": 1,
-        })
-        .run()
-        .map_err(crate::platform::io_error)?
-        .map(|document| document.map_err(crate::platform::io_error))
-        .collect::<Result<Vec<_>, _>>()?;
-    let quarantines = documents
-        .into_iter()
-        .map(|document| serde_json::to_value(document).map_err(|error| error.to_string()))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(json!({"quarantines": quarantines}))
 }

@@ -1,15 +1,12 @@
 // The ingestion service's MongoDB database. Migrations are versioned and idempotent: collections
-// get $jsonSchema validators, unique indexes enforce idempotency per installation, filter indexes
-// serve the dashboard, and TTL indexes expire telemetry (events, service events, alerts, sessions,
-// tasks, and agents) after the retention period, 30 days by default, so a small cluster never
-// fills up. Records older than the retention period less 7 days are shown as stale data on the
-// dashboard. Durable state and history are never expired: repositories, chain heads, the autonomy
-// ledger, selection registry, policy versions, governance audit trail, status reports, approvals,
-// credit grants, Dashboard Agent definitions/incidents/quarantines, and approved flow context.
-// Detailed Dashboard Agent activity logs expire after 30 days. CRANE_MONGODB_RETENTION_DAYS=persist
-// keeps telemetry forever (for a larger cluster), and removes the expiry of records already stored.
-// MongoDB is append-only through this service, not immutable by itself, which is why every stored
-// record keeps its SHA-512 chain digest for independent verification.
+// get $jsonSchema validators and unique indexes enforce idempotency per installation. The service
+// keeps only what DataSea's Flows section and Crane machines need: repositories with their verified
+// remotes, each member's latest repository status, upload positions, approval requests (machine
+// links and owner keys), Brick change requests, and the org catalog of Bricks. Telemetry (events,
+// sessions, tasks, agents, alerts, the autonomy ledger, the governance audit trail, the selection
+// registry, policy versions, and service events) is accepted from machines for compatibility but no
+// longer stored; schema 14 removed it, together with the dashboard's metric, Dashboard Agent,
+// credit grant, and resident decision records.
 
 use std::time::Duration;
 
@@ -23,78 +20,19 @@ use crate::platform::io_error;
 /** Current schema version applied by the migrations (3: records keyed by installation; 4: the
  * members' repository status and the service's settings; 10: Dashboard Agent enforcement and
  * approval-gated flow context; 11: resident-agent decisions made on the dashboard; 12: Brick change
- * requests made on the dashboard) */
-pub(crate) const SCHEMA_VERSION: i64 = 13;
+ * requests made on the dashboard; 14: telemetry and the dashboard's metric records removed, upload
+ * positions kept as checkpoints) */
+pub(crate) const SCHEMA_VERSION: i64 = 14;
 
 /** How the service reaches its database
  * Fields
     - uri: String - connection string (secret)
     - database: String - database name
-    - retention_ms: Option<i64> - lifetime of telemetry records; None keeps them for ever
 */
 #[derive(Debug, Clone)]
 pub(crate) struct Settings {
     pub(crate) uri: String,
     pub(crate) database: String,
-    pub(crate) retention_ms: Option<i64>,
-}
-
-/** Days of telemetry kept by default */
-pub(crate) const DEFAULT_RETENTION_DAYS: i64 = 30;
-
-/** One day in milliseconds */
-pub(crate) const DAY_MS: i64 = 86_400_000;
-
-/** Days before deletion during which a record is shown as stale data */
-pub(crate) const STALE_WINDOW_DAYS: i64 = 7;
-
-/** The collections whose records expire, the time each record's age counts from, and that time's
- * unit in milliseconds */
-pub(crate) const EXPIRING: [(&str, &str, i64); 6] = [
-    ("events", "occurred_at", 1),
-    ("service_events", "occurred_at", 1),
-    ("alerts", "at", 1000),
-    ("sessions", "last_seen_at", 1),
-    ("tasks", "started_at", 1),
-    ("agents", "last_seen_at", 1),
-];
-
-/** Read the retention period from the environment: CRANE_MONGODB_RETENTION_DAYS (or the older
- * CRANE_MONGODB_EVENT_RETENTION_DAYS), in days (fractions allowed), 30 by default; persist,
- * forever, off, or 0 keeps every record
- * Input
-    - None
- * Output
-    - Option<i64> milliseconds, None to keep everything
-*/
-pub(crate) fn retention_from_environment() -> Option<i64> {
-    let text = std::env::var("CRANE_MONGODB_RETENTION_DAYS")
-        .or_else(|_| std::env::var("CRANE_MONGODB_EVENT_RETENTION_DAYS"))
-        .unwrap_or_default();
-    match text.trim().to_ascii_lowercase().as_str() {
-        "" => Some(DEFAULT_RETENTION_DAYS * DAY_MS),
-        "persist" | "forever" | "off" | "none" | "0" => None,
-        other => Some(
-            other
-                .parse::<f64>()
-                .ok()
-                .filter(|days| *days > 0.0 && days.is_finite())
-                .map_or(DEFAULT_RETENTION_DAYS * DAY_MS, |days| {
-                    ((days * DAY_MS as f64) as i64).max(1)
-                }),
-        ),
-    }
-}
-
-/** When a record whose age counts from a time expires
- * Input
-    - retention_ms: Option<i64> - retention period
-    - from_millis: i64 - the record's time (Unix milliseconds)
- * Output
-    - Option<bson::DateTime>, None when records are kept
-*/
-pub(crate) fn expiry(retention_ms: Option<i64>, from_millis: i64) -> Option<bson::DateTime> {
-    retention_ms.map(|retention| bson::DateTime::from_millis(from_millis + retention))
 }
 
 impl Settings {
@@ -113,7 +51,6 @@ impl Settings {
         Ok(Self {
             uri,
             database: std::env::var("CRANE_MONGODB_DB").unwrap_or_else(|_| "foxx".into()),
-            retention_ms: retention_from_environment(),
         })
     }
 }
@@ -187,130 +124,8 @@ const COLLECTIONS: &[Collection] = &[
         required: &["repository_id", "installation"],
         indexes: &[(&[("repository_id", 1), ("installation", 1)], true)],
     },
-    Collection {
-        name: "agents",
-        required: &["agent_id", "repository_id", "installation"],
-        indexes: &[(&[("installation", 1), ("agent_id", 1)], true)],
-    },
-    Collection {
-        name: "sessions",
-        required: &["foxx_session_id", "repository_id", "installation"],
-        indexes: &[
-            (&[("installation", 1), ("foxx_session_id", 1)], true),
-            (&[("repository_id", 1), ("last_seen_at", -1)], false),
-            (&[("agent_id", 1), ("started_at", -1)], false),
-        ],
-    },
-    Collection {
-        name: "tasks",
-        required: &[
-            "foxx_task_id",
-            "foxx_session_id",
-            "repository_id",
-            "installation",
-        ],
-        indexes: &[
-            (&[("installation", 1), ("foxx_task_id", 1)], true),
-            (&[("foxx_session_id", 1), ("started_at", -1)], false),
-            (&[("external_task_id", 1)], false),
-        ],
-    },
-    Collection {
-        name: "events",
-        required: &[
-            "event_id",
-            "event_type",
-            "repository_id",
-            "installation",
-            "sequence",
-            "digest",
-            "occurred_at",
-        ],
-        indexes: &[
-            (&[("installation", 1), ("event_id", 1)], true),
-            (
-                &[("repository_id", 1), ("installation", 1), ("sequence", 1)],
-                true,
-            ),
-            (&[("repository_id", 1), ("occurred_at", -1)], false),
-            (&[("scope.foxx_session_id", 1), ("sequence", 1)], false),
-            (&[("scope.foxx_task_id", 1), ("sequence", 1)], false),
-            (&[("scope.tool_call_id", 1)], false),
-            (&[("event_type", 1), ("occurred_at", -1)], false),
-            (&[("decision", 1), ("occurred_at", -1)], false),
-            (&[("severity", 1), ("occurred_at", -1)], false),
-            (&[("domain", 1), ("occurred_at", -1)], false),
-            (&[("enforcement", 1), ("occurred_at", -1)], false),
-        ],
-    },
-    Collection {
-        name: "autonomy_ledger",
-        required: &[
-            "entry_id",
-            "session",
-            "kind",
-            "idempotency_key",
-            "digest",
-            "repository_id",
-            "installation",
-        ],
-        indexes: &[
-            (&[("installation", 1), ("idempotency_key", 1)], true),
-            (
-                &[("repository_id", 1), ("installation", 1), ("seq", 1)],
-                true,
-            ),
-            (&[("session", 1), ("seq", 1)], false),
-        ],
-    },
-    Collection {
-        name: "selection_registry",
-        required: &[
-            "id",
-            "repository_id",
-            "installation",
-            "record_digest",
-            "signature",
-        ],
-        indexes: &[(
-            &[("repository_id", 1), ("installation", 1), ("id", 1)],
-            true,
-        )],
-    },
-    Collection {
-        name: "policy_versions",
-        required: &[
-            "repository_id",
-            "installation",
-            "generation",
-            "head",
-            "signature",
-        ],
-        indexes: &[(
-            &[("repository_id", 1), ("installation", 1), ("generation", 1)],
-            true,
-        )],
-    },
-    Collection {
-        name: "governance_changes",
-        required: &["repository_id", "installation", "seq", "action", "digest"],
-        indexes: &[(
-            &[("repository_id", 1), ("installation", 1), ("seq", 1)],
-            true,
-        )],
-    },
-    Collection {
-        name: "alerts",
-        required: &["alert_id", "kind", "repository_id", "installation"],
-        indexes: &[
-            (
-                &[("repository_id", 1), ("installation", 1), ("alert_id", 1)],
-                true,
-            ),
-            (&[("repository_id", 1), ("at", -1)], false),
-            (&[("session", 1), ("at", -1)], false),
-        ],
-    },
+    // How far each of a machine's streams arrived (events, ledger, audit, alerts) and its last
+    // upload: machines resume from these positions, so nothing is uploaded twice
     Collection {
         name: "ingestion_checkpoints",
         required: &["repository_id", "installation", "stream"],
@@ -322,11 +137,6 @@ const COLLECTIONS: &[Collection] = &[
     Collection {
         name: "repository_status",
         required: &["repository_id", "installation", "collected_at"],
-        indexes: &[(&[("repository_id", 1), ("installation", 1)], true)],
-    },
-    Collection {
-        name: "chain_heads",
-        required: &["repository_id", "installation", "sequence", "digest"],
         indexes: &[(&[("repository_id", 1), ("installation", 1)], true)],
     },
     Collection {
@@ -343,53 +153,6 @@ const COLLECTIONS: &[Collection] = &[
         indexes: &[
             (&[("code_digest", 1)], true),
             (&[("repository_id", 1), ("confirmed_at", -1)], false),
-        ],
-    },
-    Collection {
-        name: "service_events",
-        required: &["event_id", "event_name", "flow", "occurred_at"],
-        indexes: &[
-            (&[("event_id", 1)], true),
-            (&[("repository_id", 1), ("occurred_at", -1)], false),
-            (&[("action.action_user", 1), ("occurred_at", -1)], false),
-        ],
-    },
-    Collection {
-        name: "credit_grants",
-        required: &[
-            "grant_id",
-            "repository_id",
-            "installation",
-            "session",
-            "amount",
-            "status",
-        ],
-        indexes: &[
-            (&[("grant_id", 1)], true),
-            (
-                &[("repository_id", 1), ("installation", 1), ("status", 1)],
-                false,
-            ),
-            (&[("repository_id", 1), ("approved_at", -1)], false),
-        ],
-    },
-    Collection {
-        name: "resident_decisions",
-        required: &[
-            "decision_id",
-            "repository_id",
-            "installation",
-            "action",
-            "decided_by",
-            "status",
-        ],
-        indexes: &[
-            (&[("decision_id", 1)], true),
-            (
-                &[("repository_id", 1), ("installation", 1), ("status", 1)],
-                false,
-            ),
-            (&[("repository_id", 1), ("decided_at", -1)], false),
         ],
     },
     Collection {
@@ -417,113 +180,6 @@ const COLLECTIONS: &[Collection] = &[
         ],
     },
     Collection {
-        name: "dashboard_agents",
-        required: &[
-            "agent_id",
-            "repository_id",
-            "name",
-            "reason",
-            "created_by",
-            "created_at",
-            "updated_at",
-            "state",
-            "metric",
-            "threshold",
-            "window_minutes",
-            "assignments",
-        ],
-        indexes: &[
-            (&[("repository_id", 1), ("agent_id", 1)], true),
-            (
-                &[("repository_id", 1), ("state", 1), ("updated_at", -1)],
-                false,
-            ),
-        ],
-    },
-    Collection {
-        name: "dashboard_incidents",
-        required: &[
-            "incident_id",
-            "incident_key",
-            "repository_id",
-            "agent_id",
-            "created_at",
-            "status",
-            "reason",
-            "three_a",
-        ],
-        indexes: &[
-            (&[("repository_id", 1), ("incident_id", 1)], true),
-            (&[("repository_id", 1), ("incident_key", 1)], true),
-            (&[("repository_id", 1), ("created_at", -1)], false),
-            (
-                &[("repository_id", 1), ("status", 1), ("created_at", -1)],
-                false,
-            ),
-        ],
-    },
-    Collection {
-        name: "dashboard_quarantines",
-        required: &[
-            "quarantine_id",
-            "repository_id",
-            "kind",
-            "target_id",
-            "reason",
-            "requested_by",
-            "requested_at",
-            "state",
-        ],
-        indexes: &[
-            (&[("repository_id", 1), ("quarantine_id", 1)], true),
-            (
-                &[("repository_id", 1), ("state", 1), ("requested_at", -1)],
-                false,
-            ),
-        ],
-    },
-    Collection {
-        name: "dashboard_flow_context",
-        required: &[
-            "context_id",
-            "repository_id",
-            "incident_id",
-            "flow_id",
-            "context",
-            "proposed_by",
-            "proposed_at",
-            "status",
-        ],
-        indexes: &[
-            (&[("repository_id", 1), ("context_id", 1)], true),
-            (
-                &[("repository_id", 1), ("flow_id", 1), ("status", 1)],
-                false,
-            ),
-        ],
-    },
-    Collection {
-        name: "dashboard_agent_activity",
-        required: &[
-            "activity_id",
-            "repository_id",
-            "action",
-            "actor",
-            "at",
-            "details",
-            "expires_at",
-        ],
-        indexes: &[
-            (&[("repository_id", 1), ("at", -1)], false),
-            (&[("activity_id", 1)], true),
-        ],
-    },
-    Collection {
-        name: "dashboard_agent_leases",
-        required: &["repository_id", "owner", "lease_until"],
-        indexes: &[(&[("repository_id", 1)], true)],
-    },
-    Collection {
         name: "service_settings",
         required: &["name"],
         indexes: &[(&[("name", 1)], true)],
@@ -535,6 +191,31 @@ const COLLECTIONS: &[Collection] = &[
     },
 ];
 
+/** Collections earlier versions created that the service no longer keeps (schema 14 drops them
+ * once their upload positions are carried into ingestion_checkpoints) */
+pub(crate) const RETIRED: &[&str] = &[
+    "events",
+    "sessions",
+    "tasks",
+    "agents",
+    "alerts",
+    "autonomy_ledger",
+    "governance_changes",
+    "selection_registry",
+    "policy_versions",
+    "chain_heads",
+    "service_events",
+    "metric_rollups",
+    "credit_grants",
+    "resident_decisions",
+    "dashboard_agents",
+    "dashboard_incidents",
+    "dashboard_quarantines",
+    "dashboard_flow_context",
+    "dashboard_agent_activity",
+    "dashboard_agent_leases",
+];
+
 /** The repository-scoped collections; global service settings and migration state are excluded. */
 pub(super) fn repository_collections() -> impl Iterator<Item = &'static str> {
     COLLECTIONS
@@ -543,9 +224,128 @@ pub(super) fn repository_collections() -> impl Iterator<Item = &'static str> {
         .map(|collection| collection.name)
 }
 
+/** Raise one upload position of every machine found by a pipeline that yields
+ * {_id: {repository_id, installation}, value}
+ * Input
+    - database: &Database - database
+    - source: &str - collection the pipeline reads
+    - pipeline: Vec<Document> - grouping stages
+    - stream: &str - checkpoint stream (events, ledger, audit, alerts)
+    - field: &str - checkpoint field (seq or count)
+ * Output
+    - Result<(), String>
+*/
+fn carry_position(
+    database: &Database,
+    source: &str,
+    pipeline: Vec<Document>,
+    stream: &str,
+    field: &str,
+) -> Result<(), String> {
+    let checkpoints = database.collection::<Document>("ingestion_checkpoints");
+    let found = database
+        .collection::<Document>(source)
+        .aggregate(pipeline)
+        .run()
+        .map_err(io_error)?;
+    for group in found {
+        let group = group.map_err(io_error)?;
+        let Ok(key) = group.get_document("_id") else {
+            continue;
+        };
+        let (Ok(repository), Ok(installation)) =
+            (key.get_str("repository_id"), key.get_str("installation"))
+        else {
+            continue;
+        };
+        let value = match group.get("value") {
+            Some(Bson::Int32(number)) => *number as i64,
+            Some(Bson::Int64(number)) => *number,
+            Some(Bson::Double(number)) => *number as i64,
+            _ => continue,
+        };
+        checkpoints
+            .update_one(
+                doc! {"repository_id": repository, "installation": installation, "stream": stream},
+                doc! {"$max": {field: value}},
+            )
+            .upsert(true)
+            .run()
+            .map_err(io_error)?;
+    }
+    Ok(())
+}
+
+/** Carry every machine's upload positions out of the telemetry collections schema 14 drops, so no
+ * machine uploads its history again: the last event (chain head, events that arrived already
+ * expired, and stored events), the last ledger entry and governance change, and the alerts count
+ * Input
+    - database: &Database - database
+    - existing: &[String] - collections present before the migration
+ * Output
+    - Result<(), String>
+*/
+fn carry_positions(database: &Database, existing: &[String]) -> Result<(), String> {
+    let present = |name: &str| existing.iter().any(|found| found == name);
+    let highest = |field: &str| {
+        vec![doc! {"$group": {
+            "_id": {"repository_id": "$repository_id", "installation": "$installation"},
+            "value": {"$max": format!("${field}")},
+        }}]
+    };
+    if present("chain_heads") {
+        carry_position(
+            database,
+            "chain_heads",
+            highest("sequence"),
+            "events",
+            "seq",
+        )?;
+        carry_position(
+            database,
+            "chain_heads",
+            highest("expired_through"),
+            "events",
+            "seq",
+        )?;
+    }
+    if present("events") {
+        carry_position(database, "events", highest("sequence"), "events", "seq")?;
+    }
+    if present("autonomy_ledger") {
+        carry_position(database, "autonomy_ledger", highest("seq"), "ledger", "seq")?;
+    }
+    if present("governance_changes") {
+        carry_position(
+            database,
+            "governance_changes",
+            highest("seq"),
+            "audit",
+            "seq",
+        )?;
+    }
+    if present("alerts") {
+        // Uploaded alerts only (the service raised its own chain alerts with source "service")
+        carry_position(
+            database,
+            "alerts",
+            vec![
+                doc! {"$match": {"source": {"$ne": "service"}}},
+                doc! {"$group": {
+                    "_id": {"repository_id": "$repository_id", "installation": "$installation"},
+                    "value": {"$sum": 1},
+                }},
+            ],
+            "alerts",
+            "count",
+        )?;
+    }
+    Ok(())
+}
+
 /** Apply the migrations that have not been applied: create missing collections with validators,
- * update the validators of existing ones, replace their indexes with the current ones, and record
- * the version
+ * update the validators of existing ones, replace their indexes with the current ones, carry the
+ * upload positions forward, drop the retired collections, and record the version
  * Input
     - database: &Database - database
  * Output
@@ -606,44 +406,22 @@ pub(crate) fn migrate(database: &Database) -> Result<i64, String> {
             .run()
             .map_err(io_error)?;
     }
-    // Metric rollups were replaced by evals computed from the event stream (DASHBOARD.md); they
-    // were derived data, so nothing is lost
-    if existing.iter().any(|name| name == "metric_rollups") {
-        database
-            .collection::<Document>("metric_rollups")
-            .drop()
-            .run()
-            .map_err(io_error)?;
+    // The positions are carried before anything is dropped; a failure stops the migration here and
+    // it runs again at the next start (raising a position is idempotent)
+    carry_positions(database, &existing)?;
+    for name in RETIRED {
+        if existing.iter().any(|found| found == name) {
+            database
+                .collection::<Document>(name)
+                .drop()
+                .run()
+                .map_err(io_error)?;
+        }
     }
-    // Telemetry expires after the retention period (apply_retention sets each record's time)
-    for (collection, _, _) in EXPIRING {
-        database
-            .collection::<Document>(collection)
-            .create_index(
-                IndexModel::builder()
-                    .keys(doc! {"expires_at": 1})
-                    .options(
-                        IndexOptions::builder()
-                            .expire_after(Duration::from_secs(0))
-                            .build(),
-                    )
-                    .build(),
-            )
-            .run()
-            .map_err(io_error)?;
-    }
+    // Telemetry no longer expires because none is kept
     database
-        .collection::<Document>("dashboard_agent_activity")
-        .create_index(
-            IndexModel::builder()
-                .keys(doc! {"expires_at": 1})
-                .options(
-                    IndexOptions::builder()
-                        .expire_after(Duration::from_secs(0))
-                        .build(),
-                )
-                .build(),
-        )
+        .collection::<Document>("service_settings")
+        .delete_one(doc! {"name": "retention"})
         .run()
         .map_err(io_error)?;
     // Brick requests leave once purge_at passes (an unconfirmed one within the hour)
@@ -669,72 +447,6 @@ pub(crate) fn migrate(database: &Database) -> Result<i64, String> {
         .run()
         .map_err(io_error)?;
     Ok(SCHEMA_VERSION)
-}
-
-/** Bring stored records in line with the retention period, at every start: when records are
- * kept, remove every expiry; otherwise give records without one their expiry, and recompute all
- * of them when the period changed since the last start. The period applied is remembered in
- * service_settings
- * Input
-    - database: &Database - database
-    - retention_ms: Option<i64> - retention period
- * Output
-    - Result<u64, String> records changed
-*/
-pub(crate) fn apply_retention(
-    database: &Database,
-    retention_ms: Option<i64>,
-) -> Result<u64, String> {
-    let settings = database.collection::<Document>("service_settings");
-    let wanted = match retention_ms {
-        Some(retention) => Bson::Int64(retention),
-        None => Bson::String("persist".into()),
-    };
-    let applied = settings
-        .find_one(doc! {"name": "retention"})
-        .run()
-        .map_err(io_error)?
-        .and_then(|document| document.get("retention_ms").cloned());
-    let changed_period = applied.as_ref() != Some(&wanted);
-    let mut changed = 0;
-    for (collection, field, unit) in EXPIRING {
-        let records = database.collection::<Document>(collection);
-        let result = match retention_ms {
-            None => records
-                .update_many(
-                    doc! {"expires_at": {"$exists": true}},
-                    doc! {"$unset": {"expires_at": ""}},
-                )
-                .run(),
-            Some(retention) => {
-                let filter = if changed_period {
-                    doc! {field: {"$exists": true}}
-                } else {
-                    doc! {"expires_at": {"$exists": false}, field: {"$exists": true}}
-                };
-                records
-                    .update_many(
-                        filter,
-                        vec![doc! {"$set": {"expires_at": {"$toDate": {"$add": [
-                            {"$multiply": [{"$toLong": format!("${field}")}, unit]},
-                            retention,
-                        ]}}}}],
-                    )
-                    .run()
-            }
-        }
-        .map_err(io_error)?;
-        changed += result.modified_count;
-    }
-    settings
-        .replace_one(
-            doc! {"name": "retention"},
-            doc! {"name": "retention", "retention_ms": wanted, "applied_at": bson::DateTime::now()},
-        )
-        .upsert(true)
-        .run()
-        .map_err(io_error)?;
-    Ok(changed)
 }
 
 #[cfg(test)]

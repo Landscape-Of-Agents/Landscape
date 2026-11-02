@@ -1,7 +1,7 @@
 // Upload limits that protect the shared database now that the service address is public: a request
-// rate per installation and per client address, a cap on the records in one batch, an event quota
-// and a repository quota per installation, and a total database size above which uploads are
-// refused (reads keep working) until routine events expire or the operator makes room. Every limit
+// rate per installation and per client address, a cap on the records in one batch, a repository
+// quota per installation, and a total database size above which uploads are refused (reads keep
+// working) until the operator makes room. Every limit
 // can be changed in the service's environment; a refused upload stays on the client and is retried.
 
 use std::collections::HashMap;
@@ -22,7 +22,6 @@ const STORAGE_CHECK: Duration = Duration::from_secs(60);
     - requests_per_minute: f64 - signed requests per installation (CRANE_SERVER_REQUESTS_PER_MINUTE)
     - addresses_per_minute: f64 - requests per client address (CRANE_SERVER_ADDRESS_REQUESTS_PER_MINUTE)
     - max_batch_records: usize - records of one kind in one batch (CRANE_SERVER_MAX_BATCH_RECORDS)
-    - max_events_per_installation: u64 - stored events (CRANE_SERVER_MAX_EVENTS_PER_INSTALLATION)
     - max_repositories_per_installation: u64 - repositories (CRANE_SERVER_MAX_REPOSITORIES_PER_INSTALLATION)
     - max_storage_bytes: u64 - database data and index size (CRANE_SERVER_MAX_STORAGE_MB)
 */
@@ -31,7 +30,6 @@ pub(super) struct Limits {
     pub(super) requests_per_minute: f64,
     pub(super) addresses_per_minute: f64,
     pub(super) max_batch_records: usize,
-    pub(super) max_events_per_installation: u64,
     pub(super) max_repositories_per_installation: u64,
     pub(super) max_storage_bytes: u64,
 }
@@ -55,10 +53,6 @@ impl Limits {
             requests_per_minute: number("CRANE_SERVER_REQUESTS_PER_MINUTE", 120) as f64,
             addresses_per_minute: number("CRANE_SERVER_ADDRESS_REQUESTS_PER_MINUTE", 600) as f64,
             max_batch_records: number("CRANE_SERVER_MAX_BATCH_RECORDS", 2_000) as usize,
-            max_events_per_installation: number(
-                "CRANE_SERVER_MAX_EVENTS_PER_INSTALLATION",
-                250_000,
-            ),
             max_repositories_per_installation: number(
                 "CRANE_SERVER_MAX_REPOSITORIES_PER_INSTALLATION",
                 50,

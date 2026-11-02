@@ -24,8 +24,8 @@ part of the organization gets from it, and what is honestly not done yet. Status
 | Worker | One tick per background sync (hooks and commands already start it) or `crane resident tick`; no daemon | exists |
 | Authority | Re-reads the signed state before every effectful step; only acts inside a signed Brick assignment | exists |
 | Telemetry | 33 machine F38 events and 2 service events ([DASHBOARD.md](../../DASHBOARD.md#f38-resident-agents)), registered and documented | exists |
-| Dashboard | New **Resident agents** page (Govern group): registry, review inbox, activation timeline, idle cost and health, test and simulate, creation wizard; route `/api/residents`, merged across every member's machine | exists |
-| Dashboard decisions | Approve, deny, answer, cancel, pause, revoke from the page (GitHub-verified admin), applied by the machine at its next sync with Crane's checks; route `/auth/resident` and the machine routes `resident-decisions` | exists (approvals and answers only where the definition allows them) |
+| Dashboard | The **Resident agents** page was removed from DataSea on 2026-11-02 | removed |
+| Dashboard decisions | Removed with the page. Machines still call `resident-decisions` at each sync; the service answers with an empty list | removed |
 | VS Code | **Resident agents** group in the Bricks view; show, context preview, create draft (with dry-run and confirmation), validate, pause, resume, revoke | exists |
 | Trigger sources | Crane events, signed generation changes, Brick monitors, timers, **GitHub Actions runs (pulled)**, and delivered CI or webhook events | exists |
 | Action adapters | READ_CHECK, VERIFY, NOTIFY_SLACK (Slack), **CREATE_TICKET (Jira, deduplicated and reconciled by label)**, and the human or internal steps | exists |
@@ -347,6 +347,8 @@ failed, blocked, or denied, 4 approval required, 5 unknown.
 ---
 
 ## 7. DataSea dashboard (Govern → Resident agents)
+
+> Removed on 2026-11-02 with the DataSea revamp (schema 14); kept here as history. Decide on the machine with `crane resident` or in Landscape.
 
 | Zone | What it shows |
 |---|---|

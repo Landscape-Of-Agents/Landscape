@@ -1019,116 +1019,27 @@ analyses, signals, proposals, plans, and runs:
 
 ## Dashboard
 
-One dashboard for individuals and teams: <https://dashboard.agentslandscape.cloud>. Sign in with
-GitHub, then choose an account, a repository, and optionally one team member.
+DataSea, one dashboard for individuals and teams: <https://dashboard.agentslandscape.cloud>. A
+landing page lists the organization's sections (Engineering, Product, Sales, Marketing, Finance,
+Human Resources, Operations, Legal). Engineering holds **Flows**; the other sections have no
+subsections yet. See [dashboard.md](dashboard.md).
 
-- **Personal account:** the repositories your GitHub account owns.
-- **Organization:** the organization's repositories with every teammate's activity, and a member
-  filter. Organizations appear when they allow this app (organization settings, third-party
-  access).
-- **Views:** overview, agents and sessions, the action graph of every session, the event timeline
-  with filters, governance (policies, selections, checkpoints, audit trail), the autonomy ledger,
-  every metric with how it is known, compliance controls, alerts, members, health, session reports,
-  and evidence bundles.
-- **Stale sessions:** a session with no hook activity for `CRANE_STALE_SESSION_MINUTES` (120) and
-  no signed end is flagged and alerted: the agent was stopped, its hooks removed, or its evidence
-  is not arriving.
-- **Broken evidence chains:** the service checks that every upload continues the machine's event
-  chain where it left off, and records a critical alert for a rewrite, a gap, or a fork.
-- **Scoped access:** telemetry and evidence views read MongoDB through a handle that cannot write.
-  Dashboard writes are limited to repository-scoped agent/incident actions and GitHub-confirmed
-  approvals. Signed machine requests can read only active quarantine rules needed by local hooks;
-  they cannot read telemetry or incident records. Dashboard API access requires a signed-in person
-  with access to the selected repository. A repository appears only after an upload proves its
-  GitHub remote, so nobody can attach their uploads to someone else's repository.
-
-### Dashboard Agents
-
-Dashboard Agents are repository-scoped monitors configured in the Dashboard Agents page. Each rule
-has a name and purpose, one or more `all`, `flow`, `zone`, or `selection` assignments, a supported
-event metric, a threshold, and a lookback window. Supported metrics are critical events, denials,
-prompt/injection signals, bypass attempts, tool failures, and event volume. `active` monitors all
-matching evidence; `idle` considers only HIGH and CRITICAL evidence; `inactive` and `sleep` pause
-evaluation. The service evaluates enabled agents after successful telemetry uploads and runs a
-60-second recovery sweep (also on startup); dashboard page views only read results. A repository
-lease prevents duplicate work across service instances, and threshold incidents are persisted
-idempotently.
-
-An incident can produce a pending quarantine request for a provider agent ID, a Crane session ID,
-or an exact provider tool name. A fresh GitHub authorization check must confirm repository-admin
-access before a request becomes active or a quarantine is released. Active quarantines persist until
-an admin approves release. Local hooks query the signed ingestion service before every tool call;
-matching calls are denied, and a service/policy error also denies the call. With
-`CRANE_INGEST_URL=off` the service never sees the machine's agents, so the quarantine check is
-skipped and the local rules still apply. Tool quarantines match
-the exact provider tool name only within the incident's Crane session.
-
-Incident response/decision context can be proposed for a flow. It contains the incident reason,
-event references, and 3A timeline, and is visible to agents through the Dashboard Agents API only
-after a fresh GitHub-confirmed repository admin approves it. Dashboard Agent notifications are
-delivered by the hosted service (not a developer's local integration): configure Slack and Resend
-email credentials in the Render service environment as listed below. Recipients are the configured
-email distribution list, which should include the responsible agent creators and repository owners.
-Delivery outcomes are recorded in the service event log; missing or failed delivery configuration is
-not represented as a successful send.
-
-The Incidents view supports status/severity/text filtering, human notes, mitigation, quarantine
-requests, flow-context proposals, and a chronological 3A record that includes linked quarantine and
-context approval decisions. Flow-context proposals include the incident evidence and the related
-response-action audit trail captured when proposed. The Agent Activity view traces agent
-creation/edits, state changes, evaluations, incident actions, and policy actions; detailed activity
-records are retained for 30 days.
-
-Signed-in clients can read the agent view with
-`GET /api/dashboard-agents?repository=REPOSITORY_ID` and make bounded changes with JSON
-`POST /api/dashboard-agents?repository=REPOSITORY_ID`. POST actions include `save-agent`,
-`set-state`, `evaluate`, `open-incident`, `annotate-incident`, `resolve-incident`,
-`request-quarantine`, `request-quarantine-release`, and `propose-flow-context`. Admin approvals use
-the short-lived signed `/auth/agent-action` GitHub OAuth flow and support approval or rejection of
-quarantine, release, and flow-context requests. The OAuth token is used once to check repository
-permissions and is not stored. The API returns active/proposed quarantines and proposed or approved
-flow context along with agent data.
-
-For the hosted service, set these variables under **Render → Environment**. Never commit their
-values or paste them into issue/chat messages:
-
-| Variable | Purpose |
-| --- | --- |
-| `CRANE_DASHBOARD_AGENT_SLACK_WEBHOOK_URL` | Slack incoming webhook URL (`https://hooks.slack.com/services/...`) |
-| `CRANE_DASHBOARD_AGENT_RESEND_API_KEY` | Resend API key used to send incident email |
-| `CRANE_DASHBOARD_AGENT_EMAIL_FROM` | Verified sender address configured in Resend |
-| `CRANE_DASHBOARD_AGENT_EMAIL_TO` | Comma-separated notification recipients; configure the responsible agent creators/repository owners or their team list |
-
-When both notification providers are unset, incident creation still succeeds and the service records
-that delivery is not configured. A configured provider failure is recorded as a failed delivery and
-does not roll back the incident.
-
-### Filtered dashboard data for agents
-
-Signed-in users and agents acting with the same browser session can request compact, filtered
-event context:
-
-```text
-GET /api/agent-context?repository=REPOSITORY_ID&since=...&until=...&filter=...
-GET /api/events.csv?repository=REPOSITORY_ID&since=...&until=...&filter=...
-```
-
-Both routes require the existing `foxx_session` cookie and enforce the viewer's repository and
-member permissions. `agent-context` returns minified JSON in the `foxx-agent-context/v1` format:
-component metadata, the applied filter (identity values shortened for display), bounded summary
-counts, token totals, and at most 500 newest matching events. Timestamps are integer Unix
-milliseconds. The request filter uses the dashboard's normal `filter` JSON clauses (AND by default,
-same-group OR, and optional NOT); component metadata can be supplied as `section`, `subsection`,
-`component`, `kind`, and `context`. `events.csv` returns at most 500 newest matching event rows as
-RFC 4180 CSV. These endpoints return filtered data only; they do not provide access to data outside
-the selected repository/member scope. Dashboard component “AI” controls open the corresponding
-filtered context and API URL for copying or download.
+- **Sign-in:** Flows needs a GitHub sign-in. A personal account sees the repositories it owns; an
+  organization member sees the organization's repositories (organizations appear when they allow
+  this app in their third-party access settings). Choose the repository in the top bar.
+- **Scoped access:** the dashboard reads MongoDB through a handle that cannot write. Its only
+  writes are GitHub-confirmed approvals (a machine's link, the owner key) and the change requests
+  made in Flows, which a person applies on a machine. Dashboard API access requires a signed-in
+  person with access to the selected repository. A repository appears only after an upload proves
+  its GitHub remote, so nobody can attach their uploads to someone else's repository.
 
 ## Telemetry upload (DataSea service)
 
-Crane uploads events, metrics, sessions, tool calls, alerts, and governance history to the Landscape
-ingestion service (`https://agentscript-service.onrender.com`), which stores them in MongoDB.
-Nothing needs to be set up: uploads happen when a tool call ends, when a session ends, after every
+Crane uploads to the Landscape ingestion service (`https://agentscript-service.onrender.com`).
+The service keeps the repository, its verified remote, and each member's repository status in
+MongoDB. It also records how far the machine's events, ledger entries, governance changes, and
+alerts arrived, so nothing is uploaded twice; the records themselves are not stored (schema 14
+removed them). Nothing needs to be set up: uploads happen when a tool call ends, when a session ends, after every
 command, and every 60 seconds. Hooks never wait for the network, and the local evidence stays
 authoritative when the service is unreachable.
 
@@ -1150,11 +1061,11 @@ authoritative when the service is unreachable.
   `crane init`, and the upload key grants no authority over the repository's rules.
 - Crane never holds database credentials. Only the service has the MongoDB connection string.
 - Each machine also reports its repository status (policy results, integrity, compliance inputs,
-  connection, non-secret integration settings) every two minutes or on `crane agent sync`, for the
-  dashboard's governance and compliance views.
+  connection, non-secret integration settings, flow knowledge, Bricks) every two minutes or on
+  `crane agent sync`, for the Flows section.
 - **Limits** protect the shared database: 120 requests a minute per machine, at most 2,000 records
-  of each kind per upload, 250,000 stored events and 50 repositories per machine, and no uploads
-  while the database is over 450 MB. A refused upload stays on the machine and is retried.
+  of each kind per upload, 50 repositories per machine, and no uploads while the database is over
+  450 MB. A refused upload stays on the machine and is retried.
 - Set `CRANE_INGEST_URL=off` to keep everything local, or set it to your own service.
 
 Run the service yourself:
@@ -1192,10 +1103,9 @@ Slack, Jira, WhatsApp, and GitHub are set with `crane integrate NAME` instead.
 | `CRANE_INGEST_URL` | DataSea ingestion service; `off` keeps telemetry local | the release's service |
 | `CRANE_SYNC_SECONDS` | Periodic upload interval | `60` |
 | `CRANE_KEY_PROTECTION` | Signing keys at rest: `prompt` (a passphrase typed on the console for every signing command), `plain` | Windows Data Protection on Windows, plain (owner-only file) elsewhere |
-| `CRANE_STALE_SESSION_MINUTES` | `crane server`: minutes without hook activity before an unfinished session is stale | `120` |
-| `CRANE_MONGODB_URI`, `CRANE_MONGODB_DB`, `CRANE_MONGODB_EVENT_RETENTION_DAYS` | `crane server` only (never on developer machines) | required, `foxx`, `30` |
+| `CRANE_MONGODB_URI`, `CRANE_MONGODB_DB` | `crane server` only (never on developer machines) | required, `foxx` |
 | `CRANE_GITHUB_CLIENT_ID`, `CRANE_GITHUB_CLIENT_SECRET` | `crane server`: dashboard sign-in (GitHub OAuth app) | sign-in off |
 | `CRANE_PUBLIC_URL` | `crane server`: public address, when it cannot be detected | `RENDER_EXTERNAL_URL` or the request host |
 | `CRANE_SERVER_REQUESTS_PER_MINUTE`, `CRANE_SERVER_ADDRESS_REQUESTS_PER_MINUTE` | `crane server`: rate per machine and per client address | `120`, `600` |
-| `CRANE_SERVER_MAX_BATCH_RECORDS`, `CRANE_SERVER_MAX_EVENTS_PER_INSTALLATION`, `CRANE_SERVER_MAX_REPOSITORIES_PER_INSTALLATION`, `CRANE_SERVER_MAX_STORAGE_MB` | `crane server`: upload limits | `2000`, `250000`, `50`, `450` |
+| `CRANE_SERVER_MAX_BATCH_RECORDS`, `CRANE_SERVER_MAX_REPOSITORIES_PER_INSTALLATION`, `CRANE_SERVER_MAX_STORAGE_MB` | `crane server`: upload limits | `2000`, `50`, `450` |
 | `CRANE_ALLOW_LOCAL_REMOTE`, `CRANE_TEST_MONGODB_URI` | Offline mirrors and the live ingestion test suite | unset |

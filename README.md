@@ -58,7 +58,7 @@ enforces the policy in Claude Code, Codex, GitHub Copilot CLI, and Gemini CLI.
 | --- | --- |
 | **CLI** | The rules and the referee: signed contracts, tests, and enforcement in the agent's hooks. |
 | **Landscape** | The VS Code extension: protect code, draw zones and flows on a graph, and watch the context agents receive. |
-| **Dashboard** | Every teammate's agents in one place: decisions, denials, incidents, and tokens. |
+| **Dashboard** | DataSea: the organization's knowledge by section. Engineering holds every flow of a repository, what it calls, and who watches it. |
 
 ## Get involved
 

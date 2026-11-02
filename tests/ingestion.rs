@@ -113,9 +113,10 @@ fn service_outage_does_not_weaken_enforcement() {
 }
 
 /** The live pipeline (needs CRANE_TEST_MONGODB_URI): with only the service address set, hooks and
- * commands reach MongoDB through signed uploads, alerts, and the repository status are
- * stored, the remote is verified, forged requests are refused, and records missing from MongoDB
- * are re-sent
+ * commands reach the service through signed uploads; the repository and its status are stored and
+ * the remote is verified, while telemetry is not kept, only how far each stream arrived, so a
+ * second sync sends nothing again; forged requests are refused, and a lost position makes the
+ * machine send its records again
  * Input
     - None
  * Output
@@ -141,6 +142,9 @@ fn live_pipeline_reaches_mongodb_without_setup() {
     fixture.hook("claude", "SessionEnd", &json!({"session_id": "live-1"}));
     let synced = fixture.ok(&["agent", "sync"]);
     assert!(synced.contains("Synchronized"), "{synced}");
+    // Let the detached syncs started by the hooks finish
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    fixture.ok(&["agent", "sync"]);
     let database = mongodb::sync::Client::with_uri_str(&uri)
         .unwrap()
         .database(&name);
@@ -151,32 +155,54 @@ fn live_pipeline_reaches_mongodb_without_setup() {
             .run()
             .unwrap()
     };
+    let checkpoint = |stream: &str, field: &str| {
+        database
+            .collection::<mongodb::bson::Document>("ingestion_checkpoints")
+            .find_one(doc! {"stream": stream})
+            .run()
+            .unwrap()
+            .and_then(|document| document.get_i64(field).ok())
+            .unwrap_or(0) as u64
+    };
     let local = local_events(&fixture);
-    assert_eq!(count("events", doc! {}), local);
+    assert_eq!(
+        checkpoint("events", "seq"),
+        local,
+        "the service knows how far the events arrived"
+    );
+    assert!(checkpoint("ledger", "seq") >= 1);
+    assert!(checkpoint("audit", "seq") >= 3);
+    assert!(
+        checkpoint("alerts", "count") >= 1,
+        "a bypass attempt raised an alert"
+    );
+    let names = database.list_collection_names().run().unwrap();
+    for retired in [
+        "events",
+        "sessions",
+        "tasks",
+        "agents",
+        "alerts",
+        "autonomy_ledger",
+        "governance_changes",
+        "selection_registry",
+        "policy_versions",
+        "chain_heads",
+        "service_events",
+    ] {
+        assert!(
+            !names.iter().any(|found| found == retired),
+            "{retired} is not stored: {names:?}"
+        );
+    }
     assert_eq!(
         count(
-            "events",
+            "ingestion_checkpoints",
             doc! {"installation": {"$regex": "^[0-9a-f]{64}$"}}
         ),
-        local,
+        count("ingestion_checkpoints", doc! {}),
         "every record is tagged with the machine's upload key"
     );
-    assert!(count("events", doc! {"event_type": "command.executed"}) >= 2);
-    assert!(count("events", doc! {"event_type": "tool_call.verified"}) >= 1);
-    assert!(count("alerts", doc! {"kind": "bypass_attempt"}) >= 1);
-    // The service records what each upload showed (DASHBOARD.md F02, F09, F34)
-    assert_eq!(
-        count("service_events", doc! {"event_name": "MACHINE_FIRST_SEEN"}),
-        1
-    );
-    assert!(count("service_events", doc! {"event_name": "SYNC_COMPLETED"}) >= 1);
-    assert!(count("service_events", doc! {"event_name": "STATUS_REPORTED"}) >= 1);
-    // Every stored event carries its specification events, covered by its digest
-    assert!(count("events", doc! {"spec.event_name": "TOOL_CALL_ALLOWED"}) >= 1);
-    assert!(count("events", doc! {"spec.event_name": "COMMAND_EXECUTED"}) >= 2);
-    assert_eq!(count("sessions", doc! {}), 1);
-    assert!(count("governance_changes", doc! {}) >= 3);
-    assert_eq!(count("policy_versions", doc! {}), 1);
     assert_eq!(
         count("repositories", doc! {"verified": true}),
         1,
@@ -192,6 +218,12 @@ fn live_pipeline_reaches_mongodb_without_setup() {
         .get_document("governance")
         .is_ok_and(|governance| governance.contains_key("policies")));
     assert!(status.get_document("integrity").is_ok());
+    assert!(status.contains_key("flows"), "the Flows section reads it");
+    let again = fixture.ok(&["agent", "sync"]);
+    assert!(
+        again.contains("Synchronized 0 events") && !again.contains("re-sent"),
+        "nothing is sent twice: {again}"
+    );
     // A request without a valid signature is refused
     let forged = support::request(
         "GET",
@@ -216,151 +248,184 @@ fn live_pipeline_reaches_mongodb_without_setup() {
     assert!(running
         .log_line(&format!("\"request_id\":\"{id}\""))
         .is_some());
-    // Let the detached syncs started by the hooks finish before simulating data loss
-    std::thread::sleep(std::time::Duration::from_secs(5));
+    // The service loses a position: the machine sends its events again, and the position returns
     database
-        .collection::<mongodb::bson::Document>("events")
-        .delete_many(doc! {"sequence": {"$gt": 3}})
+        .collection::<mongodb::bson::Document>("ingestion_checkpoints")
+        .delete_one(doc! {"stream": "events"})
         .run()
         .unwrap();
     assert!(fixture.ok(&["agent", "sync"]).contains("re-sent"));
-    assert_eq!(count("events", doc! {}), local);
-    let broken = doc! {"kind": "evidence_chain_broken"};
-    assert_eq!(
-        count("alerts", broken.clone()),
-        0,
-        "re-sending is not a break"
-    );
-    // The machine's history is rewritten (an event that does not chain) and cut (a gap)
-    let file = fixture
-        .home
-        .join("repos")
-        .read_dir()
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path()
-        .join("runtime/events.jsonl");
-    let text = std::fs::read_to_string(&file).unwrap();
-    let last: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
-    let forged = |sequence: u64, previous: &str| {
-        let mut event = last.clone();
-        event["event_id"] = json!(format!("evt_forged_{sequence}"));
-        event["idempotency_key"] = json!(format!("forged:{sequence}"));
-        event["sequence"] = json!(sequence);
-        event["previous_digest"] = json!(previous);
-        event["digest"] = json!(format!("{sequence:0>128}"));
-        event.to_string()
-    };
-    let next = last["sequence"].as_u64().unwrap() + 1;
-    let appended = format!(
-        "{}
-{}
-",
-        forged(next, &"0".repeat(128)),
-        forged(next + 5, &format!("{next:0>128}"))
-    );
-    std::fs::write(&file, text + &appended).unwrap();
-    fixture.ok(&["agent", "sync"]);
-    assert_eq!(count("alerts", broken.clone()), 2, "a rewrite and a gap");
-    let details = database
-        .collection::<mongodb::bson::Document>("alerts")
-        .find(broken)
-        .run()
-        .unwrap()
-        .map(|alert| alert.unwrap().get_str("detail").unwrap().to_string())
-        .collect::<Vec<_>>()
-        .join(" | ");
-    assert!(
-        details.contains("does not chain") && details.contains("never arrived"),
-        "{details}"
-    );
-    // Retention: every telemetry record expires 30 days after its time; state never does
-    let dated = |collection: &str| {
-        database
-            .collection::<mongodb::bson::Document>(collection)
-            .find(doc! {})
-            .run()
-            .unwrap()
-            .map(|document| document.unwrap())
-            .all(|document| document.get_datetime("expires_at").is_ok())
-    };
-    for collection in ["events", "alerts", "sessions", "service_events", "agents"] {
-        assert!(dated(collection), "{collection} records expire");
-    }
-    assert_eq!(
-        count("autonomy_ledger", doc! {"expires_at": {"$exists": true}}),
-        0
-    );
-    assert_eq!(
-        count("governance_changes", doc! {"expires_at": {"$exists": true}}),
-        0
-    );
-    let event = database
-        .collection::<mongodb::bson::Document>("events")
-        .find_one(doc! {})
-        .run()
-        .unwrap()
-        .unwrap();
-    let occurred = event.get_i64("occurred_at").unwrap();
-    assert_eq!(
-        event.get_datetime("expires_at").unwrap().timestamp_millis() - occurred,
-        30 * 86_400_000
-    );
-    // A machine whose every event expired on the service re-sends them once: the service does not
-    // store them again (they are past the retention period, here two seconds) and remembers how
-    // far they went, so the next sync sends nothing again
-    drop(running);
-    let short = support::service(&uri, &name, &[("CRANE_MONGODB_RETENTION_DAYS", "0.00002")]);
-    std::thread::sleep(std::time::Duration::from_secs(3));
-    database
-        .collection::<mongodb::bson::Document>("events")
-        .delete_many(doc! {})
-        .run()
-        .unwrap();
-    fixture.ingest_url = short.url.clone();
-    fixture.ok(&["agent", "sync"]);
-    let head = database
-        .collection::<mongodb::bson::Document>("chain_heads")
-        .find_one(doc! {})
-        .run()
-        .unwrap()
-        .unwrap();
-    let expired_through = head.get_i64("expired_through").unwrap() as u64;
-    assert!(
-        expired_through >= local,
-        "every expired event was passed over: {head}"
-    );
-    assert!(
-        count(
-            "events",
-            doc! {"occurred_at": {"$lt": crate_now() - 60_000}}
-        ) == 0,
-        "expired events are not stored again"
-    );
-    let again = fixture.ok(&["agent", "sync"]);
-    assert!(!again.contains("re-sent"), "{again}");
-    drop(short);
-    // A larger cluster keeps everything: persist removes every expiry at start
-    let _kept = support::service(&uri, &name, &[("CRANE_MONGODB_RETENTION_DAYS", "persist")]);
-    std::thread::sleep(std::time::Duration::from_secs(2));
-    assert_eq!(count("events", doc! {"expires_at": {"$exists": true}}), 0);
-    assert_eq!(count("sessions", doc! {"expires_at": {"$exists": true}}), 0);
+    assert_eq!(checkpoint("events", "seq"), local_events(&fixture));
     database.drop().run().unwrap();
 }
 
-/** The current time in Unix milliseconds
+/** The schema 14 migration (needs CRANE_TEST_MONGODB_URI): a database written by an earlier
+ * service keeps every machine's upload positions (the chain head, events that arrived expired,
+ * stored events, ledger entries, governance changes, and uploaded alerts) and loses the telemetry
+ * and dashboard collections, while approvals, Brick requests, and the session key stay
  * Input
     - None
  * Output
-    - i64
+    - None (panics on failure)
 */
-fn crate_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+#[test]
+fn migration_keeps_positions_and_drops_telemetry() {
+    use mongodb::bson::{doc, Document};
+    let Some(uri) = support::mongodb() else {
+        eprintln!("skipped: set CRANE_TEST_MONGODB_URI to run against a live MongoDB");
+        return;
+    };
+    let name = format!("crane_migrate_{}", std::process::id());
+    let database = mongodb::sync::Client::with_uri_str(&uri)
         .unwrap()
-        .as_millis() as i64
+        .database(&name);
+    let insert = |collection: &str, documents: Vec<Document>| {
+        database
+            .collection::<Document>(collection)
+            .insert_many(documents)
+            .run()
+            .unwrap();
+    };
+    let repository = "r".repeat(128);
+    let scope =
+        |installation: &str| doc! {"repository_id": &repository, "installation": installation};
+    let with = |installation: &str, extra: Document| {
+        let mut document = scope(installation);
+        document.extend(extra);
+        document
+    };
+    let (a, b) = ("a".repeat(64), "b".repeat(64));
+    insert(
+        "schema_migrations",
+        vec![doc! {"version": 13_i64, "applied_at": 1_i64}],
+    );
+    insert(
+        "chain_heads",
+        vec![
+            with(
+                &a,
+                doc! {"sequence": 7_i64, "digest": "d", "expired_through": 9_i64},
+            ),
+            with(&b, doc! {"sequence": 4_i64, "digest": "d"}),
+        ],
+    );
+    insert(
+        "events",
+        vec![
+            with(&a, doc! {"sequence": 5_i64}),
+            with(&b, doc! {"sequence": 6_i64}),
+        ],
+    );
+    insert(
+        "autonomy_ledger",
+        vec![
+            with(&a, doc! {"seq": 2_i64}),
+            with(&a, doc! {"seq": 11_i64}),
+        ],
+    );
+    insert("governance_changes", vec![with(&b, doc! {"seq": 3_i64})]);
+    insert(
+        "alerts",
+        vec![
+            with(&a, doc! {"alert_id": "1"}),
+            with(&a, doc! {"alert_id": "2"}),
+            with(&a, doc! {"alert_id": "3", "source": "service"}),
+        ],
+    );
+    insert(
+        "ingestion_checkpoints",
+        vec![with(&a, doc! {"stream": "alerts", "count": 1_i64})],
+    );
+    for retired in [
+        "sessions",
+        "service_events",
+        "credit_grants",
+        "dashboard_agents",
+    ] {
+        insert(retired, vec![with(&a, doc! {"x": 1})]);
+    }
+    insert(
+        "brick_requests",
+        vec![
+            doc! {"request_id": "brq_kept", "repository_id": &repository, "op": "flow-discard", "requested_by": "alice", "status": "PENDING"},
+        ],
+    );
+    insert(
+        "service_settings",
+        vec![
+            doc! {"name": "session_key", "seed": "5".repeat(64)},
+            doc! {"name": "retention", "retention_ms": 1_i64},
+        ],
+    );
+    let _running = support::service(&uri, &name, &[]);
+    let position = |installation: &str, stream: &str, field: &str| {
+        let mut filter = scope(installation);
+        filter.insert("stream", stream);
+        database
+            .collection::<Document>("ingestion_checkpoints")
+            .find_one(filter)
+            .run()
+            .unwrap()
+            .and_then(|document| document.get_i64(field).ok())
+    };
+    assert_eq!(
+        position(&a, "events", "seq"),
+        Some(9),
+        "events that arrived expired"
+    );
+    assert_eq!(
+        position(&b, "events", "seq"),
+        Some(6),
+        "stored events past the head"
+    );
+    assert_eq!(position(&a, "ledger", "seq"), Some(11));
+    assert_eq!(position(&b, "audit", "seq"), Some(3));
+    assert_eq!(
+        position(&a, "alerts", "count"),
+        Some(2),
+        "uploaded alerts only"
+    );
+    let names = database.list_collection_names().run().unwrap();
+    for retired in [
+        "chain_heads",
+        "events",
+        "autonomy_ledger",
+        "governance_changes",
+        "alerts",
+        "sessions",
+        "service_events",
+        "credit_grants",
+        "dashboard_agents",
+    ] {
+        assert!(
+            !names.iter().any(|found| found == retired),
+            "{retired}: {names:?}"
+        );
+    }
+    let settings = database.collection::<Document>("service_settings");
+    assert!(settings
+        .find_one(doc! {"name": "retention"})
+        .run()
+        .unwrap()
+        .is_none());
+    assert!(settings
+        .find_one(doc! {"name": "session_key"})
+        .run()
+        .unwrap()
+        .is_some());
+    assert!(database
+        .collection::<Document>("brick_requests")
+        .find_one(doc! {"request_id": "brq_kept"})
+        .run()
+        .unwrap()
+        .is_some());
+    assert!(database
+        .collection::<Document>("schema_migrations")
+        .find_one(doc! {"version": 14_i64})
+        .run()
+        .unwrap()
+        .is_some());
+    database.drop().run().unwrap();
 }
 
 /** A deployed service (needs CRANE_TEST_INGEST_URL): a fresh machine with only the address set
@@ -416,9 +481,9 @@ fn deployed_service_round_trip() {
     );
 }
 
-/** The service's limits (needs CRANE_TEST_MONGODB_URI): a rate per installation answers 429, an
- * event quota and a full database answer 507, and an oversized batch answers 413; the refused data
- * stays on the machine
+/** The service's limits (needs CRANE_TEST_MONGODB_URI): a rate per installation answers 429, a
+ * full database answers 507, and an oversized batch answers 413; the refused data stays on the
+ * machine
  * Input
     - None
  * Output
@@ -431,9 +496,8 @@ fn upload_limits_protect_the_database() {
         return;
     };
     let mut fixture = Fixture::ready();
-    let cases: [(&str, &str, &str); 4] = [
+    let cases: [(&str, &str, &str); 3] = [
         ("CRANE_SERVER_REQUESTS_PER_MINUTE", "3", "HTTP 429"),
-        ("CRANE_SERVER_MAX_EVENTS_PER_INSTALLATION", "1", "HTTP 507"),
         ("CRANE_SERVER_MAX_STORAGE_MB", "1", "HTTP 507"),
         ("CRANE_SERVER_MAX_BATCH_RECORDS", "1", "HTTP 413"),
     ];

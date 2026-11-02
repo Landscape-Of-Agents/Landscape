@@ -402,6 +402,8 @@ Code: [server/dashboard/auth.rs](../../src/server/dashboard/auth.rs), [server/da
 - **How to fix safely.** Add providers behind the same "verified remote owner" rule.
 
 ## 19. Dashboard Agents, incidents, and remote quarantine
+
+> Removed on 2026-11-02 with the DataSea revamp (schema 14); kept here as history. The hook still asks the service for quarantines before tool calls; the service answers with an empty list.
 Code: [server/dashboard/api/operate.rs](../../src/server/dashboard/api/operate.rs), [server/dashboard/approve.rs](../../src/server/dashboard/approve.rs), [server/dashboard/notifications.rs](../../src/server/dashboard/notifications.rs), [hooks/enforce.rs](../../src/hooks/enforce.rs).
 
 - **Problem.** Team-level monitoring with a remote stop.

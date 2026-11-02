@@ -30,25 +30,17 @@ const INTENT_DOMAIN: &str = "foxx/dashboard/intent/v1";
 
 /** What a person asked to approve, carried through GitHub sign-in in a signed cookie
  * Fields
-    - action: String - link (a machine's upload key), owner (the owner key), or grant (credits)
-    - code: String - the one-time code (empty for a grant)
+    - action: String - link (a machine's upload key), owner (the owner key), or bricks (a change
+      request made in the Flows section)
+    - code: String - the one-time code (empty for a change request)
     - state: String - the sign-in state it belongs to
-    - grant: Option<Value> - for a grant: {repository, session, amount, reason}
-    - dashboard_agent: Option<Value> - for a Dashboard Agent action: {action, repository, record_id}
-    - resident: Option<Value> - for a resident decision: {repository, installation, action,
-      activation, assignment, step, plan, text, reason}
+    - brick: Option<Value> - for a change request: {repository, request_id}
 */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Intent {
     pub(crate) action: String,
     pub(crate) code: String,
     pub(crate) state: String,
-    #[serde(default)]
-    pub(crate) grant: Option<Value>,
-    #[serde(default)]
-    pub(crate) dashboard_agent: Option<Value>,
-    #[serde(default)]
-    pub(crate) resident: Option<Value>,
     #[serde(default)]
     pub(crate) brick: Option<Value>,
 }

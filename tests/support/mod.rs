@@ -185,7 +185,8 @@ pub fn fake_github() -> String {
                 }
             } else if let Some(repository) = url.strip_prefix("/repos/") {
                 // Roles on repositories: alice administers acme/widgets, bob can push to it,
-                // carol administers carol/notes; anyone else is not shown the repository
+                // carol administers carol/notes; anyone else is not shown the repository. No
+                // repository has a CODEOWNERS file: its contents paths fall through to 404
                 let role = match (repository, login.as_str()) {
                     ("acme/widgets", "alice") | ("carol/notes", "carol") => Some(true),
                     ("acme/widgets", "bob") => Some(false),
@@ -193,7 +194,7 @@ pub fn fake_github() -> String {
                 };
                 match role {
                     Some(admin) => {
-                        json!({"full_name": repository, "permissions": {"admin": admin, "push": true, "pull": true}})
+                        json!({"full_name": repository, "default_branch": "main", "permissions": {"admin": admin, "push": true, "pull": true}})
                     }
                     None => {
                         let _ = request.respond(

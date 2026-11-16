@@ -1,22 +1,16 @@
-// Zero-setup upload of the evidence to the Foxx ingestion service. Every build knows its service:
-// DEFAULT_INGEST_URL, or CRANE_DEFAULT_INGEST_URL when it is set at build time, and CRANE_INGEST_URL
-// overrides it at run time ("off" keeps everything local). The CLI never holds database
-// credentials: it sends batches over HTTPS, and every request is signed with this machine's
-// Ed25519 upload key (created automatically on first use, separate from repository signing keys),
-// whose public key identifies the installation. Every teammate's machine therefore uploads, not
-// only the one that ran crane init. The service writes to MongoDB; a signed policy request may
-// read active quarantine rules, but no machine route returns telemetry or incident evidence.
-// People read evidence on the hosted dashboard.
+// Zero-setup connection to the DataSea service. Every build knows its service: DEFAULT_INGEST_URL,
+// or CRANE_DEFAULT_INGEST_URL when it is set at build time, and CRANE_INGEST_URL overrides it at
+// run time ("off" keeps everything local). The CLI never holds database credentials: every request
+// goes over HTTPS, signed with this machine's Ed25519 upload key (created automatically on first
+// use, separate from repository signing keys), whose public key identifies the installation.
 //
-// A sync first asks the service how far each local stream already reached it (moving the local
-// checkpoint back when the service holds less, for example after a restore), then sends everything
-// newer in batches: events, ledger entries, governance changes, and alerts; the last batch also
-// carries the current sessions, tasks, selection records, the signed manifest, and how the sync
-// went (the service records it as DASHBOARD.md F09 events). The outcome is kept in
-// sync-state.json, which drives the periodic sync. The last batch also carries this machine's
-// repository status (foxx/status.rs) when it is due.
+// Events, the credit ledger, governance changes, and alerts stay on this machine: DataSea no
+// longer keeps them. A sync sends one batch, only when this machine's repository status is due
+// (foxx/status.rs: the flows and Bricks DataSea's Flows section shows), together with the remote
+// and root commits that prove the repository. The outcome is kept in sync-state.json, which drives
+// the periodic sync. Batch keeps its record fields because the service still accepts batches from
+// released Crane versions, which upload those streams.
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::time::Duration;
 
@@ -30,7 +24,7 @@ use super::Stores;
 use crate::governance::audit;
 use crate::governance::state::{Manifest, State};
 use crate::governance::workspace::Workspace;
-use crate::platform::files::{read_lines, write_atomic, Lock};
+use crate::platform::files::{write_atomic, Lock};
 use crate::platform::{io_error, now_millis};
 use crate::selection::registry::Record;
 use crate::trust::crypto::{hex, random_bytes, sha512_hex, SigningIdentity};
@@ -40,11 +34,6 @@ pub(crate) const REQUEST_DOMAIN: &str = "foxx/ingest/request/v1";
 
 /** Header naming the encoding of a request body ("base64"; absent for plain JSON) */
 pub(crate) const BODY_ENCODING: &str = "X-Crane-Body-Encoding";
-
-/** Most records of one stream sent in one batch: about 400 KB of events, so a batch arrives and
- * is stored well within TIMEOUT on a slow uplink or a small hosted service (a batch that timed out
- * is sent again; the service drops the duplicates) */
-pub(crate) const BATCH: usize = 100;
 
 /** The Foxx ingestion service every build uploads to unless told otherwise */
 pub(crate) const DEFAULT_INGEST_URL: &str = "https://agentscript-service.onrender.com";
@@ -187,13 +176,15 @@ pub(crate) fn request_message(method: &str, path: &str, timestamp: u64, body: &[
     format!("{method}\n{path}\n{timestamp}\n{}", sha512_hex(body)).into_bytes()
 }
 
-/** How far each stream reached the service (also the local checkpoint)
+/** How far each stream of a released Crane version reached the service (the service answers it on
+ * GET positions, so those versions send only newer records)
  * Fields
     - events: u64 - last event sequence
     - ledger: u64 - last ledger sequence
     - audit: u64 - last governance audit sequence
     - alerts: u64 - number of alerts
 */
+#[cfg_attr(not(feature = "server"), allow(dead_code))] // used by the service
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Positions {
@@ -203,7 +194,9 @@ pub(crate) struct Positions {
     pub(crate) alerts: u64,
 }
 
-/** One upload; records are decoded into Crane's own types by the service, which validates them
+/** One upload. Current machines fill only complete, remote, root_commits, actor,
+ * registry_generation, and status; the record fields are what released Crane versions still send,
+ * and the service only notes how far each stream arrived, so those versions do not resend them
  * Fields
     - complete: bool - the last batch of a sync, carrying the current state below
     - remote: Option<String> - repository remote
@@ -241,19 +234,12 @@ pub(crate) struct Batch {
 
 /** The result of one sync
  * Fields
-    - events, ledger, audit, alerts: usize - records sent per stream
-    - duplicates: usize - records the service already held (retries)
-    - reset: bool - the service held less than the checkpoint, so missing records were re-sent
+    - status: bool - the repository status was sent (it is sent only when due)
     - skipped: bool - another sync was running, so this background sync did nothing
 */
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub(crate) struct Flushed {
-    pub(crate) events: usize,
-    pub(crate) ledger: usize,
-    pub(crate) audit: usize,
-    pub(crate) alerts: usize,
-    pub(crate) duplicates: usize,
-    pub(crate) reset: bool,
+    pub(crate) status: bool,
     pub(crate) skipped: bool,
 }
 
@@ -262,7 +248,6 @@ pub(crate) struct Flushed {
     - last_attempt_at: u64 - Unix milliseconds of the last attempt
     - last_success_at: Option<u64> - Unix milliseconds of the last successful sync
     - last_error: Option<String> - why the last attempt failed
-    - remote: Positions - how far the service holds each stream
     - endpoint: Option<String> - service address
     - status_at: u64 - Unix milliseconds of the last repository status sent
     - status_generation: u64 - registry generation of the last status sent
@@ -273,7 +258,6 @@ pub(crate) struct SyncState {
     pub(crate) last_attempt_at: u64,
     pub(crate) last_success_at: Option<u64>,
     pub(crate) last_error: Option<String>,
-    pub(crate) remote: Positions,
     pub(crate) endpoint: Option<String>,
     pub(crate) status_at: u64,
     pub(crate) status_generation: u64,
@@ -320,7 +304,6 @@ pub(crate) struct Client {
     repository: String,
     key: SigningIdentity,
     agent: ureq::Agent,
-    policy_agent: ureq::Agent,
 }
 
 impl Client {
@@ -342,9 +325,6 @@ impl Client {
             repository: workspace.repository_id.clone(),
             key,
             agent: ureq::AgentBuilder::new().timeout(TIMEOUT).build(),
-            policy_agent: ureq::AgentBuilder::new()
-                .timeout(Duration::from_secs(5))
-                .build(),
         }))
     }
 
@@ -454,11 +434,6 @@ impl Client {
         self.call("POST", "brick-catalog-entry", &body)
     }
 
-    /** Fetch repository-scoped Dashboard Agent enforcement rules before a tool call. */
-    pub(crate) fn dashboard_agent_policy(&self) -> Result<Value, String> {
-        self.call("GET", "agent-policy", &[])
-    }
-
     /** Request deletion of this repository's hosted records. The service checks the GitHub token
      * against the default-branch CODEOWNERS file and never stores the token.
      */
@@ -478,7 +453,7 @@ impl Client {
     /** Send one signed request about this repository
      * Input
         - method: &str - GET or POST
-        - operation: &str - positions, batch, or snapshot
+        - operation: &str - batch, link, owner, brick-requests, brick-catalog, or another route
         - body: &[u8] - JSON body (empty for GET)
      * Output
         - Result<Value, String> the JSON answer
@@ -499,12 +474,8 @@ impl Client {
             REQUEST_DOMAIN,
             &request_message(method, &path, timestamp, body),
         );
-        let agent = if method == "GET" && operation == "agent-policy" {
-            &self.policy_agent
-        } else {
-            &self.agent
-        };
-        let request = agent
+        let request = self
+            .agent
             .request(method, &format!("{}{path}", self.base))
             .set("X-Crane-Installation", &self.key.public_hex())
             .set("X-Crane-Timestamp", &timestamp.to_string())
@@ -633,7 +604,9 @@ fn passes<R>(
     Ok(first)
 }
 
-/** One upload pass, under the sync lock, recording the outcome
+/** One upload pass, under the sync lock, recording the outcome: the local checks a sync runs
+ * (alert rules, Brick monitors, resident agents, flow watchers), then the repository status when
+ * it is due
  * Input
     - workspace: &Workspace - repository
     - stores: &Stores - runtime stores
@@ -642,7 +615,7 @@ fn passes<R>(
     - Result<Flushed, String> what was sent (nothing when uploads are off)
 */
 fn upload(workspace: &Workspace, stores: &Stores, refresh: bool) -> Result<Flushed, String> {
-    // Alert rules first, so their notifications are uploaded by this sync (telemetry/rules.rs)
+    // Alert rules first, so their notifications go out with this sync (telemetry/rules.rs)
     if let Err(error) = super::rules::evaluate(workspace, stores, "SYNC") {
         crate::platform::notes::note("ALERT_RULES_FAILED", json!({"error": error}));
     }
@@ -652,21 +625,14 @@ fn upload(workspace: &Workspace, stores: &Stores, refresh: bool) -> Result<Flush
     crate::resident::worker::sync(workspace, stores);
     // Flow watchers: read-only checks of the flows they watch; an incident notifies once
     crate::flow::watch::sync(workspace, &stores.directory);
+    // Earlier versions kept upload positions of the streams here; nothing reads them any more
+    let _ = fs::remove_file(stores.directory.join("sync-checkpoint.json"));
     let mut status = state(stores);
-    let previous_attempt = status.last_attempt_at;
     status.last_attempt_at = now_millis();
     save_state(stores, &status);
     let result = Client::open(workspace).and_then(|client| match client {
         None => Ok(None),
-        Some(client) => push(
-            &client,
-            workspace,
-            stores,
-            &mut status,
-            refresh,
-            previous_attempt,
-        )
-        .map(Some),
+        Some(client) => push(&client, workspace, &mut status, refresh).map(Some),
     });
     match &result {
         Ok(Some(_)) => {
@@ -680,265 +646,49 @@ fn upload(workspace: &Workspace, stores: &Stores, refresh: bool) -> Result<Flush
     result.map(Option::unwrap_or_default)
 }
 
-/** Apply the credit grants an admin approved on the dashboard for this machine: each grant is a
- * Grant entry in the session's ledger, idempotent by its grant id (a retried sync never credits
- * twice), and rejected when the session is not on this machine; the service is told the outcome
+/** Send this machine's repository status when it is due (every STATUS_EVERY, when the registry
+ * generation changed, or when a person asked), with the remote and root commits that prove the
+ * repository; nothing is sent otherwise
  * Input
     - client: &Client - service connection
     - workspace: &Workspace - repository
-    - stores: &Stores - runtime stores
- * Output
-    - Result<usize, String> grants settled
-*/
-fn apply_grants(client: &Client, workspace: &Workspace, stores: &Stores) -> Result<usize, String> {
-    let answer = client.call("GET", "grants", &[])?;
-    let grants = answer["grants"].as_array().cloned().unwrap_or_default();
-    if grants.is_empty() {
-        return Ok(0);
-    }
-    let sessions = stores.identity.sessions();
-    let generation = State::load(workspace)
-        .map(|state| state.generation())
-        .unwrap_or(0);
-    let mut results = Vec::new();
-    for grant in &grants {
-        let id = grant["grant_id"].as_str().unwrap_or_default();
-        let session = grant["session"].as_str().unwrap_or_default();
-        let amount = grant["amount"].as_u64().unwrap_or(0).min(1000);
-        if id.is_empty() || amount == 0 {
-            continue;
-        }
-        if !sessions
-            .iter()
-            .any(|record| record.foxx_session_id == session)
-        {
-            results.push(json!({"grant_id": id, "status": "REJECTED", "detail": "the session is not on this machine"}));
-            continue;
-        }
-        let reason = format!(
-            "granted on the dashboard by @{}: {}",
-            grant["approved_by"].as_str().unwrap_or("an admin"),
-            grant["reason"].as_str().unwrap_or_default()
-        );
-        let key = format!("grant:{id}");
-        match stores.ledger.apply(super::ledger::Operation {
-            session,
-            task: None,
-            tool_call_id: None,
-            kind: super::ledger::Kind::Grant,
-            amount,
-            reason: &reason,
-            registry_generation: generation,
-            idempotency_key: &key,
-        }) {
-            Ok((entry, _)) => results.push(json!({"grant_id": id, "status": "APPLIED", "entry_id": entry.entry_id, "detail": format!("{} credits available now", entry.after.available)})),
-            Err(error) => results.push(json!({"grant_id": id, "status": "REJECTED", "detail": error})),
-        }
-    }
-    let body = serde_json::to_vec(&json!({"results": results})).map_err(io_error)?;
-    client.call("POST", "grants", &body)?;
-    Ok(results.len())
-}
-
-/** Apply the resident-agent decisions an admin made on the dashboard for this machine (approve,
- * deny, answer, cancel, pause, revoke; resident/remote.rs applies them with the CLI's checks, each
- * at most once), then tell the service the outcome
- * Input
-    - client: &Client - service connection
-    - workspace: &Workspace - repository
-    - stores: &Stores - runtime stores
- * Output
-    - Result<usize, String> decisions settled
-*/
-fn apply_resident_decisions(
-    client: &Client,
-    workspace: &Workspace,
-    stores: &Stores,
-) -> Result<usize, String> {
-    let answer = client.call("GET", "resident-decisions", &[])?;
-    let decisions = answer["decisions"].as_array().cloned().unwrap_or_default();
-    if decisions.is_empty() {
-        return Ok(0);
-    }
-    // Busy with a command or a tick: the decisions stay pending at the service until the next sync
-    let Some(mut store) =
-        crate::resident::store::ResidentStore::try_open_exclusive(&stores.directory)?
-    else {
-        return Ok(0);
-    };
-    let mut env = crate::resident::worker::live(workspace, &stores.directory);
-    let results = crate::resident::remote::apply(&mut store, &mut env, &decisions);
-    let body = serde_json::to_vec(&json!({"results": results})).map_err(io_error)?;
-    client.call("POST", "resident-decisions", &body)?;
-    Ok(results.len())
-}
-
-/** Reconcile and upload: see the module comment
- * Input
-    - client: &Client - service connection
-    - workspace: &Workspace - repository
-    - stores: &Stores - runtime stores
-    - status: &mut SyncState - sync status, updated with the remote positions
+    - status: &mut SyncState - sync status, updated when the status was sent
     - refresh: bool - send the repository status even when it is not due
-    - previous_attempt: u64 - when the sync before this one started (Unix milliseconds, 0 if never)
  * Output
     - Result<Flushed, String>
+    - Error if the rules cannot be read or the service refuses the batch
 */
 fn push(
     client: &Client,
     workspace: &Workspace,
-    stores: &Stores,
     status: &mut SyncState,
     refresh: bool,
-    previous_attempt: u64,
 ) -> Result<Flushed, String> {
-    let path = stores.directory.join("sync-checkpoint.json");
-    let mut checkpoint: Positions = fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default();
-    let remote: Positions = serde_json::from_value(client.call("GET", "positions", &[])?)
-        .map_err(|error| format!("the ingestion service sent unreadable positions: {error}"))?;
-    let mut flushed = Flushed::default();
-    for (local, remote) in [
-        (&mut checkpoint.events, remote.events),
-        (&mut checkpoint.ledger, remote.ledger),
-        (&mut checkpoint.audit, remote.audit),
-        (&mut checkpoint.alerts, remote.alerts),
-    ] {
-        if remote < *local {
-            *local = remote;
-            flushed.reset = true;
-        }
-    }
-    // Credits an admin granted on the dashboard: applied before the ledger is read, so the new
-    // entries are uploaded by this sync (a failure only delays them to the next one)
-    if let Err(error) = apply_grants(client, workspace, stores) {
-        crate::platform::notes::note("CREDIT_GRANTS_FAILED", json!({"error": error}));
-    }
-    // Resident-agent decisions made on the dashboard, applied before the events are read so their
-    // notes are uploaded by this sync
-    if let Err(error) = apply_resident_decisions(client, workspace, stores) {
-        crate::platform::notes::note("RESIDENT_DECISIONS_FAILED", json!({"error": error}));
-    }
-    let all_events = stores.events.read_all()?;
-    let ledger = stores.ledger.entries()?;
-    let governance = State::load(workspace)?;
-    let alerts = read_lines(&stores.directory.join("alerts.jsonl"))?;
-    let events = all_events
-        .iter()
-        .filter(|event| event.sequence > checkpoint.events)
-        .collect::<Vec<_>>();
-    let entries = ledger
-        .iter()
-        .filter(|entry| entry.seq > checkpoint.ledger)
-        .collect::<Vec<_>>();
-    let changes = governance
-        .audit
-        .iter()
-        .filter(|entry| entry.seq > checkpoint.audit)
-        .collect::<Vec<_>>();
-    let new_alerts = &alerts[(checkpoint.alerts as usize).min(alerts.len())..];
-    let mut sessions = events
-        .iter()
-        .filter_map(|event| event.scope.foxx_session_id.clone())
-        .collect::<BTreeSet<_>>();
-    sessions.extend(entries.iter().map(|entry| entry.session.clone()));
-    let rounds = [events.len(), entries.len(), changes.len(), new_alerts.len()]
-        .into_iter()
-        .map(|length| length.div_ceil(BATCH))
-        .max()
-        .unwrap_or(0)
-        .max(1);
-    let mut sent_status = false;
-    for round in 0..rounds {
-        let range = |length: usize| (round * BATCH).min(length)..((round + 1) * BATCH).min(length);
-        let mut batch = Batch {
-            events: events[range(events.len())]
-                .iter()
-                .map(|event| (*event).clone())
-                .collect(),
-            ledger: entries[range(entries.len())]
-                .iter()
-                .map(|entry| (*entry).clone())
-                .collect(),
-            audit: changes[range(changes.len())]
-                .iter()
-                .map(|entry| (*entry).clone())
-                .collect(),
-            alerts: new_alerts[range(new_alerts.len())].to_vec(),
-            ..Batch::default()
-        };
-        if round + 1 == rounds {
-            let records = stores.identity.sessions();
-            let touched = |session: &str| flushed.reset || sessions.contains(session);
-            batch.complete = true;
-            batch.sync = Some(json!({
-                "trigger": if refresh { "MANUAL" } else { "BACKGROUND" },
-                "started_at": status.last_attempt_at,
-                "resent": flushed.reset,
-                "previous_error": status.last_error,
-                "events": flushed.events + events.len(),
-                // What started a background sync (F34): POST_TOOL, STOP, SESSION_END, COMMAND, INTERVAL
-                "trigger_reason": if refresh { None } else { std::env::var("CRANE_SYNC_TRIGGER").ok() },
-                "seconds_since_last_attempt": (previous_attempt > 0).then(|| status.last_attempt_at.saturating_sub(previous_attempt) / 1000),
-                "interval_seconds": super::sync::interval_seconds(),
-            }));
-            batch.remote = workspace.remote.clone();
-            batch.root_commits = workspace.root_commits.clone();
-            batch.actor = Some(crate::platform::actor());
-            batch.registry_generation = governance.generation();
-            batch.sessions = records
-                .into_iter()
-                .filter(|record| touched(&record.foxx_session_id))
-                .collect();
-            batch.tasks = stores
-                .identity
-                .tasks()
-                .into_iter()
-                .filter(|task| touched(&task.foxx_session_id))
-                .collect();
-            batch.selections = governance.registry.selections.clone();
-            batch.manifest = governance.registry.manifest.clone();
-            if refresh
-                || now_millis().saturating_sub(status.status_at) >= STATUS_EVERY
-                || status.status_generation != governance.generation()
-            {
-                batch.status = Some(crate::foxx::status::collect(workspace));
-            }
-        }
-        sent_status |= batch.status.is_some();
-        let body = serde_json::to_vec(&batch).map_err(io_error)?;
-        let answer = client.call("POST", "batch", &body)?;
-        flushed.duplicates += answer["duplicates"].as_u64().unwrap_or(0) as usize;
-        flushed.events += batch.events.len();
-        flushed.ledger += batch.ledger.len();
-        flushed.audit += batch.audit.len();
-        flushed.alerts += batch.alerts.len();
-        if let Some(last) = batch.events.last() {
-            checkpoint.events = last.sequence;
-        }
-        if let Some(last) = batch.ledger.last() {
-            checkpoint.ledger = last.seq;
-        }
-        if let Some(last) = batch.audit.last() {
-            checkpoint.audit = last.seq;
-        }
-        checkpoint.alerts += batch.alerts.len() as u64;
-        write_atomic(
-            &path,
-            serde_json::to_string(&checkpoint)
-                .map_err(io_error)?
-                .as_bytes(),
-        )?;
-    }
-    status.remote = checkpoint;
-    if sent_status {
-        status.status_at = now_millis();
-        status.status_generation = governance.generation();
-    }
     status.endpoint = Some(client.base.clone());
-    Ok(flushed)
+    let generation = State::load(workspace)?.generation();
+    let due = refresh
+        || now_millis().saturating_sub(status.status_at) >= STATUS_EVERY
+        || status.status_generation != generation;
+    if !due {
+        return Ok(Flushed::default());
+    }
+    let batch = Batch {
+        complete: true,
+        remote: workspace.remote.clone(),
+        root_commits: workspace.root_commits.clone(),
+        actor: Some(crate::platform::actor()),
+        registry_generation: generation,
+        status: Some(crate::foxx::status::collect(workspace)),
+        ..Batch::default()
+    };
+    let body = serde_json::to_vec(&batch).map_err(io_error)?;
+    client.call("POST", "batch", &body)?;
+    status.status_at = now_millis();
+    status.status_generation = generation;
+    Ok(Flushed {
+        status: true,
+        skipped: false,
+    })
 }
 
 #[cfg(test)]

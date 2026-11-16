@@ -1890,20 +1890,16 @@ fn verify(activation: &mut Activation, now: u64) {
     end(activation, state, status, reason, now);
 }
 
-/** Where a person's decision comes from
+/** Where a person's decision comes from (DataSea no longer decides for resident agents)
  * Variants
     - Machine - a person running Crane on their machine (signers: the repository's signer keys)
-    - Dashboard - a repository admin GitHub verified on the dashboard, deciding on the plan digest
-      they were shown
 */
 pub(crate) enum Via<'a> {
     Machine { signers: &'a [String] },
-    Dashboard { plan: &'a str },
 }
 
-/** Check that a person may decide a waiting step: a signer key on a machine (for approvals), or a
- * dashboard decision the definition allows and that was made on the plan as it is now; and, when
- * the definition separates duties, not the person who activated the assignment
+/** Check that a person may decide a waiting step: a signer key on a machine (for approvals); and,
+ * when the definition separates duties, not the person who activated the assignment
  * Input
     - store: &ResidentStore - store
     - activation: &Activation - activation
@@ -1924,33 +1920,16 @@ fn check_decider(
         &activation.definition_id,
         Some(activation.definition_version),
     )?;
-    match via {
-        Via::Machine { signers } => {
-            if approval
-                && !decider
-                    .key
-                    .as_ref()
-                    .is_some_and(|key| signers.contains(key))
-            {
-                return Err("only the repository owner or an admin (a signer) can decide resident approvals".into());
-            }
-        }
-        Via::Dashboard { plan } => {
-            if !definition.definition.remote_decisions {
-                return Err(format!(
-                    "definition {}@{} does not take decisions from the dashboard (remote_decisions is off)",
-                    definition.definition.definition_id, definition.definition.version
-                ));
-            }
-            let current = activation
-                .plan
-                .as_ref()
-                .map(|plan| plan.digest.as_str())
-                .unwrap_or_default();
-            if current != *plan {
-                return Err(format!("the plan changed since the decision was made (decided on {plan}, now {current})"));
-            }
-        }
+    let Via::Machine { signers } = via;
+    if approval
+        && !decider
+            .key
+            .as_ref()
+            .is_some_and(|key| signers.contains(key))
+    {
+        return Err(
+            "only the repository owner or an admin (a signer) can decide resident approvals".into(),
+        );
     }
     if approval && definition.definition.distinct_approver {
         let activator = store
@@ -1977,7 +1956,7 @@ fn check_decider(
     - activation_id: &str - activation
     - step_id: &str - step
     - approver: &Author - who
-    - via: Via - a signer on a machine, or a verified admin on the dashboard
+    - via: Via - a signer on a machine
     - approved: bool - approve or deny
     - reason: &str - why
  * Output
@@ -2065,7 +2044,7 @@ pub(crate) fn approve(
     - step_id: &str - step
     - text: &str - answer
     - by: &Author - who
-    - via: Via - a person on a machine, or a verified admin on the dashboard
+    - via: Via - a person on a machine
  * Output
     - Result<ActivationState, String>
 */

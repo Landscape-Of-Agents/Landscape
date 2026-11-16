@@ -19,28 +19,24 @@ part of the organization gets from it, and what is honestly not done yet. Status
 
 | Area | What changed | Status |
 |---|---|---|
-| Runtime | New module [src/resident/](../../src/resident) (about 12,000 lines with its unit tests): model, triggers, RCA, plans, authority, context cache, sealed store, worker, dashboard decisions, report | exists |
+| Runtime | New module [src/resident/](../../src/resident) (about 12,000 lines with its unit tests): model, triggers, RCA, plans, authority, context cache, sealed store, worker, report | exists |
 | CLI | New family `crane resident` (31 commands, shared envelope, exit codes) in [src/cli/resident/](../../src/cli/resident) | exists |
 | Worker | One tick per background sync (hooks and commands already start it) or `crane resident tick`; no daemon | exists |
 | Authority | Re-reads the signed state before every effectful step; only acts inside a signed Brick assignment | exists |
-| Telemetry | 33 machine F38 events and 2 service events ([DASHBOARD.md](../../DASHBOARD.md#f38-resident-agents)), registered and documented | exists |
-| Dashboard | The **Resident agents** page was removed from DataSea on 2026-11-02 | removed |
-| Dashboard decisions | Removed with the page. Machines still call `resident-decisions` at each sync; the service answers with an empty list | removed |
+| Telemetry | 32 machine F38 events ([DASHBOARD.md](../../DASHBOARD.md#f38-resident-agents)), registered and documented, kept on the machine | exists |
+| Dashboard | The **Resident agents** page and its decisions were removed from DataSea on 2026-11-02; nothing about resident agents is uploaded | removed |
 | VS Code | **Resident agents** group in the Bricks view; show, context preview, create draft (with dry-run and confirmation), validate, pause, resume, revoke | exists |
 | Trigger sources | Crane events, signed generation changes, Brick monitors, timers, **GitHub Actions runs (pulled)**, and delivered CI or webhook events | exists |
 | Action adapters | READ_CHECK, VERIFY, NOTIFY_SLACK (Slack), **CREATE_TICKET (Jira, deduplicated and reconciled by label)**, and the human or internal steps | exists |
-| Governance options | Dashboard decisions (opt-in per definition), separation of duties (the activator cannot approve) | exists |
+| Governance options | Separation of duties (the activator cannot approve) | exists |
 | Not wired | On-call paging, runbook execution, metrics, deployments, inbound Slack or tickets, a model provider, an HTTP webhook listener, a sandbox | to build (shown as unavailable everywhere) |
 
 Files changed outside the new modules are small hook-ins: [src/main.rs](../../src/main.rs) and
 [src/cli/mod.rs](../../src/cli/mod.rs) (module and dispatch),
 [src/cli/agent.rs](../../src/cli/agent.rs) and [src/telemetry/ingest.rs](../../src/telemetry/ingest.rs)
-(one tick per background sync), [src/foxx/status.rs](../../src/foxx/status.rs) (the `residents`
-report, and pulling dashboard decisions), [src/telemetry/spec_commands.rs](../../src/telemetry/spec_commands.rs)
+(one tick per background sync), [src/telemetry/spec_commands.rs](../../src/telemetry/spec_commands.rs)
 (F38 dispatch), [src/integrations/mod.rs](../../src/integrations/mod.rs) (Jira issue create and
-lookup), the service files [src/server/ingest.rs](../../src/server/ingest.rs) and
-[src/server/store.rs](../../src/server/store.rs) (the machine routes for decisions), and the
-dashboard and extension files listed in sections 7 and 8.
+lookup), and the extension files listed in section 8.
 
 ---
 
@@ -52,7 +48,7 @@ dashboard and extension files listed in sections 7 and 8.
 2. **Give it a responsibility.** An *assignment* puts one definition version on one Flow, Zone, or
    Runbook, for a lifetime of 1 to 90 days, with explicit trigger subscriptions such as
    `ci` `ci.failed`. There is no "any event" option.
-3. **Test it before it can act.** `crane resident test` (or the dashboard's test event builder)
+3. **Test it before it can act.** `crane resident test`
    shows whether a trigger would match, whether it would be dropped as a duplicate or by the
    cooldown, the context it would receive, the RCA path, the plan, and Crane's decision for every
    step. Nothing runs.
@@ -62,14 +58,9 @@ dashboard and extension files listed in sections 7 and 8.
    trigger, the context and its cache status, the candidate causes and their evidence, the plan,
    Crane's decision per step, approvals, actions, verification, and usage.
 6. **Answer when it asks.** Approvals, questions, uncertain effects to reconcile, and proposed RCA
-   graphs appear in the dashboard's review inbox with the exact command to run. The answer resumes
-   the same activation.
-7. **Decide from the dashboard.** A repository admin approves, denies, or answers a waiting step,
-   cancels an activation, or pauses or revokes an assignment from the page. GitHub confirms the
-   role, and the machine applies the decision at its next sync with every check Crane makes there.
-   Approvals and answers count only when the definition says `remote_decisions: true`, and only for
-   the plan the admin was shown.
-8. **Stop it.** Pause, revoke, or let it expire, from the CLI, the dashboard, or VS Code. Revoking
+   graphs appear in `crane resident status` with the exact command to run. The answer resumes the
+   same activation.
+7. **Stop it.** Pause, revoke, or let it expire, from the CLI or VS Code. Revoking
    the signed Brick assignment (`crane brick unassign`) stops it too, before its next step.
 
 ### Lifecycles (kept separate on purpose)
@@ -84,7 +75,7 @@ Activation:  QUEUED -> CONTEXT_LOADING -> INVESTIGATING -> PLAN_READY -> EXECUTI
              outcomes: COMPLETED (proven), PARTIALLY_VERIFIED, FAILED, BLOCKED, CANCELLED, UNKNOWN, SIMULATED (tests)
 ```
 
-The dashboard shows a **derived runtime status** next to the lifecycle: ACTIVE_IDLE, QUEUED,
+`crane resident status` shows a **derived runtime status** next to the lifecycle: ACTIVE_IDLE, QUEUED,
 INVESTIGATING, EXECUTING, AWAITING_APPROVAL, AWAITING_INPUT, WAITING_FOR_EVENT,
 RECONCILIATION_REQUIRED, or **DEGRADED**. DEGRADED means Crane would not admit it right now, for
 example because its signed Brick assignment was revoked or its Zone is no longer active. It looks
@@ -130,7 +121,6 @@ idle but cannot act, so it is shown differently from a healthy idle assignment.
 | Sealed records | The runbook store's pattern (digest per record, lock, atomic write) | Tampering is refused on read |
 | Events | `platform::notes` turned into F38 by `telemetry::spec_resident` | Same event store, hash chain, identity, and redaction |
 | Slack | `integrations::deliver_now` | The configured channel and credentials already in the trust directory |
-| Dashboard data | The status report every sync uploads (like the Bricks page) | No new store or write path in DataSea |
 | CLI output | `cli::protocol` envelope and exit codes | Landscape and scripts read it unchanged |
 
 There is **no second policy engine, no new signed file, no new event store, and no new
@@ -161,7 +151,7 @@ dependency**.
   (ceiling 2).
 - **Loops are impossible by construction:** events the runtime caused (`resident.*` events and
   commands that carry `RESIDENT_*` notes) never become triggers.
-- **Concurrency:** every writer (a command that changes the store, the background sync's tick, applying dashboard decisions) holds one lock from reading the store to its last save, so a background sync can never overwrite a command's change. Background work skips its turn when the lock is busy; commands wait for it. Leases make crash recovery explicit.
+- **Concurrency:** every writer (a command that changes the store, the background sync's tick) holds one lock from reading the store to its last save, so a background sync can never overwrite a command's change. Background work skips its turn when the lock is busy; commands wait for it. Leases make crash recovery explicit.
 - **Automatic reconciliation:** an adapter that can read its result back does so before anyone is
   asked. Jira issues carry a label derived from the step's idempotency key. Before creating, and on
   every tick while a step is uncertain, the label is looked up. An issue that exists is the
@@ -240,22 +230,21 @@ the signed state again and applies these rules. The strictest one wins.
 
 Who may decide a waiting step:
 
-| Decision | From a machine (CLI or VS Code) | From the dashboard |
-|---|---|---|
-| Approve or deny | A repository signer (owner or admin key) | A GitHub-verified repository admin, only if the definition has `remote_decisions: true`, and only for the plan digest shown |
-| Answer a question | Any person running Crane | Same rule as approvals |
-| Cancel, pause, revoke | Any person running Crane | Any GitHub-verified repository admin (it only makes things stricter) |
-| Resume, activate, renew, review an RCA graph | A repository signer | Never |
-| Reconcile an uncertain effect | Any person running Crane (declared evidence) | Never; adapters that can read back (Jira) reconcile automatically |
+| Decision | Who (on a machine: CLI or VS Code) |
+|---|---|
+| Approve or deny | A repository signer (owner or admin key) |
+| Answer a question | Any person running Crane |
+| Cancel, pause, revoke | Any person running Crane |
+| Resume, activate, renew, review an RCA graph | A repository signer |
+| Reconcile an uncertain effect | Any person running Crane (declared evidence); adapters that can read back (Jira) reconcile automatically |
+
+A definition may still carry `remote_decisions` from before DataSea's decisions were removed; it
+has no effect and is kept so the definition's digest does not change.
 
 With `distinct_approver: true`, the person who activated the assignment cannot approve its steps.
 
 Other guarantees:
 
-- **Dashboard decisions** pass three gates: GitHub confirms the admin role when the decision is
-  made, the decision waits for at most one day for its machine, and the machine applies it through
-  the same functions and checks as the CLI. Each decision is applied once (by its id). A decision
-  about a plan that changed since is refused, and the refusal is reported back to the page.
 - **Approvals** bind to the activation, the plan digest, the step's content, and the signed-state
   digest. They expire (`approval_ttl_minutes`), are used once, and come only from a repository
   signer (owner or admin key). A change to the signed rules after approval voids it.
@@ -269,9 +258,8 @@ Other guarantees:
 - **Secrets never enter** definitions, plans, triggers, answers, or events. Validation refuses
   them, and the remaining text is redacted.
 - **Records are sealed**: an edit to the resident store outside Crane is refused when it is read.
-- **What leaves the machine** (the dashboard report and F38 events) is identifiers, states,
-  digests, counts, reason codes, and bounded plan parameters. Mission text, context text, and
-  answers stay in the trust directory.
+- **Nothing leaves the machine.** Definitions, assignments, activations, F38 events, mission
+  text, context text, and answers stay in the trust directory; DataSea receives none of it.
 - **Bounded cost**: per-assignment cooldown, a daily activation limit (ceiling 200), steps per plan
   (ceiling 20), retries (ceiling 2), step timeouts, wait deadlines, model calls per activation
   (default 0), and at most 25 activations advanced per tick.
@@ -305,7 +293,7 @@ with approver, digest, expiry, and use. F38 events link to these records by id.
 - **Runbook for a stuck assignment:** run `crane resident show ID` to see its status and Crane's
   reasons now. `crane resident activations --assignment ID` and `crane resident activation ACT` show
   the timeline. Then approve, answer, reconcile, or cancel.
-- **Health:** `crane resident status` and the dashboard show ticks, idle ticks, **model calls while
+- **Health:** `crane resident status` shows ticks, idle ticks, **model calls while
   idle**, model calls in activations, triggers received, rejected, and duplicate, ingestion lag,
   queue depth, failed or blocked activations, cache hit, miss, and invalidation, ignored triggers by
   reason, and outcomes by kind.
@@ -346,42 +334,10 @@ failed, blocked, or denied, 4 approval required, 5 unknown.
 
 ---
 
-## 7. DataSea dashboard (Govern → Resident agents)
+## 7. DataSea
 
-> Removed on 2026-11-02 with the DataSea revamp (schema 14); kept here as history. Decide on the machine with `crane resident` or in Landscape.
-
-| Zone | What it shows |
-|---|---|
-| State | Active and idle, investigating or executing, awaiting approval, degraded, model calls while idle (should stay 0), queue depth |
-| Registry | Assignments (with their machine and **Pause… / Revoke…** buttons; status, lifecycle, target, definition, agent, RCA, trigger support per source, Crane's health now, expiry, last event, latest activation, last verification, last failure, model calls); definitions; RCA graphs with node bases |
-| Review inbox | Pending approvals (with proposed steps and why Crane asks), questions, uncertain effects, proposed RCA graphs, expired or unhealthy assignments. **Approve…, Deny…, Answer…** buttons decide on the page; the exact command is shown as the alternative |
-| Activation timeline | Every activation with filters and a **Cancel…** button while it runs; detail: trigger, context sources and versions, cache, candidate causes with evidence, plan with Crane's decision per step, approvals, usage, and timeline |
-| Idle cost and health | The counters from section 5, ignored triggers by reason, outcomes, and F38 events over time |
-| Test and simulate | Test reports; a typed test-event builder with an in-browser "would it match" preview; what can run today (step types and trigger sources, supported or not) |
-| Create | An eight-step wizard: identity and goal, target (inactive ones marked unavailable), context preview from the reported Brick attachments, real trigger sources only, actions and limits (least privilege, nothing auto-runs by default), RCA behavior, verification, and review with risks and missing integrations |
-
-Files: [src/server/dashboard/govern.js](../../src/server/dashboard/govern.js) (`residentsView`),
-[app.js](../../src/server/dashboard/app.js) (navigation and guide),
-[api/controls.rs](../../src/server/dashboard/api/controls.rs) and
-[api/mod.rs](../../src/server/dashboard/api/mod.rs) (`/api/residents`).
-
-**How a dashboard decision travels:** the button opens a short form (reason; the answer for a
-question). GitHub sign-in confirms that you administer the repository, and the service records the
-decision for the machine that holds the activation (`resident_decisions`, waiting at most one
-day). That machine's next sync fetches it (`GET resident-decisions`) and applies it through
-`resident::remote`, with the same functions and checks as the CLI. It then reports `APPLIED` or
-`REJECTED` with the reason (`POST resident-decisions`). Events: `RESIDENT_DECISION_RECORDED` or
-`RESIDENT_DECISION_REFUSED` on the service, then `RESIDENT_DECISION_APPLIED` from the machine.
-
-**Several members:** every member's machine keeps its own resident store. The page merges the
-latest report of every machine. Each row says which machine it is on, which is where a decision is
-applied, and counters are summed. A member whose Crane has no resident agents no longer hides the
-others.
-
-**What the dashboard still cannot do:** it holds no signing key, so it cannot validate, activate,
-resume, or renew an assignment, review an RCA graph, or declare a reconciliation. The wizard and
-test builder **download** draft and event files that a member imports. The durable record is each
-machine's resident store; DataSea receives reports, events, and pending decisions only.
+DataSea has no resident-agent page since 2026-11-02, and machines send it nothing about resident
+agents. Decide on the machine with `crane resident` or in Landscape.
 
 ---
 
@@ -401,9 +357,8 @@ triggers, Crane's answer now, its latest activation, and model calls. Commands:
 - **Pause, Resume, or Revoke Resident Agent**: offers only the changes its lifecycle allows, asks for
   a reason, confirms, and runs Crane (resuming needs what Crane requires).
 
-It reads the same `crane resident` envelopes as the dashboard's data source, so an assignment made
-on the dashboard path (draft imported with the CLI) and one made in the editor are the same
-record. Landscape never reads the trust directory or decides anything. It stays disabled in
+It reads the same `crane resident` envelopes as the CLI, so an assignment made in either is the
+same record. Landscape never reads the trust directory or decides anything. It stays disabled in
 untrusted workspaces, as before. Files: [core/residents.ts](../../extensions/foxx/src/core/residents.ts),
 [bricksView.ts](../../extensions/foxx/src/bricksView.ts), and
 [package.json](../../extensions/foxx/package.json).
@@ -415,7 +370,6 @@ untrusted workspaces, as before. Files: [core/residents.ts](../../extensions/fox
 | Command | Covers | Result |
 |---|---|---|
 | `cargo test --bin crane resident` | 24 resident unit tests, the F38 registration and documentation test, and the CLI status mapping | 26 passed |
-| `cargo test --features server --bin crane resident_reports_of_every_machine` | Merging several machines' reports on the dashboard | 1 passed |
 | `cargo test --test residents` | The real binary: definition and RCA save, activate, and review; dry-run create; validate (Slack and Jira not configured); activate; agent gate; plan-only test; trigger to PROVEN; duplicate; tick with 0 model calls; revoke to DEGRADED and BLOCKED; rejected delivery; replay of a recorded event; duplicate | 1 passed |
 | `cargo test --bin crane telemetry::spec` | Event specification, including the dispatch change | 6 passed |
 | `cargo test --bin crane integrations::` | Integration providers (the Jira module gained functions) | 2 passed |
@@ -424,7 +378,6 @@ untrusted workspaces, as before. Files: [core/residents.ts](../../extensions/fox
 | `cargo clippy --bin crane --tests` and `--features server --bin crane --tests` | No warning in changed code | clean |
 | `rustfmt --check` on changed files | Formatting | clean |
 | `npx tsc -p .` and `node --test --test-name-pattern=resident out/test/core.test.js` (extension) | Types; 3 resident tests (now also lifecycle changes and repository-scope CI drafts) | 3 passed |
-| `node --check` on `govern.js` and `app.js` | Dashboard scripts parse | ok |
 
 The unit tests use a fake clock, fixtures, a counting fake model, a fake Slack, a fake Jira, and
 recorded GitHub answers. No test needs a paid model, a real Slack message, a ticket, a GitHub call,
@@ -432,12 +385,6 @@ or credentials. Besides the first round's coverage, this round adds:
 
 - one Jira issue per step, including after a lost answer (found by label on the next tick)
 - a person reconciling while Jira cannot answer
-- dashboard decisions:
-  - refused without `remote_decisions`
-  - refused for a changed plan
-  - applied for the current plan
-  - applied only once
-  - pause accepted and resume refused
 - separation of duties and the deny path
 - out-of-order events not satisfying a wait
 - GitHub Actions runs:
@@ -447,12 +394,8 @@ or credentials. Besides the first round's coverage, this round adds:
   - no read without a CI subscription
 - duplicating an assignment
 
-**Not run:** the dashboard integration tests (`tests/dashboard.rs`) and the ingestion tests need a
-live MongoDB (`CRANE_TEST_MONGODB_URI`). So the `/auth/resident` sign-in flow, the
-`resident-decisions` service routes, and the page buttons were checked by type-checking, clippy,
-`node --check`, and the unit tests of both ends (the machine's `remote::apply` and the dashboard's
-merge), not against a running service or in a browser. The real Jira and GitHub calls were not
-made; their request shapes follow the integrations already in the repository.
+**Not run:** the real Jira and GitHub calls were not made; their request shapes follow the
+integrations already in the repository.
 
 ## 10. Limitations and next steps
 
@@ -461,12 +404,11 @@ made; their request shapes follow the integrations already in the repository.
 | No model provider | Reasoning is deterministic RCA traversal; ambiguous cases become questions or proposals | Choose a provider and decide whether repository context may leave the machine; then plug it into `Reasoner`, metered and bounded by `max_model_calls` |
 | Runbook execution from a plan | `EXECUTE_PROCEDURE` is unavailable | Start an active runbook version from an approved step, and track its run through reconciliation (the runbook engine lives in the CLI layer today) |
 | On-call paging | `PAGE_ONCALL` is unavailable | An on-call adapter (PagerDuty or Opsgenie) with dedup keys |
-| No HTTP webhook listener | Webhooks deliver with `crane resident trigger`; CI is also pulled from GitHub Actions | A signed, authenticated listener on the DataSea service |
+| No HTTP webhook listener | Webhooks deliver with `crane resident trigger`; CI is also pulled from GitHub Actions | A signed, authenticated listener (on a machine or the DataSea service) |
 | Metrics, deployments, inbound Slack or tickets | Sources listed as unsupported | Connectors in `trigger.rs`, one at a time |
 | Pulled CI names no target | CI subscriptions use the repository scope with attribute filters | Map a run's changed files to Zones and Flows |
 | Slack has no idempotency key | An uncertain Slack call needs a person to reconcile it | Bot-token mode with message lookup for automatic reconciliation |
-| Separation of duties compares names | A person known as `@login` on the dashboard and by their Git name on a machine is not recognised as the same | Link identities (the dashboard already links machines to GitHub accounts) |
-| Dashboard cannot resume, activate, or review | Those stay signer actions on a machine | Keep, by design: loosening needs a signing key |
+| Separation of duties compares names | Two Git names of the same person are not recognised as the same | Link identities (DataSea already links machines to GitHub accounts) |
 | One store per machine | Each member's machine runs the assignments it holds | Pick one runner machine per repository, or move durable state to the service |
 | Sandbox | Tests are plan-only | An isolation profile that can really confine execution |
 

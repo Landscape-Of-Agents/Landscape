@@ -313,7 +313,6 @@ of them.
 | Requests from the dashboard have no dry-run preview; Crane's checks run when they are applied | partial |
 | Monitors only run when a sync or command runs (no daemon); ci, metrics, external have no connector | partial |
 | Nested Stacks | not supported (one level, on purpose) |
-| A per-call finding names every Brick on the target that sets a control, not only the one whose rule fired | partial |
 | The mock call test runs on a machine (CLI, Landscape); DataSea has no Test button | to build |
 | A catalog entry cannot be withdrawn yet; a revoked version stays listed (importing repositories decide) | to build |
 | The publisher's key is checked against the signature, not against the importing repository's admins (an import is only a draft) | by design |

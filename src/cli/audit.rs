@@ -88,7 +88,7 @@ pub(crate) fn record(words: &[String], result: &Result<(), String>, started: u64
         "command wall clock",
     ));
     let _ = EventStore::open(&trust.runtime()).append(event);
-    sync::trigger(&workspace, "COMMAND");
+    sync::trigger(&workspace);
 }
 
 /** Names the Landscape extension may record (DASHBOARD.md F31) */

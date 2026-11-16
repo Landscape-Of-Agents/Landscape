@@ -173,14 +173,3 @@ fn try_raise(
     });
     append_line(&path, &record.to_string())
 }
-
-/** Report whether alert delivery is configured, for compliance evidence
- * Input
-    - workspace: &Workspace - repository
- * Output
-    - bool
-*/
-pub(crate) fn configured(workspace: &Workspace) -> bool {
-    integrations::load(workspace, "slack").is_some()
-        || integrations::load(workspace, "whatsapp").is_some()
-}

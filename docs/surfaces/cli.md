@@ -1033,20 +1033,21 @@ subsections yet. See [dashboard.md](dashboard.md).
   person with access to the selected repository. A repository appears only after an upload proves
   its GitHub remote, so nobody can attach their uploads to someone else's repository.
 
-## Telemetry upload (DataSea service)
+## Repository status sync (DataSea service)
 
-Crane uploads to the Landscape ingestion service (`https://agentscript-service.onrender.com`).
-The service keeps the repository, its verified remote, and each member's repository status in
-MongoDB. It also records how far the machine's events, ledger entries, governance changes, and
-alerts arrived, so nothing is uploaded twice; the records themselves are not stored (schema 14
-removed them). Nothing needs to be set up: uploads happen when a tool call ends, when a session ends, after every
-command, and every 60 seconds. Hooks never wait for the network, and the local evidence stays
-authoritative when the service is unreachable.
+Crane sends each repository's status to the DataSea service
+(`https://agentscript-service.onrender.com`): the flows and the Bricks on them, which DataSea's
+Flows section shows. The service keeps the repository, its verified remote, and each member's latest
+status in MongoDB. Events, ledger entries, governance changes, and alerts stay on the machine.
+Nothing needs to be set up: a background sync runs when a tool call ends, when a session ends, after
+every command, and every 60 seconds, and sends the status when it is due (every two minutes, or when
+the signed rules change). `crane agent sync` always sends it. Hooks never wait for or ask the
+network, and the local evidence stays authoritative when the service is unreachable.
 
-- Tool-call telemetry retains the exact tool name reported by Claude, Codex, Copilot, Gemini, or
-  an MCP server instead of collapsing unrecognized names to `OTHER`. Crane does not ask a separate
-  model to guess a tool's identity. Token measurements are observed only when a provider supplies a
-  readable transcript with usage; unsupported providers are shown as unmeasured, never estimated.
+- Local tool-call events retain the exact tool name reported by Claude, Codex, Copilot, Gemini, or
+  an MCP server instead of collapsing unrecognized names to `OTHER`. Token measurements are observed
+  only when a provider supplies a readable transcript with usage; unsupported providers are shown as
+  unmeasured, never estimated.
 - From a repository clone, a human CODEOWNER can permanently clear its hosted records with
   `crane data clear`. The command requires GitHub CLI authentication (`gh auth login`) and an exact
   typed confirmation. The service independently checks the caller's GitHub identity against a
@@ -1057,15 +1058,15 @@ authoritative when the service is unreachable.
 
 - Each request is signed with the machine's own upload key (`~/.crane-trust/installation.key`,
   created automatically). Its public key identifies the installation, and an installation can only
-  add to and read its own records. Every teammate's machine uploads, not only the one that ran
+  add to and read its own records. Every teammate's machine reports, not only the one that ran
   `crane init`, and the upload key grants no authority over the repository's rules.
 - Crane never holds database credentials. Only the service has the MongoDB connection string.
-- Each machine also reports its repository status (policy results, integrity, compliance inputs,
-  connection, non-secret integration settings, flow knowledge, Bricks) every two minutes or on
-  `crane agent sync`, for the Flows section.
-- **Limits** protect the shared database: 120 requests a minute per machine, at most 2,000 records
-  of each kind per upload, 50 repositories per machine, and no uploads while the database is over
-  450 MB. A refused upload stays on the machine and is retried.
+- The repository status holds only flow knowledge and the Bricks on each flow and zone (reference,
+  name, type, state, intent, and agent assignments). Configuration and context text stay on the
+  machine.
+- **Limits** protect the shared database: 120 requests a minute per machine, 50 repositories per
+  machine, and no uploads while the database is over 450 MB. A refused send is retried at the next
+  sync.
 - Set `CRANE_INGEST_URL=off` to keep everything local, or set it to your own service.
 
 Run the service yourself:

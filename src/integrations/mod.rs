@@ -369,19 +369,6 @@ pub(crate) fn secrets(workspace: &Workspace, name: &str) -> Map<String, Value> {
     found
 }
 
-/** List the configured integrations (non-secret settings)
- * Input
-    - workspace: &Workspace - repository
- * Output
-    - Vec<Integration>
-*/
-pub(crate) fn configured(workspace: &Workspace) -> Vec<Integration> {
-    PROVIDERS
-        .iter()
-        .filter_map(|provider| load(workspace, provider.name()))
-        .collect()
-}
-
 /** Set an integration's settings without prompts (from DataSea, Landscape, or a script): the
  * given settings are merged and checked, every address among them must answer from this machine
  * before anything is kept, and credentials (given on this machine only) are added

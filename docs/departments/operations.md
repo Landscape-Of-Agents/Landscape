@@ -8,8 +8,7 @@ consequences (restarts, refunds, account changes), which is when control and pro
 | Need | How | Status |
 |---|---|---|
 | What changed before this incident, and which agent made it | the change's agent trail and its evidence | partial: record and evidence exist; incident and deployment connectors to build |
-| Stop a runaway agent from anywhere | remote quarantine from the dashboard | exists |
-| Team monitors that open incidents | Dashboard Agents | exists |
+| Monitors that open incidents | flow subagents (watchers) and Brick monitors on a machine | exists |
 | Runbooks that never repeat a risky action blindly | runbooks over skills: uncertain effects are reconciled first, retries only without effects | exists |
 | Agents act on infrastructure only within signed limits | the tool gateway with zone-like rules for environments and services | to build |
 

@@ -80,9 +80,9 @@ automated scanners without a working attack.
   encoded PowerShell is denied; reading credential files while using the network, rewriting Git
   history, and deleting directory trees need approval. At stop, files changed outside every
   recorded tool call are reported as unattributed changes.
-- **Evidence is tamper-evident.** Events are hash-chained per machine; the hosted service checks
-  that every upload continues the chain and raises a critical alert for a rewrite, gap, or fork.
-- **The service holds the only database credentials.** Machines sign uploads with their own upload
+- **Evidence is tamper-evident and stays local.** Events are hash-chained per machine and never
+  leave it; DataSea receives only each machine's repository status (its flows and Bricks).
+- **The service holds the only database credentials.** Machines sign requests with their own upload
   key and can only add to and read their own records. Dashboard views read through a handle that
   cannot write; the few dashboard writes are repository-scoped and checked against GitHub.
 - **What is not observed.** Network, CPU, memory, and token usage are not observed by hooks and are

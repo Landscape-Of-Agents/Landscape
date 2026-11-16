@@ -21,9 +21,8 @@ Start with the part that matches what you need. Every term is explained in one p
 | Product | What it is | Read |
 |---|---|---|
 | **Crane** (free) | Signed rules for every AI agent, checked before each action and verified after | [products/crane.md](products/crane.md) |
-| **Black Box** (paid) | The flight recorder: every attempt, near miss, and what stopped it | [products/black-box.md](products/black-box.md) |
 | **Evidence Receipts** (paid) | Proof for every change: proven, contradicted, unknown and why | [products/evidence-receipts.md](products/evidence-receipts.md) |
-| Strategy | Why these three products, the market, pricing, and what we will not build | [products/strategy.md](products/strategy.md) |
+| Strategy | Why these two products, the market, pricing, and what we will not build | [products/strategy.md](products/strategy.md) |
 
 ## By feature
 

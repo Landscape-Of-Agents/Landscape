@@ -169,11 +169,6 @@ pub(crate) const KINDS: &[(&str, &str, &str)] = &[
         "Activation ended with an evidence-based outcome.",
     ),
     (
-        "RESIDENT_DECISION_APPLIED",
-        "RESIDENT_APPROVAL",
-        "A decision a verified admin made on the dashboard was applied on the machine, or refused.",
-    ),
-    (
         "RESIDENT_TESTED",
         "RESIDENT_TEST",
         "Assignment tested in plan-only mode (nothing executed).",
@@ -315,7 +310,6 @@ mod tests {
             include_str!("../resident/registry.rs"),
             include_str!("../resident/worker.rs"),
             include_str!("../resident/store.rs"),
-            include_str!("../resident/remote.rs"),
             include_str!("../cli/resident/registry.rs"),
             include_str!("../cli/resident/activity.rs"),
         ]

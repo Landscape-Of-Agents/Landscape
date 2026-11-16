@@ -41,25 +41,6 @@ impl Hook {
         {
             return self.answer_request(session, &action, request);
         }
-        // With uploads off (CRANE_INGEST_URL=off) the service never sees this machine's agents,
-        // so no Dashboard Agent can quarantine them; with uploads on, an unreachable service
-        // fails closed
-        let remote_quarantine = match crate::telemetry::ingest::Client::open(&self.workspace)? {
-            None => None,
-            Some(client) => {
-                let policy = client.dashboard_agent_policy().map_err(|error| {
-                    format!(
-                        "Dashboard Agent policy could not be checked; tool call denied: {error}"
-                    )
-                })?;
-                Self::dashboard_quarantine(
-                    &policy,
-                    &session.agent_id,
-                    &session.foxx_session_id,
-                    &action.tool,
-                )?
-            }
-        };
         let (call, provided) = self.tool_call_id(session, &action);
         let trust = self.workspace.trust()?;
         // The same integrity and zone limits 'crane scope' decides from (one code path)
@@ -128,14 +109,6 @@ impl Hook {
                 decided.verdict.reasons.push(reason);
                 decided.rules.push("FLOW_MODEL_ROUTING");
             }
-        }
-        if let Some((quarantine_id, reason)) = remote_quarantine {
-            decided.verdict.decision = Decision::Quarantine;
-            decided.verdict.cost = 0;
-            decided.verdict.reasons.push(format!(
-                "Dashboard Agent quarantine {quarantine_id}: {reason}"
-            ));
-            decided.rules.push("DASHBOARD_AGENT_QUARANTINE");
         }
         // The call counts in the session's Brick usage (caps, failures in a row); best effort
         decided.counted.denied |= matches!(
@@ -647,48 +620,6 @@ impl Hook {
         }
     }
 
-    fn dashboard_quarantine(
-        policy: &serde_json::Value,
-        agent_id: &str,
-        session_id: &str,
-        tool_name: &str,
-    ) -> Result<Option<(String, String)>, String> {
-        let quarantines = policy["quarantines"].as_array().ok_or(
-            "the ingestion service returned an invalid Dashboard Agent policy; tool call denied",
-        )?;
-        for quarantine in quarantines {
-            let quarantine_id = quarantine["quarantine_id"]
-                .as_str()
-                .filter(|value| !value.is_empty())
-                .ok_or("the ingestion service returned a malformed quarantine; tool call denied")?;
-            let kind = quarantine["kind"]
-                .as_str()
-                .ok_or("the ingestion service returned a malformed quarantine; tool call denied")?;
-            let target_id = quarantine["target_id"]
-                .as_str()
-                .ok_or("the ingestion service returned a malformed quarantine; tool call denied")?;
-            let reason = quarantine["reason"]
-                .as_str()
-                .filter(|value| !value.is_empty())
-                .ok_or("the ingestion service returned a malformed quarantine; tool call denied")?;
-            let matches = match kind {
-                "agent" => target_id == agent_id,
-                "session" => target_id == session_id,
-                "tool" => {
-                    let scope_session_id = quarantine["scope_session_id"]
-                        .as_str()
-                        .ok_or("the ingestion service returned an unscoped tool quarantine; tool call denied")?;
-                    target_id == tool_name && scope_session_id == session_id
-                }
-                _ => return Err("the ingestion service returned an unsupported quarantine type; tool call denied".into()),
-            };
-            if matches {
-                return Ok(Some((quarantine_id.to_string(), reason.to_string())));
-            }
-        }
-        Ok(None)
-    }
-
     fn selection_guidance(&self, record: &Record) -> Result<String, String> {
         let requirement = match record.operation {
             crate::selection::registry::Operation::Preserve => "must remain unchanged".to_string(),
@@ -1055,51 +986,5 @@ impl Hook {
                 detail,
             },
         )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Hook;
-    use serde_json::json;
-
-    #[test]
-    fn remote_dashboard_quarantines_match_agent_session_and_tool() {
-        let policy = json!({"quarantines": [
-            {"quarantine_id": "q1", "kind": "agent", "target_id": "agt_claude", "reason": "agent review"},
-            {"quarantine_id": "q2", "kind": "session", "target_id": "ses_blocked", "reason": "session review"},
-            {"quarantine_id": "q3", "kind": "tool", "target_id": "Bash", "scope_session_id": "ses_tool", "reason": "tool review"}
-        ]});
-        assert_eq!(
-            Hook::dashboard_quarantine(&policy, "agt_claude", "ses_ok", "Read").unwrap(),
-            Some(("q1".into(), "agent review".into()))
-        );
-        assert_eq!(
-            Hook::dashboard_quarantine(&policy, "agt_codex", "ses_blocked", "Read").unwrap(),
-            Some(("q2".into(), "session review".into()))
-        );
-        assert_eq!(
-            Hook::dashboard_quarantine(&policy, "agt_codex", "ses_tool", "Bash").unwrap(),
-            Some(("q3".into(), "tool review".into()))
-        );
-        assert_eq!(
-            Hook::dashboard_quarantine(&policy, "agt_codex", "ses_other", "Bash").unwrap(),
-            None
-        );
-        assert_eq!(
-            Hook::dashboard_quarantine(&policy, "agt_codex", "ses_ok", "Read").unwrap(),
-            None
-        );
-    }
-
-    #[test]
-    fn malformed_remote_quarantine_policy_fails_closed() {
-        let result = Hook::dashboard_quarantine(
-            &json!({"quarantines": [{"kind": "unknown"}]}),
-            "agt",
-            "ses",
-            "Read",
-        );
-        assert!(result.is_err());
     }
 }

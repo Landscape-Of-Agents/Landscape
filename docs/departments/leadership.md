@@ -7,7 +7,7 @@ that hold up in an audit.
 
 | Question | Answered from | Status |
 |---|---|---|
-| Are agents safer than last quarter? | near misses per thousand actions, bypasses, accidents | data exists; the report is to build |
+| Are agents safer than last quarter? | near misses per thousand actions, bypasses, accidents | data exists on each machine; the report is to build |
 | Where can agents be trusted with more? | earned-autonomy proposals per area, from evidence, signed by a person | to build |
 | How much of our critical code is under signed rules? | governed coverage | data exists; the report is to build |
 | What is agent work worth? | cost per verified change | to build |

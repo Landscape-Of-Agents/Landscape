@@ -54,7 +54,7 @@ is what customers buy.
 
 ```mermaid
 flowchart LR
-  A["1 Act under rules<br/>Crane: decide before, verify after"] --> R["2 Record<br/>Black Box: attempts, decisions, effects"]
+  A["1 Act under rules<br/>Crane: decide before, verify after"] --> R["2 Record<br/>Crane: attempts, decisions, effects, kept on each machine"]
   R --> P["3 Prove<br/>Receipts: proven, contradicted, unknown and why"]
   P --> L["4 Learn<br/>Insight: patterns, proposals"]
   L -->|"reviewed by a person"| K["Organizational knowledge<br/>context, checklists, autonomy, procedures"]
@@ -64,10 +64,10 @@ flowchart LR
 | Stage | What it does | Code | Status |
 |---|---|---|---|
 | Act under rules | signed rules enforced before and after every agent action | [hooks/](../../src/hooks), [governance/](../../src/governance) | exists (local agents); pull-request and tool-gateway points to build |
-| Record | tamper-evident events of every attempt and effect | [telemetry/](../../src/telemetry), [server/](../../src/server) | exists; near-miss classification to build |
+| Record | tamper-evident events of every attempt and effect | [telemetry/](../../src/telemetry) | exists on each machine (DataSea no longer keeps it); near-miss classification to build |
 | Prove | evidence packs with reasons for every gap | [capture/](../../src/capture) | exists; receipt renderer and runtime connectors to build |
 | Learn | patterns and proposals across all work | [insight/](../../src/insight), [capture/broker/proposals.rs](../../src/capture/broker/proposals.rs) | exists (CLI); unified review and delivery to build |
-| Deliver | knowledge back to agents and people | session context, [foxx/live.rs](../../src/foxx/live.rs), `/api/agent-context` | partial |
+| Deliver | knowledge back to agents and people | session context, [foxx/live.rs](../../src/foxx/live.rs) | partial |
 
 ### 1.3 Packaging
 
@@ -76,7 +76,7 @@ One product, sold as one platform, with three entry points from [PRODUCTS.md](..
 | Tier | Contains | For |
 |---|---|---|
 | **Free** | Crane rules and enforcement, the editor extension, the personal view, receipts for public repositories | individual developers and evaluation |
-| **Team** | Black Box (recorder, near misses, barriers), Receipts for private repositories, Insight patterns, the proposal inbox, Slack | engineering teams |
+| **Team** | Receipts for private repositories, Insight patterns, the proposal inbox, Slack | engineering teams |
 | **Business** | earned autonomy, feature rollups for product managers, verification debt, the context server for agents, the incident view | product and operations |
 | **Enterprise** | compliance, security, and board exports, SSO, retention, self-hosting, verified procedure export | regulated organizations |
 
@@ -97,7 +97,7 @@ dashboard is for exploration, not the main interface.
 | **Slack or Teams** | everyone | daily digest per role; incident summaries; approval and review requests; "ask" in natural language | alerts exist (Slack, WhatsApp); digests, reviews, and ask to build |
 | **The editor** | developers, tech leads | authors rules; sees what agents were told; sees zone patterns next to the code | exists for rules and live context; patterns to build |
 | **The proposal inbox** | tech leads, admins, owners | accepts or rejects everything the system learned: checklists, zone context, autonomy changes, procedures | partial (CLI review exists per kind); unified inbox to build |
-| **The dashboard** | managers, security, compliance, platform | explores the record, role lenses, near misses, trends | exists (record); lenses to build |
+| **The dashboard** | everyone in the organization | DataSea: the organization's knowledge by section; Engineering holds Flows | exists (Flows); other sections to build |
 | **Reports** | CEO, board, auditors, insurers | signed monthly and period reports | to build |
 | **The tracker** (Jira, Linear) | product and project managers | a comment on each item with its proof status | Jira alerts exist; proof comments to build |
 | **The incident tool** | on-call | the change's agent trail and evidence assembled in the incident channel | to build |
@@ -148,9 +148,9 @@ both safe and proven, which is exactly the promise.
 
 | Metric | Definition | Why it proves smartness | Source |
 |---|---|---|---|
-| **Repeat near-miss rate** | attempts against the same rule and zone after reviewed context was delivered, per thousand actions | agents learning the organization's rules shows up as fewer repeat attempts | Black Box |
+| **Repeat near-miss rate** | attempts against the same rule and zone after reviewed context was delivered, per thousand actions | agents learning the organization's rules shows up as fewer repeat attempts | Crane (local events) |
 | **First-pass receipt completeness** | share of agent changes whose first receipt has no gaps the agent could have closed itself (tests not run, task not linked) | agents learning what "done" means here | Receipts |
-| **Context effectiveness** | denials and rework in a zone before versus after context was added | knowledge actually changing behavior | Black Box, Insight |
+| **Context effectiveness** | denials and rework in a zone before versus after context was added | knowledge actually changing behavior | Crane (local events), Insight |
 | **Approvals needed per verified change** | human approvals divided by verified changes | autonomy earned where safe | decision events |
 | **Question answer rate** | share of questions answered `sufficient` by a checklist (not exploration) | the organization's playbook growing | Work Capture, Insight |
 | **Procedure reuse** | share of recurring work done through a published procedure | learning compounding into reuse | capability pipeline |
@@ -388,8 +388,8 @@ that only a decision-time record can provide.
 | 3 | Sandbox profile | confidential trust directory, mediated network | to build | [trust/mod.rs](../../src/trust/mod.rs) |
 | **Record** |||||
 | 4 | Counterfactual fields and barrier codes | severity and barrier analysis of near misses | to build | [hooks/enforce.rs](../../src/hooks/enforce.rs), [telemetry/events.rs](../../src/telemetry/events.rs) |
-| 5 | Near-miss classifier and replay viewer | the Black Box | to build | [server/](../../src/server) |
-| 6 | OpenTelemetry and SIEM export; retention tiers | fit into existing tools; audits | to build | [telemetry/spec.rs](../../src/telemetry/spec.rs), [server/database.rs](../../src/server/database.rs) |
+| 5 | Near-miss classifier and replay viewer | — | dropped (November 2026, with Black Box) | — |
+| 6 | OpenTelemetry and SIEM export from each machine | fit into existing tools; audits | to build | [telemetry/spec.rs](../../src/telemetry/spec.rs) |
 | **Evidence** |||||
 | 7 | Receipt renderer and check publisher | receipts where reviewers work | to build | [capture/ingest/pack.rs](../../src/capture/ingest/pack.rs) |
 | 8 | Connectors: test reports, deployments, logs, metrics | complete receipts and incident views | to build | [capture/resources/](../../src/capture/resources) |
@@ -402,13 +402,13 @@ that only a decision-time record can provide.
 | 14 | Signed, per-repository thresholds | tune learning without code changes | to build | [insight/mod.rs](../../src/insight/mod.rs) |
 | **Delivery to agents** |||||
 | 15 | Reviewed knowledge in session context | agents start knowing the organization | to build | [hooks/runtime/session.rs](../../src/hooks/runtime/session.rs) |
-| 16 | Context server ("ask the organization") over MCP | any agent can ask before it acts | to build | `/api/agent-context` ([server/dashboard/api/](../../src/server/dashboard/api)) |
+| 16 | Context server ("ask the organization") over MCP | any agent can ask before it acts | to build | [hooks/runtime/session.rs](../../src/hooks/runtime/session.rs) |
 | 17 | Receipt at stop | agents close their own evidence gaps | to build | [hooks/runtime/session.rs](../../src/hooks/runtime/session.rs) |
 | **Delivery to people** |||||
 | 18 | Proposal inbox | one place to accept or reject what the system learned | to build | [capture/broker/proposals.rs](../../src/capture/broker/proposals.rs), [capture/ingest/contributions.rs](../../src/capture/ingest/contributions.rs) |
 | 19 | Question interface (natural language to a deterministic request) | "ask" for people and agents | to build | [capture/broker/run.rs](../../src/capture/broker/run.rs) |
 | 20 | Role lenses and digests | each role's view and rhythm | to build | [server/dashboard/](../../src/server/dashboard) |
-| 21 | Signed reports (board, compliance, insurer) | period evidence | to build | [telemetry/compliance.rs](../../src/telemetry/compliance.rs) |
+| 21 | Signed reports (board, compliance, insurer) | period evidence | to build | [telemetry/](../../src/telemetry) |
 | 22 | Earned-autonomy proposals with expiry and simulation | autonomy from evidence | to build | [governance/zones.rs](../../src/governance/zones.rs), [insight/](../../src/insight) |
 | **Platform** |||||
 | 23 | Shared metric layer | one definition of every number | partial (evals, Insight counts) | [telemetry/evals.rs](../../src/telemetry/evals.rs) |
@@ -420,7 +420,7 @@ that only a decision-time record can provide.
 | Phase | Components | Outcome |
 |---|---|---|
 | **1. Cover every agent** | 1, 7, 9, 4 | receipts and rules on every pull request; near-miss data captured with severity |
-| **2. Show what only we can show** | 5, 18, 15, 20 (developer, tech lead, security) | the Black Box and the inbox; agents receive reviewed knowledge |
+| **2. Show what only we can show** | 5, 18, 15, 20 (developer, tech lead, security) | near misses per zone and the inbox; agents receive reviewed knowledge |
 | **3. Complete the evidence** | 8, 12, 10, 11 | complete receipts, outcomes without manual entry, learning from all stores |
 | **4. Let agents ask** | 16, 17, 19 | "ask the organization" for people and agents |
 | **5. Earn autonomy and report it** | 22, 21, 23, 6 | autonomy from evidence; board, compliance, and insurer reports |
@@ -529,12 +529,12 @@ Non-technical roles already benefit from what engineering produces:
 
 | Role | What they get today or soon | How |
 |---|---|---|
-| **Executives and board** | a signed monthly report: governed coverage, near misses, earned autonomy, accidents, cost per verified change | Black Box report (to build on existing data) |
+| **Executives and board** | a signed monthly report: governed coverage, near misses, earned autonomy, accidents, cost per verified change | a signed report (to build) |
 | **Compliance and legal** | evidence of human oversight of AI-assisted change, mapped to frameworks and EU AI Act obligations | compliance controls (exist) plus export (to build) |
 | **Sales** | answers to customer security questionnaires about AI use, backed by evidence ("all AI-written changes to payment code require human approval; here is the evidence for last quarter") | the same export, scoped per question |
 | **Product managers** | proof status per feature | Receipts' feature rollup (to build) |
 | **Customer success** | a changelog where each customer-facing change links to its proof | Receipts subproduct (to build) |
-| **Finance** | cost per verified change; agent spend that produced nothing | Black Box cost lens (to build) |
+| **Finance** | cost per verified change; agent spend that produced nothing | a cost lens (to build) |
 
 ### 13.2 With connectors and the gateway
 
@@ -587,7 +587,7 @@ data exists.
 | Engineering manager | "Where are approvals always granted and nothing ever goes wrong?" | decision events, outcomes | data exists; lens to build |
 | On-call | "What changed before this incident, who or what made it, and what was unproven?" | packs, agent trail, flows | partial (runtime connectors to build) |
 | Architect | "What depends on the payment flow, and which boundaries do changes keep crossing?" | flow call graph, governance links | partial |
-| Security | "What did agents attempt against our controls this month, and which barrier stopped it?" | Black Box | data exists; classifier to build |
+| Security | "What did agents attempt against our controls this month, and which barrier stopped it?" | decision events on each machine | data exists locally; classifier to build |
 | Product manager | "Is the partial-refund feature proven done?" | targets, receipts, tracker join | to build |
 | Project manager | "What is blocking this release right now?" | approvals waiting, quarantines, gaps | partial |
 | CTO | "Is our agent program safer and more productive than last quarter?" | near misses per thousand actions, verified throughput, accidents | to build |
@@ -609,7 +609,7 @@ data exists.
 |---|---|---|---|
 | **In: read** | connectors through the connector contract (`discover`, `fetch`, `query`, `get_metadata`, `health_check`), registered with an explicit scope and a credential reference, never the credential | evidence from business systems | contract exists; business connectors to build |
 | **In: act** | the tool gateway: agents call business tools through Crane, which decides before and verifies after | control and record of agent actions in business systems | to build |
-| **In: ask** | the context server over MCP; Slack and Teams; the dashboard | questions from people and agents | partial (`/api/agent-context` exists) |
+| **In: ask** | the context server over MCP; Slack and Teams; the dashboard | questions from people and agents | to build |
 | **Out: notify** | Slack, WhatsApp, email, Jira; Teams and PagerDuty to add | alerts, digests, review requests | partial |
 | **Out: export** | OpenTelemetry, SIEM, CSV, signed reports | existing tools keep working with our record | partial (CSV exists) |
 | **Out: write back** | comments in trackers and pull requests, check runs | results where people work | to build (Jira alerts exist) |
@@ -1003,7 +1003,7 @@ Continuing the numbering of section 19.
 | 39 | Pattern approvals and approval-to-envelope proposals | one decision covers its class | to build | Insight trust patterns |
 | 40 | Routing, escalation, and safe timeouts | the right person, and silence never means yes | to build | ownership data, alerts |
 | 41 | Undo windows for reversible actions | act now, correct later | to build | the tool gateway (component 2) |
-| 42 | Automatic narrowing of envelopes on harm | fail safe on evidence of accidents | to build | Black Box accident classification |
+| 42 | Automatic narrowing of envelopes on harm | fail safe on evidence of accidents | to build | accident classification (to build) |
 | 43 | Human-load metrics and rubber-stamp detection | measure the loop itself | to build | metric layer (component 23) |
 | 44 | People-data guard: blocks individual assessments, enforces private-by-default views and minimum support for people-related aggregates | the employee-insight rules, enforced in code | partial (Insight read model, minimum support) | [insight/read.rs](../../src/insight/read.rs) |
 

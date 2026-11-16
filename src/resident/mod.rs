@@ -16,7 +16,6 @@
 //   authority - the Crane view an action is decided against, re-read before each step
 //   context   - versioned context packs and their dependency-keyed cache
 //   registry  - lifecycle changes of definitions, assignments, and RCA graphs
-//   remote    - decisions a verified admin made on the dashboard, applied on this machine
 //   store     - the sealed runtime store (runtime/resident/store.json)
 //   worker    - activation lifecycle, adapters, human waits, the tick the background sync runs
 //   report    - the resident part of the status a machine reports to the dashboard
@@ -27,7 +26,6 @@ pub(crate) mod model;
 pub(crate) mod plan;
 pub(crate) mod rca;
 pub(crate) mod registry;
-pub(crate) mod remote;
 pub(crate) mod report;
 pub(crate) mod store;
 pub(crate) mod trigger;

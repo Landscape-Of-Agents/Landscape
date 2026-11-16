@@ -44,10 +44,10 @@ refer to the event scenarios in [DASHBOARD.md](../../DASHBOARD.md).
 **Evidence and visibility**
 14. [Recording an event](#14-recording-an-event)
 15. [Alerts and custom rules](#15-alerts-and-custom-rules)
-16. [Background sync and upload](#16-background-sync-and-upload)
+16. [Background sync](#16-background-sync)
 17. [Service ingest](#17-service-ingest)
 18. [Dashboard sign-in and viewing](#18-dashboard-sign-in-and-viewing)
-19. [Dashboard Agents, incidents, and remote quarantine](#19-dashboard-agents-incidents-and-remote-quarantine)
+19. [Retired: Dashboard Agents and remote quarantine](#19-retired-dashboard-agents-and-remote-quarantine)
 20. [Extension operations](#20-extension-operations)
 
 **Learning (the Capability Compiler and Insight)**
@@ -251,7 +251,7 @@ Code: [hooks/enforce.rs](../../src/hooks/enforce.rs), [hooks/shell.rs](../../src
 
 - **Problem.** Decide, from the real state, whether a proposed action may run.
 - **Lifecycle.** `PRE_TOOL_USE` → adapter builds a provider-neutral action → guard checks, in order:
-  integrity, safety state (and remote quarantines), protected files, shell analysis, script pre-check,
+  integrity, safety state, protected files, shell analysis, script pre-check,
   edit simulation, zone and flow limits, autonomy mode, credits → answer allow, ask, or deny with a
   reason and context → decision event; credits reserved.
 - **Steps and why.** Cheap, decisive checks first; any error denies (`HOOK_ERROR`). Edits are simulated
@@ -260,15 +260,14 @@ Code: [hooks/enforce.rs](../../src/hooks/enforce.rs), [hooks/shell.rs](../../src
 - **Humans in the loop.** "Ask a human" (assisted ceilings, restricted code, degraded sessions, empty
   credits). Can be reduced safely by Insight trust patterns proposing a higher ceiling for zones with a
   clean record, decided by the owner, never automatically.
-- **Surfaces.** Agent tool (the answer), extension (live context), dashboard (decisions, denials).
+- **Surfaces.** Agent tool (the answer), extension (live context), `crane scope explain`.
 - **Input, result, storage.** Input: the hook payload and the working tree. Result: a decision. Stored
-  as an F05 event and a ledger reservation in the runtime store, uploaded later.
+  as an F05 event and a ledger reservation in the runtime store; neither leaves the machine.
 - **Reasoning.** Enforcement must be before the effect where possible, and honest where not.
 - **Fixes needed.** Lexical shell and script analysis cannot see through indirection (**MEDIUM**; the
-  after-check catches effects). Remote quarantine check fails closed on a service outage (**MEDIUM**).
+  after-check catches effects).
 - **How to fix safely.** Keep post-action verification as the backstop and add an optional sandbox
-  profile. Cache a signed "no quarantine" answer with an expiry so outages degrade to the last known
-  state for a bounded time.
+  profile.
 
 ## 11. The verification after a tool call
 Code: [hooks/runtime/tools.rs](../../src/hooks/runtime/tools.rs). Events: F06.
@@ -281,7 +280,7 @@ Code: [hooks/runtime/tools.rs](../../src/hooks/runtime/tools.rs). Events: F06.
 - **Steps and why.** The after-check is what makes allowing unknowable actions safe.
 - **Humans in the loop.** A person repairs or restores after a violation; releasing a quarantine needs
   an admin. Necessary for containment.
-- **Surfaces.** Agent tool, dashboard (violations, bypasses, quarantines), alerts.
+- **Surfaces.** Agent tool, `crane session`, alerts.
 - **Input, result, storage.** F06 events, ledger entries, safety state in the runtime store.
 - **Reasoning.** Decide from the real state, before and after.
 - **Fixes needed.** None known (**NONE**).
@@ -303,17 +302,17 @@ Code: [hooks/runtime/session.rs](../../src/hooks/runtime/session.rs). Events: F0
 - **How to fix safely.** Report missing hooks directly (see flow 8).
 
 ## 13. Autonomy credits
-Code: [telemetry/ledger.rs](../../src/telemetry/ledger.rs), [governance/config.rs](../../src/governance/config.rs), [server/dashboard/approve.rs](../../src/server/dashboard/approve.rs). Events: F27.
+Code: [telemetry/ledger.rs](../../src/telemetry/ledger.rs), [governance/config.rs](../../src/governance/config.rs). Events: F27.
 
 - **Problem.** Meter risk-bearing authority separately from tokens and money.
 - **Lifecycle.** Grant at session start → reserve on an allowed action → consume when it ran, release
-  when it failed → revoke on violation → expire at end; dashboard approvals can grant more.
+  when it failed → revoke on violation → expire at end.
 - **Steps and why.** An empty balance never denies, it only asks a human, so credits cannot cause
   silent failures.
-- **Humans in the loop.** Approving actions when credits run out; granting credits on the dashboard.
+- **Humans in the loop.** Approving actions when credits run out.
   Can be reduced by tuning costs per zone from trust patterns (owner decision).
-- **Surfaces.** Agent tool, dashboard (Operate, credits).
-- **Input, result, storage.** Hash-chained ledger in the runtime store, uploaded.
+- **Surfaces.** Agent tool, `crane budget`.
+- **Input, result, storage.** Hash-chained ledger in the runtime store, on the machine only.
 - **Reasoning.** A budget managers understand.
 - **Fixes needed.** Costs are fixed defaults (**LOW**).
 - **How to fix safely.** Insight proposes cost changes as configuration diffs signed by an admin.
@@ -344,84 +343,69 @@ Code: [telemetry/alerts.rs](../../src/telemetry/alerts.rs), [telemetry/rules.rs]
 - **Steps and why.** Delivery never changes a decision and never exposes credentials.
 - **Humans in the loop.** People define rules and respond. Could be seeded with recommended rules per
   zone criticality.
-- **Surfaces.** CLI, Slack, WhatsApp, Jira; dashboard shows alerts.
+- **Surfaces.** CLI, Slack, WhatsApp, Jira.
 - **Input, result, storage.** Rules in the trust directory; alert events in the runtime store.
 - **Reasoning.** Alerts belong next to the evidence that triggers them.
-- **Fixes needed.** Machine-local evaluation stops when the machine is off (**LOW**; Dashboard Agents
-  cover the team view).
-- **How to fix safely.** Document which to use; optionally mirror local rules as Dashboard Agents.
+- **Fixes needed.** Machine-local evaluation stops when the machine is off, and there is no team
+  view of alerts (**LOW**).
+- **How to fix safely.** Pick one runner machine per repository, as for resident agents.
 
-## 16. Background sync and upload
-Code: [telemetry/sync.rs](../../src/telemetry/sync.rs), [telemetry/ingest.rs](../../src/telemetry/ingest.rs), [foxx/status.rs](../../src/foxx/status.rs). Events: F09.
+## 16. Background sync
+Code: [telemetry/sync.rs](../../src/telemetry/sync.rs), [telemetry/ingest.rs](../../src/telemetry/ingest.rs), [foxx/status.rs](../../src/foxx/status.rs).
 
-- **Problem.** Team visibility without slowing or weakening enforcement.
-- **Lifecycle.** A detached `crane agent sync` asks the service how far each stream reached → sends
-  newer records in signed batches (events, ledger, governance changes, alerts, sessions, tasks,
-  selection records, manifest, repository status every two minutes) → retries refused uploads.
-- **Steps and why.** Detached, so hooks never wait for the network.
+- **Problem.** Run the local checks and keep DataSea's Flows section current without slowing or
+  weakening enforcement.
+- **Lifecycle.** A detached `crane agent sync` runs alert rules, Brick monitors, resident agents, and
+  flow watchers → when the repository status is due (every two minutes, on a new registry
+  generation, or when a person runs it), sends one signed batch with the status (flows and Bricks)
+  and the remote and root commits → retries a refused send at the next sync.
+- **Steps and why.** Detached, so hooks never wait for the network. Events, the ledger, governance
+  changes, and alerts never leave the machine.
 - **Humans in the loop.** None (`crane agent link` once to attribute a machine to a person).
-- **Surfaces.** Dashboard.
-- **Input, result, storage.** Local stores → MongoDB; sync state in the trust directory.
-- **Reasoning.** Local evidence is authoritative; the service is for visibility.
-- **Fixes needed.** Default ingest URL still on the Render host (**LOW**). Work Capture packs and
-  Insight reports are not uploaded (**LOW**).
-- **How to fix safely.** Switch the default once the domain is live with the old host as fallback; add
-  new record kinds as new streams so old clients are unaffected.
+- **Surfaces.** DataSea Flows.
+- **Input, result, storage.** The repository status → MongoDB `repository_status`; sync state in the
+  trust directory.
+- **Reasoning.** Local evidence is authoritative; the service shares only what Flows needs.
+- **Fixes needed.** Default ingest URL still on the Render host (**LOW**).
+- **How to fix safely.** Switch the default once the domain is live, with the old host as fallback.
 
 ## 17. Service ingest
 Code: [server/ingest.rs](../../src/server/ingest.rs), [server/limits.rs](../../src/server/limits.rs), [server/store.rs](../../src/server/store.rs), [server/database.rs](../../src/server/database.rs).
 
-- **Problem.** Accept evidence from many machines without trusting any of them more than itself.
-- **Lifecycle.** Verify signature, timestamp, and limits → verify the upload continues the machine's
-  event chain (critical alert on rewrite, gap, or fork) → store tagged with the installation → evaluate
-  Dashboard Agents → expire records after retention.
-- **Steps and why.** The public key is the identity; chain continuity makes tampering visible across the
-  network boundary.
+- **Problem.** Accept repository status from many machines without trusting any of them more than
+  itself.
+- **Lifecycle.** Verify signature, timestamp, and limits → store the repository and its status
+  tagged with the installation. Batches from released Crane versions also carry events and other
+  records: only how far each stream arrived is kept, so those versions do not resend them.
+- **Steps and why.** The public key is the identity; the root commits prove the remote.
 - **Humans in the loop.** None.
 - **Surfaces.** Dashboard.
-- **Input, result, storage.** MongoDB `foxx` collections; service events.
+- **Input, result, storage.** MongoDB `foxx` collections.
 - **Reasoning.** A minimal-trust collector.
-- **Fixes needed.** Thirty-day retention is short for annual audits (**MEDIUM**); one deployment
-  topology (**MEDIUM**).
-- **How to fix safely.** Retention tiers with export to cold storage; a documented self-host profile
-  using the same binary.
+- **Fixes needed.** One deployment topology (**MEDIUM**).
+- **How to fix safely.** A documented self-host profile using the same binary.
 
 ## 18. Dashboard sign-in and viewing
-Code: [server/dashboard/auth.rs](../../src/server/dashboard/auth.rs), [server/dashboard/data.rs](../../src/server/dashboard/data.rs), [server/dashboard/api/](../../src/server/dashboard/api). Events: F00.
+Code: [server/dashboard/auth.rs](../../src/server/dashboard/auth.rs), [server/dashboard/data.rs](../../src/server/dashboard/data.rs), [server/dashboard/flows.js](../../src/server/dashboard/flows.js). Events: F00.
 
-- **Problem.** Show a team its evidence, with GitHub-native permissions and no write path.
-- **Lifecycle.** GitHub OAuth (`read:org`) → signed eight-hour cookie → visible repositories are those
-  whose verified remote owner is the viewer or their organization → views read through a read-only
-  handle, merging members' records after verifying each chain.
-- **Steps and why.** Visibility follows GitHub ownership; viewing can never change evidence.
+- **Problem.** Show a team its repository's flows, with GitHub-native permissions and no write path
+  beyond change requests.
+- **Lifecycle.** The landing page and sections are open → Flows needs GitHub OAuth (`read:org`) →
+  signed eight-hour cookie → visible repositories are those whose verified remote owner is the viewer
+  or their organization → Flows reads the latest member status through a read-only handle.
+- **Steps and why.** Visibility follows GitHub ownership; viewing never changes what machines report.
 - **Humans in the loop.** Sign-in. None beyond.
-- **Surfaces.** Dashboard; `GET /api/agent-context` and CSV for tools.
+- **Surfaces.** DataSea.
 - **Input, result, storage.** Reads MongoDB; writes only the session cookie.
 - **Reasoning.** Zero user administration for GitHub teams.
 - **Fixes needed.** GitHub only (**MEDIUM** product gap).
 - **How to fix safely.** Add providers behind the same "verified remote owner" rule.
 
-## 19. Dashboard Agents, incidents, and remote quarantine
+## 19. Retired: Dashboard Agents and remote quarantine
 
-> Removed on 2026-11-02 with the DataSea revamp (schema 14); kept here as history. The hook still asks the service for quarantines before tool calls; the service answers with an empty list.
-Code: [server/dashboard/api/operate.rs](../../src/server/dashboard/api/operate.rs), [server/dashboard/approve.rs](../../src/server/dashboard/approve.rs), [server/dashboard/notifications.rs](../../src/server/dashboard/notifications.rs), [hooks/enforce.rs](../../src/hooks/enforce.rs).
-
-- **Problem.** Team-level monitoring with a remote stop.
-- **Lifecycle.** A person configures a monitor → evaluated after each upload and in a 60-second sweep
-  (with a repository lease) → threshold crossed opens an incident idempotently → a person annotates,
-  mitigates, requests a quarantine, or proposes flow context → a fresh GitHub admin check activates a
-  quarantine or makes context visible → hooks deny matching tool calls → release follows the same check.
-- **Steps and why.** Fresh GitHub checks on the dangerous actions; the lease prevents duplicates.
-- **Humans in the loop.** Configuring monitors; activating and releasing quarantines. A quarantine
-  should stay human; monitors could be suggested from Insight patterns.
-- **Surfaces.** Dashboard, hooks, Slack and email notifications.
-- **Input, result, storage.** Monitors, incidents, and approvals in MongoDB; local hooks query
-  quarantines.
-- **Reasoning.** A kill switch that does not need the agent's machine.
-- **Fixes needed.** Outage behavior (see flow 10) (**MEDIUM**). Monitors cannot watch Work Capture or
-  Insight patterns (**LOW**).
-- **How to fix safely.** Cached signed answers; upload insight summaries as a new stream and add
-  monitor metrics over them.
+Removed in November 2026. DataSea no longer runs monitors, opens incidents, or quarantines agents,
+and the hook no longer asks the service before a tool call. Monitoring now runs on a machine: flow
+subagents (flow 16 and [flow-knowledge.md](../features/flow-knowledge.md)) and Brick monitors.
 
 ## 20. Extension operations
 Code: [extensions/foxx/src/](../../extensions/foxx/src) (`panel.ts`, `sidebar.ts`, `graphView.ts`, `core/*.ts`). Events: F31.

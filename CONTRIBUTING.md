@@ -90,13 +90,14 @@ flowchart LR
     Hooks --> Gov
     Hooks --> Tel["telemetry: events, ledger, metrics"]
     CLI --> Tel
-    Tel -->|"signed uploads, X-Request-Id"| Up["telemetry::ingest"]
+    Tel --> Local[("local events, ledger, alerts")]
+    CLI -->|"repository status, X-Request-Id"| Up["telemetry::ingest"]
   end
   Up -->|HTTPS| Ingest
   subgraph Service["DataSea service (crane server)"]
     Ingest["server::ingest: auth, limits"] --> Store["server::store (writes)"]
     Dash["server::dashboard (authenticated views + narrow writes)"] --> Read["dashboard::data (ReadOnly)"]
-    Dash --> Approval["dashboard::approve (approvals + Dashboard Agent records)"]
+    Dash --> Approval["dashboard::approve (machine links, owner key, flow requests)"]
   end
   Store --> DB[("MongoDB")]
   Read --> DB

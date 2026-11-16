@@ -46,7 +46,7 @@ they change, and it does three things:
 |---|---|
 | **Richer context** | Code that matters carries signed guidance. The moment an agent touches it, the agent is told what it needs to know, so it stops guessing and stops spending tokens rediscovering the same constraints. |
 | **Better guardrails** | Rules are written in a small language, **AgentScript**, and cryptographically signed by people. Every tool call an agent makes is checked *before* it runs and verified *after* it runs, against the real files on disk, not against what the agent says it did. |
-| **Stronger observability** | Every decision becomes tamper-evident evidence. A hosted dashboard shows, for one developer or a whole organization, which agent did what, what was refused and why, what it cost, and whether the evidence chain is intact. |
+| **Stronger observability** | Every decision becomes tamper-evident evidence on the machine where it happened: which agent did what, what was refused and why, and what it cost. Crane's commands and alerts read it there; it is not uploaded. |
 
 On top of that foundation, the repository contains a seven-stage pipeline, the **Capability
 Compiler**, that turns *verified* completed work into reusable, governed procedures ("capabilities")
@@ -58,8 +58,8 @@ The product is delivered through four surfaces:
    agent's hooks, and the evidence recorder.
 2. **Landscape for VS Code**, the editor extension, for marking code, drawing zones and flows, and
    watching what context agents receive.
-3. **The DataSea dashboard and ingestion service**, a hosted service where evidence from every
-   teammate's machine is collected and shown.
+3. **The DataSea dashboard and service**, a hosted service with the organization's sections;
+   Engineering › Flows shows each repository's flows as its members' machines report them.
 4. **The landing page** at [agentslandscape.cloud](https://agentslandscape.cloud), which shows releases and
    collects feedback.
 
@@ -175,15 +175,14 @@ This story is used throughout the document. Each step names the part of the syst
    - **After** each tool call, Crane re-checks protected blocks on disk. Everything is intact.
    - At **stop**, Crane reconciles every change of the session. At **session end**, it attests the
      final state.
-8. **Evidence flows.** Every step above was written as a hash-chained **event** on Ravi's machine and
-   uploaded in the background, signed with his machine's **upload key**
-   ([src/telemetry/ingest.rs](../../src/telemetry/ingest.rs)).
-9. **The team looks.** On the dashboard, Priya sees Ravi's session, the two denials, the approval,
-   tokens per tool call, the credit balance, and compliance posture ([src/server/dashboard/](../../src/server/dashboard)).
-10. **A monitor fires.** A **Dashboard Agent** Priya configured ("more than 3 denials in zone
-    payment-core within 30 minutes") opens an **incident**. Priya requests a **quarantine** of that
-    session, confirms through GitHub that she administers the repository, and from then on every
-    tool call in that session is denied.
+8. **Evidence stays on the machine.** Every step above was written as a hash-chained **event** on
+   Ravi's machine ([src/telemetry/events.rs](../../src/telemetry/events.rs)). In the background, Crane
+   sends DataSea only the repository's **status**: its flows and the Bricks on them, signed with his
+   machine's **upload key** ([src/telemetry/ingest.rs](../../src/telemetry/ingest.rs)).
+9. **The team looks.** On DataSea, Priya opens Engineering › Flows and sees the payment flow, its
+   context, tests, people, and the subagents that watch it ([src/server/dashboard/](../../src/server/dashboard)).
+10. **A watcher fires.** A flow subagent Priya approved notices the failed check on the payment flow
+    and opens an **incident** on Ravi's machine, notifying Slack once.
 11. **The work becomes knowledge.** Later, Work Capture investigates the change and produces an
     **Evidence Pack** showing CI passed but no test report exists. The capability pipeline can turn
     the verified parts of this work into a reusable *candidate* procedure, which stays a candidate
@@ -351,17 +350,14 @@ These vocabularies are deliberately separate, so a denied attack is never confus
 - **Ledger.** The append-only, hash-chained record of credit movements (grant, reserve, consume,
   release, revoke, expire) with balances before and after and an idempotency key
   ([src/telemetry/ledger.rs](../../src/telemetry/ledger.rs)).
-- **Eval.** A number shown on the dashboard, computed only from events. A number with no events
+- **Eval.** A number Crane computes only from local events (alert rules and session views use it). A number with no events
   behind it is `null`, never zero ([src/telemetry/evals.rs](../../src/telemetry/evals.rs)).
 - **Severity.** `INFO`, `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`, assigned by four rules: failure streak,
   outcome, threshold, or fixed.
-- **DataSea.** The name for the evidence store: locally, the event store in the trust directory's
-  runtime folder; remotely, the MongoDB collections behind the hosted service.
+- **DataSea.** The hosted service and dashboard: a landing page and the organization's sections,
+  with Engineering › Flows built from each machine's repository status. Events stay in the trust
+  directory's runtime folder on each machine.
 - **Installation.** One machine, identified by the public half of its upload key.
-- **Dashboard Agent.** A repository-scoped monitor on the dashboard: a metric, a threshold, a lookback
-  window, and assignments to zones, flows, or selections. When it fires, it opens an **incident**.
-- **Quarantine (remote).** An admin-approved rule on the service that makes local hooks deny matching
-  tool calls (by provider agent id, Crane session id, or exact tool name within a session).
 
 ### 5.7 The capability pipeline
 
@@ -394,7 +390,7 @@ flowchart BT
   T --> S[selection: anchors, signed registry, location tracker]
   S --> G[governance: state and manifest, admins, policies, checkpoints, zones and flows, verification]
   G --> H[hooks: adapters, guard, runtime]
-  G --> TL[telemetry: events, ledger, identity, evals, alerts, compliance, upload]
+  G --> TL[telemetry: events, ledger, identity, evals, alerts, status sync]
   H --> TL
   TL --> F[foxx: repository status, live agent context]
   TL --> I[integrations: Slack, Jira, WhatsApp, GitHub]
@@ -416,16 +412,15 @@ flowchart LR
     HK --> EV["event store + ledger (trust dir)"]
     VS["Landscape for VS Code"] -->|runs| CLI["crane CLI"]
     CLI --> GOV
-    EV -->|"background sync, signed with upload key"| UP["telemetry::ingest"]
+    CLI -->|"repository status, signed with upload key"| UP["telemetry::ingest"]
   end
   UP -->|HTTPS| ING
   subgraph Cloud["DataSea service (crane server)"]
-    ING["/v1 ingest: signature, limits, chain checks"] --> DB[("MongoDB")]
-    DASH["dashboard: GitHub sign-in, read-only views"] --> DB
-    DA["Dashboard Agents, incidents, approvals"] --> DB
+    ING["/v1: signature, limits"] --> DB[("MongoDB")]
+    DASH["dashboard: landing, sections, Flows (GitHub sign-in)"] --> DB
+    AP["approvals and flow change requests"] --> DB
   end
   B["Browser"] --> DASH
-  HK -.->|"quarantine check before tool calls"| ING
 ```
 
 ### 6.3 Repository map
@@ -675,38 +670,24 @@ whose transcripts give nothing (Codex) are shown as **unmeasured**, never estima
   and channels. Rules fire, remind after a cooldown while still firing, and resolve when the value
   returns. They live in the trust directory, out of an agent's reach.
 
-### 9.4 Compliance evidence
-
-[src/telemetry/compliance.rs](../../src/telemetry/compliance.rs) defines controls, each with an objective,
-an enforcement rule, the required evidence, a verification method, and the F-flows its evidence comes
-from. A control is evaluated only from evidence Crane actually holds:
-
-- `SATISFIED` needs positive evidence;
-- `PARTIAL` means partial coverage;
-- `NO_EVIDENCE` means nothing proves it either way;
-- `NOT_APPLICABLE` means there is nothing to apply it to (for example, no preserve rules defined).
-
-Framework mappings (OWASP LLM and agentic guidance, NIST AI RMF, SOC 2, ISO/IEC 27001:2022, GDPR) show
-which requirements the evidence *supports*; they are explicitly not certification. Network egress is
-not a control, because hooks cannot observe it; it is reported as inferred observability.
-
-### 9.5 Upload
+### 9.4 Sync
 
 [src/telemetry/sync.rs](../../src/telemetry/sync.rs) and [src/telemetry/ingest.rs](../../src/telemetry/ingest.rs):
 
-- Data leaves the machine when it is complete: a tool call when it ends, a session when it ends, a
-  command when it finishes, and everything else every 60 seconds.
+- A sync starts after a tool call, when a session ends, when a command finishes, and otherwise
+  every 60 seconds. It runs the local checks (alert rules, Brick monitors, resident agents, flow
+  watchers).
 - A sync runs as a **detached** `crane agent sync` process, so a hook never waits for the network
-  and a slow or unreachable service never weakens enforcement.
-- A sync first asks the service how far each local stream already reached it, then sends everything
-  newer in batches: events, ledger entries, governance changes, alerts, sessions, tasks, selection
-  records, the signed manifest, and every two minutes the **repository status** (policy results,
-  integrity, compliance inputs, connection, non-secret integration settings,
-  [src/foxx/status.rs](../../src/foxx/status.rs)).
+  and a slow or unreachable service never weakens enforcement. Hooks never ask the service anything
+  before a tool call.
+- Events, ledger entries, governance changes, and alerts **stay on the machine**. At most every two
+  minutes, or when the registry generation changes, the sync sends one batch: the **repository
+  status** (the flows and Bricks DataSea's Flows section shows, [src/foxx/status.rs](../../src/foxx/status.rs))
+  with the remote and root commits that prove the repository.
 - Every request is signed with the machine's upload key. `CRANE_INGEST_URL=off` keeps everything
   local.
 
-### 9.6 The DataSea service
+### 9.5 The DataSea service
 
 `crane server` ([src/server/mod.rs](../../src/server/mod.rs)) is the only component that holds database
 credentials.
@@ -715,58 +696,32 @@ credentials.
 - Every `/v1` request carries the installation's public key, a timestamp within five minutes, and a
   signature over method, path, timestamp, and body digest.
 - The public key *is* the identity: every stored record is tagged with it, and an installation can
-  only add to and read its own records. The only thing a machine may read back is the list of active
-  quarantines for its hooks.
-- The service checks that every upload **continues the machine's event chain** where it left off,
-  and records a critical alert for a rewrite, a gap, or a fork.
+  only add to and read its own records.
+- The service keeps repositories with their verified remotes, each member's latest repository
+  status, approval requests, Brick and flow change requests, and the organization's Brick catalog.
+  Released Crane versions still upload events and other records; the service keeps only how far
+  each stream arrived (so they do not resend it) and answers their quarantine, credit-grant, and
+  resident-decision requests with empty lists.
 - **Limits** ([src/server/limits.rs](../../src/server/limits.rs)) protect the shared database: 120
-  requests a minute per machine, 2,000 records per kind per upload, 250,000 stored events and 50
-  repositories per machine, and no uploads above 450 MB. A refused upload stays on the machine and is
-  retried. Events are retained 30 days by default.
+  requests a minute per machine, 2,000 records per kind per batch (from released versions), a
+  repository cap per machine, and no uploads above 450 MB. A refused upload is retried.
 
 **Dashboard (people)** ([src/server/dashboard/](../../src/server/dashboard)):
 - Sign-in with GitHub OAuth (scope `read:org`). The service keeps no GitHub token; it sets an
   eight-hour signed session cookie.
-- A viewer sees a repository only if its **verified** remote is `github.com/OWNER/NAME` and `OWNER`
-  is the viewer or one of their organizations. A repository appears only after an upload *proves* its
-  remote, so nobody can attach uploads to someone else's repository.
-- Evidence views read MongoDB through a **read-only handle** that cannot insert, update, or delete,
-  and pipelines that would write are refused ([src/server/dashboard/data.rs](../../src/server/dashboard/data.rs)).
-- A repository's view merges every selected member's records. Each member's event chain and ledger
-  are verified separately, then merged in time order.
-- Pages: **Monitor** (overview, event explorer, timeline), **AI agents** (agents, tool calls,
-  sessions, with a profile for each), **Investigate** (logs, traces, topology, distributions, texts),
-  **Operate** (alerting, credits), **Govern** (audit trail, governance with zones, flows, and call
-  graphs, compliance), **Organization** (repositories, settings), and **Dashboard Agents** with
-  incidents. A global filter over any attribute (AND, OR groups, NOT) can be saved and shared as a
-  link.
+- The landing page and the section pages are open to anyone; Flows needs a sign-in. A viewer sees a
+  repository only if its **verified** remote is `github.com/OWNER/NAME` and `OWNER` is the viewer or
+  one of their organizations. A repository appears only after an upload *proves* its remote.
+- Flows reads MongoDB through a **read-only handle** that cannot insert, update, or delete
+  ([src/server/dashboard/data.rs](../../src/server/dashboard/data.rs)).
 - **The only writes** are narrow and repository-scoped: GitHub-confirmed approvals (linking a machine
-  to a person, confirming the owner key, granting credits), Dashboard Agent configuration and
-  incidents, quarantine requests, and flow-context proposals ([src/server/dashboard/approve.rs](../../src/server/dashboard/approve.rs)).
-
-**Dashboard Agents and incidents:**
-1. A person configures a monitor: a metric (critical events, denials, prompt-injection signals,
-   bypass attempts, tool failures, event volume), a threshold, a lookback window, and assignments.
-2. The service evaluates enabled monitors after each successful upload and in a 60-second recovery
-   sweep. A repository lease prevents duplicate work across service instances.
-3. Crossing the threshold opens an incident (idempotently).
-4. From an incident, a person can annotate, mitigate, request a quarantine, or propose incident
-   context for a flow.
-5. A **fresh GitHub check of repository-admin access** is required before a quarantine becomes active
-   or is released, or before proposed flow context becomes visible to agents.
-6. Local hooks query the service before every tool call. Matching calls are denied, and a service
-   error also denies (unless uploads are switched off, in which case local rules still apply).
-7. Notifications go to Slack and email (Resend) from the service. A missing or failed delivery is
-   recorded as such, never as a successful send.
-
-**Data for agents:** `GET /api/agent-context` returns compact, filtered event context (at most 500
-events) in the `foxx-agent-context/v1` format, and `GET /api/events.csv` the same as CSV, both under
-the viewer's own permissions.
+  to a person, confirming the owner key) and the flow change requests a person applies on a machine
+  ([src/server/dashboard/approve.rs](../../src/server/dashboard/approve.rs)).
 
 **Clearing data:** `crane data clear` lets a human CODEOWNER (checked by the service against a direct
 entry in the default branch's `CODEOWNERS`) permanently delete a repository's hosted records.
 
-### 9.7 Integrations
+### 9.6 Integrations
 
 `crane integrate slack|jira|whatsapp|github` stores non-secret settings in
 `integrations/NAME.json` and credentials in `secrets/NAME.json` (owner-only) in the trust directory,
@@ -965,13 +920,11 @@ flowchart LR
 | Governance state | generation 1, 2, 3, … (each a signed manifest) | `commit()` | [state.rs](../../src/governance/state.rs) |
 | Selection | resolved / UNRESOLVED; record generations | location tracker, Crane commands | [tracker.rs](../../src/selection/tracker.rs) |
 | Zone / flow | `proposed` → `active` | an admin, through `governance sign` | [zones.rs](../../src/governance/zones.rs) |
-| Agent session safety | `ACTIVE` → `DEGRADED` → `QUARANTINED` | violations, bypasses, remote quarantine | [telemetry/model.rs](../../src/telemetry/model.rs) |
-| Agent state (telemetry) | `INACTIVE`, `ACTIVE`, `DEGRADED`, `QUARANTINED`, `STALE`, `ENDED`, `ERROR` | hook runtime, service | [DASHBOARD.md](../../DASHBOARD.md) |
+| Agent session safety | `ACTIVE` → `DEGRADED` → `QUARANTINED` | violations, bypasses | [telemetry/model.rs](../../src/telemetry/model.rs) |
+| Agent state (telemetry) | `INACTIVE`, `ACTIVE`, `DEGRADED`, `QUARANTINED`, `STALE`, `ENDED`, `ERROR` | hook runtime | [DASHBOARD.md](../../DASHBOARD.md) |
 | Tool call | decision (`ALLOW`/`REQUIRE_APPROVAL`/`DENY`/`QUARANTINE`/`ERROR`) → verification | guard, runtime | [enforce.rs](../../src/hooks/enforce.rs) |
 | Credits | grant → reserve → consume or release; revoke; expire | hook runtime | [ledger.rs](../../src/telemetry/ledger.rs) |
 | Alert rule | ok → firing → (reminding) → resolved | background sync | [rules.rs](../../src/telemetry/rules.rs) |
-| Quarantine (remote) | pending → active → release pending → released | dashboard, GitHub-confirmed admin | [approve.rs](../../src/server/dashboard/approve.rs) |
-| Dashboard Agent | `active`, `idle`, `inactive`, `sleep` | dashboard user | [GUIDE](../surfaces/cli.md#dashboard-agents) |
 | Work Capture investigation | `sufficient`, `incomplete`, `budget_exhausted`, `rejected`, `exploratory` (no checklist served the question) | broker | [capture/ingest/pack.rs](../../src/capture/ingest/pack.rs) |
 | Checklist proposal | proposed → accepted (a new, pinned RecipeBook version) / rejected | Insight proposes; the owner or an admin decides | [capture/broker/proposals.rs](../../src/capture/broker/proposals.rs) |
 | Context contribution | proposed → accepted / rejected / superseded / expired | proposer, reviewer (a different human) | [contributions.rs](../../src/capture/ingest/contributions.rs) |
@@ -997,7 +950,7 @@ flowchart LR
 | `.crane/audit.jsonl` | Governance change history | `commit()` | hash chain, manifest |
 | `~/.crane-trust/` | Signing keys, pinned keys, rollback anchors, upload key, integration secrets, alert rules | Crane only | outside the repository; agents refused |
 | `~/.crane-trust/…/runtime/` | Event store, credit ledger, sessions, alerts, sync state, capture (with checklist proposals) / capability / compiler / lab / discovery / invocation / evolution stores, insight reports | hooks, Crane | hash chains, digests, locks |
-| MongoDB (`foxx` database) | Repositories, each member's repository status, upload positions, approvals, Brick and flow change requests, the Brick catalog (telemetry is no longer stored) | the service only | signed requests, read-only dashboard handle |
+| MongoDB (`foxx` database) | Repositories, each member's repository status, upload positions of released Crane versions, approvals, Brick and flow change requests, the Brick catalog (telemetry is not stored) | the service only | signed requests, read-only dashboard handle |
 
 ---
 
@@ -1074,7 +1027,6 @@ Everything below comes from events, and every number with no events behind it is
 - **Cost:** model tokens per tool call and turn (where measurable), and autonomy credits granted,
   consumed, revoked, and remaining.
 - **Integrity:** evidence chain continuity per machine, governance integrity, policy pass and fail.
-- **Compliance posture:** each control's outcome with its evidence and framework mappings.
 - **Learning quality (capability pipeline):** Evidence Pack sufficiency and the reasons for missing
   evidence, intake completeness, gate results, lab outcomes, discovery outcomes, verified versus
   declared invocation outcomes, qualified evolution signals.
@@ -1088,11 +1040,11 @@ Everything below comes from events, and every number with no events behind it is
 - **Autonomy that is earned, not assumed.** Credits, autonomy ceilings, and criticality let an
   organization give agents more freedom in routine code and less in critical code, and widen it as
   evidence shows they behave.
-- **Audit and compliance without extra work.** Every decision is tamper-evident evidence mapped to
-  common frameworks, which is the raw material for change-management and AI-governance audits.
-- **Team-wide visibility with strict privacy.** One dashboard shows every teammate's agents, while
-  secrets are redacted before storage, raw prompts are never stored, and viewing can never change the
-  evidence.
+- **Audit without extra work.** Every decision is tamper-evident evidence on the machine, which is
+  the raw material for change-management and AI-governance audits.
+- **Shared knowledge with strict privacy.** DataSea shows every flow of a repository and who watches
+  it, while agent activity stays on each machine, secrets are redacted before storage, and raw
+  prompts are never stored.
 - **Better decisions, not just more context.** The capability pipeline separates what is *proven*
   from what is *declared*, *inferred*, or *unknown*, at every step. Agents and people can act on
   verified procedures, see exactly which gaps remain, and see why a capability does or does not

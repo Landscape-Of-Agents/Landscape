@@ -1,9 +1,8 @@
 // Security telemetry: the taxonomy, the unified event store, canonical identity, the autonomy
-// ledger, redaction, metrics, compliance evidence, and alerts. Runtime evidence lives in the
+// ledger, redaction, metrics, and alerts. Runtime evidence lives in the
 // trust directory's runtime folder, never in the application repository.
 
 pub(crate) mod alerts;
-pub(crate) mod compliance;
 pub(crate) mod evals;
 pub(crate) mod events;
 pub(crate) mod identity;

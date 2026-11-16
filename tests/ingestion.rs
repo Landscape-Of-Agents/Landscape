@@ -1,8 +1,8 @@
 // The upload pipeline (built with --features server). An unreachable service never weakens
 // enforcement or loses local evidence. With a live MongoDB (CRANE_TEST_MONGODB_URI), a real
 // 'crane server' receives signed uploads with no setup on the client, stores each machine's
-// repository status, rejects forged requests, re-receives records missing from the database, and
-// enforces its limits. With CRANE_TEST_INGEST_URL, the same uploads reach a deployed service.
+// repository status (events, ledger, and alerts stay on the machine), rejects forged requests,
+// and enforces its limits. With CRANE_TEST_INGEST_URL, the same uploads reach a deployed service.
 
 mod common;
 mod support;
@@ -113,10 +113,9 @@ fn service_outage_does_not_weaken_enforcement() {
 }
 
 /** The live pipeline (needs CRANE_TEST_MONGODB_URI): with only the service address set, hooks and
- * commands reach the service through signed uploads; the repository and its status are stored and
- * the remote is verified, while telemetry is not kept, only how far each stream arrived, so a
- * second sync sends nothing again; forged requests are refused, and a lost position makes the
- * machine send its records again
+ * commands reach the service through signed uploads; the repository and its status (flows and
+ * Bricks) are stored and the remote is verified, while events, the ledger, governance changes,
+ * and alerts never leave the machine; forged requests are refused
  * Input
     - None
  * Output
@@ -141,10 +140,9 @@ fn live_pipeline_reaches_mongodb_without_setup() {
     fixture.hook("claude", "pre-tool-use", &call("l2", "cat .crane/map"));
     fixture.hook("claude", "SessionEnd", &json!({"session_id": "live-1"}));
     let synced = fixture.ok(&["agent", "sync"]);
-    assert!(synced.contains("Synchronized"), "{synced}");
+    assert!(synced.contains("Sent this repository's status"), "{synced}");
     // Let the detached syncs started by the hooks finish
     std::thread::sleep(std::time::Duration::from_secs(5));
-    fixture.ok(&["agent", "sync"]);
     let database = mongodb::sync::Client::with_uri_str(&uri)
         .unwrap()
         .database(&name);
@@ -155,27 +153,14 @@ fn live_pipeline_reaches_mongodb_without_setup() {
             .run()
             .unwrap()
     };
-    let checkpoint = |stream: &str, field: &str| {
-        database
-            .collection::<mongodb::bson::Document>("ingestion_checkpoints")
-            .find_one(doc! {"stream": stream})
-            .run()
-            .unwrap()
-            .and_then(|document| document.get_i64(field).ok())
-            .unwrap_or(0) as u64
-    };
-    let local = local_events(&fixture);
-    assert_eq!(
-        checkpoint("events", "seq"),
-        local,
-        "the service knows how far the events arrived"
-    );
-    assert!(checkpoint("ledger", "seq") >= 1);
-    assert!(checkpoint("audit", "seq") >= 3);
-    assert!(
-        checkpoint("alerts", "count") >= 1,
-        "a bypass attempt raised an alert"
-    );
+    for stream in ["events", "ledger", "audit", "alerts"] {
+        assert_eq!(
+            count("ingestion_checkpoints", doc! {"stream": stream}),
+            0,
+            "{stream} stay on the machine"
+        );
+    }
+    assert!(local_events(&fixture) >= 4, "the evidence is kept locally");
     let names = database.list_collection_names().run().unwrap();
     for retired in [
         "events",
@@ -214,16 +199,18 @@ fn live_pipeline_reaches_mongodb_without_setup() {
         .run()
         .unwrap()
         .expect("the repository status was uploaded");
-    assert!(status
-        .get_document("governance")
-        .is_ok_and(|governance| governance.contains_key("policies")));
-    assert!(status.get_document("integrity").is_ok());
     assert!(status.contains_key("flows"), "the Flows section reads it");
-    let again = fixture.ok(&["agent", "sync"]);
-    assert!(
-        again.contains("Synchronized 0 events") && !again.contains("re-sent"),
-        "nothing is sent twice: {again}"
-    );
+    assert!(status.contains_key("bricks"), "the Flows section reads it");
+    for local in [
+        "governance",
+        "integrity",
+        "compliance_inputs",
+        "integrations",
+        "alerting",
+        "residents",
+    ] {
+        assert!(!status.contains_key(local), "{local} stays on the machine");
+    }
     // A request without a valid signature is refused
     let forged = support::request(
         "GET",
@@ -248,14 +235,6 @@ fn live_pipeline_reaches_mongodb_without_setup() {
     assert!(running
         .log_line(&format!("\"request_id\":\"{id}\""))
         .is_some());
-    // The service loses a position: the machine sends its events again, and the position returns
-    database
-        .collection::<mongodb::bson::Document>("ingestion_checkpoints")
-        .delete_one(doc! {"stream": "events"})
-        .run()
-        .unwrap();
-    assert!(fixture.ok(&["agent", "sync"]).contains("re-sent"));
-    assert_eq!(checkpoint("events", "seq"), local_events(&fixture));
     database.drop().run().unwrap();
 }
 
@@ -429,8 +408,8 @@ fn migration_keeps_positions_and_drops_telemetry() {
 }
 
 /** A deployed service (needs CRANE_TEST_INGEST_URL): a fresh machine with only the address set
- * uploads everything (a second sync has nothing left to send and nothing to re-send), and a
- * teammate's machine without a repository signing key uploads with its own upload key
+ * sends its repository status, and a teammate's machine without a repository signing key sends
+ * with its own upload key
  * Input
     - None
  * Output
@@ -454,21 +433,16 @@ fn deployed_service_round_trip() {
     fixture.hook("claude", "pre-tool-use", &call("d1"));
     fixture.hook("claude", "post-tool-use", &call("d1"));
     fixture.hook("claude", "SessionEnd", &json!({"session_id": "deployed-1"}));
-    // Let the detached syncs started by the hooks finish, then upload the rest
+    // Let the detached syncs started by the hooks finish
     std::thread::sleep(std::time::Duration::from_secs(5));
     let synced = fixture.ok(&["agent", "sync"]);
-    assert!(synced.contains("Synchronized"), "{synced}");
-    let again = fixture.ok(&["agent", "sync"]);
-    assert!(
-        again.contains("Synchronized 0 events") && !again.contains("re-sent"),
-        "the service holds every local record: {again}"
-    );
+    assert!(synced.contains("Sent this repository's status"), "{synced}");
     // A teammate's machine: same clone, its own trust directory, no repository signing key
     let owner_home = fixture.home.clone();
     fixture.home = fixture.root.path().join("teammate-trust");
     let _ = fixture.command(&["session", "."]).output().unwrap();
     let synced = fixture.ok(&["agent", "sync"]);
-    assert!(synced.contains("Synchronized"), "{synced}");
+    assert!(synced.contains("Sent this repository's status"), "{synced}");
     assert!(
         !fixture.home.join("keys").exists(),
         "the teammate never needed a repository signing key"
@@ -481,9 +455,9 @@ fn deployed_service_round_trip() {
     );
 }
 
-/** The service's limits (needs CRANE_TEST_MONGODB_URI): a rate per installation answers 429, a
- * full database answers 507, and an oversized batch answers 413; the refused data stays on the
- * machine
+/** The service's limits (needs CRANE_TEST_MONGODB_URI): a rate per installation answers 429 and
+ * a full database answers 507; the machine's records stay on it (the batch-size limit, 413, only
+ * concerns released versions that still upload records)
  * Input
     - None
  * Output
@@ -496,10 +470,9 @@ fn upload_limits_protect_the_database() {
         return;
     };
     let mut fixture = Fixture::ready();
-    let cases: [(&str, &str, &str); 3] = [
+    let cases: [(&str, &str, &str); 2] = [
         ("CRANE_SERVER_REQUESTS_PER_MINUTE", "3", "HTTP 429"),
         ("CRANE_SERVER_MAX_STORAGE_MB", "1", "HTTP 507"),
-        ("CRANE_SERVER_MAX_BATCH_RECORDS", "1", "HTTP 413"),
     ];
     for (index, (variable, value, expected)) in cases.iter().enumerate() {
         let name = format!("crane_limits_{}_{index}", std::process::id());
@@ -518,16 +491,19 @@ fn upload_limits_protect_the_database() {
         }
         let limited = support::service(&uri, &name, &[(variable, value)]);
         fixture.ingest_url = limited.url.clone();
-        let first = fixture.command(&["agent", "sync"]).output().unwrap();
-        let refused = if first.status.success() {
-            text(&fixture.command(&["agent", "sync"]).output().unwrap())
-        } else {
-            text(&first)
-        };
+        // Each manual sync is one request: the rate limit answers within a few of them
+        let mut answers = Vec::new();
+        for _ in 0..5 {
+            let output = fixture.command(&["agent", "sync"]).output().unwrap();
+            answers.push(text(&output));
+            if !output.status.success() {
+                break;
+            }
+        }
+        let refused = answers.last().unwrap();
         assert!(
             refused.contains(expected),
-            "{variable}={value}: first: {} then: {refused}",
-            text(&first)
+            "{variable}={value}: {answers:?}"
         );
         drop(limited);
         mongodb::sync::Client::with_uri_str(&uri)

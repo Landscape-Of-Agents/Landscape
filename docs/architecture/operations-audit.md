@@ -60,7 +60,7 @@ decision first).
 | Provenance | implemented | event chain ([telemetry/events.rs](../../src/telemetry/events.rs)), audit chain, signed manifest, record digests, scope decision log | |
 | Budgets | implemented | autonomy credits ([telemetry/ledger.rs](../../src/telemetry/ledger.rs)), `PlanLimits`, broker budgets | Token budgets are unobserved by design. |
 | Recovery | partial | invocation `reconcile` and `abandon`; `TransactionRuntime` (absent, so operations needing it are blocked); repair instructions after violations | No durable runtime. |
-| Revocation | partial / unverified | capability `revoke`/`deprecate`, local and remote quarantine, `admin del` | During a run, `operation_check` rechecks role, adapter, schema, and (before externally consequential operations) staleness; per-operation eligibility after a revoke is not tested. |
+| Revocation | partial / unverified | capability `revoke`/`deprecate`, local quarantine, `admin del` | During a run, `operation_check` rechecks role, adapter, schema, and (before externally consequential operations) staleness; per-operation eligibility after a revoke is not tested. |
 
 ### Skills, runbooks, surfaces
 
@@ -262,7 +262,7 @@ through one path, and they can only tighten. Context is delivered through the ex
 | Snapshot assembly, delivery once per session, refresh reasons | implemented | `src/brick/context.rs`, `src/hooks/runtime/{bricks,session,tools}.rs` |
 | Assignments and runtime status, deterministic monitors | implemented (no daemon; runs on background sync or `brick monitor run`) | `src/brick/runtime.rs`, `src/telemetry/{ingest,sync}.rs` |
 | F37 events | implemented | `src/telemetry/spec_bricks.rs`, DASHBOARD.md F37 |
-| Dashboard Bricks page and draft builder | implemented (read-only view; builder downloads a draft) | `src/server/dashboard/{govern.js,api/controls.rs}`, `src/brick/report.rs` |
+| Dashboard Bricks page and draft builder | removed (2026-11-02, DataSea revamp); Flows shows each flow's and zone's Bricks by name | `src/brick/report.rs` |
 | Runbook attachments applied by the runbook runtime | to build | |
 | Per-Brick budget meters, execute/network limits per target | to build | |
 

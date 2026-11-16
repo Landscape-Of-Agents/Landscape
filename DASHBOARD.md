@@ -1,16 +1,15 @@
 # Foxx Dashboard: Event Specification
 
 This document defines every event Crane, the Foxx service, the Foxx dashboard, and the Foxx editor
-extension emit, flow by flow. It replaces the earlier metric set: dashboard telemetry charts,
-tables, and alerts are derived from these events. Dashboard Agent configurations and incident
-journals are separately persisted, repository-scoped monitor state; their measurements are computed
-from the same event evidence.
+extension emit, flow by flow. Since November 2026 events stay on the machine that recorded them;
+Crane's commands, alert rules, and Landscape read them there, and DataSea receives none of them.
+Flows retired with that change are marked in place.
 
 - Part 1 defines the event envelope, the 13 attribute groups, their compulsory sub-attributes,
   the shared value lists, and the severity rules.
 - Part 2 defines every flow (F00 to F36). Each flow has a description, its common attributes, and
   every event with all 13 groups.
-- Part 3 maps the events to the dashboard tabs.
+- Part 3 says where events appear now that DataSea no longer receives them.
 
 > **Status (2026-11-02, DataSea revamp, service schema 14).** DataSea is now a landing page and
 > the organization's sections, with Flows under Engineering
@@ -1295,132 +1294,11 @@ Credit events emitted during F08 (release, expire) are defined in F27.
 ---
 ### F09. Evidence upload
 
-After actions, at stop and session end, after Crane commands, and otherwise every minute (F34), a
-background process uploads what is new. It first asks the service how far each record stream got
-and re-sends what the service lost. Every request is signed by the machine's upload key, stamped
-with the time, and size- and rate-limited. The service checks that the repository is really the one
-claimed and that the machine's event history continues exactly where it left off; a gap, rewrite,
-or fork raises a critical alert. Routine records expire after the retention period; security
-evidence is kept.
-
-Common attributes
-- Action [action_type (SYNC) (enum), action_source (CLI, SERVICE) (enum), action_user (Git user.name of the machine) (string), action_email (string, null), action_id (request id) (string)]
-- Repository [repo (PERSONAL, ORGANIZATION, UNKNOWN), repo_id (digest), repo_remote (string, null), repo_remote_verified (boolean), registry_generation (integer)]
-- Session [session_type (NOT_IN_SESSION) (enum), session_id (null), provider_session_id (null), id_provenance (NA), task_id (null), external_task_id (null)]
-- Agent [agent_type (NOT_AN_AGENT), agent_id (null), model (null), autonomy_mode (NA)]
-- Assessment [assessment (NOT_REQUIRED), assessment_checks ([])]
-- Decision [decision (NOT_REQUIRED), decision_rule (null), decision_reasons ([]), enforcement (NOT_APPLICABLE)]
-- Bindings [third_party ([FOXX_SERVICE, MONGODB]), binding_result (OK, FAILED, TIMEOUT)]
-- Telemetry [agent_state (INACTIVE), known_as (OBSERVED), hook_event (NA)]
-- Other [machine_key (key)]
-
-#### F09.1 `SYNC_STARTED`
-- Action [(common), action_source (CLI)]
-- Repository [(common)]
-- Session [(common)]
-- Agent [(common)]
-- Resource [resource ([NETWORK, UPLOAD_KEY])]
-- Response [response_status (STARTED) (enum), failure_state (NA), response_statement (string)]
-- Assessment [(common)]
-- Decision [(common)]
-- Eval [eval (MEASURED), pending_events (integer), pending_ledger_entries (integer), pending_audit_entries (integer), pending_alerts (integer)]
-- Severity [severity_status (INFO), severity_basis (FIXED), alert_kind (NONE)]
-- Bindings [(common), binding_result (NA)]
-- Telemetry [(common)]
-- Other [trigger (POST_TOOL, STOP, SESSION_END, COMMAND, INTERVAL, MANUAL) (enum)]
-
-#### F09.2 `SYNC_COMPLETED`
-- Action [(common), action_source (CLI)]
-- Repository [(common)]
-- Session [(common)]
-- Agent [(common)]
-- Resource [resource ([NETWORK, DATABASE])]
-- Response [response_status (OK) (enum), failure_state (NA), response_statement (string)]
-- Assessment [(common)]
-- Decision [(common)]
-- Eval [eval (MEASURED), batches (integer), events_sent (integer), duplicates_skipped (integer), duration_ms (duration_ms)]
-- Severity [severity_status (LOW), severity_basis (FAILURE_STREAK), alert_kind (NONE)]
-- Bindings [(common), binding_result (OK)]
-- Telemetry [(common)]
-- Other [status_report_included (boolean)]
-
-#### F09.3 `SYNC_RESENT`
-The service held fewer records than the machine (for example after a restore); the missing records were sent again.
-- Action [(common), action_source (CLI)]
-- Repository [(common)]
-- Session [(common)]
-- Agent [(common)]
-- Resource [resource ([NETWORK, DATABASE])]
-- Response [response_status (OK) (enum), failure_state (NA), response_statement (string)]
-- Assessment [(common)]
-- Decision [(common)]
-- Eval [eval (MEASURED), records_resent (integer)]
-- Severity [severity_status (MEDIUM), severity_basis (FIXED), alert_kind (NONE)]
-- Bindings [(common)]
-- Telemetry [(common)]
-- Other [streams ([EVENTS, LEDGER, AUDIT, ALERTS]) (list of enums)]
-
-#### F09.4 `SYNC_REFUSED`
-- Action [(common), action_source (SERVICE)]
-- Repository [(common)]
-- Session [(common)]
-- Agent [(common)]
-- Resource [resource ([NETWORK])]
-- Response [response_status (UNAUTHORIZED, RATE_LIMITED, TOO_LARGE, QUOTA_REACHED, STORAGE_FULL, BAD_REQUEST, SERVER_ERROR, UNREACHABLE) (enum), failure_state (SIGNATURE_INVALID, TIMESTAMP_SKEW, MISSING_HEADERS, MACHINE_RATE, ADDRESS_RATE, BATCH_TOO_LARGE, EVENT_QUOTA, REPOSITORY_QUOTA, DATABASE_SIZE, MALFORMED_BATCH, STORE_FAILED, NETWORK) (enum), response_statement (string)]
-- Assessment [(common)]
-- Decision [decision (DENY), decision_rule (UPLOAD_LIMIT, UPLOAD_AUTH) (enum), decision_reasons (list), enforcement (PREVENTED)]
-- Eval [eval (MEASURED), retry_after_s (integer, null)]
-- Severity [severity_status (MEDIUM, HIGH), severity_basis (FAILURE_STREAK), alert_kind (NONE)]
-- Bindings [(common), binding_result (FAILED, TIMEOUT)]
-- Telemetry [(common), agent_state (ERROR)]
-- Other [request_id (string)]
-
-#### F09.5 `REMOTE_VERIFIED`
-- Action [(common), action_source (SERVICE)]
-- Repository [(common), repo_remote_verified (true, false) (boolean)]
-- Session [(common)]
-- Agent [(common)]
-- Resource [resource ([DATABASE])]
-- Response [response_status (VERIFIED, NOT_PROVEN) (enum), failure_state (NA, REMOTE_NOT_PROVEN) (enum), response_statement (string)]
-- Assessment [assessment (COMPLIANT, UNRESOLVED), assessment_checks ([ROOT_COMMITS_AND_REMOTE])]
-- Decision [(common)]
-- Eval [(common)]
-- Severity [severity_status (INFO, MEDIUM) (enum), severity_basis (OUTCOME), alert_kind (NONE)]
-- Bindings [(common)]
-- Telemetry [(common)]
-- Other []
-
-#### F09.6 `EVIDENCE_CHAIN_BROKEN`
-- Action [(common), action_source (SERVICE)]
-- Repository [(common)]
-- Session [(common)]
-- Agent [(common)]
-- Resource [resource ([DATABASE])]
-- Response [response_status (STORED_WITH_ALERT) (enum), failure_state (GAP, REWRITE, FORK) (enum), response_statement (string)]
-- Assessment [assessment (SUSPICIOUS), assessment_checks ([CHAIN_CONTINUITY])]
-- Decision [decision (NOT_REQUIRED), decision_rule (null), decision_reasons (list), enforcement (DETECTED_AFTER_EFFECT)]
-- Eval [eval (MEASURED), head_sequence (integer), received_sequence (integer), missing_events (integer)]
-- Severity [severity_status (CRITICAL), severity_basis (FIXED), alert_kind (EVIDENCE_CHAIN_BROKEN)]
-- Bindings [(common)]
-- Telemetry [(common)]
-- Other [head_digest (digest), received_previous_digest (digest)]
-
-#### F09.7 `ROUTINE_RECORDS_EXPIRED`
-- Action [action_type (EXPIRE) (enum), action_source (SERVICE), action_user (null)]
-- Repository [(common)]
-- Session [(common)]
-- Agent [(common)]
-- Resource [resource ([DATABASE])]
-- Response [response_status (OK) (enum), failure_state (NA), response_statement (string)]
-- Assessment [(common)]
-- Decision [(common)]
-- Eval [eval (MEASURED), events_expired (integer), retention_days (integer)]
-- Severity [severity_status (INFO), severity_basis (FIXED), alert_kind (NONE)]
-- Bindings [third_party ([MONGODB])]
-- Telemetry [(common), known_as (INFERRED)]
-- Other [expired_severities ([INFO, LOW, MEDIUM]) (list of enums)]
-
----
+> Retired in November 2026. Events, ledger entries, governance changes, and alerts stay on each
+> machine; a sync sends DataSea only the repository status (F34 says when). The service no longer
+> records upload events (`SYNC_STARTED`, `SYNC_COMPLETED`, `SYNC_RESENT`, `SYNC_REFUSED`,
+> `REMOTE_VERIFIED`, `EVIDENCE_CHAIN_BROKEN`, `ROUTINE_RECORDS_EXPIRED`). A refused send is
+> retried at the next sync; `crane agent sync` reports the error.
 
 ### F10. A session stops reporting
 
@@ -2693,7 +2571,6 @@ Common attributes
 - Telemetry [(common), agent_state (ERROR)]
 - Other [path (string), method (GET, POST, PUT, DELETE, PATCH, OTHER) (enum)]
 
-(Upload refusals as seen by the machine are F09.4; record expiry is F09.7.)
 
 ---
 
@@ -2979,29 +2856,14 @@ Common attributes
 
 ---
 
-### F34. Background upload timing
+### F34. Background sync timing
 
-Uploads never hold up the agent. After an action, stop, session end, or a Crane command, a separate
-background process (hidden window) starts an upload; otherwise any Crane activity starts one once the
-last attempt is older than the interval (60 seconds by default). An unreachable service is simply
-retried at the next trigger.
-
-#### F34.1 `SYNC_TRIGGER_EVALUATED`
-- Action [action_type (SYNC_TRIGGER) (enum), action_source (HOOK, CLI) (enum), action_user (string), action_email (null), action_id (null)]
-- Repository [repo (enum), repo_id (digest), repo_remote (string, null), repo_remote_verified (boolean), registry_generation (integer)]
-- Session [session_type (NOT_IN_SESSION, AGENT_SESSION) (enum), session_id (string, null), provider_session_id (string, null), id_provenance (enum), task_id (string, null), external_task_id (string, null)]
-- Agent [agent_type (NOT_AN_AGENT, CLAUDE_CODE, CODEX, GENERIC) (enum), agent_id (string, null), model (string, null), autonomy_mode (enum)]
-- Resource [resource ([NOT_CONSUMED]), resource_ids ([]), resource_classification ([NONE])]
-- Response [response_status (STARTED, NOT_DUE, UPLOADS_OFF, SPAWN_FAILED) (enum), failure_state (NA) (enum), response_statement (string)]
-- Assessment [assessment (NOT_REQUIRED), assessment_checks ([])]
-- Decision [decision (NOT_REQUIRED), decision_rule (null), decision_reasons ([]), enforcement (NOT_APPLICABLE)]
-- Eval [eval (MEASURED), seconds_since_last_attempt (integer), interval_seconds (integer, 60)]
-- Severity [severity_status (INFO, LOW) (enum), severity_basis (FIXED), alert_kind (NONE)]
-- Bindings [third_party ([NONE]), binding_result (NA)]
-- Telemetry [agent_state (INACTIVE, ACTIVE), known_as (OBSERVED), hook_event (enum)]
-- Other [trigger (POST_TOOL, STOP, SESSION_END, COMMAND, INTERVAL) (enum)]
-
----
+> The event `SYNC_TRIGGER_EVALUATED` is retired (November 2026): it was recorded by the service
+> from the upload, and uploads no longer carry it. The timing still holds: after an action, stop,
+> session end, or a Crane command, a separate background process (hidden window) runs a sync;
+> otherwise any Crane activity starts one once the last attempt is older than the interval (60
+> seconds by default). The sync runs the local checks and sends the repository status when it is
+> due. An unreachable service is retried at the next trigger.
 
 ### F35. Read-only inspection commands
 
@@ -3273,25 +3135,10 @@ effect is uncertain and waits for a person to establish what happened (it is nev
 - Response [response_status (PASSED, CONTRADICTED, UNKNOWN)]
 - Other [step]
 
-#### F38.12 `RESIDENT_DECISION_APPLIED`
-A decision a repository admin made on the dashboard (GitHub verified it when it was made) reached the
-machine that holds the activation and was applied there through the same checks as the CLI, or was
-refused (the definition does not take dashboard decisions, the plan changed since, separation of
-duties, an action the dashboard may not take). Pausing, revoking, and cancelling are always
-accepted from the dashboard; approvals and answers only when the definition allows it.
-- Response [response_status (APPLIED, REJECTED)]
-- Other [decision, action (approve, deny, answer, cancel, pause, revoke), activation, assignment, step, approver, source (DASHBOARD)]
-
-#### F38.13 `RESIDENT_DECISION_RECORDED`, `RESIDENT_DECISION_REFUSED` (service)
-The dashboard recorded a resident decision for the machine that holds the activation or assignment
-(GitHub confirmed the person administers the repository), or refused it because they do not. Recorded
-by the service itself; the machine later notes `RESIDENT_DECISION_APPLIED` when it applies or refuses
-it. Decisions wait at most one day.
-- Action [action_type (RESIDENT_APPROVAL), action_source (DASHBOARD), action_user (GitHub login)]
-- Assessment [assessment_checks ([GITHUB_ADMIN_ROLE])]
-- Decision [decision (ALLOW, DENY), decision_rule (GITHUB_ADMIN_REQUIRED)]
-- Response [response_status (OK, REFUSED), failure_state (NA, NOT_ADMIN)]
-- Other [action, activation, assignment, step, plan]
+#### F38.12 `RESIDENT_DECISION_APPLIED` (retired)
+Retired in November 2026 with DataSea's resident decisions: decisions are made on the machine
+(F38 approval events). F38.13 (`RESIDENT_DECISION_RECORDED`, `RESIDENT_DECISION_REFUSED`, recorded
+by the service) is retired with it.
 
 #### F38.11 `RESIDENT_TESTED`
 An assignment was tested against a fixture or replayed trigger in plan-only mode: matching,
@@ -3378,65 +3225,12 @@ command, so nothing ran. This is not a denial and not a bypass attempt.
 
 ## Part 3: Where events appear on the dashboard
 
-Pages are grouped in the left rail (Monitor, AI agents, Investigate, Operate, Govern, Organization).
-Groups fold, the rail has its own search, and pages that need attention carry a badge (firing alert
-rules, controls not satisfied). Each page is split into zones, one metric or table per panel, and
-the zones are listed under the page in the rail. Every panel has:
-
-- an info icon (hover for the explanation, click for the details sidebar);
-- a funnel that says in words which events it counts: the time range, every global condition, its
-  own conditions, its grouping, or that it shows state that no filter narrows;
-- the lens (a right sidebar with the chart large, its metrics, its properties and filter in words,
-  what it is, and an interpretation generated from what it drew) and expand (shown on hover);
-- a `⋯` menu with its own conditions (added to the global filter for that panel only), refresh,
-  monitor view (full screen, refreshed every 30 seconds), agent context, and collapse (double-clicking
-  the title also collapses it).
-
-Every time is shown as `YYYY:MM:DD:HH:MM:SS:MMM` (local time); chart axes shorten it to `HH:MM` with
-the date `YYYY:MM:DD` under the first tick of each day, and their tooltips keep the full time. Colors follow the Foxx logo (fox orange, ember, cream on
-warm charcoal); series use a categorical order led by the Foxx orange that was checked for
-color-blind separation in both themes, and states use reserved status colors. The theme is the
-system's, or light or dark when chosen.
-
-| Page | Built from |
-|---|---|
-| **Header and scope** | F00 (sign-in, account, repository, member), F02.7 (linked members) |
-| **Repositories** | per repository: count of F02.9 machines, F03 sessions, all events, F05.3 to F05.7 denials, F06.5 bypasses, F14.1 alerts, newest `occurred_at` |
-| **Overview** | Health: F05 evals; Agent fleet: tool calls (F05 and F06 traces), tokens (F06 `eval.model_tokens`), tool time; Activity: F03, F04, F05, F10; Security outcomes: F05.4, F06.3 to F06.5, F07.1, F27; Recent violations: F06.4, F06.5; Recent alerts: F14; All evals |
-| **Event explorer** | every event, as volume over time (split by any attribute) and as a stream; facets include and exclude values |
-| **Timeline** | Gantt chart of traces; event timeline (every event as a dot in lanes); activity rhythm (day of week by hour, and per day); concurrency (distinct sessions and agents per time bucket); tool time, hook latency, and tokens over time |
-| **Agents** | fleet numbers; a leaderboard per agent identity (calls, tools, denial and failure shares, tool time, tokens, sessions, quarantines, bypass attempts); events and Gantt by agent; agent by tool and agent by decision matrices; a risk map (calls against denial share); bypass attempts and denials by agent; tokens by agent; models, autonomy modes, and session safety; a profile per agent |
-| **Dashboard Agents** | separately stored monitoring rules, action states, incidents, quarantine requests/releases, and flow-context proposals; evaluated after telemetry uploads, at startup recovery, and every 60 seconds; incidents filtered by status, severity, and text; threshold evidence, evaluation metrics, action logs, and chronological 3A notes/resolution. Repository-admin-approved quarantines are checked by local hooks before every tool call. |
-| **Tool calls** | every traced tool call (F05 decision to F06 verification): summary, types (by tool, resource kind, decision), metrics per tool, decisions per tool, tools by resource, the waterfall (time per call, packed or in real time, with the tokens of its turn), tokens per call, time against tokens, tool time, and a browser of every call; a profile per tool |
-| **Sessions** | summary, activity, active sessions, a leaderboard (calls, time, tokens), the waterfall of one session's calls, and the session list |
-| **Session page** | tiles: F03, F05.10, F06.4, F06.5, F27; the waterfall of its tool calls; tool mix; tokens over the session; Gantt; action graph: every event with that `session_id` in `sequence` order; tasks: F04, F07; downloads: F30.3 |
-| **Logs** | every event as a log line, with its severity, flow, statement, tokens, stale data, and any attribute as a column |
-| **Traces** | events grouped by `action.action_id`; duration histogram and a table filtered by kind, outcome, duration, and span count; a trace view with its tokens and waterfall |
-| **Topology** | Who used what (any chain of 2 to 5 attributes); member by agent, tool by decision, and flow by severity matrices; most touched and denied resources; flow dependencies; the code topology (zones and flows of governance.yaml with their call graphs, F28) |
-| **Distributions** | histograms of trace duration, gap between session events, events per session, tokens per call, tool time, hook latency, and any numeric `eval.*` attribute; breakdowns by any attribute |
-| **Texts and reasons** | the words of `statement`, `reason`, and `response_statement`, the distinct texts, and log lines |
-| **Alerting** | rules built with `crane alert` (from the newest status report), rule values over time, firings, deliveries, alert events (F14), hook alerts |
-| **Credits** | balances per session (F27), grants made on the dashboard and their outcome |
-| **Audit trail** | summary; changes per day by actor; actor by action; the change timeline; the governance changes (F13.3, F18 to F20, F28); command outcomes and events (F13); dashboard actions (service events) |
-| **Governance** | state; zones and flows (criticality, autonomy ceiling, files, call graph); flow call graphs; policies with command outcomes; the selection map (by file, operation, language) and relocations; checkpoints and context; integrity by member and evidence chains; governance events (F01, F12, F13, F18 to F20, F28); findings |
-| **Compliance** | posture gauge (applicable controls satisfied, partial counting half); outcomes; outcomes per framework (OWASP LLM, OWASP Agentic, NIST AI RMF, SOC 2, ISO/IEC 27001, GDPR) and each requirement; controls as cards or a table; evidence per control and flow; gaps and limitations; inferred observability; what Crane cannot observe |
-| **Settings** | Approvals: F02.4 to F02.7, F30.4, F30.5; Members: F02.7, F02.9, F09, F28; Health: F09, F12, F27.10, F29; Data retention; Connection: F21, F02.5; Integrations: F22 |
-
-### Action graph encoding (session page)
-
-| Node | Event |
-|---|---|
-| large orange dot | F05.1, F05.2, F05.11, F05.12 |
-| large amber dot | F05.3, F05.5, F05.6, F05.7, F05.8, F05.9, F16.1 |
-| large amber dot with `{bypass_attempt}` | F05.4 |
-| large green dot | F06.1 |
-| large red dot | F06.4 |
-| large pink dot | F06.5, F05.10 |
-| small amber dot (gap) | F06.3, F08.1, F11.1, F07.1 |
-| small dot (task) | F04.1, F07.2, F07.3, F07.4 |
-| small dot (session) | F03.1, F03.2, F08.2, F08.3, F17.1 |
-| small dot (signal) | F04.2, F27.4 |
-| dashed curve | from an F05 event to the F06 event with the same `action_id` |
+Since November 2026 no event reaches DataSea: events stay on the machine that recorded them, where
+`crane session`, `crane scope explain`, alert rules, and Landscape read them. DataSea's Engineering ›
+Flows section is built from each machine's repository status (flows, zones, drafts, watchers,
+incidents, and the Bricks and assignments on them), not from events. The pages this part used to
+map (Monitor, AI agents, Investigate, Operate, Govern, Organization, Dashboard Agents) were removed
+with schema 14.
 
 ---
 
@@ -3522,7 +3316,6 @@ returns the specification version and the 13 groups.
 
 - **F26:** a cache `HIT` is not recorded, because it happens on every hook call. Only `MISS` and
   `REFRESHED` are.
-- **F09.7:** expiry is not recorded, because MongoDB's TTL index deletes documents without notice.
 - **`failure_state`:** a command failure that fits none of the listed values is `OTHER`.
 - **`response_statement`:** Crane writes it from the outcome (at most ten words). Hooks do not
   carry the agent's own words.
@@ -3530,9 +3323,6 @@ returns the specification version and the 13 groups.
   events are given `PERSONAL` or `ORGANIZATION` when the dashboard serves them, from the
   viewer's account.
 - **`session_type` `MULTI_AGENT`:** not detected yet.
-- **F34:** only triggers that started an upload are recorded. The service records them from the
-  upload itself. `NOT_DUE` would be recorded on every hook call, and `UPLOADS_OFF` and
-  `SPAWN_FAILED` never reach the service.
 - **F31:** events are recorded only in a folder where Crane is set up. A setup that fails before
   that (for example `NO_REMOTE`) leaves no event.
 - **F32:** `FORK` is never recorded, because pull requests from forks do not run the notification

@@ -250,9 +250,8 @@ pub(crate) fn limit_ceilings(limits: &Limits) -> [(&'static str, u32, u32); 8] {
       (an activation without verification evidence is never completed either way)
     - on_missing_context: MissingContext - what a context gap does
     - limits: Limits - operating limits
-    - remote_decisions: bool - approvals and answers may also come from a GitHub-verified
-      repository admin on the dashboard (off by default; pausing, revoking, and cancelling from
-      the dashboard are always allowed because they only make things stricter)
+    - remote_decisions: bool - retired: DataSea no longer decides for resident agents, so it has
+      no effect; kept so signed definitions that set it still parse and keep their digests
     - distinct_approver: bool - the person who activated the assignment may not approve its steps
     - created_by: Author - author
     - created_at: u64 - Unix milliseconds

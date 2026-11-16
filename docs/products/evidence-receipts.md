@@ -10,8 +10,8 @@ for every pull request and deployment.
 - **Contradicted**, and by what.
 - **Unknown, and why**: empty (looked, nothing there), unavailable, denied, not queried, or could
   not be parsed.
-- Which zones and policies the change touched, which rules applied, and which near misses happened
-  while it was made (from Black Box).
+- Which zones and policies the change touched, which rules applied, and what agents attempted
+  against them while it was made (from the decision record on the machine that made it).
 - Integrity: the evidence pack's digest and whether replaying the investigation gives the same
   answer.
 

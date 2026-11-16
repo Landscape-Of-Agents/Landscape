@@ -14,7 +14,6 @@ without evidence.
 | Term | Meaning |
 |---|---|
 | **Crane** | The free rule layer. Signed rules for AI agents, checked before every action and verified after. |
-| **Black Box** | The paid flight recorder. Every agent attempt, near miss, and what stopped it, kept tamper-evident. |
 | **Evidence Receipts** | The paid proof per change. What is proven, contradicted, or unknown (and why), for every pull request. |
 | **Landscape** | The whole system's name, and the VS Code extension that authors rules (`foxx`). |
 | **Dashboard** | DataSea, the hosted web app: a landing page and the organization's sections; Engineering holds Flows. |
@@ -243,7 +242,7 @@ sandbox (not available yet).
 | **Compliance control** | A requirement (for example from SOC 2) and the evidence that it holds. |
 | **Dashboard Agent** | Retired: a team-wide monitor the dashboard once ran. Removed with the DataSea revamp; its quarantines no longer exist. |
 | **Incident** | An event worth a person's attention, with its timeline. |
-| **Remote quarantine** | An admin stops an agent from the dashboard. Its hooks deny further actions. |
+| **Remote quarantine** | Retired: an admin once stopped an agent from the dashboard. Crane no longer asks the service before tool calls. |
 | **Read-only handle** | Dashboard pages read through a connection that cannot write. |
 
 ## 11. Command results

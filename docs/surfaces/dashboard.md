@@ -45,20 +45,20 @@ The service keeps only what Flows and the machines need:
 
 - repositories with their verified remotes;
 - each member's latest repository status;
-- how far each machine's uploads arrived;
+- how far each stream of a released Crane version arrived;
 - approval requests;
 - Brick and flow change requests;
 - the organization catalog of Bricks.
 
-Machines still upload events, ledger entries, governance changes, and alerts. The service records
-only how far each of these arrived, so nothing is uploaded twice. Released Crane versions still ask
-for remote quarantines, credit grants, and resident-agent decisions. The service answers with
-empty lists.
+Events, ledger entries, governance changes, and alerts stay on each machine: current Crane sends
+only the repository status (the flows and Bricks Flows shows). Released Crane versions still upload
+those records; the service keeps only how far each arrived, so they are not sent again, and answers
+those versions' requests for quarantines, credit grants, and resident-agent decisions with empty
+lists.
 
 ## Turning uploads off
 
 `CRANE_INGEST_URL=off` keeps everything local. Flows then shows nothing reported by that machine.
-With uploads on, the hook still checks the service before tool calls, and an unreachable service
-still means "deny" on those machines (a known availability trade-off).
+Hooks never ask the service anything, so an unreachable service never denies a tool call.
 
 The events machines record follow the specification in [DASHBOARD.md](../../DASHBOARD.md).

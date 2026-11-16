@@ -154,8 +154,8 @@ fn hook(args: &[String]) -> Result<(), String> {
     runtime::run(kind, event)
 }
 
-/** Upload the local evidence to the DataSea ingestion service now (internal: started detached by
- * hooks, commands, and the periodic sync)
+/** Run the local checks and send this repository's status to DataSea now (internal: started
+ * detached by hooks, commands, and the periodic sync; a person running it always sends the status)
  * Input
     - None
  * Output
@@ -185,14 +185,10 @@ fn sync() -> Result<(), String> {
         println!("Another upload is running; this one was skipped");
         return Ok(());
     }
-    println!(
-        "Synchronized {} events, {} ledger entries, {} governance changes, {} alerts ({} already present{})",
-        flushed.events,
-        flushed.ledger,
-        flushed.audit,
-        flushed.alerts,
-        flushed.duplicates,
-        if flushed.reset { "; re-sent records missing from the service" } else { "" }
-    );
+    if flushed.status {
+        println!("Sent this repository's status to DataSea (events, ledger, and alerts stay on this machine)");
+    } else {
+        println!("The repository status is up to date on DataSea; nothing was sent");
+    }
     Ok(())
 }

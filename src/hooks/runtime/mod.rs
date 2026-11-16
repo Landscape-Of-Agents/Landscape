@@ -287,11 +287,10 @@ impl Hook {
         };
         // A tool call is complete after post-tool use, a session after stop or session end
         match self.event {
-            HookEvent::PostToolUse | HookEvent::PostToolUseFailure => {
-                sync::trigger(&self.workspace, "POST_TOOL")
-            }
-            HookEvent::Stop => sync::trigger(&self.workspace, "STOP"),
-            HookEvent::SessionEnd => sync::trigger(&self.workspace, "SESSION_END"),
+            HookEvent::PostToolUse
+            | HookEvent::PostToolUseFailure
+            | HookEvent::Stop
+            | HookEvent::SessionEnd => sync::trigger(&self.workspace),
             _ => sync::trigger_if_due(&self.workspace, &self.stores),
         }
         result

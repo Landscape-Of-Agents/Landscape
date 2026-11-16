@@ -1,9 +1,7 @@
-// The resident part of the repository status a machine reports to the DataSea dashboard
-// (foxx::status, key "residents"): definitions, assignments with their lifecycle, derived runtime
-// status, and health, recent activations with their timelines, the review inbox (approvals,
-// questions, reconciliation, RCA proposals), idle cost and health counters, recent test reports,
-// and the step and trigger catalogs. Only identifiers, states, digests, counts, reason codes, and
-// bounded plan parameters leave the machine; context text and answers stay in the trust directory.
+// The resident read models 'crane resident' prints and Landscape shows: definitions, assignments
+// with their lifecycle, derived runtime status, and health, recent activations with their
+// timelines, the review inbox (approvals, questions, reconciliation, RCA proposals), idle cost and
+// health counters, recent test reports, and the step and trigger catalogs. None of it is uploaded.
 
 use serde_json::{json, Value};
 
@@ -11,7 +9,6 @@ use super::authority::{self, Authority, Decision};
 use super::model::{Assignment, Lifecycle, TriggerSource};
 use super::plan;
 use super::store::{Activation, ActivationState, ResidentStore, StepState};
-use crate::governance::workspace::Workspace;
 
 /** Most activations reported */
 const MAX_ACTIVATIONS: usize = 60;
@@ -396,29 +393,4 @@ fn crane_view(authority: &Authority) -> Value {
         "signed_assignments": authority.assignments,
         "connectors": authority.connectors,
     })
-}
-
-/** Collect the resident report of a repository (an {error} object when the store cannot be read;
- * null when there is no resident store yet)
- * Input
-    - workspace: &Workspace - repository
- * Output
-    - Value
-*/
-pub(crate) fn collect(workspace: &Workspace) -> Value {
-    let runtime = match workspace.trust() {
-        Ok(trust) => trust.runtime(),
-        Err(error) => return json!({"error": error}),
-    };
-    if !runtime.join("resident").join("store.json").exists() {
-        return json!({"empty": true, "catalog": {"steps": plan::catalog(None), "triggers": TriggerSource::ALL.iter().map(|source| json!({"source": source, "supported": source.delivery().is_some(), "delivery": source.delivery()})).collect::<Vec<_>>()}});
-    }
-    match ResidentStore::open(&runtime) {
-        Ok(store) => build(
-            &store,
-            authority::load(workspace).ok().as_ref(),
-            crate::platform::now_millis(),
-        ),
-        Err(error) => json!({"error": error}),
-    }
 }

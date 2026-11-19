@@ -570,7 +570,7 @@ For every proposed action, the adapter produces a provider-neutral action
 
 1. **Integrity.** The rules must verify. If not: deny (`INTEGRITY_FAILED`).
 2. **Safety state.** A quarantined session's mutating actions are denied, and a degraded session's
-   need approval. The service's active quarantines are checked too.
+   need approval. Nothing is asked of the hosted service.
 3. **Protection of Crane's own files.** Writing `.crane/`, the trust directory, or the agent tool's
    hook settings is denied. These denials are **final even if the agent asks for approval**.
 4. **Shell command analysis** ([src/hooks/shell.rs](../../src/hooks/shell.rs)). A command that names
@@ -615,8 +615,8 @@ After the tool ran (DASHBOARD.md F06; [src/hooks/runtime/tools.rs](../../src/hoo
 
 At `STOP`, Crane reconciles every change of the session against the rules. At `SESSION_END`, it
 attests the final state and expires unused credits. A session with no hook activity for 120 minutes
-and no signed end is flagged as **stale** on the service: the agent was stopped, its hooks removed,
-or its evidence is not arriving.
+and no signed end is shown as **stale** by `crane session`: the agent was stopped or its hooks were
+removed.
 
 ### 8.5 The limit, stated plainly
 

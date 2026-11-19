@@ -64,9 +64,13 @@ fn monitored(workspace: &Workspace) -> bool {
     - None (failures to start are ignored; the next trigger retries)
 */
 pub(crate) fn trigger(workspace: &Workspace) {
-    // Alert rules and Brick monitors are evaluated by the sync too, so it runs for them even when
-    // uploads are off
-    if !configured() && !super::rules::exist(workspace) && !monitored(workspace) {
+    // Alert rules, Brick monitors, and the operator's agent-command switch are handled by the sync
+    // too, so it runs for them even when uploads are off
+    if !configured()
+        && !super::rules::exist(workspace)
+        && !monitored(workspace)
+        && !crate::trust::agent_commands::fetches()
+    {
         return;
     }
     let Ok(executable) = std::env::current_exe() else {
@@ -135,7 +139,11 @@ fn disinherit_standard_handles() {
     - None
 */
 pub(crate) fn trigger_if_due(workspace: &Workspace, stores: &Stores) {
-    if !configured() && !super::rules::exist(workspace) && !monitored(workspace) {
+    if !configured()
+        && !super::rules::exist(workspace)
+        && !monitored(workspace)
+        && !crate::trust::agent_commands::fetches()
+    {
         return;
     }
     let last = ingest::state(stores).last_attempt_at;

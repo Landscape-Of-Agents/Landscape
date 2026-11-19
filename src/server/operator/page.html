@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crane Operator</title>
+<style>
+  :root {
+    --bg: #0e1013; --panel: #161a1f; --line: #262c34; --text: #e6e9ee; --muted: #8d96a3;
+    --on: #3fb978; --off: #d35b5b; --accent: #e8893a; --focus: #7aa7ff;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f5f6f8; --panel: #ffffff; --line: #dde1e6; --text: #15191e; --muted: #5b6570; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 24px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: .2px; }
+  header .who { color: var(--muted); font-size: 14px; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; display: grid; gap: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+  .panel h2 { margin: 0 0 4px; font-size: 15px; }
+  .muted { color: var(--muted); }
+  .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .state { font-size: 28px; font-weight: 700; }
+  .state.on { color: var(--on); } .state.off { color: var(--off); }
+  button { font: inherit; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text); padding: 9px 16px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #111; font-weight: 600; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  button:disabled { opacity: .5; cursor: default; }
+  input[type=text] { font: inherit; width: 100%; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  code, .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 13px; }
+  .key { word-break: break-all; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 12.5px; }
+  .notice { border-left: 3px solid var(--accent); padding: 10px 14px; background: var(--bg); border-radius: 6px; }
+  .error { color: var(--off); }
+  .center { text-align: center; padding: 48px 20px; }
+  .hidden { display: none !important; }
+  .stack { display: grid; gap: 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Crane Operator</h1>
+  <div class="who" id="who"></div>
+</header>
+<main>
+  <section class="panel center hidden" id="signed-out">
+    <h2>Operator settings</h2>
+    <p class="muted">This dashboard is for the Crane operator only. Sign in with GitHub to continue.</p>
+    <p id="refused" class="error hidden">That GitHub account is not an operator. Nothing was changed.</p>
+    <button class="primary" id="sign-in">Sign in with GitHub</button>
+  </section>
+
+  <section class="panel center hidden" id="unavailable">
+    <h2>Unavailable</h2>
+    <p class="muted" id="unavailable-text"></p>
+  </section>
+
+  <div id="operator" class="stack hidden">
+    <section class="panel">
+      <div class="switch-row">
+        <div>
+          <h2>Agents may run read-only Crane commands</h2>
+          <div class="muted">Applies to every machine running an official Crane build. Machines pick it up at their next sync (about a minute while agents work); a cached answer expires after <span id="lifetime">15</span> minutes, and then it counts as off.</div>
+        </div>
+        <div class="state" id="state">…</div>
+      </div>
+      <div style="margin-top:16px;display:grid;gap:10px">
+        <label for="reason" class="muted">Reason (kept in the audit)</label>
+        <input type="text" id="reason" maxlength="300" placeholder="Why you are changing it">
+        <div><button class="primary" id="toggle" disabled>…</button> <span id="message" class="muted"></span></div>
+      </div>
+      <p class="muted" id="changed" style="margin:12px 0 0"></p>
+    </section>
+
+    <div class="grid">
+      <section class="panel">
+        <h2>What agents may run while it is on</h2>
+        <p class="muted">One plain command at a time (no pipes, chains, or redirections). Anything that signs or changes rules, keys, hooks, secrets, or integrations stays for people only.</p>
+        <div class="chips" id="commands"></div>
+      </section>
+      <section class="panel">
+        <h2>Who can change this</h2>
+        <p class="muted">Only GitHub logins listed in <code>CRANE_OPERATOR_LOGINS</code> on this service. Customers cannot turn it on: machines accept only answers signed by the operator key below, which is compiled into official builds. A customer can always turn it off on their own machine with <code>CRANE_AGENT_COMMANDS=off</code>.</p>
+        <p class="muted" style="margin-bottom:4px">Operator public key</p>
+        <div class="mono key" id="key"></div>
+      </section>
+    </div>
+
+    <section class="panel">
+      <h2>Audit</h2>
+      <table>
+        <thead><tr><th>When</th><th>Who</th><th>Change</th><th>Reason</th></tr></thead>
+        <tbody id="audit"><tr><td colspan="4" class="muted">No changes yet.</td></tr></tbody>
+      </table>
+    </section>
+  </div>
+</main>
+<script src="/operator.js"></script>
+</body>
+</html>

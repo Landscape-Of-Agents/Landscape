@@ -899,7 +899,11 @@ impl Guard<'_> {
         if self.names_protected(command) {
             deny(decided, "SHELL_NAMES_METADATA", "the command names protected Crane metadata (.crane, the trust directory, or hook settings); agents cannot read or change it through the shell".into(), true);
         }
-        if let Some(invocation) = crane_invocation(command) {
+        // One plain read-only Crane command passes while the operator's switch allows it; the Crane
+        // process the agent starts checks the same thing again (cli/mod.rs)
+        if let Some(invocation) = crane_invocation(command)
+            .filter(|_| !crate::trust::agent_commands::shell_allowed(command))
+        {
             deny(
                 decided,
                 "CRANE_COMMAND",

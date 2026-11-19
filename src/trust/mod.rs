@@ -8,6 +8,7 @@
 // paths, but only an execution boundary that mediates all file access (a sandbox, a container, or
 // a separate user) can make that guarantee.
 
+pub(crate) mod agent_commands;
 pub(crate) mod crypto;
 pub(crate) mod keys;
 pub(crate) mod vault;

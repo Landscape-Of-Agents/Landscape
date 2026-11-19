@@ -18,7 +18,9 @@ without evidence.
 | **Landscape** | The whole system's name, and the VS Code extension that authors rules (`foxx`). |
 | **Dashboard** | DataSea, the hosted web app: a landing page and the organization's sections; Engineering holds Flows. |
 | **DataSea** | The hosted service that receives signed uploads from machines and serves the dashboard. |
-| **CLI** | The `crane` command. Only people run it; agents never do. |
+| **CLI** | The `crane` command. Only people run it; agents only run read-only commands while the operator switch is on. |
+| **Operator dashboard** | A separate dashboard only the operator signs in to. It holds the operator switch. |
+| **Operator switch** | Whether agents may run read-only Crane commands in their sessions. Off by default; machines trust only answers signed by the operator key. |
 
 ## 2. Rules people sign
 

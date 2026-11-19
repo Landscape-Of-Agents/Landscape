@@ -48,11 +48,13 @@ Start with the part that matches what you need. Every term is explained in one p
 | The `crane` command line (full reference) | [surfaces/cli.md](surfaces/cli.md) |
 | The dashboard | [surfaces/dashboard.md](surfaces/dashboard.md) |
 | Landscape for VS Code | [surfaces/vscode.md](surfaces/vscode.md) |
+| The operator dashboard (the switch for agents running read-only Crane commands) | [surfaces/operator.md](surfaces/operator.md) |
 
 ## Architecture (for people building Crane)
 
 | Document | What it covers |
 |---|---|
+| [SYSTEM-README.md](SYSTEM-README.md) | Everything in one place: status board, technologies, terms, changes, and every workflow step by step with the system's response and failure behavior |
 | [architecture/overview.md](architecture/overview.md) | The whole system, how each part works inside, and its limits |
 | [architecture/intelligence.md](architecture/intelligence.md) | Where the product is going: intelligence for every role, human-in-the-loop design |
 | [architecture/flows.md](architecture/flows.md) | Every control flow and pipeline |

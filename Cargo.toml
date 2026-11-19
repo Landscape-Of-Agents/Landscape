@@ -47,3 +47,8 @@ required-features = ["server"]
 name = "dashboard"
 path = "tests/dashboard.rs"
 required-features = ["server"]
+
+[[test]]
+name = "operator_service"
+path = "tests/operator_service.rs"
+required-features = ["server"]

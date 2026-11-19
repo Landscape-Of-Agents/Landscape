@@ -1,5 +1,5 @@
-// Shared helpers of the service tests (built with --features server): start 'crane server' on a
-// free port, a stand-in for GitHub's sign-in, HTTP requests that do not follow redirects, and
+// Shared helpers of the service tests (built with --features server): start 'crane server' (or
+// the operator dashboard) on a free port, a stand-in for GitHub's sign-in, HTTP requests that do not follow redirects, and
 // signing in to the dashboard.
 
 #![allow(dead_code)]
@@ -82,6 +82,38 @@ impl Drop for Service {
     - Service
 */
 pub fn service(uri: &str, database: &str, variables: &[(&str, &str)]) -> Service {
+    start(
+        &["server", "--listen", "127.0.0.1:0"],
+        &[("CRANE_MONGODB_URI", uri), ("CRANE_MONGODB_DB", database)],
+        variables,
+    )
+}
+
+/** Start 'crane operator serve' (the operator dashboard) on a free port
+ * Input
+    - uri: &str - MongoDB connection string
+    - database: &str - database name (CRANE_OPERATOR_DB)
+    - variables: &[(&str, &str)] - extra environment (the signing key, operator logins, sign-in)
+ * Output
+    - Service
+*/
+pub fn operator_service(uri: &str, database: &str, variables: &[(&str, &str)]) -> Service {
+    start(
+        &["operator", "serve", "--listen", "127.0.0.1:0"],
+        &[("CRANE_MONGODB_URI", uri), ("CRANE_OPERATOR_DB", database)],
+        variables,
+    )
+}
+
+/** Start a crane service and wait for its "listening on" line
+ * Input
+    - args: &[&str] - the command
+    - database: &[(&str, &str)] - the database settings
+    - variables: &[(&str, &str)] - extra environment
+ * Output
+    - Service
+*/
+fn start(args: &[&str], database: &[(&str, &str)], variables: &[(&str, &str)]) -> Service {
     let mut command = Command::new(env!("CARGO_BIN_EXE_crane"));
     for name in [
         "CRANE_GITHUB_CLIENT_ID",
@@ -101,10 +133,11 @@ pub fn service(uri: &str, database: &str, variables: &[(&str, &str)]) -> Service
     for (name, value) in variables {
         command.env(name, value);
     }
+    for (name, value) in database {
+        command.env(name, value);
+    }
     let mut child = command
-        .args(["server", "--listen", "127.0.0.1:0"])
-        .env("CRANE_MONGODB_URI", uri)
-        .env("CRANE_MONGODB_DB", database)
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

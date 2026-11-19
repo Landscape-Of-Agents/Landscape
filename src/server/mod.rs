@@ -21,6 +21,7 @@ mod http;
 mod ingest;
 mod limits;
 mod log;
+pub(crate) mod operator;
 mod store;
 
 use std::io::Write;

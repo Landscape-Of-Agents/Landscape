@@ -123,8 +123,13 @@ impl Hook {
         session: &SessionRecord,
     ) -> Result<(String, Vec<SuppliedContext>), String> {
         let policies = PolicySet::load(&self.workspace)?;
-        let mut text = String::from(
-            "Crane governs this repository. Agent changes to .crane (including .crane/map), Crane's hook settings, and Crane's trust directory are denied, even with approval; Crane commands are for humans only: do not run crane (any command, including validate and test); Crane checks your work itself. To ask Crane about this repository's flows (their context, people, tests, and the model their priority routes to), start a trace, propose a test or context, or start a read-only watcher, run 'crane-request help': Crane answers it and nothing runs. Do not add, move, or alter '@crane:selection' marker comments.\n",
+        let commands = if crate::trust::agent_commands::enabled_now() {
+            "Crane commands that only read are allowed for you while the operator permits it: run one plain command at a time, such as 'crane validate', 'crane test .', 'crane scope inspect', 'crane scope resolve write PATH', 'crane session current', 'crane flow show ID', or 'crane brick list' (no pipes, chains, or redirections); every command that changes anything stays for humans only and is denied."
+        } else {
+            "Crane commands are for humans only: do not run crane (any command, including validate and test); Crane checks your work itself."
+        };
+        let mut text = format!(
+            "Crane governs this repository. Agent changes to .crane (including .crane/map), Crane's hook settings, and Crane's trust directory are denied, even with approval; {commands} To ask Crane about this repository's flows (their context, people, tests, and the model their priority routes to), start a trace, propose a test or context, or start a read-only watcher, run 'crane-request help': Crane answers it and nothing runs. Do not add, move, or alter '@crane:selection' marker comments.\n",
         );
         let mut supplied = Vec::new();
         for (_, block) in policies.blocks() {

@@ -207,7 +207,12 @@ impl Fixture {
             .env_remove("CRANE_SESSION_ID")
             .env_remove("CRANE_TASK_ID")
             .env_remove("CRANE_TASK_NAME")
-            .env_remove("CRANE_TEST_SELECTION_IDS");
+            .env_remove("CRANE_TEST_SELECTION_IDS")
+            // The operator's agent-command switch stays off and is never fetched in tests,
+            // unless a test turns it on itself (tests/operator.rs)
+            .env_remove("CRANE_OPERATOR_PUBLIC_KEY")
+            .env_remove("CRANE_AGENT_COMMANDS")
+            .env("CRANE_OPERATOR_URL", "off");
         for marker in AGENT_MARKERS {
             command.env_remove(marker);
         }

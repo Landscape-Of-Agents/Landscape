@@ -33,6 +33,7 @@ pub(super) const CRANE_COMMANDS: &[&str] = &[
     "governance",
     "foxx",
     "server",
+    "operator",
     "help",
     "--help",
     "-h",

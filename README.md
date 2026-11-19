@@ -62,6 +62,8 @@ enforces the policy in Claude Code, Codex, GitHub Copilot CLI, and Gemini CLI.
 
 ## Get involved
 
+- **See everything at once:** the [complete system reference](docs/SYSTEM-README.md): every
+  technology, term, change, and workflow, step by step.
 - **Use it:** start with the [docs index](docs/README.md) (by department, product, feature, or surface), the [CLI guide](docs/surfaces/cli.md), and the [terminology](docs/TERMINOLOGY.md).
 - **Build it:** read [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Report a vulnerability:** see [SECURITY.md](SECURITY.md).

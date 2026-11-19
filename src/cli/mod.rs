@@ -24,6 +24,7 @@ mod invoke;
 mod isolation;
 mod lab;
 mod link;
+mod operator;
 mod permission;
 mod precondition;
 mod protocol;
@@ -78,12 +79,15 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
     let words = arguments.iter().map(String::as_str).collect::<Vec<_>>();
     let rest = |count: usize| arguments[count.min(arguments.len())..].to_vec();
     // Only a human runs Crane. Inside an agent session only the entry points the agent's own hooks
-    // start are allowed (the hooks deny typing them from the agent's shell)
+    // start are allowed (the hooks deny typing them from the agent's shell), and read-only commands
+    // while the operator's switch allows them (trust/agent_commands.rs)
     if let Some(marker) = crate::trust::agent_environment() {
         if !matches!(words.as_slice(), ["agent", "hook", ..] | ["agent", "sync"]) {
-            return Err(format!(
-                "crane cannot be executed by an AI agent ({marker} is set); only a human runs Crane"
-            ));
+            if let Err(reason) = crate::trust::agent_commands::agent_may_run(&words) {
+                return Err(format!(
+                    "crane cannot be executed by an AI agent ({marker} is set): {reason}"
+                ));
+            }
         }
     }
     match words.as_slice() {
@@ -148,6 +152,7 @@ fn dispatch(arguments: &[String]) -> Result<(), String> {
         ["compile", ..] => compile::compile(&rest(1)),
         ["lab", ..] => lab::lab(&rest(1)),
         ["evolution", ..] => evolution::evolution(&rest(1)),
+        ["operator", ..] => operator::operator(&rest(1)),
         ["foxx", "event", ..] => audit::foxx_event(&rest(2)),
         ["foxx", "live", ..] => audit::foxx_live(&rest(2)),
         #[cfg(feature = "server")]
@@ -341,6 +346,11 @@ Agent
 
 Integrations
   crane integrate jira|whatsapp|slack|github
+
+Operator (agents running read-only Crane commands; off unless the operator turns it on)
+  crane operator status [--refresh]   (this machine's view of the switch; CRANE_AGENT_COMMANDS=off turns it off here)
+  crane operator keygen               (a new operator key pair)
+  crane operator serve [--listen ADDR] (the operator dashboard; server builds)
 
 Alert rules (evaluated by the background sync)
   crane alert add NAME metric METRIC above|at_least|below|at_most|equals N [window 15m]

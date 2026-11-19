@@ -165,6 +165,16 @@ fn hook(args: &[String]) -> Result<(), String> {
 fn sync() -> Result<(), String> {
     let workspace = crate::governance::workspace::Workspace::locate()?;
     let stores = crate::telemetry::Stores::open(&workspace.trust()?.runtime());
+    // The operator's switch for agent commands: a failure keeps the cached policy, which expires on
+    // its own (trust/agent_commands.rs)
+    if crate::trust::agent_commands::fetches() {
+        if let Err(error) = crate::trust::agent_commands::refresh() {
+            crate::platform::notes::note(
+                "OPERATOR_POLICY_FAILED",
+                serde_json::json!({"error": error}),
+            );
+        }
+    }
     if !crate::telemetry::sync::configured() {
         // Brick monitors still run locally (they need no service)
         crate::brick::runtime::sync_monitors(&workspace, &stores);

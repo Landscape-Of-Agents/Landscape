@@ -84,7 +84,11 @@ selection; it is signed into the record). Options: `policy NAME`, `checkpoint NA
 
 **Only people run Crane.** Every `crane` command refuses to run inside an AI agent session (the
 hooks themselves excepted), and the hooks deny any agent shell command or script that invokes
-`crane`, including `crane validate` and `crane --version`.
+`crane`, including `crane validate` and `crane --version`. The one exception is the operator's
+switch on the [operator dashboard](operator.md). While it is on, an agent may run one plain
+**read-only** command at a time, such as `crane validate`, `crane test .`, or `crane scope inspect`.
+Everything that changes anything stays human-only. `crane operator status [--refresh]` shows a
+machine's view, and `CRANE_AGENT_COMMANDS=off` turns it off on that machine.
 
 **Moving the repository.** After a transfer or rename (for example to another organization), the
 repository identity changes with the remote, so `crane validate` reports the registry as belonging

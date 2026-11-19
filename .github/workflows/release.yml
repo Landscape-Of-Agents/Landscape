@@ -61,6 +61,10 @@ jobs:
         env:
           # The DataSea ingestion service compiled into the release, so uploads need no setup
           CRANE_DEFAULT_INGEST_URL: ${{ vars.CRANE_INGEST_URL }}
+          # The operator key releases trust for the agent-command switch, and the operator
+          # dashboard they read it from (without the key, agents never run Crane commands)
+          CRANE_OPERATOR_PUBLIC_KEY: ${{ vars.CRANE_OPERATOR_PUBLIC_KEY }}
+          CRANE_DEFAULT_OPERATOR_URL: ${{ vars.CRANE_OPERATOR_URL }}
         run: cargo build --locked --release --target ${{ matrix.target }}
 
       # A cross-compiled binary cannot run on the machine that built it, so its architecture is

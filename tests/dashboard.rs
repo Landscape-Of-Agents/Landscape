@@ -635,11 +635,16 @@ fn dashboard_is_read_only_and_machines_cannot_read() {
         "a correctly signed request is accepted: {}",
         positions.body
     );
+    // Current machines upload no events, ledger, audit, or alerts (only the repository status), so
+    // nothing has moved their positions (released versions still upload and move them)
     let positions = positions.json();
-    assert!(
-        positions["events"].as_u64().unwrap() >= 3,
-        "positions are kept, not records: {positions}"
-    );
+    for stream in ["events", "ledger", "audit", "alerts"] {
+        assert_eq!(
+            positions[stream].as_u64(),
+            Some(0),
+            "no {stream} were uploaded: {positions}"
+        );
+    }
     assert_eq!(
         signed("snapshot").status,
         404,

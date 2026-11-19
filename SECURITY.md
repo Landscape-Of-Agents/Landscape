@@ -85,5 +85,10 @@ automated scanners without a working attack.
 - **The service holds the only database credentials.** Machines sign requests with their own upload
   key and can only add to and read their own records. Dashboard views read through a handle that
   cannot write; the few dashboard writes are repository-scoped and checked against GitHub.
+- **Agents running Crane is off unless the operator turns it on.** Only GitHub logins listed on the
+  operator dashboard can change it. Machines accept only answers signed by the operator key compiled
+  into official builds, valid for 15 minutes, so a customer cannot turn it on and an unreachable
+  dashboard means off. Even when on, agents run only plain read-only commands; every command that
+  changes anything stays human-only ([docs/surfaces/operator.md](docs/surfaces/operator.md)).
 - **What is not observed.** Network, CPU, memory, and token usage are not observed by hooks and are
   reported as unsupported, never estimated.

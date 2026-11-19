@@ -1,31 +1,32 @@
-// The operator dashboard ('crane operator serve', cargo feature "server"): a separate service from
-// DataSea that holds settings only the operator may change. Today it holds one: whether AI agents
-// may run read-only Crane commands inside their own sessions (trust/agent_commands.rs).
+// The operator dashboard: settings only the Crane operator may change, separate from DataSea's
+// pages. Today it holds one: whether AI agents may run read-only Crane commands inside their own
+// sessions (trust/agent_commands.rs). It runs in one of two ways:
+//   - inside the DataSea service ('crane server'), at /operator/ on the same host, reusing DataSea's
+//     GitHub sign-in (same OAuth app, same session cookie) and its MongoDB;
+//   - on its own ('crane operator serve'), with its own sign-in and database.
 //
-// Who may use it: a person signed in with GitHub whose login is listed in CRANE_OPERATOR_LOGINS.
-// Everyone else can sign in to GitHub but is refused here (no session is set), and every /api route
-// checks the list again on each request, so removing a login revokes access at once.
+// Who may use it: a person signed in with GitHub whose login is listed in CRANE_OPERATOR_LOGINS
+// (DEFAULT_OPERATORS when it is not set). Everyone else is refused: no operator session is set, and
+// every /api route checks the list again on each request, so removing a login revokes access at
+// once.
 //
 // What machines read: GET /v1/agent-commands, public, answering the current setting signed with the
-// operator key (CRANE_OPERATOR_SIGNING_KEY) and valid for POLICY_LIFETIME_MILLIS. Crane verifies it
-// against the operator public key compiled into each build, so the answer cannot be forged by
-// anyone without that key, and an unreachable service means "off" once the cached answer expires.
+// operator key and valid for POLICY_LIFETIME_MILLIS. The key is CRANE_OPERATOR_SIGNING_KEY when set,
+// else one the service creates once and keeps in its database. Crane verifies the answer against
+// the operator public key compiled into each build, so nobody without the key can forge it, and an
+// unreachable service means "off" once the cached answer expires.
 //
-// Configuration (environment only): CRANE_MONGODB_URI (required), CRANE_OPERATOR_DB (default
-// crane_operator), CRANE_OPERATOR_SIGNING_KEY (64 hex, required), CRANE_OPERATOR_LOGINS (required),
-// CRANE_GITHUB_CLIENT_ID and CRANE_GITHUB_CLIENT_SECRET (a GitHub OAuth app whose callback is
-// PUBLIC_URL/auth/callback), CRANE_PUBLIC_URL (else RENDER_EXTERNAL_URL), and the listen address.
-//
-// Routes: GET / (page), /operator.js, /health, /auth/login, /auth/callback, /auth/logout,
-// /api/state (operator only), POST /api/agent-commands (operator only; JSON with the
-// X-Crane-Operator header, so no other site can submit it), GET /v1/agent-commands (machines).
+// Routes (under /operator/ inside DataSea): GET / (page), operator.js, auth/login, auth/logout,
+// api/state (operator only), POST api/agent-commands (operator only; JSON with the X-Crane-Operator
+// header, so no other site can submit it); GET /v1/agent-commands (machines, at the host's root);
+// standalone also /health and /auth/callback.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::Instant;
 
-use mongodb::bson::{doc, Document};
+use mongodb::bson::{self, doc, Document};
 use mongodb::sync::Database;
 use serde_json::{json, Value};
 use tiny_http::{Request, Server};
@@ -46,7 +47,7 @@ const PAGE: &str = include_str!("page.html");
 /** The operator page's script */
 const SCRIPT: &str = include_str!("operator.js");
 
-/** Requests served concurrently */
+/** Requests served concurrently (standalone) */
 const WORKERS: usize = 4;
 
 /** Largest accepted request body */
@@ -55,20 +56,45 @@ const MAX_BODY: usize = 4 * 1024;
 /** Name of the setting document */
 const SETTING: &str = "agent_commands";
 
-/** The operator service's shared state
+/** The operator logins when CRANE_OPERATOR_LOGINS is not set: the maintainer of the official
+ * service (a self-hosted service sets its own) */
+const DEFAULT_OPERATORS: &str = "VishuKalier2003";
+
+/** Where the operator dashboard lives inside DataSea */
+pub(crate) const PREFIX: &str = "/operator";
+
+/** How the dashboard is served
+ * Variants
+    - Embedded - inside DataSea: its sign-in and address limits are DataSea's
+    - Standalone - its own service, with its own sign-in and address limits
+*/
+enum Mode {
+    Embedded,
+    Standalone(Box<Standalone>),
+}
+
+/** What only the standalone service has
+ * Fields
+    - auth: Option<Auth> - its GitHub sign-in, None until configured
+    - addresses: Limiter - requests per client address
+*/
+struct Standalone {
+    auth: Option<Auth>,
+    addresses: Limiter,
+}
+
+/** The operator dashboard's state
  * Fields
     - database: Database - MongoDB
     - key: SigningIdentity - the operator key that signs policies
     - logins: Vec<String> - GitHub logins allowed in (lowercase)
-    - auth: Option<Auth> - GitHub sign-in, None until configured
-    - addresses: Limiter - requests per client address
+    - mode: Mode - embedded or standalone
 */
-struct Operator {
+pub(crate) struct Operator {
     database: Database,
     key: SigningIdentity,
     logins: Vec<String>,
-    auth: Option<Auth>,
-    addresses: Limiter,
+    mode: Mode,
 }
 
 /** The stored setting
@@ -83,7 +109,7 @@ struct Setting {
     changed_at: u64,
 }
 
-/** Read the operator logins from CRANE_OPERATOR_LOGINS
+/** Read the operator logins
  * Input
     - value: &str - comma- or space-separated GitHub logins
  * Output
@@ -100,7 +126,93 @@ fn parse_logins(value: &str) -> Vec<String> {
     logins
 }
 
-/** Run the operator service until it is stopped
+/** Read a non-empty environment variable
+ * Input
+    - name: &str - variable
+ * Output
+    - Option<String>
+*/
+fn variable(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+/** The operator key: CRANE_OPERATOR_SIGNING_KEY when set, else the one this service created once
+ * and keeps in its database (created on first start; another instance starting at the same time
+ * reads the one that was stored)
+ * Input
+    - database: &Database - MongoDB
+ * Output
+    - Result<SigningIdentity, String>
+*/
+fn operator_key(database: &Database) -> Result<SigningIdentity, String> {
+    if let Some(seed) = variable("CRANE_OPERATOR_SIGNING_KEY") {
+        return SigningIdentity::from_seed_hex(seed.trim());
+    }
+    let settings = database.collection::<Document>("service_settings");
+    let read = || -> Result<Option<String>, String> {
+        Ok(settings
+            .find_one(doc! {"name": "operator_key"})
+            .run()
+            .map_err(io_error)?
+            .and_then(|document| document.get_str("seed").ok().map(String::from)))
+    };
+    if read()?.is_none() {
+        let seed = SigningIdentity::generate()?.seed_hex();
+        let _ = settings
+            .insert_one(
+                doc! {"name": "operator_key", "seed": &seed, "created_at": bson::DateTime::now()},
+            )
+            .run();
+    }
+    let seed = read()?.ok_or("the operator key could not be stored")?;
+    SigningIdentity::from_seed_hex(&seed)
+}
+
+impl Operator {
+    /** The operator dashboard inside DataSea, on DataSea's database
+     * Input
+        - database: &Database - DataSea's MongoDB
+     * Output
+        - Result<Operator, String>
+    */
+    pub(crate) fn embedded(database: &Database) -> Result<Self, String> {
+        let operator = Self {
+            key: operator_key(database)?,
+            logins: parse_logins(
+                &variable("CRANE_OPERATOR_LOGINS").unwrap_or_else(|| DEFAULT_OPERATORS.into()),
+            ),
+            database: database.clone(),
+            mode: Mode::Embedded,
+        };
+        log::write(
+            "info",
+            "operator",
+            None,
+            "started",
+            json!({"mode": "embedded", "public_key": operator.key.public_hex(), "operators": operator.logins.len()}),
+        );
+        Ok(operator)
+    }
+
+    /** Answer a request inside DataSea: the path is already stripped of PREFIX ("/" for the page),
+     * or is /v1/agent-commands
+     * Input
+        - request: &mut Request - request
+        - auth: Option<&Auth> - DataSea's sign-in
+        - path: &str - path below PREFIX
+     * Output
+        - Reply
+    */
+    pub(crate) fn handle(&self, request: &mut Request, auth: Option<&Auth>, path: &str) -> Reply {
+        let method = request.method().as_str().to_ascii_uppercase();
+        let (_, query) = http::split(request.url());
+        route(request, self, auth, &method, path, &query)
+    }
+}
+
+/** Run the operator dashboard as its own service until it is stopped
  * Input
     - args: &[String] - optional --listen ADDRESS
  * Output
@@ -116,19 +228,9 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         [flag, address] if flag == "--listen" => address.clone(),
         _ => return Err("usage: crane operator serve [--listen ADDRESS]".into()),
     };
-    let variable = |name: &str| {
-        std::env::var(name)
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-    };
-    let key = SigningIdentity::from_seed_hex(
-        variable("CRANE_OPERATOR_SIGNING_KEY")
-            .ok_or("set CRANE_OPERATOR_SIGNING_KEY (create one with 'crane operator keygen')")?
-            .trim(),
-    )?;
-    let logins = parse_logins(&variable("CRANE_OPERATOR_LOGINS").ok_or(
-        "set CRANE_OPERATOR_LOGINS to the GitHub logins allowed to change the operator settings",
-    )?);
+    let logins = parse_logins(
+        &variable("CRANE_OPERATOR_LOGINS").unwrap_or_else(|| DEFAULT_OPERATORS.into()),
+    );
     if logins.is_empty() {
         return Err("CRANE_OPERATOR_LOGINS names no GitHub login".into());
     }
@@ -139,11 +241,13 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     let connected = database::connect(&settings)?;
     let auth = Auth::from_environment(&store::session_seed(&connected)?)?;
     let operator = Arc::new(Operator {
+        key: operator_key(&connected)?,
         database: connected,
-        key,
         logins,
-        auth,
-        addresses: Limiter::new(600.0),
+        mode: Mode::Standalone(Box::new(Standalone {
+            auth,
+            addresses: Limiter::new(600.0),
+        })),
     });
     let server = Arc::new(
         Server::http(&listen).map_err(|error| format!("cannot listen on {listen}: {error}"))?,
@@ -152,11 +256,13 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         .server_addr()
         .to_ip()
         .map_or(listen, |address| address.to_string());
+    let signed_in =
+        matches!(&operator.mode, Mode::Standalone(standalone) if standalone.auth.is_some());
     println!(
         "Crane operator dashboard listening on {address} (database {}; operator key {}; sign-in {}; operators: {})",
         settings.database,
         operator.key.public_hex(),
-        if operator.auth.is_some() {
+        if signed_in {
             "on"
         } else {
             "off: set CRANE_GITHUB_CLIENT_ID and CRANE_GITHUB_CLIENT_SECRET"
@@ -169,7 +275,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         "operator",
         None,
         "started",
-        json!({"database": settings.database, "public_key": operator.key.public_hex(), "operators": operator.logins.len()}),
+        json!({"mode": "standalone", "database": settings.database, "public_key": operator.key.public_hex(), "operators": operator.logins.len()}),
     );
     let workers = (0..WORKERS)
         .map(|_| {
@@ -188,7 +294,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/** Answer one request and log it
+/** Answer one request of the standalone service and log it
  * Input
     - request: Request - the request
     - operator: &Operator - shared state
@@ -207,11 +313,24 @@ fn respond(mut request: Request, operator: &Operator) {
                 Err(_) => Reply::json(503, json!({"error": "the database is unavailable"})),
             };
         }
-        if !operator.addresses.allow(&http::client_address(&request)) {
-            return Reply::json(429, json!({"error": "too many requests; try again in a minute"}))
-                .with_header("Retry-After", "60");
+        let Mode::Standalone(standalone) = &operator.mode else {
+            return Reply::json(500, json!({"error": "not a standalone service"}));
+        };
+        if !standalone.addresses.allow(&http::client_address(&request)) {
+            return Reply::json(
+                429,
+                json!({"error": "too many requests; try again in a minute"}),
+            )
+            .with_header("Retry-After", "60");
         }
-        route(&mut request, operator, &method, &path, &query)
+        route(
+            &mut request,
+            operator,
+            standalone.auth.as_ref(),
+            &method,
+            &path,
+            &query,
+        )
     }))
     .unwrap_or_else(|_| {
         Reply::json(
@@ -237,10 +356,11 @@ fn respond(mut request: Request, operator: &Operator) {
     http::send(request, reply, &request_id);
 }
 
-/** Route a request
+/** Route a request (paths relative to the dashboard)
  * Input
     - request: &mut Request - request
     - operator: &Operator - shared state
+    - auth: Option<&Auth> - GitHub sign-in
     - method: &str - HTTP method (uppercase)
     - path: &str - path
     - query: &BTreeMap<String, String> - query
@@ -250,20 +370,17 @@ fn respond(mut request: Request, operator: &Operator) {
 fn route(
     request: &mut Request,
     operator: &Operator,
+    auth: Option<&Auth>,
     method: &str,
     path: &str,
     query: &BTreeMap<String, String>,
 ) -> Reply {
+    let embedded = matches!(operator.mode, Mode::Embedded);
     if method == "POST" && path == "/api/agent-commands" {
-        return change(request, operator);
+        return change(request, operator, auth);
     }
     if method != "GET" {
         return Reply::json(405, json!({"error": "method not allowed"}));
-    }
-    if path == "/auth/login" {
-        if let Some(location) = Auth::elsewhere(request) {
-            return Reply::redirect(&location);
-        }
     }
     match path {
         "/" | "/index.html" => Reply::page(PAGE),
@@ -272,11 +389,20 @@ fn route(
             Ok(setting) => Reply::json(200, json!(sign(operator, &setting, now_millis()))),
             Err(_) => Reply::json(503, json!({"error": "the database is unavailable"})),
         },
-        "/auth/login" => login(request, operator),
-        "/auth/callback" => callback(request, operator, query),
+        // Inside DataSea, sign-in is DataSea's, returning here afterwards
+        "/auth/login" if embedded => Reply::redirect(&format!("/auth/login?next={PREFIX}/")),
+        "/auth/logout" if embedded => Reply::redirect(&format!("{PREFIX}/"))
+            .with_header("Set-Cookie", &Auth::cookie(request, "foxx_session", "", 0)),
+        "/auth/login" => {
+            if let Some(location) = Auth::elsewhere(request) {
+                return Reply::redirect(&location);
+            }
+            login(request, auth)
+        }
+        "/auth/callback" if !embedded => callback(request, operator, auth, query),
         "/auth/logout" => Reply::redirect("/")
             .with_header("Set-Cookie", &Auth::cookie(request, "foxx_session", "", 0)),
-        "/api/state" => match signed_in(request, operator) {
+        "/api/state" => match signed_in(request, operator, auth) {
             Ok(login) => state(operator, &login),
             Err(reply) => reply,
         },
@@ -336,15 +462,15 @@ fn current(database: &Database) -> Result<Setting, String> {
     ))
 }
 
-/** Start GitHub sign-in with a random state bound to a short-lived cookie
+/** Start GitHub sign-in (standalone) with a random state bound to a short-lived cookie
  * Input
     - request: &Request - request
-    - operator: &Operator - shared state
+    - auth: Option<&Auth> - sign-in
  * Output
     - Reply
 */
-fn login(request: &Request, operator: &Operator) -> Reply {
-    let Some(auth) = &operator.auth else {
+fn login(request: &Request, auth: Option<&Auth>) -> Reply {
+    let Some(auth) = auth else {
         return Reply::redirect("/");
     };
     let state = random_bytes(16)
@@ -356,16 +482,22 @@ fn login(request: &Request, operator: &Operator) -> Reply {
     )
 }
 
-/** Finish GitHub sign-in: only a listed operator gets a session
+/** Finish GitHub sign-in (standalone): only a listed operator gets a session
  * Input
     - request: &Request - request
     - operator: &Operator - shared state
+    - auth: Option<&Auth> - sign-in
     - query: &BTreeMap<String, String> - code and state
  * Output
     - Reply
 */
-fn callback(request: &Request, operator: &Operator, query: &BTreeMap<String, String>) -> Reply {
-    let Some(auth) = &operator.auth else {
+fn callback(
+    request: &Request,
+    operator: &Operator,
+    auth: Option<&Auth>,
+    query: &BTreeMap<String, String>,
+) -> Reply {
+    let Some(auth) = auth else {
         return Reply::redirect("/");
     };
     let expected = http::cookie(request, "crane_operator_oauth").filter(|state| !state.is_empty());
@@ -412,12 +544,13 @@ fn callback(request: &Request, operator: &Operator, query: &BTreeMap<String, Str
  * Input
     - request: &Request - request
     - operator: &Operator - shared state
+    - auth: Option<&Auth> - sign-in
  * Output
     - Result<String, Reply> - the login, or the refusal (503 not configured, 401 signed out, 403
       not an operator)
 */
-fn signed_in(request: &Request, operator: &Operator) -> Result<String, Reply> {
-    let Some(auth) = &operator.auth else {
+fn signed_in(request: &Request, operator: &Operator, auth: Option<&Auth>) -> Result<String, Reply> {
+    let Some(auth) = auth else {
         return Err(Reply::json(
             503,
             json!({"error": "sign-in is not configured: set CRANE_GITHUB_CLIENT_ID and CRANE_GITHUB_CLIENT_SECRET"}),
@@ -429,7 +562,7 @@ fn signed_in(request: &Request, operator: &Operator) -> Result<String, Reply> {
     if !operator.logins.contains(&viewer.login) {
         return Err(Reply::json(
             403,
-            json!({"error": "this dashboard is for the operator only"}),
+            json!({"error": "this dashboard is for the operator only", "login": viewer.login}),
         ));
     }
     Ok(viewer.login)
@@ -505,11 +638,12 @@ fn state(operator: &Operator, login: &str) -> Reply {
  * Input
     - request: &mut Request - request
     - operator: &Operator - shared state
+    - auth: Option<&Auth> - sign-in
  * Output
     - Reply
 */
-fn change(request: &mut Request, operator: &Operator) -> Reply {
-    let login = match signed_in(request, operator) {
+fn change(request: &mut Request, operator: &Operator, auth: Option<&Auth>) -> Reply {
+    let login = match signed_in(request, operator, auth) {
         Ok(login) => login,
         Err(reply) => return reply,
     };
@@ -593,7 +727,7 @@ fn change(request: &mut Request, operator: &Operator) -> Reply {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_logins;
+    use super::{parse_logins, DEFAULT_OPERATORS};
 
     /** Operator logins are read case-insensitively, with or without "@", without duplicates
      * Input
@@ -608,5 +742,9 @@ mod tests {
             vec!["other".to_string(), "vishukalier2003".to_string()]
         );
         assert!(parse_logins(" , ").is_empty());
+        assert_eq!(
+            parse_logins(DEFAULT_OPERATORS),
+            vec!["vishukalier2003".to_string()]
+        );
     }
 }

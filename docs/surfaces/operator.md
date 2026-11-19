@@ -1,6 +1,11 @@
 # The operator dashboard
 
-A separate dashboard from DataSea, for settings only the Crane operator may change. It holds one
+**<https://dashboard.agentslandscape.cloud/operator/>**
+
+A separate dashboard from DataSea's pages, for settings only the Crane operator may change. It is
+served by the DataSea service at `/operator/` (its own page and its own operator-only access,
+sharing only DataSea's GitHub sign-in and database), and can also run on its own with
+`crane operator serve`. It holds one
 setting today: **whether AI agents may run read-only Crane commands inside their own sessions**
 (Claude Code, Codex, Copilot CLI, Gemini CLI, or any other agent Crane recognizes).
 
@@ -46,42 +51,30 @@ Only you, the operator:
      means off once the cached answer expires. A copied or replayed answer grants nothing beyond
      its own expiry.
 
-## One-time setup (the operator)
+## Setup
 
-1. **Create the operator key.** On your machine, in a normal terminal:
-   ```bash
-   crane operator keygen
-   ```
-   - It prints `CRANE_OPERATOR_SIGNING_KEY=…` (secret) and `CRANE_OPERATOR_PUBLIC_KEY=…`.
-   - Store the signing key in a password manager. It is shown only once.
-2. **Create a GitHub OAuth app** (GitHub → Settings → Developer settings → OAuth Apps → New):
-   - Homepage URL: `https://crane-operator.onrender.com` (or your custom domain);
-   - Authorization callback URL: `https://crane-operator.onrender.com/auth/callback`;
-   - copy the Client ID and generate a Client secret.
-3. **Deploy on Render.** In the Render dashboard, open the Blueprint for this repository and sync
-   it: [render.yaml](../../render.yaml) defines the `crane-operator` web service (same Docker image
-   as DataSea, command `crane operator serve`). Fill in the secrets it asks for:
+Inside DataSea, nothing needs to be configured:
 
-   | Variable | Value |
-   |---|---|
-   | `CRANE_MONGODB_URI` | the same MongoDB connection string DataSea uses (its own database `crane_operator`) |
-   | `CRANE_OPERATOR_SIGNING_KEY` | the signing key from step 1 |
-   | `CRANE_GITHUB_CLIENT_ID`, `CRANE_GITHUB_CLIENT_SECRET` | the OAuth app from step 2 |
-   | `CRANE_OPERATOR_LOGINS` | preset to `VishuKalier2003`; add more logins separated by commas |
+- **Sign-in** is DataSea's GitHub OAuth app; signing in from the operator page returns to it.
+- **Operators** are `CRANE_OPERATOR_LOGINS` on the DataSea service, `VishuKalier2003` when it is
+  not set. To add someone, set it in Render (comma-separated logins).
+- **The operator key** is created by the service on its first start and kept in its MongoDB
+  (`service_settings`, name `operator_key`). It survives restarts and redeploys. Setting
+  `CRANE_OPERATOR_SIGNING_KEY` on the service uses that key instead; machines trust only the key
+  their build was made with, so a changed key means "off" until a release trusts the new one.
+- **Official builds** trust the key through two repository variables the release workflow
+  compiles in: `CRANE_OPERATOR_PUBLIC_KEY` (shown on the dashboard and in every
+  `/v1/agent-commands` answer) and `CRANE_OPERATOR_URL` (`https://dashboard.agentslandscape.cloud`,
+  also the built-in default).
 
-   If Render gives the service another address, update the OAuth app's URLs to match.
-4. **Make official builds trust the key.** In GitHub → the repository → Settings → Secrets and
-   variables → Actions → Variables, add:
-   - `CRANE_OPERATOR_PUBLIC_KEY`: the public key from step 1;
-   - `CRANE_OPERATOR_URL`: the dashboard address, for example `https://crane-operator.onrender.com`.
-
-   The release workflow compiles both into every binary. Builds without the key never let agents
-   run Crane commands.
-5. **Release** a new Crane version and install it where you want the switch to apply.
+**Running it on its own instead:** `crane operator serve` with `CRANE_MONGODB_URI`,
+`CRANE_OPERATOR_DB` (default `crane_operator`), `CRANE_OPERATOR_LOGINS`, a GitHub OAuth app
+(`CRANE_GITHUB_CLIENT_ID`, `CRANE_GITHUB_CLIENT_SECRET`, callback `PUBLIC_URL/auth/callback`), and
+optionally `CRANE_OPERATOR_SIGNING_KEY` (`crane operator keygen` makes one).
 
 ## Using it
 
-1. Open the dashboard and click **Sign in with GitHub**.
+1. Open <https://dashboard.agentslandscape.cloud/operator/> and click **Sign in with GitHub**.
 2. The panel shows the switch (**ON** or **OFF**), who changed it last and when, what agents may
    run, the operator public key, and the audit.
 3. Type a reason and click **Turn on** or **Turn off**, then confirm.
@@ -107,6 +100,8 @@ Only you, the operator:
 
 ## Endpoints
 
+Inside DataSea every route below is under `/operator/`, except `/v1/agent-commands`, which is at the host's root.
+
 | Route | Who | What |
 |---|---|---|
 | `GET /` | anyone | The page (it shows only sign-in to non-operators) |
@@ -125,8 +120,9 @@ Only you, the operator:
   - the local off honored;
   - writes, chains and redirections denied;
   - the session context follows the switch.
-- **`tests/operator_service.rs`** runs against a live MongoDB and a stand-in GitHub:
-  - a non-operator is refused;
+- **`tests/operator_service.rs`** runs against a live MongoDB and a stand-in GitHub, both inside DataSea and standalone:
+  - a non-operator is refused (a DataSea session alone gets 403);
+  - the operator key survives a restart;
   - a change needs the session, the header and a reason;
   - machines follow on and off;
   - a build trusting another key refuses the dashboard.

@@ -1,6 +1,7 @@
 // The operator page: shows the agent-command switch and changes it. Every change goes to
-// POST /api/agent-commands with the X-Crane-Operator header; the service checks the operator's
-// GitHub login on every request.
+// POST api/agent-commands with the X-Crane-Operator header; the service checks the operator's
+// GitHub login on every request. Addresses are relative, so the page works at / (its own service)
+// and at /operator/ (inside DataSea).
 "use strict";
 
 const element = (id) => document.getElementById(id);
@@ -18,7 +19,7 @@ function render(data) {
   element("operator").classList.remove("hidden");
   element("who").textContent = "@" + data.login + " · ";
   const out = document.createElement("a");
-  out.href = "/auth/logout";
+  out.href = "auth/logout";
   out.textContent = "Sign out";
   out.style.color = "inherit";
   element("who").appendChild(out);
@@ -58,11 +59,11 @@ async function load() {
   const params = new URLSearchParams(location.search);
   if (params.has("refused")) {
     show("refused", true);
-    history.replaceState(null, "", "/");
+    history.replaceState(null, "", location.pathname);
   }
   let response;
   try {
-    response = await fetch("/api/state", { credentials: "same-origin" });
+    response = await fetch("api/state", { credentials: "same-origin" });
   } catch (error) {
     show("unavailable", true);
     element("unavailable-text").textContent = "The operator dashboard could not be reached.";
@@ -71,6 +72,8 @@ async function load() {
   if (response.status === 401 || response.status === 403) {
     element("operator").classList.add("hidden");
     show("signed-out", true);
+    // Signed in, but not as an operator (inside DataSea a DataSea session exists)
+    if (response.status === 403) show("refused", true);
     return;
   }
   const data = await response.json().catch(() => ({}));
@@ -95,7 +98,7 @@ async function change() {
   if (!confirm((enabled ? "Allow" : "Stop") + " AI agents running read-only Crane commands on every machine?")) return;
   element("toggle").disabled = true;
   message.textContent = "Saving…";
-  const response = await fetch("/api/agent-commands", {
+  const response = await fetch("api/agent-commands", {
     method: "POST",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", "X-Crane-Operator": "1" },
@@ -112,6 +115,6 @@ async function change() {
   render(data);
 }
 
-element("sign-in").addEventListener("click", () => { location.href = "/auth/login"; });
+element("sign-in").addEventListener("click", () => { location.href = "auth/login"; });
 element("toggle").addEventListener("click", change);
 load();

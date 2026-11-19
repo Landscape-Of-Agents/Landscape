@@ -48,6 +48,7 @@ const WORKERS: usize = 8;
     - storage: Storage - database size gauge
     - agent_policies: Limiter - quarantine reads per installation (asked before tool calls)
     - dashboard: dashboard::Dashboard - the hosted dashboard
+    - operator: operator::Operator - the operator dashboard at /operator/ and its /v1/agent-commands
 */
 struct Service {
     database: Database,
@@ -58,6 +59,7 @@ struct Service {
     addresses: Limiter,
     storage: Storage,
     dashboard: dashboard::Dashboard,
+    operator: operator::Operator,
 }
 
 /** Run the service until it is stopped
@@ -81,7 +83,9 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     database::migrate(&connected)?;
     let limits = Limits::from_environment();
     let auth = dashboard::auth::Auth::from_environment(&store::session_seed(&connected)?)?;
+    let operator = operator::Operator::embedded(&connected)?;
     let service = Arc::new(Service {
+        operator,
         dashboard: dashboard::Dashboard::new(
             dashboard::data::ReadOnly::new(connected.clone()),
             dashboard::approve::Approvals::new(connected.clone()),
@@ -206,6 +210,18 @@ fn respond(mut request: Request, service: &Service) {
                 json!({"error": "too many requests from this address; try again in a minute"}),
             )
             .with_header("Retry-After", "60")
+        } else if path == operator::PREFIX {
+            Reply::redirect(&format!("{}/", operator::PREFIX))
+        } else if let Some(below) = path.strip_prefix(&format!("{}/", operator::PREFIX)) {
+            // The operator dashboard: its own pages, DataSea's sign-in
+            let below = format!("/{below}");
+            service
+                .operator
+                .handle(&mut request, service.dashboard.auth(), &below)
+        } else if path == "/v1/agent-commands" {
+            service
+                .operator
+                .handle(&mut request, service.dashboard.auth(), &path)
         } else if !url.starts_with("/v1/") && !url.contains("/v1/repositories/") {
             service.dashboard.handle(&mut request)
         } else {

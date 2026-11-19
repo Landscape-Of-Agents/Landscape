@@ -2,8 +2,8 @@
 # The build compiles Tailwind CSS (landing/src/input.css -> landing/public/styles.css). Release
 # downloads, download totals, and the visit counter are read in the browser, so a new Crane
 # release appears without redeploying. Only changes under landing/ redeploy it.
-# This Blueprint manages this static site and the operator dashboard; the DataSea ingestion service
-# is configured separately.
+# This Blueprint manages only this static site; the DataSea ingestion service (which also serves the
+# operator dashboard at /operator/) is configured separately.
 services:
   - type: web
     name: agent-landscape
@@ -40,35 +40,3 @@ services:
       - path: /*.html
         name: Cache-Control
         value: no-cache
-
-  # The operator dashboard (crane operator serve): the switch that lets AI agents run read-only Crane
-  # commands. Only the GitHub logins in CRANE_OPERATOR_LOGINS can sign in. Same image as DataSea,
-  # another command. Secrets (sync: false) are entered in the Render dashboard, never committed.
-  - type: web
-    name: crane-operator
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerCommand: crane operator serve
-    plan: free
-    healthCheckPath: /health
-    autoDeploy: true
-    buildFilter:
-      paths:
-        - src/**
-        - Cargo.toml
-        - Cargo.lock
-        - build.rs
-        - Dockerfile
-    envVars:
-      - key: CRANE_MONGODB_URI
-        sync: false
-      - key: CRANE_OPERATOR_DB
-        value: crane_operator
-      - key: CRANE_OPERATOR_SIGNING_KEY
-        sync: false
-      - key: CRANE_OPERATOR_LOGINS
-        value: VishuKalier2003
-      - key: CRANE_GITHUB_CLIENT_ID
-        sync: false
-      - key: CRANE_GITHUB_CLIENT_SECRET
-        sync: false

@@ -46,6 +46,9 @@ const FAVICON: &[u8] = include_bytes!("favicon.png");
 /** The largest change request (a draft and a context text) */
 const MAX_REQUEST_BODY: usize = 192 * 1024;
 
+/** The operator dashboard's page, the only address a sign-in may return to besides the dashboard */
+const OPERATOR_PAGE: &str = "/operator/";
+
 /** How long a settled Brick request stays on the page */
 pub(crate) const BRICK_REQUEST_KEPT_MILLIS: u64 = 90 * 24 * 60 * 60 * 1000;
 
@@ -86,6 +89,16 @@ impl Dashboard {
     */
     pub(crate) fn configured(&self) -> bool {
         self.auth.is_some()
+    }
+
+    /** The GitHub sign-in, shared with the operator dashboard at /operator/
+     * Input
+        - None (uses self)
+     * Output
+        - Option<&Auth>, None when sign-in is not configured
+    */
+    pub(crate) fn auth(&self) -> Option<&Auth> {
+        self.auth.as_ref()
     }
 
     /** Check with GitHub that a token's person is a code owner of a repository (clearing its data)
@@ -160,7 +173,7 @@ impl Dashboard {
             "/flows.js" => Reply::script(FLOWS),
             "/logo.png" => Reply::image(LOGO, "image/png"),
             "/favicon.png" | "/favicon.ico" => Reply::image(FAVICON, "image/png"),
-            "/auth/login" => self.login(request),
+            "/auth/login" => self.login(request, &query),
             "/auth/approve" => self.approve(request, &query),
             "/auth/bricks" => self.start_bricks(request, &query),
             "/auth/callback" => self.callback(request, &query),
@@ -172,25 +185,42 @@ impl Dashboard {
         }
     }
 
-    /** Start GitHub sign-in with a random state bound to a short-lived cookie
+    /** Start GitHub sign-in with a random state bound to a short-lived cookie; next=/operator/
+     * returns to the operator dashboard afterwards (no other address is accepted, so the sign-in
+     * cannot redirect elsewhere)
      * Input
         - request: &Request - request
+        - query: &BTreeMap<String, String> - optional next
      * Output
         - Reply
     */
-    fn login(&self, request: &Request) -> Reply {
+    fn login(&self, request: &Request, query: &BTreeMap<String, String>) -> Reply {
         let Some(auth) = &self.auth else {
             return Reply::redirect("/");
         };
         let state = random_bytes(16)
             .map(|bytes| hex(&bytes))
             .unwrap_or_default();
+        let next = if query.get("next").map(String::as_str) == Some(OPERATOR_PAGE) {
+            OPERATOR_PAGE
+        } else {
+            ""
+        };
         Reply::redirect(&auth.authorize_url(request, &state, false))
             .with_header(
                 "Set-Cookie",
                 &Auth::cookie(request, "foxx_oauth", &state, 600),
             )
             .with_header("Set-Cookie", &Auth::cookie(request, "foxx_intent", "", 0))
+            .with_header(
+                "Set-Cookie",
+                &Auth::cookie(
+                    request,
+                    "foxx_next",
+                    next,
+                    if next.is_empty() { 0 } else { 600 },
+                ),
+            )
     }
 
     /** Start an approval: GitHub sign-in carrying what to approve in a signed cookie
@@ -544,6 +574,12 @@ impl Dashboard {
                             if bricks { "engineering/flows" } else { "" }
                         )
                     }
+                    // A sign-in started from the operator dashboard returns there
+                    None if http::cookie(request, "foxx_next").as_deref()
+                        == Some(OPERATOR_PAGE) =>
+                    {
+                        OPERATOR_PAGE.into()
+                    }
                     None => "/".into(),
                 };
                 drop(token);
@@ -559,6 +595,7 @@ impl Dashboard {
                     )
                     .with_header("Set-Cookie", &Auth::cookie(request, "foxx_oauth", "", 0))
                     .with_header("Set-Cookie", &Auth::cookie(request, "foxx_intent", "", 0))
+                    .with_header("Set-Cookie", &Auth::cookie(request, "foxx_next", "", 0))
             }
             Err(error) => Reply::json(400, json!({"error": error})),
         }

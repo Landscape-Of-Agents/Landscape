@@ -35,7 +35,7 @@ const CLOCK_SKEW_MILLIS: u64 = 5 * 60 * 1000;
 
 /** The operator dashboard machines read the policy from, unless the build or CRANE_OPERATOR_URL
  * names another */
-pub(crate) const DEFAULT_OPERATOR_URL: &str = "https://crane-operator.onrender.com";
+pub(crate) const DEFAULT_OPERATOR_URL: &str = "https://dashboard.agentslandscape.cloud";
 
 /** The operator's decision, as signed
  * Fields

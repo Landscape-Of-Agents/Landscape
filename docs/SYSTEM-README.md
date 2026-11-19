@@ -49,7 +49,7 @@ Shorter entry points: [README](../README.md) (the vision), [docs index](README.m
 | Landscape for VS Code (`agentscript.foxx`) | developers, tech leads | Published (Marketplace, Open VSX) |
 | DataSea service + dashboard | the organization | Hosted on Render + MongoDB; landing page, 8 sections, **Engineering › Flows** |
 | Landing site (agentslandscape.cloud) | visitors | Static site on Render |
-| Operator dashboard (`crane operator serve`) | the operator only | Built and tested; defined in `render.yaml` as `crane-operator` |
+| Operator dashboard (dashboard.agentslandscape.cloud/operator/) | the operator only | Served by the DataSea service; also runs alone with `crane operator serve` |
 
 ### Size and health
 

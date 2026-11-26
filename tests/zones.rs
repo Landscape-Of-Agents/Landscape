@@ -185,6 +185,12 @@ fn zone_ceilings_restrict_writes() {
     );
 }
 
+/** Zones and flows marked in source comments limit only the lines between their markers
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
 #[test]
 fn source_marked_zone_and_flow_enforce_only_their_lines() {
     let fixture = fixture();
@@ -245,6 +251,12 @@ fn source_marked_zone_and_flow_enforce_only_their_lines() {
     assert!(flow_outside.status.success(), "{}", text(&flow_outside));
 }
 
+/** Editing or breaking a source marker is refused, and an unresolvable marker fails closed
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
 #[test]
 fn source_marker_integrity_and_resolution_fail_closed() {
     let fixture = fixture();

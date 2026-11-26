@@ -682,6 +682,8 @@ impl Engine<'_> {
         actor: &Actor,
         request: InvocationRequest,
     ) -> CapabilityResult<InvocationRecord> {
+        // Only a registry contributor may submit, and only for the reader the sources were opened
+        // for; refusals are recorded
         if let Err(error) = self.registry.grants.require(actor, Role::Contributor) {
             return Err(self.refuse("submit", None, actor, error));
         }
@@ -692,6 +694,8 @@ impl Engine<'_> {
             );
             return Err(self.refuse("submit", None, actor, error));
         }
+        // The idempotency key is a short token, inputs may not carry secrets, and the requested
+        // limits must stay under the ceiling
         let key_valid = !request.idempotency_key.is_empty()
             && request.idempotency_key.len() <= 128
             && request
@@ -710,6 +714,8 @@ impl Engine<'_> {
         if let Err(problem) = within_ceiling(&request.limits) {
             return Err(CapabilityError::new(ErrorCode::InvalidSchema, problem));
         }
+        // The invocation id derives from the key and the request digest; inserting into the ledger
+        // returns the existing record for a repeated submission, so a retry never runs twice
         let now = self.clock.now();
         let request_digest = request.digest();
         let mut record = InvocationRecord {
@@ -760,6 +766,8 @@ impl Engine<'_> {
             Insertion::Existing(existing) => return Ok(*existing),
             Insertion::Inserted(record) => *record,
         };
+        // Every state change is committed to the ledger and emitted as an event: Requested,
+        // Authorizing, Preflighting
         let first = record.transitions[0].clone();
         self.events.emit(&record, &first);
         let reason = record.authorization.clone();
@@ -770,6 +778,7 @@ impl Engine<'_> {
             actor,
             "authorized",
         )?;
+        // Preflight and plan: a plan that cannot be built blocks the invocation
         let (checks, definition, plan) = self.evaluate(&record.request, actor);
         record.preflight = checks;
         record.compilation_report = self
@@ -788,6 +797,8 @@ impl Engine<'_> {
                 return Ok(record);
             }
         };
+        // Preflight checks that block are collected; a missing lab result on a riskier capability
+        // adds an approval requirement
         let blocking = record
             .preflight
             .iter()
@@ -810,6 +821,8 @@ impl Engine<'_> {
                 .push("no passing lab report for this digest".into());
         }
         record.approval = approval;
+        // One operation record per planned operation; effects start as not applied (or none for
+        // read-only ones)
         record.operations = plan
             .operations
             .iter()
@@ -836,6 +849,8 @@ impl Engine<'_> {
             })
             .collect();
         record.plan = Some(plan);
+        // Blocking checks stop here, after the plan is recorded so people can see what would have
+        // run
         if !blocking.is_empty() {
             record.failures.extend(blocking);
             self.commit(
@@ -852,6 +867,8 @@ impl Engine<'_> {
             actor,
             "the plan is valid and every preflight check passed",
         )?;
+        // With approval required the invocation waits for a person; otherwise it runs at once when
+        // the request asks to execute
         if record.approval.required {
             let reason = format!(
                 "approval of at least {:?} level is required: {}",
@@ -1235,6 +1252,8 @@ impl Engine<'_> {
         actor: &Actor,
         from: usize,
     ) -> CapabilityResult<()> {
+        // Executing: run the operations in order from the given index (an approval or a retry
+        // resumes there), skipping those already done
         self.commit(
             record,
             InvocationState::Executing,
@@ -1250,6 +1269,9 @@ impl Engine<'_> {
             if record.operations[index].status == OperationStatus::Succeeded {
                 continue;
             }
+            // Before each operation re-check time, limits and state; a refusal blocks if nothing
+            // ran yet, otherwise the invocation fails and its applied effects are collected for
+            // recovery
             if let Err(reason) = self.operation_check(record, index, started) {
                 record.operations[index].status = OperationStatus::NotStarted;
                 record.operations[index].error = Some(reason.clone());
@@ -1284,6 +1306,8 @@ impl Engine<'_> {
                 .adapter(&planned.adapter_id)
                 .cloned()
                 .ok_or_else(|| CapabilityError::new(ErrorCode::NotFound, "adapter"))?;
+            // Dispatch with retries. A mutating operation is first persisted as Intended, so a
+            // crash during the call is known to have possibly had an effect
             loop {
                 if planned.effect != EffectClass::ReadOnly {
                     record.operations[index].status = OperationStatus::Intended;
@@ -1293,6 +1317,8 @@ impl Engine<'_> {
                 let operation = &mut record.operations[index];
                 operation.attempts += 1;
                 operation.started_at.get_or_insert(now);
+                // Transactional steps run through the transaction runtime, which may return a
+                // compensation for rollback
                 let (outcome, compensation) = if planned.requires_transaction {
                     self.runtime.execute(
                         adapter.as_ref(),
@@ -1314,6 +1340,7 @@ impl Engine<'_> {
                 operation.finished_at = Some(self.clock.now());
                 let read_only = planned.effect == EffectClass::ReadOnly;
                 let retries_left = operation.attempts <= plan.limits.max_retries;
+                // Completed: keep the redacted result, unless it exceeds the output limit
                 match outcome {
                     DispatchOutcome::Completed {
                         mut result,
@@ -1349,6 +1376,8 @@ impl Engine<'_> {
                         self.persist(record)?;
                         break;
                     }
+                    // Failed: an unknown effect needs reconciliation by a person; a definitive
+                    // failure fails the invocation
                     DispatchOutcome::Failed { error, effect } => {
                         operation.status = OperationStatus::Failed;
                         operation.error = Some(redact(&error).0);
@@ -1374,6 +1403,8 @@ impl Engine<'_> {
                             &format!("{} failed definitively", planned.step_id),
                         );
                     }
+                    // Timed out: retry only when no effect could have happened (not yet dispatched,
+                    // or read-only); otherwise the effect is unknown and must be reconciled
                     DispatchOutcome::TimedOut {
                         dispatched,
                         external_ref,
@@ -1412,6 +1443,7 @@ impl Engine<'_> {
                 }
             }
         }
+        // All operations succeeded: verify the claims
         self.collect_effects(record, false);
         self.commit(
             record,
@@ -1470,6 +1502,8 @@ impl Engine<'_> {
             .plan
             .clone()
             .ok_or_else(|| CapabilityError::new(ErrorCode::InvalidTransition, "no plan"))?;
+        // Verify each planned claim. A fresh adapter read observes this invocation; reused episode
+        // evidence does not, and says so
         let mut results = Vec::new();
         for (index, planned) in plan.verifications.iter().enumerate() {
             let mut result = VerificationResult {
@@ -1484,10 +1518,13 @@ impl Engine<'_> {
                 candidate_digest: record.digest.clone(),
                 environment: record.request.environment.clone(),
             };
+            // A claim with no bound method cannot be established
             match &planned.method {
                 None => result.limitations.push(
                     "no verification method is bound; the claim cannot be established".into(),
                 ),
+                // A fresh read: dispatch the read-only check (with its own idempotency key) and
+                // compare the observed field with the expected value
                 Some(VerificationMethod::AdapterCheck {
                     adapter_id,
                     operation_id,
@@ -1534,6 +1571,8 @@ impl Engine<'_> {
                         (_, Err(problem)) => result.limitations.push(problem),
                     }
                 }
+                // Episode evidence: every record that holds the field must agree; disagreement is a
+                // contradiction
                 Some(VerificationMethod::WorkCaptureEvidence {
                     evidence_type,
                     field: path,
@@ -1572,6 +1611,8 @@ impl Engine<'_> {
             }
             results.push(result);
         }
+        // Settle each claim from all its results: contradiction or mixed results are contradicted,
+        // any failure fails, verified needs every result verified, anything else stays unresolved
         let mut claims: BTreeMap<String, (bool, Vec<VerificationStatus>)> = BTreeMap::new();
         for result in &results {
             let entry = claims
@@ -1596,6 +1637,8 @@ impl Engine<'_> {
                 VerificationStatus::Unresolved
             }
         };
+        // The invocation's final state comes from its required claims only: any failure fails it,
+        // all verified succeeds, some verified is partial, none is unverified
         let required = claims
             .values()
             .filter(|(required, _)| *required)
@@ -1717,6 +1760,8 @@ impl Engine<'_> {
             .plan
             .clone()
             .ok_or_else(|| CapabilityError::new(ErrorCode::InvalidTransition, "no plan"))?;
+        // Ask the authoritative system about every operation whose effect is unknown: applied (keep
+        // the result), not applied (it may be dispatched again), or still unavailable
         for index in 0..record.operations.len() {
             if record.operations[index].effect_status != EffectStatus::Unknown {
                 continue;
@@ -1760,6 +1805,8 @@ impl Engine<'_> {
                 .reconciliations
                 .push(ReconciliationRecord { at, outcome: note });
         }
+        // Any effect still unknown needs an explicit, authorized decision; the invocation stays
+        // where it is
         self.collect_effects(&mut record, false);
         if record
             .operations
@@ -1775,6 +1822,8 @@ impl Engine<'_> {
             )?;
             return Ok(record);
         }
+        // All known: continue from the first operation that has not succeeded, or verify when all
+        // have
         record.recovery_status = "reconciled".into();
         match record
             .operations
@@ -1817,6 +1866,8 @@ impl Engine<'_> {
             );
             return Err(self.refuse("abandon", Some(invocation_id), actor, error));
         }
+        // Once an effect may have happened only a human publisher may abandon; before that, the
+        // requester or a publisher may, always with a reason
         let effects = record.operations.iter().any(|operation| {
             matches!(
                 operation.effect_status,

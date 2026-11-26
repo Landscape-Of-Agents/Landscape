@@ -23,6 +23,8 @@ pub(super) fn migrate(args: &[String]) -> Result<(), String> {
     let args = parse(args, &[], &["dry-run"])?;
     let repo = open()?;
     let dry_run = args.flag("dry-run");
+    // Every Brick whose latest version is of a former kind is converted; only drafts are written,
+    // nothing is signed
     let mut ids = repo
         .store
         .bricks
@@ -47,6 +49,8 @@ pub(super) fn migrate(args: &[String]) -> Result<(), String> {
             continue;
         };
         let old = latest.brick.clone();
+        // A former kind converts into one or two current kinds; a second part becomes a separate
+        // Brick with -access appended to its id
         let parts = match legacy::convert(old.brick_type, &old.config) {
             Ok(parts) => parts,
             Err(problem) => {
@@ -54,6 +58,7 @@ pub(super) fn migrate(args: &[String]) -> Result<(), String> {
                 continue;
             }
         };
+        // The attachments of the old Brick, so the steps can move them
         let attachments = repo
             .store
             .attachments
@@ -68,6 +73,8 @@ pub(super) fn migrate(args: &[String]) -> Result<(), String> {
             .map(|attachment| (attachment.attachment_id.clone(), attachment.target.key()))
             .collect::<Vec<_>>();
         let mut drafts = Vec::new();
+        // Write each part as a validated draft (not in a dry run) and list the signed steps an
+        // admin runs afterwards: activate, then upgrade or attach
         for (index, (kind, config)) in parts.into_iter().enumerate() {
             let (brick_id, version) = if index == 0 {
                 (id.clone(), repo.store.next_version(&id, false))
@@ -121,6 +128,7 @@ pub(super) fn migrate(args: &[String]) -> Result<(), String> {
         }
         rows.push(json!({"brick": old.reference().to_string(), "from": old.brick_type.name(), "status": "drafted", "drafts": drafts, "attachments": attachments.iter().map(|(id, target)| json!({"attachment": id, "target": target})).collect::<Vec<Value>>()}));
     }
+    // Summarize what was drafted and what an admin does next
     let drafted = rows.iter().filter(|row| row["status"] == "drafted").count();
     crate::platform::notes::note(
         "BRICK_MIGRATION_DRAFTED",

@@ -126,6 +126,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
    * @param context extension context
    */
   register(context: vscode.ExtensionContext): void {
+    /** Register a command and dispose it with the extension. */
     const register = (command: string, callback: (...args: unknown[]) => unknown) => context.subscriptions.push(vscode.commands.registerCommand(command, callback));
     context.subscriptions.push(vscode.window.registerTreeDataProvider("foxx.bricks", this), this.diagnostics);
     register("foxx.bricks.refresh", () => this.load());
@@ -201,6 +202,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     const root = this.host.root();
     if (!root || !this.list) return;
     const byFile = new Map<string, vscode.Diagnostic[]>();
+    /** Add a diagnostic for a file. */
     const add = (file: string, message: string, severity: vscode.DiagnosticSeverity) => {
       const list = byFile.get(file) ?? [];
       const diagnostic = new vscode.Diagnostic(new vscode.Range(0, 0, 0, 1), message, severity);
@@ -239,6 +241,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     if (!this.host.root()) return [new BrickNode("Set up Crane to use Bricks", [], { icon: new vscode.ThemeIcon("info") })];
     if (!this.list) return [new BrickNode(this.problem ?? "Loading…", [], { icon: new vscode.ThemeIcon(this.problem ? "warning" : "loading~spin") })];
     const list = this.list;
+    /** A tree node for a Brick. */
     const brickNode = (row: BrickRow) => {
       const tooltip = new vscode.MarkdownString(`**${row.name}** · \`${row.ref}\` · ${row.type}\n\n${row.intent ?? ""}\n\nState **${row.state}**${row.validation ? ` · validation **${row.validation}**` : ""}`);
       return new BrickNode(row.name, [], { description: `${row.state === "draft" ? row.brick_id + " draft" : row.ref} · ${row.validation ?? ""}`, tooltip, icon: icon(TYPE_ICONS[row.type] ?? "package", row.state === "draft" ? "draft" : row.state), contextValue: `brick-${row.state}`, data: row, command: { command: "foxx.bricks.show", title: "Show", arguments: [undefined, row.ref] } });
@@ -248,6 +251,7 @@ export class Bricks implements vscode.TreeDataProvider<BrickNode> {
     const byType = [...BRICK_TYPES, ...(Object.keys(LEGACY_TYPES) as BrickType[])]
       .map((type) => ({ type, rows: list.bricks.filter((row) => row.type === type) }))
       .filter((entry) => entry.rows.length || (BRICK_TYPES as readonly string[]).includes(entry.type));
+    /** A tree folder for a Brick kind, explaining the kind. */
     const kindNode = (entry: { type: BrickType; rows: BrickRow[] }) => {
       const guide = BRICK_GUIDE[entry.type as keyof typeof BRICK_GUIDE] ?? BRICK_GUIDE[(LEGACY_TYPES[entry.type] ?? "").split(" ")[0] as keyof typeof BRICK_GUIDE];
       const former = LEGACY_TYPES[entry.type];

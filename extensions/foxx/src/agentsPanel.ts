@@ -68,12 +68,14 @@ export function agentsHost(deps: PanelDeps, changed: () => void): WorkbenchHost 
     return listed.error;
   }
 
+  /** The resident agent definitions, with their full fields. */
   const definitions = () => (residents?.definitions ?? []) as unknown as DefinitionFull[];
 
   /** The panel's dialogs, for the operation running now. */
   let dialogs: Dialogs;
 
   return {
+    /** Build the panel state: load resident agents and lay their assignments over the graph. */
     async state(refresh) {
       const problem = await load();
       const graph = await deps.graph(refresh);
@@ -95,6 +97,7 @@ export function agentsHost(deps: PanelDeps, changed: () => void): WorkbenchHost 
       };
     },
 
+    /** Run a panel operation and refresh the views after a change or a problem. */
     async run(op, values, progress, asked) {
       dialogs = asked;
       const result = await operate(op, values, progress);
@@ -414,10 +417,15 @@ let editing = null;
 let assigning = null;
 let presetTarget = "";
 const graph = Graph($("graph"), (node) => { renderSelected(node); if (node && node.kind !== "item") { presetTarget = node.id; for (const select of document.querySelectorAll("[data-targets]")) select.value = node.id; } });
+/** A status word in lower case with spaces. */
 const human = (word) => String(word || "").replace(/_/g, " ").toLowerCase();
+/** The colour class for an assignment status. */
 const toneOf = (status) => status === "ACTIVE_IDLE" ? "ok" : ["QUEUED", "INVESTIGATING", "EXECUTING", "WAITING_FOR_EVENT", "VALIDATED"].includes(status) ? "busy" : ["AWAITING_APPROVAL", "AWAITING_INPUT"].includes(status) ? "attention" : ["DEGRADED", "RECONCILIATION_REQUIRED", "REVOKED"].includes(status) ? "bad" : "";
+/** How many days an assignment has left. */
 const days = (at) => { if (!at) return ""; const left = Math.round((at - Date.now()) / 86400000); return left > 0 ? left + " day(s) left" : "ended"; };
+/** Whether an assignment is working (active or paused). */
 const working = (row) => row.lifecycle === "active" || row.lifecycle === "paused";
+/** The latest version of each definition that is not revoked. */
 const latestVersions = () => { const map = new Map(); for (const row of S.definitions) if (row.state !== "revoked" && (!map.has(row.definition_id) || map.get(row.definition_id).version < row.version)) map.set(row.definition_id, row); return [...map.values()]; };
 
 function onState(state) {
@@ -518,6 +526,7 @@ function assignForm(row) {
 }
 function renderWaiting() {
   const rows = waitingDefinitions($("w-all").checked);
+  /** The assignments of a definition that are not working and not revoked. */
   const parked = (id) => S.assignments.filter((item) => item.definition.split("@")[0] === id && !working(item) && item.lifecycle !== "revoked");
   $("waiting").innerHTML = rows.length ? rows.map((row) => {
     const parkedRows = parked(row.definition_id);

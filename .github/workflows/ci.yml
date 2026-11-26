@@ -1,3 +1,7 @@
+# Continuous integration for every push and pull request: format check, compile, Clippy, the
+# Rust test suite against a MongoDB service, the VS Code extension build and tests, and an
+# end-to-end smoke test of the built binary. Test runs never upload to the hosted DataSea service.
+
 name: CI
 
 on:

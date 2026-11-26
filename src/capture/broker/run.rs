@@ -738,6 +738,8 @@ impl EvidenceQueryBroker {
         request: &EvidenceQueryRequest,
         policy: &AccessPolicy,
     ) -> CaptureResult<(EvidenceRecipe, Exploration)> {
+        // Exploration builds a first checklist from what the permitted resources can actually
+        // answer, instead of from a stored recipe
         let scope = ScopeResolution::resolve(request, &self.registry, policy);
         let mut exploration = Exploration {
             class: request.investigation_class.clone(),
@@ -748,6 +750,9 @@ impl EvidenceQueryBroker {
         let mut wanted: BTreeMap<(ResourceType, EvidenceType), BTreeSet<String>> = BTreeMap::new();
         let mut permitted = scope.permitted_resources.clone();
         permitted.sort();
+        // For each permitted resource: skip those that answer no queries or have no connector; ask
+        // the connector what it holds, and keep the evidence types the policy permits and the
+        // resource really has
         for resource_id in &permitted {
             let Some(definition) = self.registry.get(resource_id) else {
                 continue;
@@ -797,6 +802,8 @@ impl EvidenceQueryBroker {
                     discovered.status
                 ));
             }
+            // The filter keys a step can use: those the resource supports and the request gives a
+            // value for
             let known = definition
                 .capabilities
                 .filters
@@ -820,6 +827,8 @@ impl EvidenceQueryBroker {
                 snapshot: discovered.snapshot,
             });
         }
+        // One step per resource type and evidence type, bounded by the recipe's step limit; each
+        // filter is a template filled from the request's variables
         if wanted.len() > recipe::MAX_RECIPE_STEPS {
             exploration.notes.push(format!(
                 "{} evidence types were found; the exploration queries the first {}",
@@ -859,6 +868,7 @@ impl EvidenceQueryBroker {
                 }
             })
             .collect::<Vec<_>>();
+        // Nothing to explore means nothing can be captured for this investigation class
         if steps.is_empty() {
             return Err(CaptureError::new(
                 ErrorCode::InvalidRecipe,
@@ -2356,12 +2366,15 @@ impl EvidenceQueryBroker {
         selected: &BTreeSet<String>,
         request: &EvidenceQueryRequest,
     ) -> Vec<Warning> {
+        // Everything a person should know before trusting the results, each with the references it
+        // concerns
         let mut warnings = Vec::new();
         let warn = |kind: WarningKind, message: String, refs: Vec<String>| Warning {
             kind,
             message,
             refs,
         };
+        // Resources the scope refused
         for denial in &scope.denied {
             warnings.push(warn(
                 WarningKind::Access,
@@ -2369,6 +2382,8 @@ impl EvidenceQueryBroker {
                 vec![denial.resource_id.clone()],
             ));
         }
+        // Steps that were denied, failed authorization, returned partial results, or stopped with
+        // more pages at the source
         for step in &run.audit.steps {
             match (step.state, step.connector_status) {
                 (StepState::Denied, _)
@@ -2403,6 +2418,8 @@ impl EvidenceQueryBroker {
                 ));
             }
         }
+        // Starting variables the checklist needed but was not given, and variables whose values
+        // could not be checked
         for variable in &run.unstarted {
             warnings.push(warn(
                 WarningKind::Completeness,
@@ -2444,6 +2461,7 @@ impl EvidenceQueryBroker {
                 Vec::new(),
             ));
         }
+        // Evidence the requirements call for but the run could not get
         for item in missing {
             warnings.push(warn(
                 WarningKind::Completeness,
@@ -2454,6 +2472,7 @@ impl EvidenceQueryBroker {
                 Vec::new(),
             ));
         }
+        // Assertions that conflict or could not be established
         for assertion in assertions {
             if assertion.conflicted() {
                 let mut refs = assertion.supporting.clone();
@@ -2474,6 +2493,7 @@ impl EvidenceQueryBroker {
                 ));
             }
         }
+        // Timed evidence with no observation time, or older than the requested freshness
         let now = self.clock.now();
         for id in selected {
             let Some(record) = self.store.evidence.get(id) else {

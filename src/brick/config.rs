@@ -1221,12 +1221,14 @@ fn contradictions(checks: &[Check]) -> Vec<Problem> {
     - None
 */
 fn check_problems(field: &str, check: &Check, gate: bool, problems: &mut Vec<Problem>) {
+    // A precondition runs before every change, so only cheap gate checks belong there
     if gate && !check.is_gate() {
         problems.push(problem(
             "PRECONDITION_TOO_COSTLY",
             format!("{field}: {} is a verification check; a precondition runs before every change and may use file, env, branch, git_clean, time_window, command_available, credential_present, or signed_state checks", serial_kind(check)),
         ));
     }
+    // Branch patterns must be real branch names or patterns
     if let Check::BranchIs { patterns } | Check::BranchNot { patterns } = check {
         if let Some(bad) = patterns.iter().find(|pattern| {
             pattern.is_empty()
@@ -1240,7 +1242,10 @@ fn check_problems(field: &str, check: &Check, gate: bool, problems: &mut Vec<Pro
             ));
         }
     }
+    // Each check kind has its own rules, aimed at checks that could never hold, always hold, or
+    // reach somewhere they should not
     match check {
+        // File checks name one exact file, and file_contains needs text
         Check::FileExists { path }
         | Check::FileAbsent { path }
         | Check::FileContains { path, .. } => {
@@ -1313,6 +1318,7 @@ fn check_problems(field: &str, check: &Check, gate: bool, problems: &mut Vec<Pro
                 ));
             }
         }
+        // Endpoint checks are https only and never reach private addresses
         Check::HttpOk {
             url,
             status,
@@ -1349,6 +1355,7 @@ fn check_problems(field: &str, check: &Check, gate: bool, problems: &mut Vec<Pro
                 format!("{field}: window_hours is 1 to 720"),
             ));
         }
+        // Programs must pass the command rules and finish within ten minutes
         Check::CommandSucceeds {
             program,
             args,
@@ -1497,12 +1504,16 @@ pub(crate) fn validate(
     adapters: &[(String, String)],
     profiles: &[(String, bool)],
 ) -> Vec<Problem> {
+    // Every rule below only reports a problem; nothing is fixed silently, so a person sees each
+    // mistake. The rules catch configurations that would be unsafe, that would silently do nothing,
+    // or that contradict themselves.
     let mut problems = Vec::new();
     let paths = |problems: &mut Vec<Problem>, field: &str, entries: &[String]| {
         for entry in entries {
             problems.extend(path_problem(field, entry));
         }
     };
+    // A Brick that shares its configuration from another must name a valid Brick id
     if let Some(shared) = config.shares_from() {
         if crate::platform::validate_name("brick", shared).is_err() {
             problems.push(problem(
@@ -1512,6 +1523,8 @@ pub(crate) fn validate(
         }
     }
     match config {
+        // Knowledge is delivered to agents as text: each file must be one exact path, never Crane's
+        // own state or an .env file, and every list stays bounded
         Config::Knowledge(config) => {
             paths(&mut problems, "files", &config.files);
             for file in &config.files {
@@ -1561,6 +1574,8 @@ pub(crate) fn validate(
                 ));
             }
         }
+        // Identity admits callers: it must name someone, catch near-misspellings of a provider
+        // (which would admit nobody), and never admit everyone
         Config::Identity(config) => {
             if config.agents.is_empty() {
                 problems.push(problem(
@@ -1606,6 +1621,9 @@ pub(crate) fn validate(
                 ));
             }
         }
+        // Access shapes reads and changes: path lists may not contradict each other, deny_read may
+        // not blind the agent entirely, and the former allow list and the per-operation modes are
+        // not mixed
         Config::Access(config) => {
             for (field, entries) in [
                 ("include", &config.include),
@@ -1668,6 +1686,8 @@ pub(crate) fn validate(
                 ));
             }
         }
+        // Approval holds changes for people: it needs at least one kind of change, reads cannot be
+        // held at the hook boundary, and the size, quorum and expiry settings must fit together
         Config::Approval(config) => {
             paths(&mut problems, "paths", &config.paths);
             paths(&mut problems, "except", &config.except);
@@ -1721,6 +1741,9 @@ pub(crate) fn validate(
                 ));
             }
         }
+        // Limits cap session and daily work: caps above their bounds limit nothing, a 0 cap blocks
+        // everything (access does that better), and running out may stop or escalate but never
+        // retry
         Config::Limits(config) => {
             let caps = [
                 config.max_tool_calls,
@@ -1767,6 +1790,9 @@ pub(crate) fn validate(
                 problems.push(problem("LIMITS_RETRY", "on_exhausted is stop or escalate"));
             }
         }
+        // Environment: the isolation profile must exist (an unavailable one makes changes observe-
+        // only), variable names must be valid, hide_env may not hide everything, and credentials
+        // and network hosts must be well formed and not both allowed and denied
         Config::Environment(config) => {
             match profiles.iter().find(|(id, _)| *id == config.profile) {
                 None => problems.push(problem(
@@ -1846,6 +1872,8 @@ pub(crate) fn validate(
                 ));
             }
         }
+        // Precondition gates work before it starts: at least one well-formed, non-contradictory
+        // check, and a failure may ask or deny but never pass silently
         Config::Precondition(config) => {
             if config.checks.is_empty() {
                 problems.push(problem(
@@ -1864,6 +1892,8 @@ pub(crate) fn validate(
             }
             problems.extend(contradictions(&config.checks));
         }
+        // Verification checks work after it is done, with its own checks or those of a precondition
+        // Brick
         Config::Verification(config) => {
             if config.checks.is_empty() && config.checks_from.is_none() {
                 problems.push(problem(
@@ -1876,6 +1906,8 @@ pub(crate) fn validate(
             }
             problems.extend(contradictions(&config.checks));
         }
+        // Action routes operations through Crane: each one must be a registered or known direct
+        // operation, and deny_direct only makes sense when a direct operation is listed
         Config::Action(config) => {
             let rules = config.rules();
             if rules.is_empty() {
@@ -1926,6 +1958,9 @@ pub(crate) fn validate(
                 }
             }
         }
+        // Recovery decides what happens after failures: retries need reconciliation first (an
+        // uncertain effect must not run twice) and the retry, backoff and failure counts must fit
+        // together
         Config::Recovery(config) => {
             if !config.reconcile_before_retry && config.max_retries > 0 {
                 problems.push(problem("RECOVERY_UNSAFE_RETRY", "retries require reconcile_before_retry: an uncertain effect is reconciled before it is repeated"));
@@ -1976,6 +2011,9 @@ pub(crate) fn validate(
                 ));
             }
         }
+        // Provenance requires records on commits: each requirement needs its key or pattern, a
+        // pattern must not match every commit, and gating commits needs something in the message to
+        // read
         Config::Provenance(config) => {
             if config.require.is_empty() {
                 problems.push(problem(
@@ -2044,6 +2082,8 @@ pub(crate) fn validate(
                 problems.push(problem("PROVENANCE_COMMITS_INVALID", "commits is 1 to 500"));
             }
         }
+        // Watch raises signals: monitors run at most every five minutes, only on sources with a
+        // connector, thresholds only where they mean something, and analyses only ever advise
         Config::Watch(config) => {
             if config.signals.is_empty() && config.triggers.is_empty() && config.analyses.is_empty()
             {

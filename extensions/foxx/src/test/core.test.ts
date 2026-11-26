@@ -91,6 +91,7 @@ Trust this owner key for this repository? (y/N): `;
 });
 
 test("searches actions by prefix: every typed word must start a word of the action", () => {
+  /** The ids of the actions a search finds. */
   const ids = (query: string) => search(query, ACTIONS).map((action) => action.id);
   assert.equal(ids("").length, ACTIONS.length);
   assert.equal(ids("pres")[0], "preserve");
@@ -183,6 +184,7 @@ test("keeps flow stage orders acyclic when zones are connected", () => {
 });
 
 test("lists active agents first, then the most recent", () => {
+  /** A graph activity entry. */
   const entry = (id: string, active: boolean, last_at: number) => ({ node: "flow:" + id, kind: "flow" as const, id, calls: 1, denied: 0, last_at, active, agents: [] });
   assert.deepEqual(busiest([entry("old", false, 1), entry("live", true, 2), entry("recent", false, 9)]).map((item) => item.id), ["live", "recent", "old"]);
 });
@@ -193,7 +195,9 @@ test("links zones by dragging: new flows, appends, prepends, merges, and refusal
     text = addZone(text, { id, description: "", criticality: id === "pay" ? "critical" : "routine", autonomy_ceiling: id === "pay" ? "assisted" : "delegated", selectors: { files: [`app/${id}.py`] } });
     if (status === "active") text = activate(text, "zone", id);
   }
+  /** Each flow as id:status:stages. */
   const flows = (yaml: string) => (parse(yaml).flows ?? []).map((flow: { id: string; status: string; stages: { id: string }[] }) => `${flow.id}:${flow.status}:${flow.stages.map((stage) => stage.id).join(">")}`);
+  /** The zone ids. */
   const zones = (yaml: string) => (parse(yaml).zones ?? []).map((zone: { id: string }) => zone.id);
   let edit = linkZones(text, "cart", "pay");
   assert.deepEqual(flows(edit.text), ["cart-to-pay:active:cart>pay"], "two enforced zones become an enforced flow");
@@ -226,7 +230,9 @@ test("unlinks zones by splitting the flow, giving lone zones back", () => {
   let text = "version: 1\n";
   for (const id of ["a", "b", "c", "d"]) text = activate(addZone(text, { id, description: "", criticality: "routine", autonomy_ceiling: "delegated", selectors: { files: [`app/${id}.py`] } }), "zone", id);
   for (const [from, to] of [["a", "b"], ["b", "c"], ["c", "d"]]) text = linkZones(text, from, to).text;
+  /** Each flow as id:stages:files. */
   const flows = (yaml: string) => (parse(yaml).flows ?? []).map((flow: { id: string; stages: { id: string }[]; include?: string[] }) => `${flow.id}:${flow.stages.map((stage) => stage.id).join(">")}:${(flow.include ?? []).join(",")}`);
+  /** The zone ids. */
   const zones = (yaml: string) => (parse(yaml).zones ?? []).map((zone: { id: string }) => zone.id);
   const middle = unlinkZones(text, "b", "c");
   assert.deepEqual(flows(middle.text), ["a-to-b:a>b:app/a.py,app/b.py", "a-to-b-c:c>d:app/c.py,app/d.py"], "the split keeps both halves as flows");
@@ -296,6 +302,7 @@ test("describes a dry-run preview: restrictions before and after, widening, and 
 test("offers every command family with the arguments the CLI requires", () => {
   const families = new Set(CONTROLS.map((item) => item.family));
   for (const family of ["scope", "permission", "precondition", "constraint", "approval", "isolation", "verification", "provenance", "budget", "recovery", "revocation", "selection", "skill", "runbook", "brick"]) assert.ok(families.has(family), family);
+  /** The control with an id. */
   const byId = (id: string) => CONTROLS.find((item) => item.id === id)!;
   assert.deepEqual(controlArgs(byId("permission.test"), ["look-up@1"]), ["permission", "test", "--skill", "look-up@1", "--format", "json"]);
   assert.deepEqual(controlArgs(byId("approval.deny"), ["inv@abc", "wrong amount"]), ["approval", "deny", "inv@abc", "--reason", "wrong amount", "--format", "json"]);
@@ -441,6 +448,7 @@ test("the settings pop-up of every kind lists every setting Crane accepts for it
 });
 
 test("names what a DataSea request is about", () => {
+  /** A DataSea request. */
   const request = (op: string, params: Record<string, unknown>) => ({ request_id: "brq_1", op, params, reason: "why", role: "admin", requested_by: "ana", requested_at: 0 });
   assert.equal(inboxSubject(request("attach", { subject: "guard@2", target: "zone:api" })), "guard@2 → zone:api");
   assert.equal(inboxSubject(request("assign", { agent: "claude", targets: ["zone:api", "flow:pay"] })), "claude → zone:api, flow:pay");

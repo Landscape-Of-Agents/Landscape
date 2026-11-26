@@ -429,6 +429,8 @@ pub(crate) fn build(
     actor: &Actor,
     now: u64,
 ) -> CapabilityResult<CapabilityIntake> {
+    // Integrity first: the request's schema, the episode and Evidence Pack it names, and the pack's
+    // own manifest and digest must all match before anything is read from them
     if request.schema_version != INTAKE_SCHEMA_VERSION {
         return Err(CapabilityError::new(ErrorCode::UnsupportedSchemaVersion, format!("intake schema version {} is not supported (this Crane reads {INTAKE_SCHEMA_VERSION})", request.schema_version)));
     }
@@ -482,6 +484,7 @@ pub(crate) fn build(
             ),
         ));
     }
+    // The submitter must be allowed to read the repository the evidence comes from
     if let Some(repository) = &pack.scope.repository {
         if !sources.reader.permits_repository(Some(repository)) {
             return Err(CapabilityError::new(
@@ -490,6 +493,7 @@ pub(crate) fn build(
             ));
         }
     }
+    // The episode and the pack themselves are the first resolved references
     let mut references = vec![
         ReferenceCheck::new(
             "episode",
@@ -514,6 +518,9 @@ pub(crate) fn build(
     let mut validation_results = Vec::new();
     let mut policies = Vec::new();
     let mut present = BTreeSet::new();
+    // Re-resolve every evidence item against the canonical records: an item whose artifact or
+    // content hash changed is a mismatch, and unreadable or missing items are recorded instead of
+    // trusted
     for item in &pack.evidence {
         let (check, record) = sources.evidence(&item.evidence_id);
         let check = match (record, &check.outcome) {
@@ -562,6 +569,9 @@ pub(crate) fn build(
         if !resolved {
             continue;
         }
+        // Resolved items are sorted into what the work observably did: code changes, tool calls, CI
+        // and tests, deployments (a rollback counts as recovery), runtime signals, validations and
+        // policies
         if item.parse_status == ParseStatus::Failed {
             completeness.parse_failures.push(item.evidence_id.clone());
         } else {
@@ -613,6 +623,8 @@ pub(crate) fn build(
         }
     }
     completeness.present = present.into_iter().collect();
+    // Assertions are compared with their current state (a changed claim is stale) and split into
+    // verified, contradicted and unresolved claims; an agent's hypothesis never counts as verified
     for assertion in &pack.assertions {
         let current = capture.assertions.get(&assertion.assertion_id);
         let outcome = match current {
@@ -661,6 +673,7 @@ pub(crate) fn build(
                 .push(assertion.assertion_id.clone());
         }
     }
+    // The pack's relations that show state moving forward (triggered, resulted in, deployed to)
     observed.state_transitions = pack
         .context_view
         .relations
@@ -673,6 +686,7 @@ pub(crate) fn build(
         })
         .map(|relation| relation.relation_id.clone())
         .collect();
+    // Evidence the pack already knew was missing is carried into completeness by why it is missing
     for missing in &pack.missing_evidence {
         match missing.state {
             SourceState::Unavailable => completeness
@@ -688,6 +702,8 @@ pub(crate) fn build(
         }
     }
     completeness.missing = pack.missing_evidence.clone();
+    // The zones, flows and policies the evidence was captured under must still be the current
+    // revisions; older ones are recorded as stale
     let governance_checks = pack
         .scope
         .zones
@@ -714,6 +730,8 @@ pub(crate) fn build(
         }
         references.push(check);
     }
+    // Business references in the intent count only when their mapping is authoritative; a claimed
+    // mapping stronger than the evidence allows is an error
     let intent = &request.intent;
     let all_refs = intent
         .objective
@@ -730,6 +748,8 @@ pub(crate) fn build(
             completeness.unresolved_mappings.push(reference.id.clone());
         }
     }
+    // The review profile decides which gaps block: any error makes the intake Incomplete, otherwise
+    // it is Ready
     completeness.unresolved_assumptions = request.unresolved_assumptions.clone();
     findings.extend(profile_findings(&profile, request, &completeness));
     let status = if findings
@@ -740,6 +760,8 @@ pub(crate) fn build(
     } else {
         IntakeStatus::Ready
     };
+    // The intake id derives from the idempotency key and fingerprint, so submitting the same
+    // request twice yields the same intake
     let (idempotency_key, fingerprint) = identity(request);
     let snapshots = capture
         .audit(&pack.retrieval.query_id)
@@ -757,6 +779,7 @@ pub(crate) fn build(
                 .collect()
         })
         .unwrap_or_default();
+    // Riskier work needs a more senior reviewer
     let approval_level = match request.risk {
         RiskLevel::Low => ReviewLevel::Peer,
         RiskLevel::Medium => ReviewLevel::Owner,

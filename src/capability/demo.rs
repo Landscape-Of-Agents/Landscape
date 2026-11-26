@@ -399,6 +399,8 @@ pub(crate) struct DemoReport {
     - Error if any stage fails unexpectedly
 */
 pub(crate) fn run() -> CapabilityResult<DemoReport> {
+    // A synthetic cast, a captured Evidence Pack, an in-memory registry and a clock that ticks
+    // forward on each call, so the whole story is deterministic
     let cast = cast();
     let (mut capture, pack) = captured()?;
     let mut registry = CapabilityRegistry::in_memory(grants(&cast));
@@ -415,6 +417,8 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
         current: &current,
         reader: &engineer_reader,
     };
+    // Submit two intakes from the same pack; submitting the second again shows that intake is
+    // idempotent
     let refund = registry.submit_intake(&refund_intake(&pack), &sources, &cast.engineer, tick())?;
     let diagnostics =
         registry.submit_intake(&diagnostics_intake(&pack), &sources, &cast.engineer, tick())?;
@@ -433,12 +437,15 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
             })
         })
         .collect::<Vec<_>>();
+    // The low-risk diagnostics intake must be ready, or the rest of the story cannot run
     if diagnostics.intake.status != IntakeStatus::Ready {
         return Err(CapabilityError::new(
             ErrorCode::IncompleteEvidence,
             "the low-risk intake should be ready",
         ));
     }
+    // The risky recovery capability is created and validated, and its publication is refused
+    // because its evidence is incomplete
     let recovery = bind(RECOVERY, &pack, &refund.intake.intake_id)?;
     registry.create_candidate(&cast.engineer, recovery, Some("conservative"), tick())?;
     let recovery_run = registry.validate(
@@ -474,6 +481,7 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
             ))
         }
     };
+    // The diagnostics capability passes validation and the lead publishes it
     let diagnostics_definition = bind(DIAGNOSTICS, &pack, &diagnostics.intake.intake_id)?;
     registry.create_candidate(
         &cast.engineer,
@@ -503,6 +511,7 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
         },
         tick(),
     )?;
+    // A narrower version 2 is proposed, linked to version 1
     let mut next = diagnostics_definition.clone();
     next.version = 2;
     next.previous_version_ref = Some(1);
@@ -512,6 +521,7 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
         .limitations
         .retain(|limitation| !limitation.contains("Runtime metrics"));
     registry.propose_version(&cast.engineer, next, Some("low-risk-technical"), tick())?;
+    // The published version must trace back to every piece of its evidence
     let trace = query::trace(
         &registry.state,
         "deployment-failure-diagnostics",
@@ -528,6 +538,7 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
             "the published version must trace to its evidence",
         ));
     }
+    // An agent's hypothesis alone never verifies a claim
     let deployment = entity_id(EntityKind::Deployment, "dep-7731");
     let guess = hypothesis(
         &cast.agent,
@@ -563,6 +574,8 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
     let eligible_before_change =
         query::latest_eligible(&registry.state, "deployment-failure-diagnostics")
             .map(|record| record.definition.version);
+    // Moving the refunds zone to a new revision makes the published version stale and no longer
+    // eligible
     current.zones.insert("refunds".into(), "v4".into());
     let sources = Sources {
         capture: &capture.store,

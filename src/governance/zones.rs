@@ -285,6 +285,16 @@ pub(crate) struct Resolution {
     pub(crate) source_markers: Vec<String>,
 }
 
+/** A zone or flow marked by comments in a source file, resolved to the lines it covers
+ * Fields
+    - path: String - repository-relative file
+    - start_line: usize - first covered line
+    - end_line: usize - last covered line
+    - kind: String - zone or flow
+    - id: String - the entity's id
+    - ceiling: Ceiling - its autonomy ceiling
+    - criticality: Criticality - its criticality
+*/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SourceScope {
     pub(crate) path: String,
@@ -308,6 +318,13 @@ fn finding(code: &str, severity: Severity, message: String) -> Finding {
     Finding::new(code, severity, message)
 }
 
+/** Check whether a file contains any Crane marker tag, reading it in 8 KiB chunks and carrying the tail of each chunk so a tag split across chunks is still found
+ * Input
+    - path: &std::path::Path - file to inspect
+ * Output
+    - Result<bool, String>
+    - Error if the file cannot be read
+*/
 fn contains_marker_tag(path: &std::path::Path) -> Result<bool, String> {
     let mut file = fs::File::open(path)
         .map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
@@ -488,12 +505,14 @@ pub(crate) fn resolve(
     state: &State,
     policies: &PolicySet,
 ) -> Result<Resolution, String> {
+    // Crane's own state is never part of a zone or flow
     let files = git::list_files(&workspace.root)?
         .into_iter()
         .filter(|path| !path.starts_with(".crane/"))
         .collect::<Vec<_>>();
     let mut resolution = Resolution::default();
     let mut ids: BTreeMap<String, &'static str> = BTreeMap::new();
+    // Every id must be well formed and unique across zones, flows and context packs
     let mut check_id = |kind: &'static str, id: &str, findings: &mut Vec<Finding>| {
         if crate::platform::validate_name(kind, id).is_err() {
             findings.push(finding(
@@ -508,6 +527,8 @@ pub(crate) fn resolve(
             findings.push(finding("governance_duplicate_id", Severity::High, format!("'{id}' is used by a {other} and a {kind}; zone, flow, and context pack identities must be distinct")));
         }
     };
+    // Context packs first: they are referenced by zones and flows below, and every file they name
+    // must exist
     let packs = governance
         .context_packs
         .iter()
@@ -528,6 +549,7 @@ pub(crate) fn resolve(
             }
         }
     }
+    // A zone or flow may only reference policies and context packs that exist
     let references = |kind: &str,
                       id: &str,
                       policy_refs: &[String],
@@ -552,6 +574,8 @@ pub(crate) fn resolve(
             }
         }
     };
+    // The symbol index (a call graph over the repository's source) is costly, so it is built only
+    // when a flow or a symbol selector needs it
     let needs_index = governance
         .flows
         .iter()
@@ -577,6 +601,7 @@ pub(crate) fn resolve(
     };
     resolution.analyzed = index.analyzed;
     resolution.unsupported = index.unsupported;
+    // Zones: each selector kind adds the files it matches; a selector that matches nothing is stale
     for zone in &governance.zones {
         check_id("zone", &zone.id, &mut resolution.findings);
         references(
@@ -592,6 +617,7 @@ pub(crate) fn resolve(
                 findings.push(finding("selector_stale", Severity::Medium, format!("zone {} selector {selector} matches nothing (stale after a rename or deletion?); it covers nothing and grants nothing", zone.id)));
             }
         };
+        // Path patterns
         for pattern in &zone.selectors.paths {
             let matched = files
                 .iter()
@@ -605,6 +631,7 @@ pub(crate) fn resolve(
             );
             covered.extend(matched);
         }
+        // Exact files
         for file in &zone.selectors.files {
             let matched = files
                 .iter()
@@ -618,6 +645,7 @@ pub(crate) fn resolve(
             );
             covered.extend(matched);
         }
+        // Whole directories
         for directory in &zone.selectors.directories {
             let prefix = format!("{}/", directory.trim_end_matches('/'));
             let matched = files
@@ -632,6 +660,7 @@ pub(crate) fn resolve(
             );
             covered.extend(matched);
         }
+        // Symbols, resolved through the index to the files that define them
         for symbol in &zone.selectors.symbols {
             let graph = index.discover(std::slice::from_ref(symbol), 0);
             if graph.status == "UNRESOLVED" {
@@ -647,6 +676,7 @@ pub(crate) fn resolve(
             }
             covered.extend(graph.files);
         }
+        // Signed selections cover the file they currently sit in
         for id in &zone.selectors.selections {
             match state.record(id) {
                 Some(record) => {
@@ -672,6 +702,8 @@ pub(crate) fn resolve(
             graph: None,
         });
     }
+    // Flows: check references and context, then follow the call graph from the entry points (and
+    // the stage symbols) to find every file the flow reaches
     for flow in &governance.flows {
         check_id("flow", &flow.id, &mut resolution.findings);
         references(
@@ -707,6 +739,7 @@ pub(crate) fn resolve(
                 format!("flow {} has no entry points or linked zone stages", flow.id),
             ));
         }
+        // The call graph starts at the declared entry points and at the symbols of each stage
         let entry_points = flow
             .entry_points
             .iter()
@@ -719,6 +752,8 @@ pub(crate) fn resolve(
             .collect::<Vec<_>>();
         let graph = index.discover(&entry_points, flow.max_depth.unwrap_or(DEFAULT_DEPTH));
         let mut covered = graph.files.clone();
+        // Files named by the stages' path, file, directory and selection selectors join the flow
+        // too
         let stage_paths = flow
             .stages
             .iter()
@@ -737,6 +772,8 @@ pub(crate) fn resolve(
                     }))
             })
             .collect::<Vec<_>>();
+        // Then the flow's include patterns and the stage paths add files, and its exclude patterns
+        // remove them
         for pattern in flow.include.iter().chain(stage_paths.iter()) {
             covered.extend(
                 files
@@ -751,6 +788,8 @@ pub(crate) fn resolve(
                 .iter()
                 .any(|pattern| glob::matches(pattern, path))
         });
+        // A flow whose graph could not be followed fully is reported; an active one that is
+        // unresolved is serious
         match graph.status {
             "UNRESOLVED" => resolution.findings.push(finding(
                 "flow_unresolved",
@@ -774,6 +813,8 @@ pub(crate) fn resolve(
             graph: Some(graph),
         });
     }
+    // Source markers: zones and flows can also be marked by comments inside files. A file too large
+    // to scan that still holds a marker cannot be enforced, so it is reported
     resolution.findings.extend(stage_findings(governance));
     for path in &files {
         let full = workspace.root.join(path);
@@ -790,6 +831,8 @@ pub(crate) fn resolve(
             );
         }
     }
+    // Group the zone and flow markers by entity; malformed markers and markers naming no governance
+    // entity are reported and skipped
     let source_scan = scan_repository(workspace)?;
     let zone_ids = governance
         .zones
@@ -847,6 +890,8 @@ pub(crate) fn resolve(
             .or_default()
             .push((path, marker));
     }
+    // Each marked entity needs exactly one start and one end marker in the same file, enclosing at
+    // least one line; only active entities become line scopes
     for ((kind, id), markers) in source_markers {
         let start_markers = markers
             .iter()
@@ -902,11 +947,14 @@ pub(crate) fn resolve(
         }
         let _ = end_path;
     }
+    // The set of markers is compared with the signed set, so adding or removing a marker by hand is
+    // detected
     resolution.source_markers.sort();
     resolution.findings.extend(marker_signature_findings(
         &resolution.source_markers,
         state.config.source_markers.as_deref(),
     ));
+    // Line scopes in one file must nest like brackets; overlapping or crossed scopes are reported
     let mut scope_events = BTreeMap::<&str, Vec<(usize, bool, &str)>>::new();
     for scope in &resolution.source_scopes {
         scope_events.entry(&scope.path).or_default().extend([
@@ -934,6 +982,8 @@ pub(crate) fn resolve(
             }
         }
     }
+    // Files claimed by several active entities with different ceilings are reported once per group;
+    // the strictest ceiling applies at enforcement time
     let mut overlaps: BTreeMap<String, Vec<&Resolved>> = BTreeMap::new();
     for entity in resolution
         .entities
@@ -965,6 +1015,8 @@ pub(crate) fn resolve(
             }
         }
     }
+    // Finally, source files no active zone or flow covers are listed, so gaps in governance are
+    // visible
     if !governance.zones.is_empty() || !governance.flows.is_empty() {
         resolution.uncovered = files
             .iter()
@@ -1008,6 +1060,14 @@ pub(crate) struct Limit {
     pub(crate) bricks: Vec<String>,
 }
 
+/** A limit that applies only to some lines of a file (from source markers)
+ * Fields
+    - start_line: usize - first line
+    - end_line: usize - last line
+    - ceiling: Ceiling - autonomy ceiling for these lines
+    - criticality: Criticality - criticality for these lines
+    - entities: Vec<String> - the zones and flows the lines belong to
+*/
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ScopedLimit {
     pub(crate) start_line: usize,
@@ -1018,6 +1078,12 @@ pub(crate) struct ScopedLimit {
 }
 
 impl Limit {
+    /** Narrow a file's limit to the lines a change touches: line scopes the change overlaps tighten the ceiling (lowest wins) and raise the criticality (highest wins); untouched scopes are ignored
+     * Input
+        - changed: &[(usize, usize)] - changed line ranges (1-based, inclusive)
+     * Output
+        - Option<Limit> (None when no whole-file entity or touched scope applies)
+    */
     pub(crate) fn for_lines(&self, changed: &[(usize, usize)]) -> Option<Self> {
         let scopes = self
             .scopes

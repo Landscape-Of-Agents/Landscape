@@ -154,8 +154,10 @@ export function layout(nodes: { id: string }[], edges: { from: string; to: strin
   for (let index = 0; index < layers.length; index += 1) layers[index] ??= [];
   // Barycenter sweeps: down by predecessors, up by successors
   const position = new Map<string, number>();
+  /** Record each node's position in its layer. */
   const index = () => layers.forEach((items) => items.forEach((id, at) => position.set(id, at)));
   index();
+  /** The positions of a node's neighbours in the previous layer (down) or the next (up). */
   const neighbors = (id: string, down: boolean) => acyclic.filter((edge) => (down ? edge.to === id : edge.from === id)).map((edge) => position.get(down ? edge.from : edge.to)!);
   for (let sweep = 0; sweep < 6; sweep += 1) {
     const down = sweep % 2 === 0;

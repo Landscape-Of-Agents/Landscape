@@ -39,6 +39,7 @@ function put(node, ...children) {
   node.replaceChildren(...children.flat(Infinity).filter((child) => child !== null && child !== undefined && child !== false));
   return node;
 }
+/** Pad a number with leading zeros. */
 const pad = (number, width) => String(number).padStart(width || 2, "0");
 /** A time as YYYY:MM:DD:HH:MM:SS:MMM (local) */
 function dt(millis) {
@@ -64,6 +65,7 @@ function member(value) { return value ? h("span", { class: "member", title: valu
 
 // ---------------------------------------------------------------- sections
 
+/** A 24x24 stroked icon from one SVG path. */
 const ICON = (d) => svg("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" }, svg("path", { d }));
 const PATHS = {
   home: "M3 11l9-7 9 7M5 10v10h5v-6h4v6h5V10",
@@ -91,6 +93,7 @@ const SECTIONS = [
   { id: "operations", name: "Operations", icon: "operations", text: "How the organization runs day to day: processes, vendors, and incidents.", subs: [] },
   { id: "legal", name: "Legal", icon: "legal", text: "What the organization agrees to: contracts, policies, and compliance.", subs: [] },
 ];
+/** The navigation section with an id. */
 const sectionOf = (id) => SECTIONS.find((section) => section.id === id);
 
 // ---------------------------------------------------------------- state
@@ -115,23 +118,27 @@ let approval = null;
 
 // ---------------------------------------------------------------- the API
 
+/** Thrown when the service says the viewer is signed out. */
 class SignedOut extends Error {}
 function scoped(path) {
   const url = new URL(path, location.origin);
   if (!url.pathname.startsWith("/api/me")) url.searchParams.set("repository", scope.repository);
   return url;
 }
+/** Read an API response: signed out throws SignedOut, other failures throw with the status. */
 async function answer(response) {
   const body = await response.json().catch(() => ({ error: "invalid response" }));
   if (response.status === 401) throw new SignedOut(body.error);
   if (!response.ok) { const error = new Error(body.error || response.statusText); error.status = response.status; throw error; }
   return body;
 }
+/** Read from the API for the chosen repository, adding the non-empty parameters. */
 async function api(path, params) {
   const url = scoped(path);
   for (const [key, value] of Object.entries(params || {})) if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, value);
   return answer(await fetch(url, { credentials: "same-origin" }));
 }
+/** Write to the API for the chosen repository. */
 async function apiWrite(path, payload) {
   return answer(await fetch(scoped(path), { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }));
 }
@@ -162,6 +169,7 @@ function currentRoute() {
   return { section: section || "", sub: sub || "" };
 }
 function drawNav(route) {
+  /** A navigation link, marked when it is the current page. */
   const link = (href, icon, label, active, extra) => h("a", { href, class: (active ? "active" : "") + (extra ? " " + extra : ""), "aria-current": active ? "page" : null }, ICON(PATHS[icon]), h("span", {}, label));
   put(document.getElementById("nav"),
     link("#/", "home", "Home", !route.section),
@@ -256,6 +264,7 @@ function sectionPage(main, section) {
 
 // ---------------------------------------------------------------- render
 
+/** Draw the page for the current route, sending unknown routes home. */
 async function render() {
   const route = currentRoute();
   const section = sectionOf(route.section);

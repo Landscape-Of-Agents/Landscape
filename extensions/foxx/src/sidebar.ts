@@ -208,7 +208,9 @@ h3 .count { margin-left: auto; font-weight: 400; text-transform: none; letter-sp
 const vscode = acquireVsCodeApi();
 let state = null;
 let view = { q: "", filter: "all", showAll: false, entityQ: "", entityKind: "all", entityStatus: "all", policyQ: "", policyUse: "all" };
+/** Escape text for safe use in HTML. */
 const esc = (text) => String(text == null ? "" : text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+/** Run an extension command. */
 const post = (id, argument) => vscode.postMessage({ type: "command", id, argument });
 function draw() {
   if (!state) return;
@@ -226,7 +228,9 @@ function draw() {
   const sel = s.selections;
   const passing = sel.filter((x) => x.outcome === "PASS").length, failing = sel.filter((x) => x.outcome === "FAIL").length, unresolved = sel.filter((x) => x.outcome === "UNRESOLVED").length;
   const zones = s.entities.filter((e) => e.kind === "zone").length, flows = s.entities.filter((e) => e.kind === "flow").length;
+  /** A count that filters the list when clicked. */
   const stat = (n, label, tone, filter) => '<button class="stat ' + tone + '" data-filter="' + filter + '" title="Show ' + esc(label.toLowerCase()) + '"><div class="n">' + n + '</div><div class="l">' + esc(label) + "</div></button>";
+  /** An action button. */
   const action = (id, glyph, label, title) => '<button class="btn" data-id="' + id + '" title="' + esc(title) + '"><span class="g">' + glyph + "</span>" + esc(label) + "</button>";
   const q = view.q.toLowerCase();
   const shown = sel.filter((x) => (view.filter === "all" || x.outcome === view.filter || (view.filter === "preserve" || view.filter === "target") && x.operation === view.filter) && (!q || (x.id + " " + (x.name || "") + " " + x.policy + " " + (x.location || "")).toLowerCase().includes(q)));
@@ -247,6 +251,7 @@ function draw() {
     ? '<div class="graph-line">' + g.zones + " zone" + (g.zones === 1 ? "" : "s") + " · " + g.flows + " flow" + (g.flows === 1 ? "" : "s") + " · " + g.selections + " selection" + (g.selections === 1 ? "" : "s") + " · " + g.edges + " connection" + (g.edges === 1 ? "" : "s") + " · " + (g.acyclic ? '<span class="ok">acyclic</span>' : '<span class="bad">' + g.rejected + " cyclic connection" + (g.rejected === 1 ? "" : "s") + " left out</span>") + "</div>"
     : '<div class="empty" style="padding:0">' + esc(s.graphError || "Crane reports the graph after the next validation.") + "</div>") +
     '<div class="row"><button class="btn" data-id="foxx.openGraph" title="Open the zones, flows, and selections as a graph beside the editor"><span class="g">◇</span>Open graph</button><button class="btn" data-id="foxx.openGraph" data-argument="connect" title="Click zones in the graph, in execution order, to join them into a flow"><span class="g">⇢</span>Connect zones</button></div></div>';
+  /** How long ago a time was, in words. */
   const ago = (at) => { const seconds = Math.max(0, Math.round((Date.now() - at) / 1000)); return seconds < 60 ? "just now" : seconds < 3600 ? Math.round(seconds / 60) + " min ago" : Math.round(seconds / 3600) + " h ago"; };
   const agentRows = s.agents.map((entry) => {
     const lead = entry.agents[0] || {};

@@ -359,13 +359,21 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
 @media (prefers-reduced-motion: reduce) { .fx-node rect.card { transition: none; } .fx-viewport.glide { transition: none; } }
 `;
 
+  /** Build an SVG element through the shared dashboard helper. */
   const svgNode = (tag, attributes, ...children) => window.Foxx.svg(tag, attributes, ...children);
+  /** A small status label; the tone adds a colour class and the title a tooltip. */
   const pill = (text, tone, title) => h("span", { class: "fx-pill" + (tone ? " " + tone : ""), title: title || undefined }, text);
+  /** Whether a value has nothing to show (null, undefined or an empty string). */
   const empty = (value) => value === null || value === undefined || value === "";
+  /** A labelled read-only field; an empty value shows a muted dash. */
   const field = (label, value) => h("div", { class: "fx-field" }, h("span", { class: "fx-label" }, label), h("span", { class: "fx-value" }, empty(value) ? h("span", { class: "muted" }, "—") : value));
+  /** Show text shared from a machine: withheld text (it looked like a secret) gets a notice, cut text an ellipsis. */
   const shared = (value) => (!value ? "" : value.withheld ? h("span", { class: "muted" }, "Not shown: it looks like it holds a secret.") : value.text + (value.truncated ? " …" : ""));
+  /** The same shared text as plain words, for titles and attributes. */
   const plain = (value) => (!value ? "" : value.withheld ? "(withheld)" : value.text || "");
+  /** The colour class for a flow priority: P0 and P1 stand out, others stay neutral. */
   const tone = (priority) => (priority === "P0" ? "p0" : priority === "P1" ? "p1" : "");
+  /** A short explanatory paragraph. */
   const note = (text) => h("p", { class: "fx-note" }, text);
   const ENDED_SHOWN_MS = 3 * 24 * 60 * 60 * 1000;
   const SIGNED = new Set(["flow-approve", "flow-discard", "flow-priority", "flow-context-add", "flow-context-remove", "flow-person-add", "flow-person-remove", "flow-test-require", "flow-proposal-approve", "flow-proposal-reject", "flow-limit"]);
@@ -377,6 +385,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
     ["denials", "Agents are denied repeatedly", "DENIALS"],
   ];
   const ROBOT = "M12 3v3M7 8h10a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3v-5a3 3 0 0 1 3-3zM9 13h.01M15 13h.01M2 12v3M22 12v3";
+  /** A 24x24 stroked icon from one SVG path. */
   const icon = (d) => svgNode("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "1.9", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" }, svgNode("path", { d }));
   const ICONS = {
     zoomIn: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM21 21l-5-5M11 8v6M8 11h6",
@@ -387,7 +396,9 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
     clear: "M6 6l12 12M18 6L6 18",
     trace: "M4 6h7M8 12h9M12 18h8M4 6v0M4 12h1M4 18h5",
   };
+  /** Keep a value for this browser tab (null removes it); storage may be blocked, which is ignored. */
   const remember = (key, value) => { try { if (value === null) sessionStorage.removeItem(key); else sessionStorage.setItem(key, value); } catch (error) { /* storage unavailable */ } };
+  /** Read a value kept for this browser tab, or null. */
   const recall = (key) => { try { return sessionStorage.getItem(key); } catch (error) { return null; } };
 
   function injectStyle() {
@@ -447,6 +458,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
       changes.textContent = invalid || (changed.length ? "Asking for: " + changed.join("; ") : "Change a limit to continue.");
       submit.disabled = !!invalid || !changed.length;
     };
+    /** Close the request dialog without sending anything. */
     const close = () => back.remove();
     const back = h("div", { class: "fx-dialog", role: "dialog", "aria-modal": "true", "aria-label": title, onclick: (event) => { if (event.target === back) close(); }, onkeydown: (event) => { if (event.key === "Escape") close(); } },
       h("form", { onsubmit: async (event) => {
@@ -495,6 +507,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
 
   /** The check boxes of a watcher's checks, and how to turn them back into a list */
   const checkFields = (chosen) => CHECKS.map(([key, label]) => ({ key, label, kind: "check", value: chosen ? chosen.includes(key) : true }));
+  /** Pull the chosen check boxes out of the form values and return them as a list of check keys. */
   const shapeChecks = (params) => { const checks = CHECKS.map(([key]) => key).filter((key) => params[key]); for (const [key] of CHECKS) delete params[key]; return checks; };
 
   // ---------------------------------------------------------------- the map's layout
@@ -559,6 +572,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
    * and the page says so */
   const REMOTE_NAME = /(^|[._-])(rpc|grpc|stub|http|https|fetch|axios|requests?|urlopen|webhook|publish|kafka|sqs|sns|pubsub|invoke|remote)([._-]|$)|Rpc|Grpc|Stub|Client\b|Http/;
   const REMOTE_FILE = /(^|\/)(rpc|grpc|proto|stubs?)(\/|\.|_|$)|_pb2|_grpc/;
+  /** Whether a called symbol looks like a remote call (an RPC or a client file) or a local function. */
   const callKind = (name, path) => (REMOTE_NAME.test(name || "") || REMOTE_FILE.test(path || "") ? "rpc" : "function");
   const KIND_LABEL = { function: "fn", rpc: "rpc", external: "ext" };
 
@@ -585,6 +599,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
     const outside = externalCalls(graph);
     const rows = [];
     const seen = new Set();
+    /** Walk the call tree depth-first from one entry, adding a row per call; a symbol seen before is marked again and not expanded, and the tree stops at 400 rows. */
     const walk = (id, depth) => {
       const entry = byId.get(id);
       if (!entry || rows.length >= 400) return 0;
@@ -608,6 +623,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
 
   // ---------------------------------------------------------------- the page
 
+  /** Draw the Flows page: load the repository's flows, zones, watchers, requests and Bricks, then build the KPI row, the map, the inspector and the queues. */
   async function flowsView(main) {
     if (needRepository(main)) return;
     injectStyle();
@@ -617,6 +633,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
     // Subagents that ended stay in view for three days. One that ended before the time was recorded
     // counts from its last run, then from its creation
     const hasEnded = (watcher) => ["STOPPED", "TERMINATED"].includes(watcher.status || (watcher.active ? "ACTIVE" : "STOPPED"));
+    /** When a watcher ended (its end time, else its last run, else when it was created). */
     const endedAt = (watcher) => watcher.ended_at || watcher.last_run || watcher.created_at || 0;
     const reported = data.watchers.length;
     data.watchers = data.watchers.filter((watcher) => !hasEnded(watcher) || Date.now() - endedAt(watcher) <= ENDED_SHOWN_MS);
@@ -624,7 +641,9 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
 
     // Who monitors a target: its active watchers and the agents assigned to it
     const watchersOf = (flowId) => data.watchers.filter((watcher) => watcher.flow === flowId);
+    /** The resident assignments that work on a target. */
     const assignedTo = (key) => data.assignments.filter((assignment) => (assignment.targets || []).includes(key));
+    /** Everything that keeps watch on a target: active watchers of its flow and the resident agents assigned to it. */
     const monitorsOf = (key, flowId) => [...(flowId ? watchersOf(flowId).filter((watcher) => watcher.active).map((watcher) => "watcher " + watcher.watcher_id) : []), ...assignedTo(key).map((assignment) => assignment.agent)];
 
     const items = [];
@@ -692,6 +711,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
     const openIncidents = data.incidents.length;
     const active = data.watchers.filter((watcher) => watcher.active).length;
     const pending = data.proposals.filter((proposal) => proposal.status === "PENDING").length;
+    /** A headline number tile. */
     const kpi = (label, value, tone) => h("div", { class: "fx-kpi" + (tone ? " " + tone : "") }, h("b", {}, String(value)), h("span", {}, label));
     const root = h("div", { class: "fx" });
     root.append(h("div", { class: "fx-head" },
@@ -740,9 +760,11 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
       svgNode("defs", {}, svgNode("marker", { id: "fx-arrow", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" }, svgNode("path", { d: "M0 0L10 5L0 10z", fill: "var(--accent)" }))),
       viewport);
     const zoomText = h("div", { class: "fx-zoom", "aria-live": "polite" }, "100%");
+    /** A map toolbar button with an icon and an accessible label. */
     const tool = (name, label, run) => h("button", { class: "fx-tool", type: "button", title: label, "aria-label": label, onclick: run }, icon(ICONS[name]));
     const focusButton = tool("focus", "Zoom to the selection", () => focusSelection(true));
     const clearButton = tool("clear", "Clear the selection", () => pick(null));
+    /** The button that opens the call trace of the selected flow. */
     const traceButton = () => h("button", { class: "fx-btn primary fx-trace-btn", type: "button", onclick: openTrace }, icon(ICONS.trace), "Trace");
     const mapTrace = traceButton();
     const focusBar = h("div", { class: "fx-focus", "aria-live": "polite" });
@@ -761,6 +783,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
     main.append(root);
 
     let geometry = null;
+    /** The canvas size, with a fallback while it is not laid out yet. */
     const size = () => ({ width: canvas.clientWidth || 960, height: canvas.clientHeight || 560 });
     function setView(view, glide) {
       state.view = { x: view.x, y: view.y, k: Math.min(3, Math.max(0.2, view.k)) };
@@ -802,6 +825,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
       if (!drag.moved) { drag.moved = true; svg.setPointerCapture(event.pointerId); canvas.classList.add("dragging"); }
       setView({ x: drag.view.x + dx, y: drag.view.y + dy, k: drag.view.k });
     });
+    /** Finish a drag of the map; a drag that moved swallows the click that follows it. */
     const endDrag = (event) => { if (!drag || event.pointerId !== drag.id) return; if (drag.moved) { suppressClick = true; setTimeout(() => { suppressClick = false; }, 0); } canvas.classList.remove("dragging"); drag = null; };
     svg.addEventListener("pointerup", endDrag);
     svg.addEventListener("pointercancel", endDrag);
@@ -912,7 +936,9 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
       return h("button", { class: "fx-item" + (on ? " on" : ""), type: "button", "aria-pressed": String(Boolean(on)), onclick: () => { state.peek = peek; drawInspector(); } },
         h("span", { class: "t" }, title), meta ? h("span", { class: "m" }, meta) : null, right ? h("span", { class: "r" }, right) : null);
     }
+    /** A list of rows, or a note when there are none. */
     const list = (rows, none) => (rows.length ? h("div", { class: "fx-items" }, rows) : note(none));
+    /** The heading of the side panel: the kind of item, its title and its status pills. */
     const peekHead = (kind, title, ...pills) => h("div", { class: "fx-peek-head" }, h("span", { class: "fx-kind" }, kind), h("h3", { class: "fx-peek-title" }, title), pills.length ? h("div", { class: "fx-acts" }, pills) : null);
 
     function drawInspector() {
@@ -1089,8 +1115,11 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
       if (!rows.length) return null;
       return h("div", { class: "fx-section" }, h("h3", {}, "Requests made here"), h("div", { class: "fx-items" }, rows.map(([row, index]) => itemRow({ type: "request", id: index }, requestTitle(row), "@" + row.requested_by + " · " + dt(row.requested_at), chip(requestStatus(row))))));
     }
+    /** A readable title for a request: its operation and what it is about. */
     const requestTitle = (row) => row.op.replace(/^flow-/, "").replace(/-/g, " ") + " " + ((row.params && (row.params.flow || row.params.proposal || row.params.watcher)) || "");
+    /** A request's status, showing EXPIRED for a pending request past its expiry. */
     const requestStatus = (row) => (row.status === "PENDING" && row.expires_at && row.expires_at < Date.now() ? "EXPIRED" : row.status);
+    /** A readable title for a proposal: a test proposal's name, otherwise its title. */
     const proposalTitle = (proposal) => (proposal.kind === "test" ? plain((proposal.payload || {}).name) : plain((proposal.payload || {}).title)) || proposal.proposal_id;
 
     function bricksList(refs) {
@@ -1320,9 +1349,13 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
 
     const catalog = data.subagent_catalog || { subtypes: ["monitor", "incident"], max_per_flow: 3, max_agent_per_flow: 1, actions: [], ceilings: ["observe", "assisted", "delegated", "autonomous"] };
     const connections = data.connections || {};
+    /** A watcher's status; older records without one are ACTIVE or STOPPED. */
     const statusOf = (watcher) => watcher.status || (watcher.active ? "ACTIVE" : "STOPPED");
+    /** Whether a watcher holds its place on a flow (active or waiting for approval). */
     const holdsPlace = (watcher) => ["ACTIVE", "PENDING_APPROVAL"].includes(statusOf(watcher));
+    /** A watcher's subtype; older records are monitors. */
     const subtypeOf = (watcher) => watcher.subtype || "monitor";
+    /** The catalog entry for a watcher action of a subtype. */
     const actionSpec = (subtype, id) => (catalog.actions || []).find((action) => action.subtype === subtype && action.id === id);
     const INFO = "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 11v5M12 8h.01";
 
@@ -1387,6 +1420,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
 
     const schemas = data.integration_schemas || [];
     const integrations = data.integrations || {};
+    /** The schema of a named watcher action. */
     const schemaOf = (name) => schemas.find((schema) => schema.name === name);
     /** Every address in a value (strings that start with http:// or https://) */
     function urlsIn(value) {
@@ -1706,6 +1740,7 @@ window.FOXX_PAGES = window.FOXX_PAGES || {};
     drawInspector();
     drawSubagents();
     let lastWidth = size().width;
+    /** Redraw the map when the window width changes enough; stops listening once the page is gone. */
     const resize = () => {
       if (!document.body.contains(root)) { window.removeEventListener("resize", resize); return; }
       if (Math.abs(size().width - lastWidth) < 40) return;

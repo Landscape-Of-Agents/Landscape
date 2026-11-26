@@ -68,9 +68,13 @@ fn path_view(boundary: &Boundary, path: &str) -> Result<Value, String> {
 */
 pub(super) fn inspect(args: &[String]) -> Result<(), String> {
     let args = Args::parse(args, &["skill", "format", "request-id"], &["json"])?;
+    // With --skill, inspect what a skill may do instead of the repository's scope
     if let Some(skill) = args.value("skill") {
         return super::skill::inspect(&args, &skill);
     }
+    // Gather everything the report shows: zone findings (an unloadable configuration is itself a
+    // finding), selections that no longer resolve, the per-file scope snapshot, and the hook
+    // installation status
     let boundary = super::boundary()?;
     let workspace = &boundary.workspace;
     let findings = zones::load(workspace)
@@ -104,11 +108,13 @@ pub(super) fn inspect(args: &[String]) -> Result<(), String> {
         .into_iter()
         .map(|(check, status, detail)| json!({"check": check, "status": status, "detail": detail}))
         .collect::<Vec<_>>();
+    // Explain the access of each path given on the command line
     let paths = args
         .positional
         .iter()
         .map(|path| path_view(&boundary, path))
         .collect::<Result<Vec<_>, _>>()?;
+    // What agents can never touch, whatever the rules say
     let always_denied = {
         let mut denied = vec![
             ".crane (the signed rules)".to_string(),
@@ -123,6 +129,8 @@ pub(super) fn inspect(args: &[String]) -> Result<(), String> {
         );
         denied
     };
+    // The report also states plainly what Crane does not enforce (sandbox, network), so nobody
+    // assumes more protection than there is
     let report = json!({
         "repository": workspace.root,
         "integrity": {"verified": boundary.integrity_ok(), "findings": boundary.enforcement.integrity},
@@ -145,6 +153,8 @@ pub(super) fn inspect(args: &[String]) -> Result<(), String> {
     if crate::cli::protocol::wants_json(&args)? {
         return print_json(&report);
     }
+    // Text output: integrity, zones, enforcement, then each governed file with its ceiling,
+    // criticality, entities and selections
     println!("Scope of {}", workspace.root.display());
     if boundary.integrity_ok() {
         println!(
@@ -226,6 +236,7 @@ pub(super) fn inspect(args: &[String]) -> Result<(), String> {
             );
         }
     }
+    // Then the read, write and delete decision for each requested path, with its reasons and gaps
     for view in &paths {
         println!("\n{}", view["path"].as_str().unwrap_or_default());
         for kind in ["read", "write", "delete"] {

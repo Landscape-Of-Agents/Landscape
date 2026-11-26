@@ -161,6 +161,8 @@ fn evaluate(
     state: &RegistryState,
     sources: &Sources,
 ) -> LabCheck {
+    // Each scenario is decided without executing the procedure: by evaluating the contract against
+    // changed inputs
     let id = format!("scenario:{}", scenario.scenario_id);
     let check = |status: CheckStatus, detail: String| {
         LabCheck::new(
@@ -171,6 +173,7 @@ fn evaluate(
         )
     };
     match &scenario.check {
+        // Applicability: decide a described situation and compare with the expected answer
         ScenarioCheck::Applicability {
             task_class,
             environment,
@@ -197,6 +200,8 @@ fn evaluate(
                 .with_counterexample(json!({"situation": situation, "decision": decision}))
             }
         }
+        // Stale dependency: move a zone, flow or policy to another version and check that the
+        // dependency reports it as expected
         ScenarioCheck::StaleDependency {
             dependency,
             id: target,
@@ -233,6 +238,8 @@ fn evaluate(
                 Some(status) => check(CheckStatus::Failed, format!("with {target} at {current_version} the dependency is {:?}, expected {expect:?}", status.outcome)).with_counterexample(json!({"dependency": status.dependency, "outcome": status.outcome})),
             }
         }
+        // Missing evidence: withhold one evidence type from the reader and check that the claims
+        // depending on it are no longer verified
         ScenarioCheck::MissingEvidence {
             evidence_type,
             expect_unresolved,
@@ -318,6 +325,7 @@ fn evaluate(
                 )
             }
         }
+        // Negative case: the contract must declare it
         ScenarioCheck::NegativeCase { declares } => {
             let wanted = declares.to_ascii_lowercase();
             let declared = definition

@@ -4,7 +4,9 @@
 // and at /operator/ (inside DataSea).
 "use strict";
 
+/** The element with an id. */
 const element = (id) => document.getElementById(id);
+/** Show or hide an element. */
 const show = (id, visible) => element(id).classList.toggle("hidden", !visible);
 let current = null;
 
@@ -55,6 +57,7 @@ function render(data) {
   }));
 }
 
+/** Load the operator switch for the repository and show it. */
 async function load() {
   const params = new URLSearchParams(location.search);
   if (params.has("refused")) {
@@ -85,6 +88,7 @@ async function load() {
   render(data);
 }
 
+/** Turn agent commands on or off, with the reason, after confirmation. */
 async function change() {
   if (!current) return;
   const enabled = !current.agent_commands.enabled;

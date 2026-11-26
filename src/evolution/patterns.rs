@@ -126,6 +126,8 @@ pub(crate) fn detect(
     drift: &DriftReport,
 ) -> Vec<Detected> {
     let mut detected = Vec::new();
+    // Patterns are looked for within one context at a time (same repository, environment and so
+    // on), so outcomes from different situations are never mixed
     for (key, members) in partition(observations, digest) {
         let of = |test: &dyn Fn(OutcomeClass) -> bool| {
             members
@@ -134,10 +136,12 @@ pub(crate) fn detect(
                 .copied()
                 .collect::<Vec<_>>()
         };
+        // Sort the context's observations by outcome class
         let failures = of(&|class| class.established_failure());
         let successes = of(&|class| class == OutcomeClass::VerifiedSuccess);
         let contradicted = of(&|class| class == OutcomeClass::Contradicted);
         let gaps = of(&|class| class.gap());
+        // The resubmissions that were collapsed into the supporting observations
         let collapsed_into = |supporting: &[&Observation]| {
             unique(
                 observations
@@ -185,6 +189,7 @@ pub(crate) fn detect(
                 .unwrap_or_default(),
             drift: Vec::new(),
         };
+        // Verified successes and contradicted outcomes count against a failure pattern
         let mut against = successes.clone();
         against.extend(contradicted.iter().copied());
         let failed_claims = |members: &[&Observation]| {
@@ -196,6 +201,7 @@ pub(crate) fn detect(
                     .cloned()
             }))
         };
+        // One failure is only diagnostic; two or more form a repeated failure
         match failures.len() {
             0 => {}
             1 => detected.push(build(
@@ -211,6 +217,7 @@ pub(crate) fn detect(
                 failed_claims(&failures),
             )),
         }
+        // Outcomes nobody could verify form a verification gap
         if !gaps.is_empty() {
             let claims = unique(
                 gaps.iter()
@@ -218,6 +225,7 @@ pub(crate) fn detect(
             );
             detected.push(build(SignalKind::VerificationGap, &gaps, &[], claims));
         }
+        // Contradictions without failures are reported as such; the engine never picks a side
         if !contradicted.is_empty() && failures.is_empty() {
             let claims = unique(
                 contradicted
@@ -231,6 +239,7 @@ pub(crate) fn detect(
                 claims,
             ));
         }
+        // A context with nothing but verified successes is a success pattern
         if !successes.is_empty()
             && failures.is_empty()
             && contradicted.is_empty()
@@ -263,6 +272,8 @@ pub(crate) fn detect(
         context_governance: BTreeMap::new(),
         drift: findings,
     };
+    // Drift signals do not depend on outcomes: a changed or missing dependency (with the
+    // invocations already suspected of running under it), or a version that is no longer eligible
     for finding in &drift.findings {
         match finding.status {
             DriftStatus::Changed | DriftStatus::Missing => {
@@ -290,6 +301,8 @@ pub(crate) fn detect(
             _ => {}
         }
     }
+    // Governance that cannot be read at all is its own signal, so unknown is never mistaken for no
+    // drift
     let unknown = drift
         .findings
         .iter()
@@ -344,6 +357,7 @@ pub(crate) fn qualify(
     pins: &BTreeMap<String, String>,
     thresholds: Thresholds,
 ) -> Qualification {
+    // Riskier capabilities need more independent evidence before a signal qualifies
     let elevated = matches!(
         risk,
         RiskLevel::High | RiskLevel::Critical | RiskLevel::Unknown
@@ -354,6 +368,8 @@ pub(crate) fn qualify(
         thresholds.min_independent
     } as usize;
     let count = detected.supporting.len();
+    // Rules shared by several kinds: enough independent invocations, readable evidence, and no
+    // contradicting outcome
     let independent = |minimum: usize| {
         rule(
             "independent_observations",
@@ -406,8 +422,12 @@ pub(crate) fn qualify(
             },
         )
     };
+    // Each kind has its own rules; the signal qualifies only when every rule is met (unknown counts
+    // as not met)
     let mut rules = Vec::new();
     match detected.kind {
+        // A repeated failure must also share one context, fail often enough, and not be explained
+        // by broken infrastructure or moved dependencies
         SignalKind::RepeatedFailure => {
             rules.push(independent(minimum));
             rules.push(rule("verified_outcomes", Some(true), "only established failures (failed verification or a definite failure from the system of record) are counted; declared outcomes are not".into()));

@@ -76,6 +76,9 @@ pub(crate) fn text(
     id: &str,
     model: Option<&str>,
 ) -> String {
+    // The text agents receive about a Flow, line by line: what governance declares, then the
+    // knowledge recorded for it (routing, trace, people, context items, tests) and who is watching
+    // it
     let mut lines = Vec::new();
     let declared = governance.flows.iter().find(|flow| flow.id == id);
     if let Some(flow) = declared {
@@ -98,6 +101,7 @@ pub(crate) fn text(
         ));
         lines.push(format!("Starts at: {}", flow.entry_points.join(", ")));
     }
+    // Without recorded knowledge, say so plainly rather than give an empty section
     let Some(knowledge) = book.flows.get(id) else {
         lines.push(
             "No knowledge recorded for this flow yet (no trace, context, people, or tests).".into(),
@@ -177,6 +181,7 @@ pub(crate) fn text(
                 .unwrap_or_default()
         ));
     }
+    // Tests, with the required ones marked
     let required = knowledge
         .tests
         .iter()
@@ -200,6 +205,7 @@ pub(crate) fn text(
                 .join("; ")
         ));
     }
+    // Active watchers on the Flow
     let watchers = super::watch::watchers(runtime)
         .into_iter()
         .filter(|watcher| watcher.active && watcher.flow == id)

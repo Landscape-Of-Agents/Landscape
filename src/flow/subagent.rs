@@ -426,6 +426,8 @@ pub(crate) fn check(
     checks: &[String],
     bounds: &FlowBounds,
 ) -> Result<(), String> {
+    // Collect every problem so the person can fix them together; a configuration may only narrow
+    // what the Flow's bounds allow
     let mut problems = Vec::new();
     let ceiling = match ceiling_of(&config.ceiling) {
         Ok(ceiling) => Some(ceiling),
@@ -434,6 +436,7 @@ pub(crate) fn check(
             None
         }
     };
+    // The subagent's ceiling may not exceed the Flow's
     if let Some(ceiling) = ceiling {
         if ceiling > bounds.ceiling {
             problems.push(format!(
@@ -443,6 +446,8 @@ pub(crate) fn check(
             ));
         }
     }
+    // Each action must belong to the subtype and fit under the allowed ceiling; the integrations an
+    // action names are the only ones that may be configured
     let allowed = ceiling.unwrap_or(bounds.ceiling).min(bounds.ceiling);
     let mut wanted = BTreeSet::new();
     for id in &config.actions {
@@ -476,6 +481,7 @@ pub(crate) fn check(
             ));
         }
     }
+    // Targets must be within the Flow's bounds
     for target in &config.targets {
         if !bounds.targets.contains(target) {
             problems.push(format!(
@@ -492,6 +498,7 @@ pub(crate) fn check(
     if config.targets.is_empty() {
         problems.push("give it the flow as a target".into());
     }
+    // Only an Incident subagent works on a designated branch, and that branch must be a valid name
     match (subtype, &config.branch) {
         ("monitor", Some(_)) => {
             problems.push("only an Incident subagent has a designated branch".into())

@@ -120,6 +120,7 @@ pub(crate) fn audit(
     session: Option<&str>,
     since: Option<u64>,
 ) -> Result<AuditReport, String> {
+    // Read this machine's runtime events and verify their hash chain before trusting any count
     let all = EventStore::open(&boundary.runtime).read_all()?;
     let chain = verify_chain(&all);
     let events = all
@@ -127,6 +128,7 @@ pub(crate) fn audit(
         .filter(|event| session.is_none_or(|session| in_session(event, session)))
         .filter(|event| since.is_none_or(|since| event.occurred_at >= since))
         .collect::<Vec<_>>();
+    // A file is governed when a zone, flow, Brick limit or selection covers it
     let governed = |path: &str| {
         boundary.enforcement.limits.contains_key(path)
             || boundary
@@ -159,6 +161,9 @@ pub(crate) fn audit(
     let mut rules = BTreeMap::<String, usize>::new();
     let mut ungoverned = BTreeMap::<String, usize>::new();
     let mut outside = BTreeMap::<String, usize>::new();
+    // Tally the events: decisions and the rules behind denials, decisions made under older rules,
+    // allowed changes to ungoverned files or outside the repository, and how verified calls turned
+    // out
     for event in &events {
         if let Some(id) = &event.scope.foxx_session_id {
             sessions.insert(id.clone());
@@ -211,6 +216,8 @@ pub(crate) fn audit(
         .iter()
         .filter(|event| event.event_type.starts_with("tool_call."))
         .count();
+    // Turn the tallies into plain findings, most serious first: no activity, a broken chain,
+    // bypasses and late detections, coverage gaps, unsettled calls, then changes nothing governs
     let findings = &mut report.findings;
     if tool_calls == 0 {
         findings.push("no hook activity is recorded on this machine for this selection: no agent ran here, or its hooks are not installed (see 'crane scope inspect'); absence of events is not evidence of safety".into());

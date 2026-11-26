@@ -361,6 +361,8 @@ impl Hook {
         - Result<(), String>
     */
     pub(super) fn stop(&self, session: &mut SessionRecord) -> Result<(), String> {
+        // At Stop, re-verify every policy over the whole repository; the agent may only finish when
+        // every command passes and no blocking finding remains
         self.report_unattributed(session)?;
         let (report, state) = evaluate(
             &self.workspace,
@@ -375,6 +377,8 @@ impl Hook {
             .iter()
             .filter(|finding| finding.blocking())
             .collect::<Vec<_>>();
+        // Update the task: done, blocked (the agent must keep working), or failed when the agent
+        // already continued once after a block
         let task = self.task(session);
         let passed = failures.is_empty() && blocking.is_empty();
         let status = if passed {
@@ -391,6 +395,7 @@ impl Hook {
             }
             self.stores.identity.save_task(&task)?;
         }
+        // Record the verification as an event with its pass and fail counts
         let mut event = self.base_event(
             if passed {
                 "task.verified"
@@ -449,6 +454,7 @@ impl Hook {
         ));
         event.payload["task_status"] = json!(status);
         self.emit(session, event, (!passed).then_some("verification_failed"))?;
+        // Passed: tell the agent it may stop
         if passed {
             return self.adapter.respond_feedback(
                 HookEvent::Stop,
@@ -459,6 +465,7 @@ impl Hook {
                 },
             );
         }
+        // Failed: list what is wrong and how to repair it, and block the stop
         let mut detail = String::new();
         for failure in &failures {
             detail.push_str(&format!(

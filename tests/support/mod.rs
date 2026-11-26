@@ -67,6 +67,12 @@ impl Service {
 }
 
 impl Drop for Service {
+    /** Stop the service process when the test ends
+     * Input
+        - None (uses self)
+     * Output
+        - None
+    */
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();

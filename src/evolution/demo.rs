@@ -313,6 +313,8 @@ fn signal_of(
     - CapabilityResult<DemoReport>
 */
 pub(crate) fn run() -> CapabilityResult<DemoReport> {
+    // Each case below runs one scenario on a freshly seeded synthetic bench and records what was
+    // expected next to what happened; the report passes only when every case matched
     let mut cases = Vec::new();
     let mut bench = seeded()?;
     let engineer = bench.world.cast.engineer.clone();
@@ -320,6 +322,8 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
         bench
             .evolution()
             .analyze(&engineer, CAPABILITY, Some(1), Thresholds::default())?;
+    // Case: three independent failures of the same kind raise a repeated-failure signal that is
+    // worth investigating
     let repeated = signal_of(
         &analysis.signals,
         SignalKind::RepeatedFailure,
@@ -335,6 +339,7 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
         ),
         repeated.state == SignalState::Investigating && repeated.independent_count == 3,
     );
+    // Case: a single failure is not enough evidence on its own
     let single = signal_of(
         &analysis.signals,
         SignalKind::DiagnosticFailure,
@@ -347,6 +352,8 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
         format!("{:?} signal: {:?}", single.kind, single.state),
         single.state == SignalState::InsufficientEvidence,
     );
+    // Case: an invocation that only declared success, with nothing to verify it, is classed as
+    // unverified
     let declared = analysis
         .report
         .observations
@@ -360,6 +367,8 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
         format!("{declared:?}"),
         declared == Some(OutcomeClass::DeclaredSuccessUnverified),
     );
+    // Case: duplicate invocations collapse, so five observations in one repository count as three
+    // independent failures
     let payments = analysis
         .report
         .observations
@@ -380,6 +389,7 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
             && analysis.report.coverage.duplicates_collapsed == 2
             && repeated.independent_count == 3,
     );
+    // Case: when other runs contradict the failures, the signal falls back to insufficient evidence
     let contradicted = signal_of(
         &analysis.signals,
         SignalKind::RepeatedFailure,
@@ -398,6 +408,8 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
         contradicted.state == SignalState::InsufficientEvidence
             && contradicted.contradicting.len() == 2,
     );
+    // Case: a zone revision that moved on since the capability was published raises dependency
+    // drift
     let mut drift_bench = seeded()?;
     drift_bench
         .world
@@ -426,6 +438,7 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
                 .and_then(|finding| finding.observed.as_deref())
                 == Some("v4"),
     );
+    // Case: when the landscape cannot be read, drift is reported as unknown rather than as no drift
     let mut dark = seeded()?;
     dark.world.current.landscape_known = false;
     let unknown = dark.evolution().drift(&engineer, CAPABILITY, Some(1))?;
@@ -443,6 +456,8 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
         unknown.summary.clone(),
         unavailable && unknown.summary.contains("unknown"),
     );
+    // Case: proposals that would weaken the capability (lower review, edit policy, add an
+    // unsupported step, broaden scope) are refused and no candidate is created
     let blocked = bench.evolution().propose(
         &engineer,
         &repeated.signal_id,
@@ -490,6 +505,8 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
         format!("{:?}; {} refused; registry versions {versions}", blocked.state, blocked.unsupported.len()),
         blocked.state == ProposalState::Blocked && blocked.unsupported.len() == 4 && blocked.candidate.is_none() && versions == 1,
     );
+    // Case: a supported proposal creates candidate version 2 and leaves the published parent
+    // untouched
     let parent_before = bench.world.registry.state.record(CAPABILITY, 1)?.clone();
     let proposal = bench
         .evolution()
@@ -511,6 +528,8 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
             && parent_before == parent_after
             && parent_after.state == LifecycleState::Published,
     );
+    // Case: analysing and proposing again reuse the same report, signals and proposal instead of
+    // piling up duplicates
     let again = bench
         .evolution()
         .analyze(&engineer, CAPABILITY, Some(1), Thresholds::default())?;
@@ -534,6 +553,7 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
             && repeat.proposal_id == proposal.proposal_id
             && bench.world.registry.state.versions[CAPABILITY].len() == 2,
     );
+    // Case: a change that excludes verified context fails regression with a concrete counterexample
     let mut narrow = seeded()?;
     let narrow_analysis =
         narrow
@@ -579,6 +599,8 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
         format!("{:?}; counterexample from {counterexample:?}", failed.state),
         failed.state == RunState::Failed && counterexample.is_some(),
     );
+    // Case: rewording a step changes behaviour that cannot be checked mechanically, so regression
+    // is inconclusive
     let mut reword = seeded()?;
     let reword_analysis =
         reword
@@ -613,6 +635,7 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
         inconclusive.state == RunState::Inconclusive
             && inconclusive.reason.contains("behavioral:procedure"),
     );
+    // Case: a repin whose target moved again before regression is blocked as stale
     let repin = drift_bench
         .evolution()
         .propose(&engineer, &drift.signal_id, Vec::new())?;
@@ -638,6 +661,7 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
             && stored_repin.state == ProposalState::Blocked
             && stale.checks.is_empty(),
     );
+    // Case: tampering with stored counts is caught by the store's integrity check
     let text = serde_json::to_string(&bench.store.state)
         .map_err(|error| CapabilityError::new(ErrorCode::Persistence, error.to_string()))?;
     let tampered = text.replacen("\"independent_count\":3", "\"independent_count\":30", 1);
@@ -652,6 +676,8 @@ pub(crate) fn run() -> CapabilityResult<DemoReport> {
             .unwrap_or_else(|| "accepted".into()),
         tampered != text && corrupt.is_some_and(|error| error.code == ErrorCode::IntegrityMismatch),
     );
+    // Case: a passing regression prepares a review packet, but an agent still cannot publish the
+    // candidate
     let (passed, _) = bench
         .evolution()
         .regression_run(&engineer, &proposal.proposal_id)?;

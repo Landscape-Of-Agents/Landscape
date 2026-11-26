@@ -23,6 +23,8 @@ pub(super) fn settle(args: &[String]) -> Result<(), String> {
         0,
         "crane budget settle --reservation ENTRY_ID --outcome success|failure|partial|unknown",
     )?;
+    // Usage is never taken from the caller: it is computed from the invocation record, so a
+    // settlement cannot under-report
     if args.value("usage").is_some() {
         return Err(
             "usage is never taken from the caller; it is read from the run's invocation record"
@@ -33,6 +35,7 @@ pub(super) fn settle(args: &[String]) -> Result<(), String> {
         .value("reservation")
         .ok_or("'--reservation' is required")?;
     let outcome = args.value("outcome").ok_or("'--outcome' is required")?;
+    // Find the step behind the reservation; holds have no execution and are released instead
     let local = Local::open()?;
     let ledger = budget(&local);
     let entry = super::reservation(&ledger, &id)?;
@@ -50,6 +53,7 @@ pub(super) fn settle(args: &[String]) -> Result<(), String> {
         .get(&step_id)
         .and_then(|step| step.invocation_id.clone())
         .ok_or("the step has not started; release the reservation instead")?;
+    // The stated outcome must match what the invocation record says, or nothing is settled
     let record = local.ledger.get(&invocation)?;
     let recorded = match record.state {
         InvocationState::Succeeded => "success",
@@ -71,6 +75,8 @@ pub(super) fn settle(args: &[String]) -> Result<(), String> {
         .reasons(["OUTCOME_MISMATCH"]);
         return finish(&args, response, &[]);
     }
+    // An uncertain outcome consumes the whole reservation, since effects may have happened; a known
+    // one consumes what was actually started
     let uncertain = matches!(recorded, "unknown" | "partial");
     let started = record
         .operations

@@ -396,6 +396,7 @@ function ensureFlowContext(document: Document, flow: YAMLMap): void {
       })
       .map((pack) => String(pack.get("id"))),
   );
+  /** The context packs a zone or stage names. */
   const named = (map: YAMLMap) => {
     const list = map.get("context_packs", true);
     return isSeq(list) ? list.items.map((item) => String((item as { value?: unknown }).value ?? item)) : [];
@@ -451,6 +452,7 @@ export function linkZones(text: string, from: string, to: string): GraphEdit {
   const b = placement(document, to);
   if (!a) throw new Error(`no zone '${from}'`);
   if (!b) throw new Error(`no zone '${to}'`);
+  /** The id of a YAML map. */
   const name = (map: YAMLMap | undefined) => String(map?.get("id"));
   if (a.flow && a.flow === b.flow) {
     if (b.index === a.index + 1) throw new Error(`${from} already leads to ${to} in flow ${name(a.flow)}`);
@@ -464,6 +466,7 @@ export function linkZones(text: string, from: string, to: string): GraphEdit {
   if (b.flow && b.index !== 0) {
     throw new Error(`${to} already follows ${name(b.stages?.items[b.index - 1] as YAMLMap)} in flow ${name(b.flow)}; link to its first zone`);
   }
+  /** A stage as it is moved between flows. */
   type Stage = ZoneInput & { status?: string; policies?: string[]; context_packs?: string[] };
   let summary: string;
   if (!a.flow && !b.flow) {
@@ -519,6 +522,7 @@ export function unlinkZones(text: string, from: string, to: string): GraphEdit {
   const flowId = String(flow.get("id"));
   const left = a.stages.items.slice(0, a.index + 1).filter(isMap);
   const right = a.stages.items.slice(a.index + 1).filter(isMap);
+  /** A stage as it is moved between flows. */
   type Stage = ZoneInput & { policies?: string[]; context_packs?: string[] };
   // What the moved stages brought into the flow leaves with them
   const moved = right.map((stage) => contributions(stage.toJSON() as Stage));
@@ -528,6 +532,7 @@ export function unlinkZones(text: string, from: string, to: string): GraphEdit {
     if (isSeq(existing)) existing.items = existing.items.filter((item) => !gone.has(String((item as { value?: unknown }).value ?? item)));
   }
   a.stages.items = left;
+  /** Put stages back as zones. */
   const restore = (stages: YAMLMap[]) => { for (const stage of stages) sequence(document, "zones").add(document.createNode(stage.toJSON())); };
   const parts: string[] = [];
   if (right.length >= 2) {
@@ -571,6 +576,7 @@ export function removeZone(text: string, id: string): GraphEdit {
   let where = placement(load(current), id);
   if (!where) throw new Error(`no zone '${id}'`);
   if (where.flow && where.stages) {
+    /** The id of the stage at an index of the flow. */
     const name = (index: number) => String((where?.stages?.items[index] as YAMLMap | undefined)?.get("id"));
     if (where.index > 0) {
       const edit = unlinkZones(current, name(where.index - 1), id);
@@ -629,6 +635,7 @@ export function removeFlow(text: string, id: string): GraphEdit {
 function dropUnusedPack(document: Document, pack: string): void {
   const packs = document.get("context_packs", true);
   if (!isSeq(packs)) return;
+  /** The context packs a zone or flow names. */
   const named = (map: unknown) => {
     const list = isMap(map) ? map.get("context_packs", true) : undefined;
     return isSeq(list) ? list.items.map((item) => String((item as { value?: unknown }).value ?? item)) : [];
@@ -655,6 +662,7 @@ export function sourcePaths(text: string, kind: "zone" | "flow", id: string): st
   const entity = find(document, kind === "zone" ? "zones" : "flows", id);
   if (!entity) throw new Error(`no ${kind} '${id}'`);
   const paths = new Set<string>();
+  /** Collect the paths, files, directories and symbols a selector names. */
   const collect = (value: unknown) => {
     if (!value || typeof value !== "object") return;
     const selectors = (value as { selectors?: Record<string, unknown> }).selectors;

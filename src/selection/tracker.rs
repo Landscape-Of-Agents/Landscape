@@ -171,6 +171,8 @@ fn unresolved(code: &'static str, reason: String) -> Resolution {
     - Resolution
 */
 pub(crate) fn resolve(id: &str, scan: &Scan) -> Resolution {
+    // A selection resolves only when its markers are intact and unambiguous; every other situation
+    // is a distinct unresolved reason, so nothing is ever guessed
     let hits = scan
         .markers
         .iter()
@@ -184,6 +186,7 @@ pub(crate) fn resolve(id: &str, scan: &Scan) -> Resolution {
             format!("the markers of selection {id} are missing (deleted, or the file was removed)"),
         );
     }
+    // A malformed marker, or markers spread over several files (copied markers), never resolve
     if let Some((path, marker)) = hits.iter().find(|(_, marker)| marker.problem.is_some()) {
         return unresolved(
             "marker_malformed",
@@ -208,6 +211,7 @@ pub(crate) fn resolve(id: &str, scan: &Scan) -> Resolution {
         );
     }
     let path = hits[0].0.clone();
+    // Exactly one start and one end marker, in the right order
     let starts = hits
         .iter()
         .filter(|(_, marker)| marker.boundary == Some(Boundary::Start))
@@ -247,6 +251,8 @@ pub(crate) fn resolve(id: &str, scan: &Scan) -> Resolution {
             format!("{path}: the end marker of selection {id} (line {}) comes before its start marker (line {})", end.line, start.line),
         );
     }
+    // The selection must nest properly with the other selections of the file: no crossed markers
+    // and no partial overlap
     let intervals = selection_intervals(scan, &path);
     if !intervals
         .iter()
@@ -273,6 +279,7 @@ pub(crate) fn resolve(id: &str, scan: &Scan) -> Resolution {
             ),
         );
     }
+    // Resolved: the content between the markers, with nested selections' markers removed
     let text = &scan.texts[&path];
     let content = projected_content(text, start, end, id, &intervals, scan, &path);
     Resolution::Resolved(Location {
@@ -289,6 +296,13 @@ pub(crate) fn resolve(id: &str, scan: &Scan) -> Resolution {
     })
 }
 
+/** Pair the valid selection markers of a file into (id, start line, end line) intervals using a stack, so only properly nested start/end pairs count; crossed markers are dropped
+ * Input
+    - scan: &Scan - scanned markers
+    - path: &str - file
+ * Output
+    - Vec<(String, usize, usize)>
+*/
 fn selection_intervals(scan: &Scan, path: &str) -> Vec<(String, usize, usize)> {
     let mut markers = scan
         .markers
@@ -317,6 +331,18 @@ fn selection_intervals(scan: &Scan, path: &str) -> Vec<(String, usize, usize)> {
     intervals
 }
 
+/** The content of a selection with the marker lines of selections nested inside it removed, normalized for digesting, so adding a nested selection does not change its parent's digest
+ * Input
+    - text: &str - file text
+    - start: &Marker - the selection's start marker
+    - end: &Marker - its end marker
+    - id: &str - its id
+    - intervals: &[(String, usize, usize)] - all selection intervals in the file
+    - scan: &Scan - scanned markers
+    - path: &str - file
+ * Output
+    - String
+*/
 fn projected_content(
     text: &str,
     start: &Marker,

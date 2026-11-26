@@ -409,14 +409,23 @@ let selectedEdge = null;
 let keyLink = null;
 let pending = [];
 const $ = (id) => document.getElementById(id);
+/** Escape text for safe use in HTML. */
 const esc = (text) => String(text == null ? "" : text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+/** Shorten text to n characters with an ellipsis. */
 const clip = (text, n) => (text.length > n ? text.slice(0, n - 1) + "…" : text);
+/** How long ago a time was, in words. */
 const ago = (at) => { const s = Math.max(0, Math.round((Date.now() - at) / 1000)); return s < 60 ? "just now" : s < 3600 ? Math.round(s / 60) + " min ago" : Math.round(s / 3600) + " h ago"; };
+/** The colour of a graph node by kind (zone, flow, target or preserve selection). */
 const color = (node) => node.kind === "zone" ? "var(--zone)" : node.kind === "flow" ? "var(--flow)" : node.operation === "target" ? "var(--target)" : "var(--preserve)";
+/** The glyph drawn in a graph node by kind. */
 const glyph = (node) => node.kind === "zone" ? "▦" : node.kind === "flow" ? "⇢" : node.operation === "target" ? "◎" : "⛨";
+/** Find a graph node by id. */
 const nodeById = (id) => data && data.nodes.find((node) => node.id === id);
+/** A zone id without its zone: prefix. */
 const zoneName = (id) => id.replace(/^zone:/, "");
+/** The recent agent activity on a node, if any. */
 const activityOf = (id) => (data && data.activity || []).find((entry) => entry.node === id);
+/** Keep the filter and view (pan and zoom) across webview reloads. */
 const persist = () => vscode.setState({ kinds, view });
 
 // ---------------------------------------------------------------- flows, links, and their rules
@@ -481,6 +490,7 @@ function draw() {
   $("filter-count").textContent = String(hidden);
   if (!data) { $("nodes").innerHTML = ""; $("edges").innerHTML = ""; empty.hidden = false; empty.innerHTML = error ? "" : "<div><b>Loading the graph…</b>Crane resolves the zones, flows, and selections.</div>"; return; }
   const { nodes, edges } = visible();
+  /** How many nodes of a kind the graph has. */
   const count = (kind) => data.nodes.filter((node) => node.kind === kind).length;
   $("summary").textContent = "· " + count("zone") + " zones · " + count("flow") + " flows · " + count("selection") + " selections" + (data.acyclic ? " · acyclic" : "");
   if (!nodes.length) { $("nodes").innerHTML = ""; $("edges").innerHTML = ""; empty.hidden = false; empty.innerHTML = data.nodes.length ? "<div><b>Everything is filtered out</b>Turn a kind back on from the filter.</div>" : "<div><b>No zones, flows, or selections yet</b>Select code and press Ctrl+Alt+F to make it a zone.</div>"; return; }
@@ -512,6 +522,7 @@ function draw() {
   }).join("");
   apply();
 }
+/** A node's display name, falling back to its id without the kind prefix. */
 const nameOf = (id) => { const node = nodeById(id); return node ? node.name : id.replace(/^[a-z]+:/, ""); };
 function edgeTitle(edge) { return nameOf(edge.from) + " → " + nameOf(edge.to); }
 // What each kind of edge means, and how to change it when it cannot be deleted from here
@@ -570,6 +581,7 @@ function openSelectionMenu(node, x, y) {
     '<label class="field" for="selection-reason">Why (kept in the audit trail)</label><input type="text" id="selection-reason" maxlength="300" autocomplete="off">' +
     '<label class="confirm"><input type="checkbox" id="node-confirm"> I am a person and I understand this ends the rule.</label>' +
     '<div class="row"><button class="btn danger" id="node-remove" disabled>' + TRASH + "Remove " + kind + '</button><button class="btn" id="node-cancel">Cancel</button></div>';
+  /** Enable Remove only when the person confirmed and gave a reason. */
   const ready = () => { $("node-remove").disabled = !$("node-confirm").checked || !$("selection-reason").value.trim(); };
   $("node-confirm").addEventListener("change", ready);
   $("selection-reason").addEventListener("input", ready);
@@ -635,6 +647,7 @@ function notices() {
 function say(tone, text, ms) { const item = { tone, text }; flash.push(item); notices(); setTimeout(() => { flash = flash.filter((other) => other !== item); notices(); }, ms || 5000); }
 function details(node) {
   const rows = [];
+  /** Add a key and value row to the details, skipping empty values. */
   const add = (key, value) => { if (value !== undefined && value !== null && value !== "") rows.push("<span>" + esc(key) + "</span><span>" + esc(value) + "</span>"); };
   if (node.kind === "selection") { add("operation", node.operation); add("policy", node.policy); add("where", node.path ? node.path + " lines " + node.lines[0] + "–" + node.lines[1] : "not found in the code"); add("nested in", node.parent ? node.parent.replace("selection:", "") : ""); }
   else { add("status", node.status); add("criticality", node.criticality); add("autonomy ceiling", node.ceiling); add("files", node.files); if (node.stages && node.stages.length) add("stages", node.stages.join(" → ")); if (node.stage_of && node.stage_of.length) add("stage of", node.stage_of.join(", ")); }
@@ -682,6 +695,7 @@ const DEFAULT_HINT = $("hint-text").textContent;
 
 // ---------------------------------------------------------------- pointer gestures on the canvas
 const canvas = $("canvas");
+/** The graph node an event happened on, if any. */
 const nodeOf = (target) => { const group = target && target.closest && target.closest(".node"); return group && data ? nodeById(group.dataset.id) : null; };
 canvas.addEventListener("pointerdown", (event) => {
   if (event.button !== 0 || !data) return;
@@ -803,6 +817,7 @@ document.addEventListener("keydown", (event) => {
 
 // ---------------------------------------------------------------- toolbar
 const filterButton = $("filter"), filterMenu = $("filter-menu");
+/** Open or close the filter menu, keeping it inside the window. */
 const setMenu = (open) => { filterMenu.hidden = !open; filterButton.setAttribute("aria-expanded", String(open)); if (open) { const box = filterButton.getBoundingClientRect(); filterMenu.style.left = Math.max(8, Math.min(window.innerWidth - 200, box.left)) + "px"; } };
 filterButton.addEventListener("click", (event) => { event.stopPropagation(); setMenu(filterMenu.hidden); });
 document.addEventListener("click", (event) => { if (!filterMenu.hidden && !filterMenu.contains(event.target)) setMenu(false); });
@@ -893,6 +908,7 @@ function drawTests() {
 }
 function card(item) {
   const request = item.request || {}, expect = item.expect || {};
+  /** One labelled input of a test card; kind picks a textarea, number or text input. */
   const field = (label, key, value, kind, wide) => '<label' + (wide ? ' class="wide"' : "") + ">" + esc(label) +
     (kind === "area" ? '<textarea data-f="' + key + '" rows="2" spellcheck="false">' + esc(value) + "</textarea>" : '<input data-f="' + key + '"' + (kind === "number" ? ' type="number"' : "") + ' value="' + esc(value) + '" spellcheck="false">') + '<span class="why" hidden></span></label>';
   const outcome = '<label>Expect<select data-f="outcome">' + ["success", "blocked", "within"].map((name) => '<option value="' + name + '"' + (expect.outcome === name ? " selected" : "") + ">" + name + "</option>").join("") + "</select></label>";
@@ -924,9 +940,11 @@ function wireTests() {
   });
   $("test-download").addEventListener("click", () => vscode.postMessage({ type: "saveText", name: picked + "-tests.txt", text: asText() }));
   const track = $("track");
+  /** Scroll the test cards one card left or right. */
   const step = (direction) => { if (!track) return; const width = track.querySelector(".tcard") ? track.querySelector(".tcard").offsetWidth + 10 : 300; track.scrollBy({ left: direction * width }); };
   $("test-prev").addEventListener("click", () => step(-1));
   $("test-next").addEventListener("click", () => step(1));
+  /** Show which test card is in view, as N / total. */
   const position = () => { const list = shown(); if (!track || !list.length) { $("test-pos").textContent = list.length ? "" : "0 / 0"; return; } const width = (track.querySelector(".tcard").offsetWidth || 1) + 10; $("test-pos").textContent = Math.min(list.length, Math.round(track.scrollLeft / width) + 1) + " / " + list.length; };
   if (track) { track.addEventListener("scroll", position, { passive: true }); track.addEventListener("keydown", (event) => { if (event.target === track && event.key === "ArrowRight") step(1); if (event.target === track && event.key === "ArrowLeft") step(-1); }); }
   position();
@@ -988,6 +1006,7 @@ function drawSubagents() {
   const max = catalog ? catalog.max_per_flow : 3, maxAgent = catalog ? catalog.max_agent_per_flow : 1;
   const caps = '<div class="scaps">' + holding.length + " of " + max + " places taken · " + byAgent + " of " + maxAgent + " created by an agent. Changes made on DataSea or the CLI wait here for your approval; Crane checks them against the flow's bounds again.</div>";
   if (!subagents.length) { body.innerHTML = caps + '<div class="tempty">No subagents on this flow. Create one with \\'crane flow subagent add ' + esc(picked) + ' --type monitor|incident\\', on DataSea, or let an agent ask for one.</div>'; return; }
+  /** The label of a watcher action, or its id. */
   const label = (id) => { const action = catalog && catalog.actions.find((entry) => entry.id === id); return action ? action.label : id; };
   body.innerHTML = caps + '<div class="slist">' + subagents.map((agent) => {
     const status = agent.status || (agent.active ? "ACTIVE" : "STOPPED");
@@ -1004,6 +1023,7 @@ function drawSubagents() {
   }).join("") + "</div>";
   for (const button of body.querySelectorAll("[data-decide]")) button.addEventListener("click", () => {
     const decision = button.dataset.decide, id = button.dataset.id;
+    /** Send the decision on a watcher and disable the buttons so it is sent once. */
     const send = () => { for (const other of body.querySelectorAll("[data-decide]")) other.disabled = true; vscode.postMessage({ type: "decide", flow: picked, id, decision }); };
     if (decision === "stop") openModal("Stop " + id + "?", "It stops acting on " + picked + " and gives its place back. Stopping cannot be undone; create a new one later if needed.", "Stop it", send); else send();
   });
@@ -1014,6 +1034,7 @@ function openModal(title, text, confirmLabel, onConfirm, error) {
   modal.innerHTML = '<div class="box"><h2 id="modal-title">' + esc(title) + "</h2>" + (text ? "<p>" + esc(text) + "</p>" : "") + (error ? '<div class="err">' + esc(error) + "</div>" : "") +
     '<div class="row"><button class="btn" id="modal-cancel">' + (confirmLabel ? "Cancel" : "Close") + "</button>" + (confirmLabel ? '<button class="btn primary" id="modal-ok">' + esc(confirmLabel) + "</button>" : "") + "</div></div>";
   modal.hidden = false;
+  /** Close the modal and clear it. */
   const close = () => { modal.hidden = true; modal.innerHTML = ""; };
   $("modal-cancel").addEventListener("click", close);
   if (confirmLabel) $("modal-ok").addEventListener("click", () => { close(); onConfirm(); });

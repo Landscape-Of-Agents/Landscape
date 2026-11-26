@@ -312,11 +312,14 @@ impl Evolution<'_> {
         version: Option<u32>,
         thresholds: Thresholds,
     ) -> CapabilityResult<Analysis> {
+        // Permission is checked before anything is read
         self.registry.grants.require(actor, Role::Contributor)?;
         let record = self.target(capability_id, version)?;
         let definition = &record.definition;
         let version = definition.version;
         let digest = record.definition_digest.clone();
+        // Gather the version's invocation outcomes and measure governance drift since it was
+        // published
         let (observations, coverage) = self.observe(actor, &record)?;
         let drift = drift::detect(
             &self.registry.state,
@@ -325,6 +328,9 @@ impl Evolution<'_> {
             &self.sources,
             &observations,
         )?;
+        // The report id is derived from everything that could change the result (version, detector,
+        // thresholds, the exact observations and the governance state), so an identical analysis is
+        // found again instead of recomputed
         let thresholds_digest = digest_of("evolution/thresholds/v1", &thresholds);
         let observation_set = observations
             .iter()
@@ -349,6 +355,7 @@ impl Evolution<'_> {
                 &name(&record.state),
             ],
         );
+        // Same inputs: return the stored report and its signals unchanged
         if let Some(report) = self.store.state.analyses.get(&report_id) {
             let signals = report
                 .signals
@@ -361,6 +368,9 @@ impl Evolution<'_> {
                 reused: true,
             });
         }
+        // Turn each detected pattern into a signal with a stable id, walking it through its
+        // lifecycle: Qualifying, then InsufficientEvidence or Qualified, Investigating and possibly
+        // NoChangeRecommended
         let now = self.clock.now();
         let pins = pinned_governance(definition);
         let mut signals = Vec::new();
@@ -390,6 +400,8 @@ impl Evolution<'_> {
                     &thresholds_digest,
                 ],
             );
+            // Qualification applies the thresholds, scaled by the capability's risk and the
+            // governance it pins
             let qualification =
                 patterns::qualify(&detected, definition.applicability.risk, &pins, thresholds);
             let missing = detected
@@ -447,6 +459,8 @@ impl Evolution<'_> {
             let qualified = qualification.qualified;
             let explanation = qualification.explanation.clone();
             signal.qualification = Some(qualification);
+            // Not enough independent evidence: the signal stays visible but cannot lead to a
+            // proposal
             if !qualified {
                 advance(
                     &mut signal.state,
@@ -456,6 +470,8 @@ impl Evolution<'_> {
                     &explanation,
                     now,
                 )?;
+            // Qualified: form a hypothesis; if it suggests no safe change, say so instead of
+            // inviting a proposal
             } else {
                 advance(
                     &mut signal.state,
@@ -491,6 +507,7 @@ impl Evolution<'_> {
             signal.seal();
             signals.push(signal);
         }
+        // Summarize the outcomes (duplicates excluded) and how the signals ended up
         let mut outcome_counts = BTreeMap::new();
         for observation in observations
             .iter()
@@ -519,6 +536,7 @@ impl Evolution<'_> {
         } else {
             format!("{} signal(s): {qualified} qualified and open for a proposal, {insufficient} with insufficient evidence, {no_change} with no change recommended; no candidate was created", signals.len())
         };
+        // Limitations are stated in the report so readers do not over-read it
         let mut limitations = vec![
             "Qualification thresholds are deterministic decision rules, not statistical confidence.".to_string(),
             "Causality is never inferred from the order of events.".into(),
@@ -563,6 +581,8 @@ impl Evolution<'_> {
             digest: String::new(),
         };
         report.seal();
+        // Store atomically: a new signal supersedes any open signal of the same kind and context,
+        // existing signals are kept as they are, and the report is written once
         let stored = self.store.transact(|state| {
             let mut stored = Vec::new();
             for signal in &signals {
@@ -791,6 +811,8 @@ impl Evolution<'_> {
         signal_id: &str,
         suggestions: Vec<Change>,
     ) -> CapabilityResult<Proposal> {
+        // Only a qualified signal under investigation (or one that already led to a proposal) can
+        // be proposed on
         self.registry.grants.require(actor, Role::Contributor)?;
         let mut signal = self.store.signal(signal_id)?;
         if !matches!(
@@ -802,6 +824,8 @@ impl Evolution<'_> {
                 format!("signal {signal_id} is {}; only qualified signals under investigation lead to proposals", name(&signal.state)),
             ));
         }
+        // The changes the signal itself suggests, plus any typed suggestions; with none there is
+        // nothing to propose
         let mut changes = proposals::changes_for(&signal);
         changes.extend(suggestions);
         if changes.is_empty() {
@@ -813,6 +837,8 @@ impl Evolution<'_> {
                 ),
             ));
         }
+        // The proposal id derives from the signal and the exact change set, so proposing the same
+        // thing again returns the existing proposal instead of a duplicate
         let change_set_digest = digest_of("evolution/change-set/v1", &changes);
         let proposal_id = stable_id("prp", &[signal_id, &change_set_digest]);
         if let Ok(mut existing) = self.store.proposal(&proposal_id) {
@@ -821,6 +847,8 @@ impl Evolution<'_> {
             }
             return self.refresh(&proposal_id, actor);
         }
+        // Gate every change against the parent and what was actually observed; refused changes are
+        // kept with their reason
         let parent = self
             .registry
             .state
@@ -842,6 +870,7 @@ impl Evolution<'_> {
             .filter(|decision| !decision.allowed)
             .map(|decision| format!("change {}: {}", decision.index + 1, decision.reason))
             .collect::<Vec<_>>();
+        // Record which claims and steps the change set touches
         let mut affected_claims = signal.affected_claims.clone();
         let mut affected_steps = signal.affected_steps.clone();
         for change in &changes {
@@ -859,6 +888,7 @@ impl Evolution<'_> {
         affected_claims.dedup();
         affected_steps.sort();
         affected_steps.dedup();
+        // Risks the reviewer should know about
         let mut risks = vec!["The candidate must be validated and published by authorized people; this proposal authorizes nothing.".to_string()];
         if changes
             .iter()
@@ -929,6 +959,7 @@ impl Evolution<'_> {
             updated_at: now,
             digest: String::new(),
         };
+        // The signal records that it led to a proposal
         if signal.state == SignalState::Investigating {
             advance(
                 &mut signal.state,
@@ -939,6 +970,8 @@ impl Evolution<'_> {
                 now,
             )?;
         }
+        // A proposal is blocked when its basis moved: the parent changed since analysis, a newer
+        // version exists, or the parent is no longer live
         let latest = self
             .registry
             .state
@@ -962,6 +995,8 @@ impl Evolution<'_> {
                 name(&parent.state)
             ));
         }
+        // Build the intended candidate from the allowed changes only; one that would weaken the
+        // parent is blocked as well
         let allowed = changes
             .iter()
             .enumerate()

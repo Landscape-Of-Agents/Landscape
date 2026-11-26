@@ -101,11 +101,14 @@ pub(crate) fn check(
     resource: &str,
     skill: Option<&VersionRecord>,
 ) -> Permission {
+    // Start from what was asked and only tighten: each problem lowers the answer to approval or
+    // denial with a code and reason
     let mut answer = Permission {
         decision: Decision::Allow,
         reasons: Vec::new(),
         effect: None,
     };
+    // The operation must be a registered ADAPTER/OPERATION whose adapter is healthy
     let Some((adapter_id, operation_id)) = operation.split_once('/') else {
         answer.tighten(
             Decision::Deny,
@@ -133,6 +136,8 @@ pub(crate) fn check(
             format!("adapter {adapter_id} is not available"),
         );
     }
+    // Through a skill, the skill must be published and the operation must implement one of its
+    // steps
     if let Some(record) = skill {
         if record.state != LifecycleState::Published {
             answer.tighten(
@@ -159,6 +164,8 @@ pub(crate) fn check(
             );
         }
     }
+    // The resource must be in the adapter's namespace; repository resources are also decided by the
+    // same boundary agents are held to, and must stay inside the repository
     let (space, identifier) = namespace(resource);
     match adapter.and_then(|adapter| adapter.resource_namespace()) {
         Some(declared) if declared == space => {
@@ -183,6 +190,7 @@ pub(crate) fn check(
         Some(declared) => answer.tighten(Decision::Deny, "RESOURCE_NAMESPACE_MISMATCH", format!("{adapter_id} acts on {declared} resources, not {space}")),
         None => answer.tighten(Decision::Deny, "UNSUPPORTED_RESOURCE", format!("adapter {adapter_id} declares no resource namespace, so {resource} cannot be resolved")),
     }
+    // Agents may only use read-only operations, and anything that changes something needs approval
     if actor.kind == ActorKind::Agent && spec.effect != EffectClass::ReadOnly {
         answer.tighten(
             Decision::Deny,

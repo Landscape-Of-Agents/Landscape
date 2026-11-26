@@ -1001,11 +1001,16 @@ pub(crate) fn advance(
     env: &mut Env,
     activation_id: &str,
 ) -> Result<ActivationState, String> {
+    // A state machine: each pass moves the activation one state forward and saves it, so a crash
+    // resumes from the last saved state. It stops when the activation ends or waits; the bound
+    // guards against a loop that never settles
     for _ in 0..200 {
         let mut activation = store.activation(activation_id)?.clone();
         if activation.state.ended() || activation.state.waiting() {
             return Ok(activation.state);
         }
+        // Reload everything each pass: another worker or a person may have changed the assignment
+        // or definition in between
         let assignment = store.assignment(&activation.assignment_id)?.clone();
         let definition = store
             .definition(
@@ -1016,6 +1021,8 @@ pub(crate) fn advance(
             .cloned();
         let now = env.now;
         match activation.state {
+            // Queued: a paused assignment stays queued; otherwise the signed authority must still
+            // admit the assignment, and this worker takes the lease
             ActivationState::Queued => {
                 if assignment.lifecycle == Lifecycle::Paused {
                     return Ok(ActivationState::Queued);
@@ -1050,6 +1057,8 @@ pub(crate) fn advance(
                     activity("RESIDENT_ACTIVATION_STARTED", &activation, json!({}));
                 }
             }
+            // Context loading: assemble the context pack; when required context is missing the
+            // definition decides whether to block or to ask a person
             ActivationState::ContextLoading => {
                 let definition = definition.ok_or("the definition version is missing")?;
                 let authority = (env.authority)()?;
@@ -1115,6 +1124,8 @@ pub(crate) fn advance(
                     }
                 }
             }
+            // Investigating: run the deterministic checks and build a plan; an invalid plan blocks
+            // the activation
             ActivationState::Investigating => {
                 let definition = definition.ok_or("the definition version is missing")?;
                 let problems = investigate(store, env, &mut activation, &assignment, &definition)?;
@@ -1162,6 +1173,7 @@ pub(crate) fn advance(
                     );
                 }
             }
+            // Plan ready: start executing
             ActivationState::PlanReady => {
                 activation.record(
                     ActivationState::Executing,
@@ -1170,6 +1182,7 @@ pub(crate) fn advance(
                     now,
                 );
             }
+            // Executing: run the next step under a renewed lease
             ActivationState::Executing => {
                 activation.lease = Some(Lease {
                     holder: env.worker.clone(),
@@ -1183,6 +1196,7 @@ pub(crate) fn advance(
                     definition.as_ref(),
                 )?;
             }
+            // Verifying: classify the outcome from the evidence of the steps
             ActivationState::Verifying => {
                 verify(&mut activation, now);
             }
@@ -1480,8 +1494,12 @@ fn run_step(
     let limits = definition
         .map(|record| record.definition.limits.clone())
         .unwrap_or_default();
+    // Waits are capped by the definition's wait limit
     let wait = now + u64::from(limits.wait_minutes) * 60_000;
     match step.step_type {
+        // Read and verify steps run a deterministic check (no model call). A failed read is still a
+        // successful read; a failed verify contradicts the plan and fails the step; an unknown
+        // result fails either way
         StepType::ReadCheck | StepType::Verify => {
             let checks = check_env(store, env, assignment);
             let result = step
@@ -1529,6 +1547,8 @@ fn run_step(
                 );
             }
         }
+        // External steps go through a registered adapter; without one the step is marked
+        // unavailable rather than skipped silently
         StepType::NotifySlack | StepType::CreateTicket => {
             let Some(adapter) = env
                 .adapters
@@ -1566,6 +1586,9 @@ fn run_step(
                 .steps
                 .get_mut(&step.step_id)
                 .ok_or("step record")?;
+            // Delivered steps keep the external reference; failures retry while attempts remain; an
+            // uncertain outcome stops the activation until a person reconciles it, because
+            // repeating it could duplicate the effect
             let (result, uncertain) = match outcome {
                 Dispatch::Done {
                     external_ref,
@@ -1621,6 +1644,8 @@ fn run_step(
                 );
             }
         }
+        // Approval steps only run after a person approved them, so reaching one means it was
+        // approved
         StepType::RequestApproval => {
             let record = activation
                 .steps
@@ -1629,6 +1654,7 @@ fn run_step(
             record.state = StepState::Succeeded;
             record.detail = "approved".into();
         }
+        // Ask-user steps wait for the person's answer until the deadline
         StepType::AskUser => {
             let record = activation
                 .steps
@@ -1645,6 +1671,7 @@ fn run_step(
                 );
             }
         }
+        // Wait steps park the activation until the event arrives or the (capped) deadline passes
         StepType::WaitForEvent => {
             let minutes = step
                 .params
@@ -1662,6 +1689,8 @@ fn run_step(
                 step.params.get("kind").cloned().unwrap_or_default()
             );
         }
+        // Reconcile steps ask a person to establish the outcome of an uncertain step; if the step
+        // is no longer uncertain there is nothing to do
         StepType::Reconcile => {
             let target = step.params.get("step").cloned().unwrap_or_default();
             let uncertain = activation
@@ -1681,6 +1710,8 @@ fn run_step(
                 record.detail = format!("{target} is not uncertain; nothing to reconcile");
             }
         }
+        // RCA proposals are recorded as a new version for review (only in live mode); nothing is
+        // published
         StepType::ProposeRca => {
             let label = step.params.get("label").cloned().unwrap_or_default();
             let rca_id = format!("{}-proposed", assignment.assignment_id);
@@ -1715,6 +1746,7 @@ fn run_step(
                     at: now,
                 }],
             };
+            // Dry runs record the activity but keep the store unchanged
             if activation.mode == Mode::Live {
                 store
                     .state
@@ -1736,6 +1768,7 @@ fn run_step(
             step_record.external_ref = Some(format!("rca:{reference}"));
             step_record.detail = "proposal recorded for review; nothing was published".into();
         }
+        // Accepting a proposed action plan adds its new steps as pending records
         StepType::ProposeActionPlan => {
             let plan = activation
                 .plan
@@ -1763,6 +1796,8 @@ fn run_step(
             );
             activation.plan = Some(plan);
         }
+        // Paging and procedures have no adapter in this version, so they are reported as
+        // unavailable
         StepType::PageOncall | StepType::ExecuteProcedure => {
             let record = activation
                 .steps

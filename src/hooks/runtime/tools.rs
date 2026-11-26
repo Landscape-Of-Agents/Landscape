@@ -620,6 +620,13 @@ impl Hook {
         }
     }
 
+    /** Describe a selection for the agent: what must happen to it (unchanged or changed meaningfully), where it is, its context, and every attached policy context file, flagged when the file changed since it was attached
+     * Input
+        - record: &Record - the selection
+     * Output
+        - Result<String, String>
+        - Error if an attached context file cannot be read
+    */
     fn selection_guidance(&self, record: &Record) -> Result<String, String> {
         let requirement = match record.operation {
             crate::selection::registry::Operation::Preserve => "must remain unchanged".to_string(),

@@ -1,3 +1,7 @@
+/* Source stylesheet of the landing page. Tailwind builds it into public/styles.css
+   (npm run build); edit this file, never the generated one. Base rules come first, then the
+   reusable components and the scene animations used by showcase.js and whatsnew.js. */
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

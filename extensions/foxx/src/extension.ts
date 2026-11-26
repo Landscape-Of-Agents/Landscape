@@ -225,6 +225,7 @@ async function describeFile(uri: vscode.Uri): Promise<SelectionInfo | undefined>
  * @param file file chosen in the Explorer, if any
  */
 async function openPanel(file: vscode.Uri | undefined, from: OpenedFrom): Promise<void> {
+  /** Record that the panel refused to open, and why. */
   const refused = (failure: string, statement: string) =>
     record("FOXX_PANEL_REFUSED", { status: "REFUSED", failure_state: failure, statement, opened_from: from });
   if (file?.scheme === "file") {
@@ -461,6 +462,7 @@ async function editGraph(label: string, edit: (text: string) => { text: string; 
 
 /** The extension side of the Landscape panel. */
 const panelHost: PanelHost = {
+  /** Describe the repository and the last validation for the panel. */
   state(): PanelState {
     const ready = Boolean(root());
     const report = lastReport;
@@ -517,6 +519,7 @@ const panelHost: PanelHost = {
 
 /** The extension side of the Landscape sidebar. */
 const sidebarHost: SidebarHost = {
+  /** Describe what the sidebar lists: governed entities, selections and their state. */
   state(): SidebarState {
     const ready = Boolean(root());
     let governed: ReturnType<typeof entities> = [];
@@ -603,8 +606,10 @@ async function revealSelection(id: string, open = false): Promise<void> {
  * @returns whether it worked, what to tell the person, and follow-up buttons
  */
 async function runAction(action: string, values: Record<string, string | boolean>, selection: SelectionInfo | undefined, step: Step = quietStep): Promise<RunResult> {
+  /** A trimmed text value from the form, or empty. */
   const value = (key: string) => (typeof values[key] === "string" ? (values[key] as string).trim() : "");
   const lines = value("context").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  /** The message of a failed Crane run, without the crane: prefix. */
   const failed = (result: { stdout: string; stderr: string }) => (result.stderr || result.stdout).trim().replace(/^crane: /, "");
   const checked = await step("crane", "Check Crane", () => checkCrane(), (status) => ({ ok: status.state === "ok", detail: status.state === "ok" ? `Crane ${status.version}${status.location ? " · " + status.location : ""}` : status.message }));
   if (checked.state !== "ok") return { ok: false, message: checked.message ?? "Crane cannot be used.", actions: CRANE_FIXES };
@@ -619,6 +624,7 @@ async function runAction(action: string, values: Record<string, string | boolean
   // What a zone or flow covers: the enclosing function when chosen and known, else the file
   const cover = (): Partial<Record<"symbols" | "files", string[]>> =>
     values.cover === "symbol" && selection?.symbol ? { symbols: [`${selection.file}:${selection.symbol}`] } : { files: [selection?.file ?? ""] };
+  /** Write a governance change as one step of this action, so its progress and result are reported. */
   const governed = (change: (text: string) => string, summary: string) => writeGovernance(change, summary, step);
   switch (action) {
     case "preserve":
@@ -901,6 +907,7 @@ async function setUp(): Promise<void> {
     return;
   }
   const fresh = !fs.existsSync(path.join(directory, ".crane", "registry.json"));
+  /** Record a failed setup and show the error. */
   const fail = (result: { code: number; stdout: string; stderr: string }) => {
     record("FOXX_SETUP", { status: "FAILED", failure_state: result.code === 127 ? "CRANE_MISSING" : "GIT", statement: "Crane setup failed.", role: fresh ? "OWNER" : "MEMBER" });
     return vscode.window.showErrorMessage(`Landscape: ${(result.stderr || result.stdout).trim().replace(/^crane: /, "")}`);
@@ -1077,12 +1084,14 @@ function loadRecords(): RegistryRecord[] {
 function publish(findings: Finding[], commands: CommandResult[]): void {
   diagnostics.clear();
   const byFile = new Map<string, vscode.Diagnostic[]>();
+  /** Add a diagnostic for a file. */
   const add = (file: string, range: vscode.Range, message: string, severity: vscode.DiagnosticSeverity, code: string) => {
     const diagnostic = new vscode.Diagnostic(range, message, severity);
     diagnostic.source = "crane";
     diagnostic.code = code;
     byFile.set(file, [...(byFile.get(file) ?? []), diagnostic]);
   };
+  /** The editor range of a selection span, or the top of the file when it has none. */
   const rangeOf = (span: Span | null | undefined) => (span ? new vscode.Range(Math.max(0, span.start_line - 2), 0, Math.max(0, span.end_line), 0) : new vscode.Range(0, 0, 0, 0));
   for (const finding of findings.filter((finding) => finding.severity !== "LOW")) {
     const span = finding.selection ? spans[finding.selection] : undefined;
@@ -1155,6 +1164,7 @@ async function test(): Promise<boolean | undefined> {
 function decorateAll(): void {
   for (const editor of vscode.window.visibleTextEditors) {
     const file = relative(editor.document.uri.fsPath);
+    /** The decorated ranges of this editor's selections of one operation. */
     const ranges = (operation: "preserve" | "target") =>
       records
         .filter((record) => record.operation === operation && spans[record.id]?.path === file)
@@ -1244,6 +1254,7 @@ class SelectionHovers implements vscode.HoverProvider {
 
 /** A node of the governance tree. */
 class Node extends vscode.TreeItem {
+  /** Create a tree node; it is collapsible when it has children. */
   constructor(label: string, readonly children: Node[] = [], description?: string, tooltip?: string | vscode.MarkdownString, icon?: vscode.ThemeIcon, command?: vscode.Command) {
     super(label, children.length ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
     this.description = description;
@@ -1307,6 +1318,7 @@ class GovernanceTree implements vscode.TreeDataProvider<Node> {
       return [new Node("Policies", policyNodes, String(policyNodes.length), undefined, new vscode.ThemeIcon("law")), new Node("governance.yaml is invalid", [], String(error), String(error), new vscode.ThemeIcon("error", new vscode.ThemeColor("testing.iconFailed")))];
     }
     const glyphs: Record<string, string> = { zone: "symbol-namespace", flow: "git-merge", context_pack: "book" };
+    /** A tree section listing governed entities of one kind. */
     const section = (kind: string, label: string) => {
       const items = governed.filter((entity) => entity.kind === kind);
       return new Node(label, items.map((entity) => new Node(entity.id, [], entity.status, new vscode.MarkdownString(`**${kind.replace("_", " ")} \`${entity.id}\`** · ${entity.status}\n\n${entity.description ?? ""}`), stateIcon(glyphs[kind], entity.status), kind === "zone" || kind === "flow" ? { command: "foxx.openEntity", title: "Open source", arguments: [kind, entity.id] } : undefined)), String(items.length), undefined, new vscode.ThemeIcon(glyphs[kind]));
@@ -1527,6 +1539,7 @@ function targetsOf(): { kind: "zone" | "flow"; id: string; status: string }[] {
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel("Landscape");
   diagnostics = vscode.languages.createDiagnosticCollection("crane");
+  /** Register a command and dispose it with the extension. */
   const register = (command: string, callback: (...args: unknown[]) => unknown) => context.subscriptions.push(vscode.commands.registerCommand(command, callback));
   // The title button passes the editor's file, so only the Explorer entry opens a whole file
   extensionVersion = String(context.extension.packageJSON.version ?? "");

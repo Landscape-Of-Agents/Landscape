@@ -235,6 +235,16 @@ fn syntax_of(path: &str) -> CommentSyntax {
     language_for(path).map_or(CommentSyntax::Line("#"), |language| language.syntax)
 }
 
+/** Decide whether a preserved selection is unchanged once the target selections nested inside it are set aside: each nested target must sit inside the parent both in the file and in its signed origin, and everything around them must match the signed content
+ * Input
+    - workspace: &Workspace - repository
+    - parent: &Record - the preserved selection
+    - location: &crate::selection::tracker::Location - where the parent is now
+    - state: &State - signed registry
+    - scan: &Scan - current file texts and markers
+ * Output
+    - bool (false when anything outside the nested targets changed or a target is malformed)
+*/
 fn unchanged_except_nested_targets(
     workspace: &Workspace,
     parent: &Record,
@@ -348,6 +358,7 @@ fn unchanged_except_nested_targets(
     - Vec<Finding>
 */
 fn consistency(workspace: &Workspace, state: &State, policies: &PolicySet) -> Vec<Finding> {
+    // Policy files must parse and live only in .crane/policies
     let mut findings = Vec::new();
     for (path, error) in &policies.errors {
         findings.push(
@@ -370,6 +381,7 @@ fn consistency(workspace: &Workspace, state: &State, policies: &PolicySet) -> Ve
         }
         Err(error) => findings.push(Finding::new("scan_failed", Severity::High, error)),
     }
+    // Policy names are unique across files
     let mut names: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (file, block) in policies.blocks() {
         names
@@ -387,6 +399,7 @@ fn consistency(workspace: &Workspace, state: &State, policies: &PolicySet) -> Ve
             ),
         ));
     }
+    // The configured defaults and autonomy mode must be valid
     findings.extend(default_findings(&state.config, state, policies));
     if !super::config::valid_mode(&state.config.autonomy.mode) {
         findings.push(Finding::new(
@@ -395,6 +408,8 @@ fn consistency(workspace: &Workspace, state: &State, policies: &PolicySet) -> Ve
             format!("autonomy mode '{}' in .crane/config.json is not observe, assisted, delegated, or autonomous", state.config.autonomy.mode),
         ));
     }
+    // Every policy command must match its signed record exactly (operation, change type and
+    // policy), so an edited policy file is caught
     for (file, block) in policies.blocks() {
         for statement in &block.statements {
             let place = format!("{}:{}", file.path, statement.line);
@@ -434,6 +449,7 @@ fn consistency(workspace: &Workspace, state: &State, policies: &PolicySet) -> Ve
             }
         }
     }
+    // Every selection has exactly one command in some policy
     for record in &state.registry.selections {
         match policies.references(&record.id).len() {
             1 => {}
@@ -638,6 +654,8 @@ pub(crate) fn evaluate(
     options: &Options,
 ) -> Result<(Report, State), String> {
     let mut findings = Vec::new();
+    // A governance state that cannot be loaded is itself a finding; the report still comes back so
+    // the person can see why
     let state = match State::load(workspace) {
         Ok(state) => state,
         Err(error) => {
@@ -659,6 +677,8 @@ pub(crate) fn evaluate(
             return Ok((report, State::default()));
         }
     };
+    // Integrity (signatures, rollback anchors) and consistency between the registry and the
+    // policies
     let trust = workspace.trust()?;
     findings.extend(integrity(workspace, &state, &trust));
     let policies = PolicySet::load(workspace)?;
@@ -683,6 +703,7 @@ pub(crate) fn evaluate(
             .with_selection(&record.id),
         );
     }
+    // Zones and flows are resolved only when asked for, since resolution reads the whole repository
     let mut zones = None;
     if options.governance {
         match super::zones::load(workspace) {
@@ -698,6 +719,7 @@ pub(crate) fn evaluate(
             )),
         }
     }
+    // Scan the files for markers and report markers that no registered selection owns
     let scanned = scan(workspace, &state, &options.scan)?;
     let registered = state
         .registry
@@ -711,6 +733,8 @@ pub(crate) fn evaluate(
         .filter(|finding| finding.code == "selection_record_invalid")
         .filter_map(|finding| finding.selection.clone())
         .collect::<BTreeSet<_>>();
+    // Resolve every selection to where its markers are now; moved selections are relocations, and
+    // missing markers may come with suggested candidates
     let mut resolutions = BTreeMap::new();
     let mut relocations = Vec::new();
     let mut resolved = BTreeMap::new();
@@ -747,6 +771,8 @@ pub(crate) fn evaluate(
         }
         resolved.insert(record.id.clone(), resolution);
     }
+    // Judge every policy command against its selection: unknown or tampered selections are
+    // unresolved, the rest are judged on their current content
     let mut results = Vec::new();
     for (file, block) in policies.blocks() {
         let mut commands = Vec::new();

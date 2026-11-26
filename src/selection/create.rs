@@ -112,6 +112,8 @@ pub(crate) fn create(request: &Request) -> Result<Record, String> {
         Operation::Preserve => "crane protect",
         Operation::Target => "crane target",
     };
+    // Only a person at a terminal may create selections, and only on a governance state that
+    // verifies
     require_human(command)?;
     let workspace = Workspace::locate()?;
     let state = State::load(&workspace)?;
@@ -127,6 +129,8 @@ pub(crate) fn create(request: &Request) -> Result<Record, String> {
             blocking.join("; ")
         ));
     }
+    // Resolve the policy and checkpoint (or the configured defaults); the checkpoint's commit must
+    // still exist
     let policies = PolicySet::load(&workspace)?;
     if let Some((path, error)) = policies.errors.first() {
         return Err(format!("fix the policy syntax first: {path}: {error}"));
@@ -157,6 +161,8 @@ pub(crate) fn create(request: &Request) -> Result<Record, String> {
             checkpoint.name, checkpoint.commit
         ));
     }
+    // Validate the request itself and the file: never Crane's own metadata, only languages with a
+    // comment syntax, UTF-8 text with no broken markers
     if let Some(name) = &request.name {
         validate_name("selection", name)?;
     }
@@ -185,6 +191,8 @@ pub(crate) fn create(request: &Request) -> Result<Record, String> {
             marker.problem.clone().unwrap_or_default()
         ));
     }
+    // The default range is the whole file, except a leading shebang or XML declaration, which must
+    // stay on line 1
     let all = lines(&text);
     if all.is_empty() {
         return Err(format!("{path} is empty; there is nothing to select"));
@@ -223,6 +231,8 @@ pub(crate) fn create(request: &Request) -> Result<Record, String> {
             .map_or(all.len(), |other| other.line);
         ranges.push((id, marker.line, end_marker));
     }
+    // A new selection may contain an existing one or sit inside it, but may not partly overlap it
+    // or cover only one of its marker lines
     if let Some((id, first, last)) = ranges.iter().find(|(_, first, last)| {
         let source_first = *first + 1;
         let source_last = last.saturating_sub(1);
@@ -237,6 +247,8 @@ pub(crate) fn create(request: &Request) -> Result<Record, String> {
             "lines {start}-{end} overlap selection {id} (lines {first}-{last} including its markers); selections cannot overlap"
         ));
     }
+    // The selected lines must be unchanged since the checkpoint: map the file (without marker
+    // lines) onto the checkpoint version and require the range to map to one contiguous block
     let marker_lines = markers
         .iter()
         .map(|marker| marker.line)
@@ -276,6 +288,8 @@ pub(crate) fn create(request: &Request) -> Result<Record, String> {
             checkpoint.name
         ));
     }
+    // The origin is the same block in the checkpoint version; its normalized content is what the
+    // signature will protect
     let base_first = mapped[0].unwrap_or_default();
     let base_last = base_first + mapped.len() - 1;
     let origin_span = Span {
@@ -287,6 +301,8 @@ pub(crate) fn create(request: &Request) -> Result<Record, String> {
     };
     let origin_content =
         normalize_content(&base_text[origin_span.start_byte..origin_span.end_byte]);
+    // Insert the markers with a fresh id and re-resolve them, to prove the marked content still
+    // equals the checkpoint content byte for byte
     let existing = scan_repository(&workspace)?;
     let id = fresh_id(&state, &existing)?;
     let new_text = insert(&text, language.syntax, &id, start, end)?;
@@ -301,6 +317,8 @@ pub(crate) fn create(request: &Request) -> Result<Record, String> {
             checkpoint.name
         ));
     }
+    // Bind the record to the checkpoint blob and this repository, so it cannot be replayed
+    // elsewhere
     let blob = git::blob_id(&workspace.root, &checkpoint.commit, &path)
         .ok_or_else(|| format!("could not read the blob of {path} at the checkpoint"))?;
     let mut origin = Origin {
@@ -336,6 +354,8 @@ pub(crate) fn create(request: &Request) -> Result<Record, String> {
         record_digest: String::new(),
         signature: String::new(),
     };
+    // Write the file and the policy; if anything fails afterwards both are restored, so a failed
+    // create leaves nothing behind
     let policy_path = workspace.root.join(&policy_file.path);
     let policy_text = insert_statement(
         &policy_file.text,
@@ -361,6 +381,7 @@ pub(crate) fn create(request: &Request) -> Result<Record, String> {
         "checkpoint": checkpoint.name,
         "binding_digest": record.origin.binding_digest,
     });
+    // Commit the signed record as a new registry generation
     let committed = commit(
         &workspace,
         command,

@@ -186,6 +186,8 @@ pub(crate) fn plan(
 ) -> VerificationPlan {
     let mut plan = VerificationPlan::default();
     let method = format!("work-capture-rules@{RULES_VERSION}");
+    // Technical claims come from the episode's assertions. An agent's hypothesis is kept aside and
+    // never becomes a claim; assertions with no known predicate are ignored
     for assertion in &intake.observed.assertions {
         if assertion.method == DerivationMethod::AgentHypothesis {
             plan.hypotheses.push(assertion.assertion_id.clone());
@@ -197,6 +199,7 @@ pub(crate) fn plan(
         else {
             continue;
         };
+        // Several assertions of one predicate get numbered claim ids (base, base-2, ...)
         let taken = plan
             .claims
             .iter()
@@ -221,6 +224,9 @@ pub(crate) fn plan(
         let mut refs = vec![assertion.assertion_id.clone()];
         refs.extend(assertion.supporting.iter().cloned());
         let conflicted = !assertion.contradicting.is_empty();
+        // Only a supported, true, uncontradicted assertion verifies its claim; a contradiction or a
+        // false result is a gap (and a false one a failure signal), and anything else is missing
+        // evidence
         let basis = match (assertion.status, assertion.truth, conflicted) {
             (_, _, true) => {
                 refs.extend(assertion.contradicting.iter().cloned());
@@ -278,6 +284,7 @@ pub(crate) fn plan(
         });
         plan.claims.push(item);
     }
+    // Business invariants are checked against the verification and metric records that name them
     let checks = intake
         .observed
         .deployments
@@ -337,6 +344,8 @@ pub(crate) fn plan(
             })
             .map(|record| record.evidence_id.clone())
             .collect::<Vec<_>>();
+        // An invariant counts only with an authoritative mapping; then a failing check contradicts
+        // it, no passing check leaves it untested, and passing checks verify it
         let basis = if !mapping.authoritative() {
             plan.gaps.push(gap(
                 GapKind::UnsupportedClaim,
@@ -383,6 +392,7 @@ pub(crate) fn plan(
         });
         plan.claims.push(item);
     }
+    // Acceptance criteria are declared, never observed, so each one is an untested gap
     for criterion in &intake.intent.acceptance_criteria {
         let claim_id = format!("acceptance-{}", criterion.id);
         plan.claims.push(claim(
@@ -410,6 +420,8 @@ pub(crate) fn plan(
             false,
         ));
     }
+    // Whatever the intake could not see becomes a gap: missing or inaccessible evidence, stale
+    // revisions and unmapped business references
     let completeness = &intake.completeness;
     for missing in &completeness.missing {
         plan.gaps.push(gap(
@@ -449,6 +461,8 @@ pub(crate) fn plan(
             false,
         ));
     }
+    // The episode's recorded outcome: failed or abandoned work is a failure signal, an unknown or
+    // partial outcome a gap
     match intake.work.outcome {
         None => plan.gaps.push(gap(
             GapKind::Unknown,
@@ -469,6 +483,7 @@ pub(crate) fn plan(
         }
         Some(EpisodeOutcome::Succeeded) => {}
     }
+    // Negative cases the episode never exercised are listed, so reviewers know what was not seen
     if intake.observed.recovery.is_empty() {
         plan.negative_cases
             .push("Recovery or rollback was not exercised in the source episode".into());

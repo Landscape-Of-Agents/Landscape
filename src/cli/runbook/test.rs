@@ -29,12 +29,14 @@ pub(super) fn test(args: &[String]) -> Result<(), String> {
     let store = runbooks(&local)?;
     let record = store.runbook(&id, version)?.clone();
     let definition = record.definition.clone();
+    // Each case is PASS or FAIL with a detail; the command fails when any case fails
     let mut cases = Vec::new();
     let mut case = |name: &str, passed: bool, detail: String| {
         cases.push(
             json!({"case": name, "status": if passed { "PASS" } else { "FAIL" }, "detail": detail}),
         )
     };
+    // The definition is valid and every operation it uses is registered
     let mut findings = model::validate(&definition);
     findings.extend(registry_findings(&local, &definition));
     case(
@@ -46,6 +48,8 @@ pub(super) fn test(args: &[String]) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join("; "),
     );
+    // Every step's failure leads somewhere defined: it stops the run, another step branches on it,
+    // or a later step handles it
     for step in &definition.steps {
         let branched = definition.steps.iter().any(|other| {
             other
@@ -73,6 +77,7 @@ pub(super) fn test(args: &[String]) -> Result<(), String> {
             .to_lowercase(),
         );
     }
+    // The planned operations fit the runbook's budget
     let total: u64 = definition
         .steps
         .iter()
@@ -130,6 +135,8 @@ pub(super) fn test(args: &[String]) -> Result<(), String> {
             Err(error) => Ok(error),
         }
     };
+    // A run is refused for a draft, for runbooks that are not active, for a missing required input,
+    // and for an input that holds a secret
     let full = definition
         .inputs
         .iter()
@@ -174,6 +181,7 @@ pub(super) fn test(args: &[String]) -> Result<(), String> {
             outcome.unwrap_or_else(|error| error),
         );
     }
+    // Summarize the cases as one response
     let failed = cases.iter().filter(|case| case["status"] == "FAIL").count();
     let detail = cases
         .iter()

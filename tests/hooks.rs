@@ -103,6 +103,12 @@ fn install_validate_uninstall() {
     assert!(status.to_string().contains("Codex"), "{status}");
 }
 
+/** Installing the Copilot and Gemini profiles keeps existing hooks, registers Crane once, validates, and uninstalling removes only Crane
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
 #[test]
 fn copilot_and_gemini_profiles_install_validate_and_uninstall() {
     let fixture = Fixture::ready();
@@ -178,6 +184,12 @@ fn session_start_supplies_context() {
     assert!(text.contains("100 credits available"), "{text}");
 }
 
+/** Reading a file with a selection gives the agent the selection's guidance and attached context
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
 #[test]
 fn selection_context_is_shown_when_a_selection_is_touched() {
     let (fixture, keep, _) = governed();
@@ -360,6 +372,12 @@ fn pre_tool_decisions() {
     assert_eq!(delete.status.code(), Some(2), "{}", text(&delete));
 }
 
+/** A target nested in a preserved selection can be edited while the rest of the parent stays frozen
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
 #[test]
 fn nested_target_is_an_editable_exception_and_nested_preserve_stays_frozen() {
     let fixture = Fixture::ready();

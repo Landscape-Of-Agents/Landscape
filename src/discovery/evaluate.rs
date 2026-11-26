@@ -383,11 +383,15 @@ fn evaluate_one(
     sources: &Sources,
     lab_reports: &[LabReport],
 ) -> CandidateEvaluation {
+    // Each gate below records its condition in the tally; the strongest reason found decides the
+    // disposition at the end
     let mut tally = Tally::default();
     let latest = state
         .versions
         .get(id)
         .and_then(|versions| versions.values().next_back());
+    // Only the latest eligible version is considered; with none, say why the latest version is not
+    // eligible
     let record: Option<&VersionRecord> = latest_eligible(state, id);
     let Some(record) = record else {
         let detail = latest.map_or_else(
@@ -430,6 +434,8 @@ fn evaluate_one(
         .latest_run(record)
         .map(|run| stale_reasons(run, state, sources))
         .unwrap_or_else(|| vec!["it has no validation run".into()]);
+    // Eligibility and freshness: published and not stale, and still valid against today's
+    // references
     let eligibility = if eligible(record) {
         ConditionStatus::Satisfied
     } else {
@@ -461,8 +467,11 @@ fn evaluate_one(
         },
         blocked_dependency,
     );
+    // Applicability and scope against the caller's situation
     applicability(definition, context, &mut tally);
     scope(definition, context, &mut tally);
+    // Dependencies: a required one that does not resolve blocks the recommendation; optional ones
+    // are only shown
     match dependencies(state, id, definition.version, sources) {
         Ok(statuses) => {
             for status in statuses {
@@ -496,6 +505,8 @@ fn evaluate_one(
         }
         Err(error) => tally.blocked_dependency.push(error.to_string()),
     }
+    // Lab reports for this exact digest: a failed one blocks, a passed one supports, inconclusive
+    // ones are shown but not counted
     let mut lab = Vec::new();
     for report in lab_reports.iter().filter(|report| {
         report.capability_id == id
@@ -536,6 +547,8 @@ fn evaluate_one(
             detail: "none; no lab result is claimed".into(),
         });
     }
+    // The disposition, strongest reason first: rejected, then blocked by a dependency, blocked by
+    // the Lab, unresolved, otherwise recommended
     let (disposition, reasons) = if !tally.rejected.is_empty() {
         (Disposition::Rejected, tally.rejected)
     } else if !tally.blocked_dependency.is_empty() {

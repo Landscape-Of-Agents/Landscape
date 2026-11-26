@@ -162,6 +162,12 @@ fn multiple_selections_and_overlap() {
     assert!(report["selections"][second.as_str()].is_object());
 }
 
+/** A nested selection validates, and changing the child does not count as changing the parent
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
 #[test]
 fn nested_selections_are_contained_and_project_child_content_from_parent() {
     let fixture = Fixture::ready();
@@ -405,6 +411,12 @@ fn forged_markers_are_detected() {
     assert!(output.contains("marker_unregistered"), "{output}");
 }
 
+/** Markers that cross instead of nesting fail validation with marker_crossed
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
 #[test]
 fn crossed_nested_markers_fail_validation() {
     let fixture = Fixture::ready();

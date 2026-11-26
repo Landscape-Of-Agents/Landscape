@@ -126,6 +126,13 @@ impl Guard<'_> {
         repository_path(self.workspace, self.cwd.as_deref(), raw)
     }
 
+    /** Find which lines of the old text a change touches, as 1-based inclusive ranges. Small files use a longest-common-subsequence diff; files too large for its table fall back to one range between the common prefix and suffix, which may over-report but never misses a change
+     * Input
+        - before: &str - current text
+        - after: &str - proposed text
+     * Output
+        - Vec<(usize, usize)> (empty when nothing changed)
+    */
     fn changed_line_ranges(before: &str, after: &str) -> Vec<(usize, usize)> {
         let old = before.lines().collect::<Vec<_>>();
         let new = after.lines().collect::<Vec<_>>();
@@ -258,6 +265,8 @@ impl Guard<'_> {
         - Decided
     */
     pub(crate) fn decide(&self, action: &AgentAction) -> Decided {
+        // Start from Allow and only ever tighten: every rule below can add a denial, approval or
+        // cost, never remove one
         let mut decided = Decided {
             verdict: Verdict {
                 decision: Decision::Allow,
@@ -283,7 +292,10 @@ impl Guard<'_> {
             decided.verdict.reasons.push(reason);
             decided.rules.push(rule);
         };
+        // Each operation is checked by what it touches and given its base cost
         match action.operation {
+            // Reads: Crane's trust directory is never readable; each read is classified, and URLs
+            // count as network use
             Operation::Read => {
                 decided.verdict.cost = self.costs.read;
                 for read in &action.reads {
@@ -310,6 +322,8 @@ impl Guard<'_> {
                     decided.verdict.cost += self.costs.network;
                 }
             }
+            // Writes: a write naming no file cannot be checked, so it is denied; otherwise each
+            // changed file is decided on its own
             Operation::Write => {
                 decided.verdict.cost = self.costs.write;
                 if action.files.is_empty() {
@@ -324,6 +338,8 @@ impl Guard<'_> {
                     self.decide_write(change, &mut decided);
                 }
             }
+            // Shell commands: an unstated command cannot be checked, so it is denied; a stated one
+            // is decided by the command rules
             Operation::Execute => {
                 decided.verdict.cost = self.costs.execute;
                 match &action.command {
@@ -336,6 +352,8 @@ impl Guard<'_> {
                     Some(command) => self.decide_command(command, &mut decided),
                 }
             }
+            // Other tools: arguments that reach Crane itself are denied, and network destinations
+            // are inferred from the arguments
             Operation::Other => {
                 decided.verdict.cost = self.costs.other;
                 if let Some(argument) = action
@@ -365,6 +383,7 @@ impl Guard<'_> {
                 });
             }
         }
+        // Network destinations are reported as resources
         for destination in &decided.network {
             decided.resources.push(Resource {
                 kind: "host".into(),
@@ -373,6 +392,7 @@ impl Guard<'_> {
                 classification: Some("external".into()),
             });
         }
+        // Policies follow from the selections the call touched
         decided.selections.sort();
         decided.selections.dedup();
         decided.policies = decided
@@ -382,6 +402,8 @@ impl Guard<'_> {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
+        // Then the autonomy gate, and finally the Brick rules, which can only make the decision
+        // stricter
         self.gate(action.operation, &mut decided);
         self.apply_bricks(action, &mut decided);
         decided
@@ -563,6 +585,14 @@ impl Guard<'_> {
         }
     }
 
+    /** Apply the zone, flow and Brick limits of the touched lines to a decision: record the entities, add criticality cost, and tighten to deny (observe) or require approval (assisted or high criticality)
+     * Input
+        - path: &str - repository-relative file
+        - changed: &[(usize, usize)] - changed line ranges
+        - decided: &mut Decided - the decision being built
+     * Output
+        - None (updates decided)
+    */
     fn apply_zone_limits(&self, path: &str, changed: &[(usize, usize)], decided: &mut Decided) {
         let Some(limit) = self
             .limits
@@ -1012,6 +1042,8 @@ pub(crate) fn self_test(
     state: &State,
     policy: &str,
 ) -> Vec<(String, &'static str, String)> {
+    // The self test decides synthetic agent actions with a real guard over the live state, so a
+    // misconfigured guard is found before an agent finds it; nothing is written
     let guard = Guard {
         workspace,
         state,
@@ -1045,6 +1077,7 @@ pub(crate) fn self_test(
         digest: String::new(),
     };
     let mut checks = Vec::new();
+    // A check passes when the guard allows exactly what it should
     let expect = |name: String, decided: Decided, allowed: bool| {
         let passed = (decided.verdict.decision == Decision::Allow) == allowed;
         (
@@ -1065,6 +1098,8 @@ pub(crate) fn self_test(
             ),
         )
     };
+    // For every selection: a write inside it is allowed only for a target selection, and removing
+    // its start marker is always refused
     for record in state
         .registry
         .selections
@@ -1135,6 +1170,8 @@ pub(crate) fn self_test(
             ));
         }
     }
+    // Writing Crane's state, or running a command that changes it, is refused; read-only Crane
+    // commands are allowed
     let map = workspace
         .root
         .join(".crane")
@@ -1174,6 +1211,7 @@ pub(crate) fn self_test(
         )),
         false,
     ));
+    // Reading the signing keys is refused
     if let Some(home) = &guard.trust_home {
         let key = home
             .join("keys")

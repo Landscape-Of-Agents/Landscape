@@ -45,6 +45,7 @@ pub(crate) fn detect(
     sources: &Sources,
     observations: &[Observation],
 ) -> CapabilityResult<DriftReport> {
+    // A version that was withdrawn is drift on its own
     let record = state.record(capability_id, version)?;
     let mut findings = Vec::new();
     if matches!(
@@ -63,6 +64,8 @@ pub(crate) fn detect(
             invocations: Vec::new(),
         });
     }
+    // Compare every pinned dependency with the version observed now: unchanged, changed, missing,
+    // or unknown when it cannot be observed (unknown is never reported as no drift)
     for status in dependencies(state, capability_id, version, sources)? {
         let dependency = &status.dependency;
         let kind = kind_name(dependency.kind);
@@ -111,6 +114,8 @@ pub(crate) fn detect(
             impact,
             invocations: Vec::new(),
         });
+        // Invocations that ran under another zone, flow or policy version than the pin are noted;
+        // their outcomes may relate to that difference, but no cause is claimed
         if matches!(
             dependency.kind,
             DependencyKind::Zone | DependencyKind::Flow | DependencyKind::Policy
@@ -144,6 +149,7 @@ pub(crate) fn detect(
             }
         }
     }
+    // Summarize, keeping changed and unknown apart
     let changed = findings
         .iter()
         .filter(|finding| {

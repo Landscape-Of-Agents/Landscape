@@ -264,6 +264,8 @@ pub(crate) fn run(
     plan: &InvocationPlan,
     requester: &Actor,
 ) -> Vec<PreflightCheck> {
+    // Each check is Passed, Failed or Unresolved; a Failed check blocks the run, an Unresolved one
+    // asks a person to decide. Without the exact version there is nothing to check
     let mut checks = Vec::new();
     let Ok(record) = inputs.state.record(target.capability_id, target.version) else {
         return vec![check(
@@ -273,6 +275,7 @@ pub(crate) fn run(
             "the version disappeared",
         )];
     };
+    // Eligibility: only published, non-stale versions may run
     checks.push(if eligible(record) {
         check(
             "eligibility",
@@ -296,7 +299,9 @@ pub(crate) fn run(
             ),
         )
     });
+    // Sharing: the version must be shared with this repository
     checks.push(shared_check(inputs.shared, target));
+    // Staleness: the latest validation run must still describe the current sources
     let live = inputs
         .state
         .latest_run(record)
@@ -312,6 +317,8 @@ pub(crate) fn run(
     } else {
         check("staleness", PreflightStatus::Failed, true, live.join("; "))
     });
+    // Lab evidence: a failed lab report for this exact digest blocks; no conclusive report leaves
+    // it unresolved, and riskier capabilities then need approval
     let reports = inputs
         .lab_reports
         .iter()
@@ -369,6 +376,8 @@ pub(crate) fn run(
             )
         },
     );
+    // Dependencies: required ones that cannot be resolved fail; ones that cannot be verified either
+    // way stay unresolved
     match dependencies(
         inputs.state,
         target.capability_id,
@@ -434,6 +443,8 @@ pub(crate) fn run(
             error.to_string(),
         )),
     }
+    // Applicability: does the capability apply to this repository and situation (yes, no or
+    // unknown)
     let situation = ApplicabilityQuery {
         task_class: definition.applicability.task_classes.first().cloned(),
         environment: target.environment.clone(),
@@ -461,6 +472,7 @@ pub(crate) fn run(
             decision.reasons.join("; "),
         ),
     });
+    // Preconditions and required state must each be confirmed by the requester
     let missing = definition
         .applicability
         .preconditions
@@ -484,6 +496,7 @@ pub(crate) fn run(
             format!("not confirmed: {}", missing.join(", ")),
         )
     });
+    // Policy: an agent may only run plans that change nothing
     let mutating = plan
         .operations
         .iter()
@@ -493,6 +506,7 @@ pub(crate) fn run(
     } else {
         check("policy", PreflightStatus::Passed, true, "no operation touches Crane policy; policy dependencies are checked with the other dependencies")
     });
+    // Verification: every required claim of the definition must be verified against the sources
     let unverified = definition
         .verification
         .claims
@@ -521,6 +535,8 @@ pub(crate) fn run(
             ),
         )
     });
+    // Adapters: every operation's adapter must be registered and healthy, and transactional steps
+    // need the transaction runtime
     let mut adapter_problems = Vec::new();
     for operation in &plan.operations {
         match inputs.adapters.adapter(&operation.adapter_id) {
@@ -552,6 +568,8 @@ pub(crate) fn run(
             adapter_problems.join("; "),
         )
     });
+    // Discovery: when the run came from a discovery recommendation, that report must be intact and
+    // recommend this exact version and digest
     if let Some(report_id) = target.discovery_report {
         checks.push(
             match inputs

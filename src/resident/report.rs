@@ -214,6 +214,8 @@ fn inbox(store: &ResidentStore, statuses: &[(String, String)]) -> Value {
     - Value
 */
 pub(crate) fn build(store: &ResidentStore, authority: Option<&Authority>, now: u64) -> Value {
+    // Definitions with their versions, limits and history (the purpose text is reported only by
+    // size)
     let definitions = store
         .state
         .definitions
@@ -239,6 +241,8 @@ pub(crate) fn build(store: &ResidentStore, authority: Option<&Authority>, now: u
             "changes": record.changes.iter().map(|change| json!({"to": change.to, "by": change.by.name, "at": change.at})).collect::<Vec<_>>(),
         }))
         .collect::<Vec<_>>();
+    // Assignments with their live status: the signed authority's admission decision, the latest
+    // activation, the last verified run and failure, and model usage
     let mut statuses = Vec::new();
     let assignments = store
         .state

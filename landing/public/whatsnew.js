@@ -7,7 +7,9 @@
 (() => {
   const STILL = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const $ = (selector) => document.querySelector(selector);
+  /** Wait a number of milliseconds. */
   const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  /** Create an element with a class and inner HTML. */
   const html = (tag, className, inner) => { const node = document.createElement(tag); if (className) node.className = className; node.innerHTML = inner; return node; };
 
   // Waits that hold while nobody can see the scene
@@ -22,6 +24,7 @@
   const progress = $("#progress");
   if (progress) {
     let queued = false;
+    /** Draw the reading progress bar from the scroll position. */
     const draw = () => {
       queued = false;
       const room = document.documentElement.scrollHeight - innerHeight;
@@ -48,8 +51,11 @@
     const view = watch(resident);
     const status = $("#res-status"), steps = [...$("#res-steps").children], log = $("#res-log"), ticks = $("#res-ticks"), canvas = $("#res-pulse");
     let idle = true, idleTicks = 1204, energy = 0, spike = [];
+    /** Show the agent's status. */
     const setStatus = (text, kind) => { status.textContent = text; status.className = "sh-tag ml-auto" + (kind ? " " + kind : text === "ACTIVE_IDLE" ? "" : " live"); };
+    /** Mark the steps before index done and the step at index current. */
     const setStep = (index, kind) => steps.forEach((node, at) => { node.className = at < index ? "done" : at === index ? "on" + (kind === "ask" ? " ask" : "") : ""; });
+    /** Add a log line, fading the older ones and keeping the last five. */
     const addLine = (entry) => {
       for (const old of log.children) old.classList.add("old");
       log.append(html("li", entry.kind, "<i>" + entry.mark + "</i><span>" + entry.text + "</span>"));
@@ -90,6 +96,7 @@
       context.shadowBlur = 0;
     }
 
+    /** Play the resident agent scene: it wakes on a trigger, investigates, asks and proves its work. */
     async function play() {
       if (STILL) {
         for (const entry of ACTIVATION.slice(-5)) addLine(entry);
@@ -166,12 +173,14 @@
       grid.append(item);
       tiles[type] = tile;
     }
+    /** Clear the Brick scene. */
     const clear = () => {
       for (const tile of Object.values(tiles)) tile.classList.remove("on");
       stack.replaceChildren();
       attach.className = effect.className = "bk-line";
       attach.textContent = effect.textContent = "";
     };
+    /** Show the signed attachment and its effect. */
     const finish = (item) => {
       attach.innerHTML = "attach " + item.name.toLowerCase().replace(/ /g, "-") + "@1 → " + item.target + " · <b>signed ✓</b>";
       attach.classList.add("on");
@@ -179,6 +188,7 @@
       effect.classList.add("on");
     };
 
+    /** Play the Brick scene: each stack's kinds light up, then it is attached and its effect shown. */
     async function play() {
       if (STILL) {
         const item = STACKS[0];

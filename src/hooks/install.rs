@@ -84,6 +84,14 @@ fn has_command(handler: &Value, command: &str, format: HookConfigFormat) -> bool
     }
 }
 
+/** Count how many times Crane's command is registered for one event, looking inside matcher groups or at flat handlers depending on the format
+ * Input
+    - groups: &[Value] - the event's entries in the hook file
+    - command: &str - Crane's hook command
+    - format: HookConfigFormat - how the file lists handlers
+ * Output
+    - usize
+*/
 fn registrations(groups: &[Value], command: &str, format: HookConfigFormat) -> usize {
     match format {
         HookConfigFormat::Grouped => groups

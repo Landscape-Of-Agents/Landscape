@@ -740,6 +740,13 @@ fn codeowners_rule(contents: &str, path: &str) -> Option<(String, Vec<String>)> 
         .find(|(pattern, _)| codeowners_matches(pattern, path))
 }
 
+/** Whether a CODEOWNERS file names this GitHub account directly (case-insensitive); team entries and comments do not count
+ * Input
+    - contents: &str - CODEOWNERS text
+    - login: &str - GitHub login
+ * Output
+    - bool
+*/
 fn codeowners_contains(contents: &str, login: &str) -> bool {
     contents.lines().any(|line| {
         let mut fields = line
@@ -799,6 +806,12 @@ mod tests {
         assert!(viewer.owns("ACME") && !viewer.owns("other"));
     }
 
+    /** Only a direct, uncommented account entry authorizes; teams do not
+     * Input
+        - None
+     * Output
+        - None (panics on failure)
+    */
     #[test]
     fn codeowners_authorization_requires_a_direct_account_entry() {
         let contents = "* @alice\nsrc/ @acme/team\n# @bob\n";

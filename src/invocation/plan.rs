@@ -407,7 +407,11 @@ pub(crate) fn build(
     adapters: &AdapterRegistry,
     sources: &Sources,
 ) -> Result<InvocationPlan, Vec<String>> {
+    // Every problem is collected rather than stopping at the first, so the requester can fix them
+    // all at once
     let mut problems = Vec::new();
+    // The bindings must be for this exact capability version, and its compilation must still be
+    // valid
     let bindings = &request.bindings;
     if bindings.capability_id != definition.capability_id
         || bindings.capability_version != definition.version
@@ -421,6 +425,7 @@ pub(crate) fn build(
         ));
     }
     check_compilation(definition, compilation, sources, &mut problems);
+    // Required inputs must be given
     for input in definition
         .execution
         .inputs
@@ -431,6 +436,7 @@ pub(crate) fn build(
             problems.push(format!("required input '{}' is missing", input.name));
         }
     }
+    // Each step may be bound once, and only steps the definition has
     let step_ids = definition
         .execution
         .steps
@@ -446,6 +452,8 @@ pub(crate) fn build(
             ));
         }
     }
+    // Turn each step into a planned operation. Approval steps only make approval required; every
+    // other step needs a registered adapter operation that fits its kind and effect
     let mut approval = ApprovalRequirement {
         required: false,
         level: definition.applicability.review_level,
@@ -484,6 +492,8 @@ pub(crate) fn build(
                 step.step_id, spec.adapter_id, spec.operation_id, step.kind
             ));
         }
+        // A mutating step must use a mutating operation and a read-only step a read-only one, so
+        // the plan never hides an effect
         if step.kind.mutating() != (spec.effect != EffectClass::ReadOnly) {
             problems.push(format!(
                 "step {}: the {:?} step and the {:?} operation disagree about effects",
@@ -497,6 +507,7 @@ pub(crate) fn build(
                 continue;
             }
         };
+        // Any operation that changes something needs at least an owner's approval
         if spec.effect != EffectClass::ReadOnly {
             approval.required = true;
             approval.level = approval.level.max(ReviewLevel::Owner);
@@ -504,6 +515,8 @@ pub(crate) fn build(
                 .reasons
                 .push(format!("step {} is {:?}", step.step_id, spec.effect));
         }
+        // The permissions an operation needs, and an idempotency key unique to this request,
+        // definition and step, so a retried operation is recognized instead of repeated
         let permissions = vec![
             format!("{}:{}", spec.adapter_id, spec.operation_id),
             format!("effect:{:?}", spec.effect).to_ascii_lowercase(),
@@ -536,6 +549,7 @@ pub(crate) fn build(
             max_output_bytes: spec.max_output_bytes.min(request.limits.max_output_bytes),
         });
     }
+    // The request's limits cap how many operations one plan may hold
     if operations.len() > request.limits.max_operations {
         problems.push(format!(
             "the plan has {} operations; the limit is {}",
@@ -543,6 +557,8 @@ pub(crate) fn build(
             request.limits.max_operations
         ));
     }
+    // Verifications: an adapter check must be registered, read-only, and not one of the operations
+    // the plan itself runs (a step cannot verify itself)
     let used = operations
         .iter()
         .map(|operation| (operation.adapter_id.clone(), operation.operation_id.clone()))
@@ -574,6 +590,7 @@ pub(crate) fn build(
                 }
             }
         }
+        // A claim with no binding is still planned, without a method, so it shows up as unresolved
         let requirement = format!("{} (expected: {})", claim.statement, claim.expected_result);
         if bound.is_empty() {
             verifications.push(PlannedVerification {
@@ -591,6 +608,7 @@ pub(crate) fn build(
             }));
         }
     }
+    // Verification bindings must name claims the definition has
     for binding in &bindings.verifications {
         if !definition
             .verification
@@ -604,6 +622,7 @@ pub(crate) fn build(
             ));
         }
     }
+    // Medium and higher risk always needs approval
     let risk = definition.applicability.risk;
     if risk >= RiskLevel::Medium {
         approval.required = true;
@@ -614,6 +633,8 @@ pub(crate) fn build(
     if !problems.is_empty() {
         return Err(problems);
     }
+    // Assumptions not yet verified and required verifications without a method are listed as
+    // unresolved for the reviewer
     let mut unresolved = definition
         .applicability
         .assumptions
@@ -684,6 +705,7 @@ pub(crate) fn build(
         limits: request.limits,
         plan_digest: String::new(),
     };
+    // The digest seals the plan; approval and execution refer to it
     plan.plan_digest = plan.compute_digest();
     Ok(plan)
 }

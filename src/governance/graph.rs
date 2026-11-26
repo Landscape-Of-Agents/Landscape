@@ -599,6 +599,12 @@ mod tests {
         }
     }
 
+    /** Cycles (including self-loops) are found and a graph with one is rejected, while diamonds are fine
+     * Input
+        - None
+     * Output
+        - None (panics on failure)
+    */
     #[test]
     fn cycles_are_found_and_never_accepted() {
         let edges = |pairs: &[(&str, &str)]| {
@@ -642,6 +648,12 @@ mod tests {
         assert!(find_cycle(&accepted).is_none());
     }
 
+    /** Each selection's parent is the smallest selection containing it, and identical spans never become each other's parent
+     * Input
+        - None
+     * Output
+        - None (panics on failure)
+    */
     #[test]
     fn nested_selections_form_a_tree_even_with_identical_spans() {
         let resolved = vec![

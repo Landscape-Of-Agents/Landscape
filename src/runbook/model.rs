@@ -334,6 +334,8 @@ pub(crate) fn validate(runbook: &Runbook) -> Vec<Value> {
     let mut findings = Vec::new();
     let mut push =
         |code: &str, message: String| findings.push(json!({"code": code, "message": message}));
+    // Identity and shape: a valid id and version, a name and description, a bounded number of
+    // uniquely named steps, and no dependency cycle
     if crate::platform::validate_name("runbook", &runbook.runbook_id).is_err() {
         push(
             "invalid_id",
@@ -372,6 +374,9 @@ pub(crate) fn validate(runbook: &Runbook) -> Vec<Value> {
     if let Err(problem) = runbook.order() {
         push("dependency_cycle", problem);
     }
+    // Each step pins an exact skill version and digest with matching bindings, binds at least one
+    // operation, branches only on a step it depends on, and reads only declared inputs or outputs
+    // of steps before it
     let declared = runbook.inputs.iter().collect::<BTreeSet<_>>();
     let mut total = 0u64;
     for step in &runbook.steps {
@@ -427,8 +432,10 @@ pub(crate) fn validate(runbook: &Runbook) -> Vec<Value> {
                 ),
             );
         }
+        // Count the worst-case operations, retries included
         total += step.cost() * (1 + u64::from(step.max_retries.min(MAX_RETRIES)));
     }
+    // Completion names real steps, and the worst case fits the budget
     for id in &runbook.completion {
         if runbook.step(id).is_none() {
             push(

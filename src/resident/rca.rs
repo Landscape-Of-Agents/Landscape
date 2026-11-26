@@ -809,9 +809,12 @@ pub(crate) fn step(
     - Investigation
 */
 pub(crate) fn investigate(input: &ReasonInput, reasoner: &str) -> Investigation {
+    // Reasoning is deterministic and walks only the recorded RCA graph; every node and edge read is
+    // recorded as consulted, so the conclusion can be audited
     let target = input.assignment.target.key();
     let mut consulted = Vec::new();
     let mut gaps = Vec::new();
+    // Without a graph there is nothing to reason over
     let Some(record) = input.rca else {
         gaps.push("the assignment has no RCA graph".to_string());
         return finish(
@@ -829,6 +832,7 @@ pub(crate) fn investigate(input: &ReasonInput, reasoner: &str) -> Investigation 
     };
     let graph = &record.graph;
     let reference = format!("{}@{}", graph.rca_id, graph.version);
+    // Signals: the graph nodes that match this trigger's source and kind
     let signals = graph
         .nodes
         .iter()
@@ -879,6 +883,9 @@ pub(crate) fn investigate(input: &ReasonInput, reasoner: &str) -> Investigation 
             causes.insert(cause.id.clone());
         }
     }
+    // Each candidate cause is judged by its diagnostic checks: a passing contradicting check (or a
+    // cause already marked contradicted) rules it out, a passing confirming check confirms it,
+    // otherwise it stays possible
     let mut candidates = Vec::new();
     for cause_id in &causes {
         let Some(cause) = graph.node(cause_id) else {
@@ -978,6 +985,7 @@ fn finish(
     mut consulted: Vec<String>,
     reasoner: &str,
 ) -> Investigation {
+    // The plan may only use step types the definition allows
     let allowed = |step_type| input.definition.policy(step_type).is_some();
     let summary = format!(
         "{} {} on {}",
@@ -989,6 +997,8 @@ fn finish(
     let reviewed = rca
         .as_ref()
         .is_some_and(|(_, state)| *state == RcaState::Reviewed);
+    // With an identified cause in a recorded RCA graph, its first remediation and the checks that
+    // verify it
     let remediation = match (record, &cause) {
         (Some(record), Some(cause)) => {
             let graph = &record.graph;
@@ -1011,7 +1021,10 @@ fn finish(
         }
         _ => None,
     };
+    // What the plan becomes depends on how sure the investigation is
     match (conclusion, remediation) {
+        // Identified with a remediation: its steps followed by verification steps. A reviewed graph
+        // runs them directly; an unreviewed graph only proposes them for a person to accept
         (Conclusion::Identified, Some((node, remediation_steps, verifications))) => {
             let mut planned = remediation_steps
                 .into_iter()
@@ -1052,6 +1065,8 @@ fn finish(
                 steps.push(proposal);
             }
         }
+        // Ambiguous, or identified with no remediation: propose the remediations of every candidate
+        // cause, or ask a person when there are none
         (Conclusion::Identified, None) | (Conclusion::Ambiguous, _) => {
             let mut proposal = step(
                 "propose",
@@ -1099,6 +1114,7 @@ fn finish(
                 steps.push(step("ask", StepType::AskUser, &[("question", format!("{summary}: the evidence supports no single cause. What should be done?"))], &[], "ambiguous evidence".into()));
             }
         }
+        // Not enough evidence: propose a new RCA and ask a person for the missing evidence
         (Conclusion::InsufficientEvidence, _) => {
             if allowed(StepType::ProposeRca) {
                 steps.push(step(

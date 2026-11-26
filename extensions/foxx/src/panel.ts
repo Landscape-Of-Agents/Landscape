@@ -364,8 +364,11 @@ let codeOpen = true;
 let menuOpen = Boolean((vscode.getState() || {}).menuOpen);
 const activity = [];
 const $ = (id) => document.getElementById(id);
+/** Escape text for safe use in HTML. */
 const esc = (text) => String(text == null ? "" : text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+/** Whether the editor has a non-empty selection. */
 const selected = () => state.selection && !state.selection.empty;
+/** Whether Crane can be used (not missing or broken). */
 const usable = () => !state.crane || state.crane.state === "ok";
 
 const ICONS = {
@@ -388,10 +391,12 @@ const ICONS = {
   menu: "M4 6h16M4 12h16M4 18h10",
   setup: "M12 3l9 5-9 5-9-5z M3 13l9 5 9-5",
 };
+/** The glyph of an action. */
 const glyph = (id) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + (ICONS[id] || ICONS.validate) + '"/></svg>';
 const QUICK = [["preserve", "Preserve"], ["target", "Target"], ["zone", "Zone"], ["flow", "Flow"], ["context", "Context"], ["checkpoint", "Checkpoint"]];
 const CEILING_HELP = { observe: "Agent may only read", assisted: "Every change needs approval", delegated: "Changes allowed within policies", autonomous: "No limit beyond policies" };
 const CRITICALITY_HELP = { routine: "Ordinary code", sensitive: "Mistakes are costly", critical: "Money, security, or data integrity", restricted: "Changes always need a human" };
+/** A word with its first letter in upper case. */
 const title = (word) => word.charAt(0).toUpperCase() + word.slice(1);
 
 // ------------------------------------------------------------------ header, banner, context
@@ -456,6 +461,7 @@ function renderCompose(focus) {
   const chips = state.ready ? QUICK.map(([id, label]) => { const action = DATA.actions.find((a) => a.id === id); return '<button class="chip" data-pick="' + id + '" title="' + esc(blocked(action) || action.detail) + '"' + (blocked(action) ? " disabled" : "") + ">" + glyph(id) + esc(label) + "</button>"; }).join("") : "";
   const toggle = state.ready ? '<button type="button" class="menu-toggle" id="menu-toggle" aria-expanded="' + listing + '" aria-controls="actions" title="' + (listing ? "Hide" : "Show") + ' every action, by group">' + glyph("menu") + "Actions" + '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>' : "";
   let index = -1;
+  /** One action in the list, disabled with the reason when it cannot run now. */
   const item = (action) => {
     index += 1;
     const why = blocked(action);
@@ -560,6 +566,7 @@ function formFor(action) {
 function plan(action) {
   const s = state.selection;
   const where = s ? "<code>" + esc(s.file) + "</code> lines " + s.start + "–" + s.end : "the selection";
+  /** What the draft covers: a function or the whole file. */
   const covers = () => draft.cover === "symbol" && s && s.symbol ? "function <code>" + esc(s.symbol) + "</code>" : "file <code>" + esc(s ? s.file : "") + "</code>";
   const lines = String(draft.context || "").split(/\\n/).filter((line) => line.trim()).length;
   const sign = ["Validate governance with <code>crane validate</code>", "Sign <code>.crane/governance.yaml</code> with your admin key", "If either step fails, restore the previous signed file"];
@@ -596,6 +603,7 @@ function renderConfigure() {
     formFor(action) + '<div class="section"><h4>Landscape will</h4><ol class="plan" id="plan"></ol></div>' +
     '<div class="footer"><button type="button" class="btn ghost" id="back">← Back</button><span class="grow"></span><span class="kbd">Ctrl ↵</span><button type="submit" class="btn primary" id="go">' + esc(action.label) + "</button></div></form>";
   const form = $("form");
+  /** Read the form into the draft and redraw the plan. */
   const sync = () => { readDraft(); $("plan").innerHTML = plan(action).map((step) => "<li><span>" + step + "</span></li>").join(""); };
   form.addEventListener("input", sync);
   form.addEventListener("change", sync);

@@ -694,11 +694,15 @@ pub(crate) fn commit(
     detail: Value,
     mutate: impl FnOnce(&mut State, u64) -> Result<(), String>,
 ) -> Result<State, String> {
+    // Every signed change is made by a person, under the governance lock, so two changes cannot
+    // interleave
     require_human(command)?;
     let trust = workspace.trust()?;
     let _lock = Lock::acquire(&trust.repo_dir.join("governance.lock"))?;
     let mut state = State::load(workspace)?;
     let first = state.registry.manifest.is_none();
+    // The first commit creates the signing key; later ones need an existing key that is an admin of
+    // the repository
     let identity: SigningIdentity = if first {
         trust.signing_key_or_create()?
     } else {
@@ -710,6 +714,8 @@ pub(crate) fn commit(
             identity.public_hex()
         ));
     }
+    // A change is only signed on top of a state that verifies, so a tampered state can never be
+    // laundered by signing over it
     if !first {
         // A rebind is checked against the identity the state was signed for, not the new one
         let (checked, checked_trust) = if action == REPOSITORY_REBOUND {
@@ -738,6 +744,8 @@ pub(crate) fn commit(
             ));
         }
     }
+    // Apply the change as the next generation, re-seal every selection record, and append an audit
+    // entry chained to the previous head
     let generation = state.generation() + 1;
     let previous_head = state.registry.manifest.as_ref().map_or_else(
         || audit::GENESIS.to_string(),
@@ -750,6 +758,8 @@ pub(crate) fn commit(
     let who = actor();
     let entry = audit::next(&state.audit, now_unix(), &who, action, detail);
     state.audit.push(entry.clone());
+    // The manifest covers digests of every part of the state and the audit head, and is signed as a
+    // whole
     let [records_digest, checkpoints_digest, config_digest, context_digest, audit_head] =
         state.covered();
     let mut manifest = Manifest {
@@ -775,6 +785,7 @@ pub(crate) fn commit(
     manifest.head = manifest.compute_head();
     manifest.signature = identity.sign(MANIFEST_DOMAIN, manifest.head.as_bytes());
     state.registry.manifest = Some(manifest.clone());
+    // Write every file atomically, then the human-readable map and the audit log line
     let pretty = |value: Value| serde_json::to_string_pretty(&value).map(|text| text + "\n");
     for (name, value) in [
         ("config.json", serde_json::to_value(&state.config)),
@@ -805,6 +816,8 @@ pub(crate) fn commit(
         &workspace.file("audit.jsonl"),
         &serde_json::to_string(&entry).map_err(io_error)?,
     )?;
+    // Finally move this machine's rollback anchor to the new generation, so an older signed state
+    // cannot be replayed here
     trust.set_anchor(&identity, generation, &manifest.head)?;
     Ok(state)
 }

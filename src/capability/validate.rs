@@ -393,7 +393,11 @@ fn wildcard(value: &str) -> bool {
     - Gate
 */
 fn structural(definition: &CapabilityDefinition) -> Gate {
+    // Structural checks need nothing but the definition: errors make it malformed, warnings are
+    // only reported
     let mut gate = Gate::default();
+    // Identity and versioning: schema, a valid id, and a version chain where each version points to
+    // the one before it
     if definition.schema_version != CAPABILITY_SCHEMA_VERSION {
         gate.error(
             "unsupported_schema_version",
@@ -431,6 +435,7 @@ fn structural(definition: &CapabilityDefinition) -> Gate {
         ),
         _ => {}
     }
+    // Required text fields
     for (field, value) in [
         ("name", &definition.name),
         ("description", &definition.description),
@@ -444,6 +449,7 @@ fn structural(definition: &CapabilityDefinition) -> Gate {
     if definition.owner_ref.is_none() {
         gate.warn("unknown_owner", "the owner is not known".into(), Vec::new());
     }
+    // The procedure must be of this version and have steps
     let execution = &definition.execution;
     if execution.procedure_version != PROCEDURE_VERSION {
         gate.error(
@@ -462,6 +468,7 @@ fn structural(definition: &CapabilityDefinition) -> Gate {
             Vec::new(),
         );
     }
+    // The ids steps may refer to: declared conditions, unique claims, and invariants
     let applicability = &definition.applicability;
     let conditions = applicability
         .preconditions
@@ -489,6 +496,8 @@ fn structural(definition: &CapabilityDefinition) -> Gate {
         .iter()
         .map(|invariant| invariant.invariant_id.as_str())
         .collect::<BTreeSet<_>>();
+    // Walk the steps in order: each step may only use inputs declared up front or produced by an
+    // earlier step, and may only name declared preconditions and claims
     let mut available = execution
         .inputs
         .iter()
@@ -552,6 +561,7 @@ fn structural(definition: &CapabilityDefinition) -> Gate {
         }
         available.extend(step.outputs.iter().cloned());
     }
+    // Execution preconditions must be declared in applicability, and checkpoints must be claims
     for condition in execution
         .preconditions
         .iter()
@@ -574,6 +584,8 @@ fn structural(definition: &CapabilityDefinition) -> Gate {
             Vec::new(),
         );
     }
+    // Every claim states what is expected, and a business invariant claim must point to a declared
+    // invariant
     for claim in &definition.verification.claims {
         if claim.statement.trim().is_empty() || claim.expected_result.trim().is_empty() {
             gate.error(
@@ -608,6 +620,8 @@ fn structural(definition: &CapabilityDefinition) -> Gate {
             );
         }
     }
+    // Dependencies are explicit (no wildcards), unique, never on the capability itself, and give a
+    // reason
     let mut dependencies = BTreeSet::new();
     for dependency in &definition.dependencies {
         if dependency.target_id.trim().is_empty() || wildcard(&dependency.target_id) {
@@ -647,6 +661,7 @@ fn structural(definition: &CapabilityDefinition) -> Gate {
             );
         }
     }
+    // An exclusion may not exclude something the applicability includes
     for exclusion in &applicability.exclusions {
         let contradicts = match exclusion.kind.as_str() {
             "environment" => applicability.environments.contains(&exclusion.value),
@@ -692,6 +707,8 @@ fn provenance(
 ) -> Gate {
     let mut gate = Gate::default();
     let provenance = &definition.provenance;
+    // A definition not backed by evidence is an error or a warning, as the validation profile
+    // requires
     if !provenance.evidence_backed() {
         let message = format!(
             "created {:?} without Work Capture evidence; it is not evidence-verified",
@@ -703,6 +720,7 @@ fn provenance(
             gate.warn("not_evidence_backed", message, Vec::new());
         }
     }
+    // A compiled definition must name the intake it came from
     if provenance.creation_method == CreationMethod::Compiler
         && provenance.source_intake_refs.is_empty()
     {
@@ -712,6 +730,8 @@ fn provenance(
             Vec::new(),
         );
     }
+    // Every source intake must exist, have been validated under this profile, be ready, and agree
+    // with the declared episode and Evidence Pack
     let mut pack_evidence = BTreeSet::new();
     for intake_id in &provenance.source_intake_refs {
         let Some(intake) = state.intakes.get(intake_id) else {
@@ -776,6 +796,7 @@ fn provenance(
             );
         }
     }
+    // Every Evidence Pack must exist, match its manifest digest, and belong to a declared episode
     for reference in &provenance.source_evidence_pack_refs {
         match sources.capture.packs.get(&reference.pack_id) {
             None => gate.error(
@@ -816,6 +837,7 @@ fn provenance(
             }
         }
     }
+    // Every declared episode must exist
     for episode in &provenance.source_episode_refs {
         if !sources.capture.episodes.contains_key(episode) {
             gate.error(
@@ -825,6 +847,7 @@ fn provenance(
             );
         }
     }
+    // Evidence-backed claims may only cite evidence inside the declared packs
     if provenance.evidence_backed() {
         let outside = definition
             .verification
@@ -940,6 +963,7 @@ fn applicability(
 ) -> Gate {
     let mut gate = Gate::default();
     let contract = &definition.applicability;
+    // Applicability must be explicit: named task classes and environments, never wildcards
     if contract.task_classes.is_empty() {
         gate.error(
             "missing_applicability",
@@ -959,6 +983,8 @@ fn applicability(
             );
         }
     }
+    // Every applicable environment must also be in the verification scope, or the capability would
+    // claim more than was verified
     let unverified = contract
         .environments
         .iter()
@@ -980,6 +1006,7 @@ fn applicability(
             Vec::new(),
         );
     }
+    // Risk must be assessed and every precondition resolved; assumptions are only warned about
     if contract.risk == RiskLevel::Unknown {
         gate.error(
             "unassessed_risk",
@@ -1011,6 +1038,7 @@ fn applicability(
             Vec::new(),
         );
     }
+    // The capability dependency graph may not form a cycle
     let edges = capability_edges(definition, state);
     if let Some(cycle) = find_cycle(&definition.capability_id, &edges) {
         gate.error(
@@ -1022,6 +1050,9 @@ fn applicability(
             cycle,
         );
     }
+    // Dependencies: a required one is an error when it fails, an optional one only a warning.
+    // Governance dependencies must resolve to their pinned version, and capability dependencies to
+    // a selectable version that fits the constraint
     for dependency in &definition.dependencies {
         let label = format!("{:?} {}", dependency.kind, dependency.target_id);
         let problem = |gate: &mut Gate, code: &str, message: String| {
@@ -1117,6 +1148,8 @@ pub(crate) fn effective_claim(
     {
         reasons.push("no verification method".into());
     }
+    // A claim is verified only when nothing below finds a reason against it. Its environment must
+    // be known and inside the verification scope
     match &claim.environment {
         None => reasons.push("the verification environment is unknown".into()),
         Some(environment)
@@ -1131,6 +1164,7 @@ pub(crate) fn effective_claim(
         }
         _ => {}
     }
+    // It must rest on something, and every evidence record it cites must be readable
     if claim.evidence_refs.is_empty() && claim.assertion_refs.is_empty() {
         reasons.push("no evidence or assertion supports it".into());
     }
@@ -1148,6 +1182,8 @@ pub(crate) fn effective_claim(
             )),
         }
     }
+    // Its assertions must exist, be supported and uncontradicted, establish something, and never be
+    // an agent's hypothesis
     for id in &claim.assertion_refs {
         match sources.capture.assertions.get(id) {
             None => reasons.push(format!("assertion {id} does not exist")),
@@ -1177,6 +1213,8 @@ pub(crate) fn effective_claim(
             }
         }
     }
+    // A business invariant also needs an authoritative mapping with a named authority, and evidence
+    // beyond technical results (CI, tests, code, tool calls)
     if claim.kind == ClaimKind::BusinessInvariant {
         let invariant = claim.invariant_ref.as_ref().and_then(|id| {
             definition

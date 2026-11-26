@@ -226,6 +226,8 @@ pub(crate) fn run_checks(
     target: Option<&str>,
     reach: Reach,
 ) -> Vec<(String, CheckOutcome, String)> {
+    // The policy evaluation is expensive, so it is computed lazily and shared by every check that
+    // needs it
     let mut report = None;
     let now = crate::platform::now_millis();
     let outcome = |holds: bool| {
@@ -240,6 +242,8 @@ pub(crate) fn run_checks(
         .map(|check| {
             let text = check_text(check);
             match check {
+                // The signed state holds when the Brick store verifies and governance has no
+                // blocking integrity finding
                 Check::SignedState => match super::store::load(workspace) {
                     Ok((state, _, _)) => match super::store::trust_of(workspace, &state) {
                         Trust::Unverified(reason) => (text, CheckOutcome::Contradicted, reason),
@@ -266,6 +270,7 @@ pub(crate) fn run_checks(
                     },
                     Err(error) => (text, CheckOutcome::Unknown, error),
                 },
+                // Selection and policy test checks read one shared policy evaluation
                 Check::SelectionsResolved | Check::PolicyTestsPass => {
                     if report.is_none() {
                         report = Some(
@@ -301,6 +306,8 @@ pub(crate) fn run_checks(
                         None => (text, CheckOutcome::NotRun, String::new()),
                     }
                 }
+                // Endpoints are only contacted when the reach allows it, and only at public
+                // addresses (pinned, so DNS cannot redirect the request to an internal host)
                 Check::HttpOk {
                     url,
                     status,
@@ -329,6 +336,7 @@ pub(crate) fn run_checks(
                         "endpoints are checked by 'crane brick test', run by a person",
                     ),
                 ),
+                // A number in a JSON file inside the repository, compared with the expected value
                 Check::JsonValue {
                     path,
                     pointer,
@@ -369,6 +377,7 @@ pub(crate) fn run_checks(
                         ),
                     }
                 }
+                // A count of local runtime events for the target within a time window
                 Check::LocalMetric {
                     metric,
                     window_hours,
@@ -391,6 +400,8 @@ pub(crate) fn run_checks(
                     ),
                     (_, Err(error)) => (text, CheckOutcome::Unknown, error),
                 },
+                // Programs only run when the reach allows it, and never a program the configuration
+                // rules refuse
                 Check::CommandSucceeds {
                     program,
                     args,
@@ -417,6 +428,8 @@ pub(crate) fn run_checks(
                         "programs run only in 'crane brick test', run by a person",
                     ),
                 ),
+                // The remaining gates are decided from local state; one that cannot be decided is
+                // not run
                 gate => match gate_holds(workspace, gate, now) {
                     Some(holds) => (text, outcome(holds), String::new()),
                     None => (text, CheckOutcome::NotRun, String::new()),

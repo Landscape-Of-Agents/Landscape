@@ -130,6 +130,8 @@ pub(crate) fn link(
     record: &EvidenceRecord,
     context: &LinkContext,
 ) -> LinkOutcome {
+    // The record itself is a node; the linker adds entities and relations, and keeps every entity
+    // it touched so the record can be tied to each one at the end
     graph.register(NodeRef::Evidence(record.evidence_id.clone()));
     let mut linker = Linker {
         graph,
@@ -139,6 +141,8 @@ pub(crate) fn link(
     let refs = &record.refs;
     let observed = RelationStatus::Observed;
     let declared = RelationStatus::Declared;
+    // Entities most record types share: the repository, the commit and the environment the record
+    // is scoped to
     let repository = record
         .scope
         .repository
@@ -154,7 +158,10 @@ pub(crate) fn link(
         .as_deref()
         .map(|name| linker.entity(EntityKind::Environment, name, None, json!({})));
     let field = |name: &str| record.field(name);
+    // Each evidence type contributes the entities it names and the relations it reports; relations
+    // the source states are Observed or Declared, and ones guessed from naming are Inferred
     match record.evidence_type {
+        // A task, and the pull request it resulted in
         EvidenceType::Task => {
             let key = refs
                 .task
@@ -177,6 +184,8 @@ pub(crate) fn link(
                 );
             }
         }
+        // A pull request: its repository, its commits, and the task it came from (named, or
+        // inferred when the branch name contains the episode's task id)
         EvidenceType::PullRequest => {
             let number = field("number")
                 .or_else(|| refs.pull_request.clone())
@@ -234,6 +243,7 @@ pub(crate) fn link(
                 _ => {}
             }
         }
+        // A code change: the commit in its repository, and every file the commit wrote
         EvidenceType::CodeChange => {
             if let (Some(repository), Some(commit)) = (&repository, &commit) {
                 linker.relate(
@@ -257,6 +267,7 @@ pub(crate) fn link(
                 }
             }
         }
+        // A CI run, triggered by its commit
         EvidenceType::CiRun => {
             let key = refs
                 .ci_run
@@ -278,11 +289,13 @@ pub(crate) fn link(
                 );
             }
         }
+        // Test reports only name the CI run they belong to
         EvidenceType::TestReport => {
             if let Some(run) = refs.ci_run.as_deref() {
                 linker.entity(EntityKind::CiRun, run, None, json!({}));
             }
         }
+        // A deployment: the commit that resulted in it and the environment it went to
         EvidenceType::Deployment => {
             let key = refs
                 .deployment
@@ -308,6 +321,7 @@ pub(crate) fn link(
                 );
             }
         }
+        // Verification, logs, metrics and configuration only name the deployment they belong to
         EvidenceType::Verification
         | EvidenceType::RuntimeLog
         | EvidenceType::Metric
@@ -316,6 +330,8 @@ pub(crate) fn link(
                 linker.entity(EntityKind::Deployment, deployment, None, json!({}));
             }
         }
+        // Agent sessions and tool calls: each tool call ran during its session, and the session ran
+        // during the episode when either identity of the task matches
         EvidenceType::AgentSession | EvidenceType::ToolCall | EvidenceType::AgentEvent => {
             if let Some(session) = refs.session.as_deref() {
                 let session = linker.entity(
@@ -355,6 +371,7 @@ pub(crate) fn link(
                 }
             }
         }
+        // A zone or flow revision with the selectors and policies that defined it
         EvidenceType::GraphState => {
             let kind = match field("kind").as_deref() {
                 Some("flow") => EntityKind::Flow,
@@ -380,6 +397,7 @@ pub(crate) fn link(
                 );
             }
         }
+        // A policy at its revision
         EvidenceType::Policy => {
             if let Some(name) = field("name") {
                 linker.entity(
@@ -392,6 +410,7 @@ pub(crate) fn link(
         }
         EvidenceType::Validation => {}
     }
+    // Finally, an OBSERVED_ON relation from the evidence to every entity it touched
     let Linker {
         graph,
         evidence,

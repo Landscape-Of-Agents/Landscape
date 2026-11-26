@@ -335,6 +335,8 @@ fn compare(before: &FileScope, after: &FileScope) -> (Vec<String>, Vec<String>) 
     - Difference
 */
 pub(crate) fn diff(before: &Snapshot, after: &Snapshot) -> Difference {
+    // Notes about the rules themselves: re-signed since the baseline, no longer verifying, or zones
+    // no longer resolving
     let mut difference = Difference::default();
     if before.versions.manifest_head != after.versions.manifest_head {
         difference.notes.push(format!(
@@ -359,6 +361,8 @@ pub(crate) fn diff(before: &Snapshot, after: &Snapshot) -> Difference {
             detail,
         });
     };
+    // For every file governed in the baseline: compare its scope (widened or narrowed), or explain
+    // where it went
     for (path, old) in &before.files {
         if let Some(new) = after.files.get(path) {
             let (wider, narrower) = compare(old, new);
@@ -370,6 +374,8 @@ pub(crate) fn diff(before: &Snapshot, after: &Snapshot) -> Difference {
             }
             continue;
         }
+        // A file that disappeared may have moved: by content digest, to a governed file (judged by
+        // its new scope) or to an ungoverned one
         let moved_governed = old.content.as_ref().and_then(|digest| {
             after.files.iter().find(|(other, scope)| {
                 scope.content.as_ref() == Some(digest) && !before.files.contains_key(*other)
@@ -427,6 +433,7 @@ pub(crate) fn diff(before: &Snapshot, after: &Snapshot) -> Difference {
         .filter_map(|rest| rest.split(',').next())
         .map(str::to_string)
         .collect::<BTreeSet<_>>();
+    // Files governed now that were not before, and are not where a governed file moved to
     for (path, scope) in &after.files {
         if !before.files.contains_key(path) && !moved_targets.contains(path) {
             let mut governed_by = scope.entities.clone();
@@ -439,6 +446,7 @@ pub(crate) fn diff(before: &Snapshot, after: &Snapshot) -> Difference {
             });
         }
     }
+    // Widened changes sort first, since they are the ones to review
     difference
         .changes
         .sort_by(|a, b| a.kind.cmp(&b.kind).then(a.path.cmp(&b.path)));

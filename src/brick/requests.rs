@@ -684,7 +684,10 @@ fn short(params: &Value, key: &str, limit: usize, required: bool) -> Result<Stri
     - Result<Value, String>
 */
 fn flow_check(op: &str, params: &Value) -> Result<Value, String> {
+    // Requests arrive from the dashboard, so nothing is trusted: every field is checked, and only
+    // the fields the command reads are kept (anything extra is dropped)
     let flow = || name("Flow", params["flow"].as_str().unwrap_or_default());
+    // A handle or key is one token that cannot be mistaken for a command-line option
     let handle = |key: &str| -> Result<String, String> {
         let text = params[key].as_str().unwrap_or_default().trim().to_string();
         if text.len() > 120
@@ -695,7 +698,9 @@ fn flow_check(op: &str, params: &Value) -> Result<Value, String> {
         }
         Ok(text)
     };
+    // Each operation keeps exactly the fields its crane flow command takes
     Ok(match op {
+        // Trace: a starting symbol, an optional Flow, and a bounded depth
         "flow-trace" => {
             let depth = bounded(params, "depth", 1, crate::flow::trace::MAX_DEPTH as u64)?;
             let from = crate::flow::trace::check_starts(
@@ -736,6 +741,8 @@ fn flow_check(op: &str, params: &Value) -> Result<Value, String> {
             }
             json!({"flow": flow()?, "priority": priority.to_ascii_uppercase().replace("NONE", "none"), "enforce_model": enforce})
         }
+        // Context: a typed item whose value holds no secret and whose file stays inside the
+        // repository (never Crane's own state)
         "flow-context-add" => {
             let kind = crate::flow::model::ContextKind::parse(
                 params["kind"].as_str().unwrap_or_default(),
@@ -802,6 +809,7 @@ fn flow_check(op: &str, params: &Value) -> Result<Value, String> {
             }
             json!({"proposal": proposal, "required": params["required"].as_bool().unwrap_or(false)})
         }
+        // Limits: watcher limits need a Flow; session and per-flow limits may be repository-wide
         "flow-limit" => {
             let id = params["flow"]
                 .as_str()
@@ -822,6 +830,7 @@ fn flow_check(op: &str, params: &Value) -> Result<Value, String> {
             }
             json!({"flow": id, "watchers": watchers, "session": session, "per_flow": per_flow})
         }
+        // Watchers: only known checks and subagent subtypes
         "flow-watch-add" => {
             let checks = params["checks"]
                 .as_array()
@@ -847,6 +856,7 @@ fn flow_check(op: &str, params: &Value) -> Result<Value, String> {
         "flow-watch-stop" => {
             json!({"watcher": name("watcher", params["watcher"].as_str().unwrap_or_default())?})
         }
+        // Triggering a subagent beyond its Flow names explicit zone or flow targets
         "flow-subagent-trigger" => {
             let beyond = params["beyond"]
                 .as_array()
@@ -867,6 +877,7 @@ fn flow_check(op: &str, params: &Value) -> Result<Value, String> {
                 "beyond": beyond,
             })
         }
+        // Editing a watcher must change something
         "flow-watch-edit" => {
             let checks = params["checks"]
                 .as_array()
@@ -896,6 +907,7 @@ fn flow_check(op: &str, params: &Value) -> Result<Value, String> {
                 "config": config,
             })
         }
+        // Any other operation cannot be requested from the dashboard
         _ => return Err(format!("'{op}' cannot be requested")),
     })
 }
@@ -939,12 +951,15 @@ fn subagent_config(params: &Value) -> Result<Value, String> {
     - Vec<String> arguments after "crane"
 */
 fn flow_command(op: &str, params: &Value, why: &str) -> Vec<String> {
+    // Turn a checked request into the exact crane flow arguments a person runs on a machine; the
+    // reason the requester gave travels with commands that take one
     let text = |key: &str| params[key].as_str().unwrap_or_default().to_string();
     let words = |list: &[&str]| {
         list.iter()
             .map(|word| (*word).to_string())
             .collect::<Vec<_>>()
     };
+    // The command and its positional arguments
     let mut args = match op {
         "flow-trace" => words(&["flow", "trace", "--from", &text("from")]),
         "flow-retrace" => words(&["flow", "retrace", &text("flow"), "--reason", why]),
@@ -1028,6 +1043,8 @@ fn flow_command(op: &str, params: &Value, why: &str) -> Vec<String> {
         "flow-watch-edit" => words(&["flow", "watch", "edit", &text("watcher")]),
         _ => Vec::new(),
     };
+    // The flow of a limit is positional; everything else optional is added as a flag only when
+    // given
     if op == "flow-limit" && !text("flow").is_empty() {
         args.insert(2, text("flow"));
     }
@@ -1042,6 +1059,7 @@ fn flow_command(op: &str, params: &Value, why: &str) -> Vec<String> {
             args.push(value);
         }
     };
+    // The optional flags each operation takes
     match op {
         "flow-trace" => {
             option("flow", "--flow");

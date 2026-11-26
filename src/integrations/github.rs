@@ -68,6 +68,7 @@ fn ask(
     secrets: &mut Map<String, Value>,
     workspace: &Workspace,
 ) -> Result<(), String> {
+    // How Crane authenticates: the GitHub CLI's login, a fine-grained token, or a GitHub App
     let auth = prompter.choice(
         "Authentication",
         &[
@@ -81,6 +82,7 @@ fn ask(
         "auth".into(),
         json!(["gh_cli", "fine_grained_pat", "github_app"][auth]),
     );
+    // The repository, offered from the connected remote when there is one
     let default_repository = crate::github::load(workspace)
         .ok()
         .flatten()
@@ -110,6 +112,8 @@ fn ask(
         &https_url,
     )?;
     settings.insert("api_url".into(), json!(api.trim_end_matches('/')));
+    // Each authentication method asks for what it needs; tokens are kept with the secrets, apart
+    // from the plain settings
     match auth {
         1 => {
             secrets.insert(

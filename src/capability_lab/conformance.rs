@@ -48,9 +48,12 @@ pub(crate) fn conformance(
     report: Option<&CompilationReport>,
     sources: &Sources,
 ) -> Vec<LabCheck> {
+    // Conformance re-derives the candidate from its sources: without the compilation report there
+    // is nothing to compare against
     let Some(report) = report else {
         return vec![check("all", CheckStatus::NotRun, "no usable compilation report; steps and claims cannot be traced to their recorded bases")];
     };
+    // Only evidence inside the candidate's own Evidence Pack may justify it
     let pack_evidence = report
         .lineage
         .as_ref()
@@ -63,6 +66,8 @@ pub(crate) fn conformance(
         })
         .unwrap_or_default();
     let mut checks = Vec::new();
+    // Steps: each one must have an observed basis whose first cited record is readable, belongs to
+    // the pack, and re-derives to exactly the compiled kind and description
     for step in &definition.execution.steps {
         let Some(basis) = report
             .step_bases
@@ -76,6 +81,7 @@ pub(crate) fn conformance(
             ));
             continue;
         };
+        // A declared or inferred step cannot be traced to an observation
         if basis.basis != Basis::Observed {
             checks.push(
                 check(
@@ -102,6 +108,7 @@ pub(crate) fn conformance(
             );
             continue;
         };
+        // An unreadable record blocks (the requester may not see it); a missing one fails
         let (reference, record) = sources.evidence(cited);
         let Some(record) = record else {
             let status = if reference.outcome == RefOutcome::Unauthorized {
@@ -135,6 +142,7 @@ pub(crate) fn conformance(
             );
             continue;
         }
+        // Re-derive the step from the record; a different result is a counterexample
         match step_of(record) {
             Some((kind, description)) if kind == step.kind && description == step.description => {
                 if recognized(record) {
@@ -166,6 +174,8 @@ pub(crate) fn conformance(
             }
         }
     }
+    // Claims: a derived claim must rest on assertions that exist and support its evidence; an
+    // observed claim's records must name its invariant; anything else is only declared
     for claim in &definition.verification.claims {
         let subject = format!("claim:{}", claim.claim_id);
         let Some(basis) = report

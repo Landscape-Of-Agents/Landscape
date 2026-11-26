@@ -280,6 +280,7 @@ pub(crate) fn extract(
     risk: RiskLevel,
 ) -> Extraction {
     let mut extraction = Extraction::default();
+    // The episode's task id becomes an input, so the capability can be run for another task
     if intake.work.task_id.is_some() {
         extraction.inputs.push(parameter(
             "task_id",
@@ -287,6 +288,8 @@ pub(crate) fn extract(
             "Task the procedure is performed for",
         ));
     }
+    // Only observed actions and observations form steps, in timeline order, each evidence record
+    // once
     let mut seen = BTreeSet::new();
     let mut records = Vec::new();
     for item in reconstruction.items.iter().filter(|item| {
@@ -303,6 +306,7 @@ pub(crate) fn extract(
             records.push(record);
         }
     }
+    // A deployment in the episode means the capability needs a target environment as input
     if records
         .iter()
         .any(|record| record.evidence_type == EvidenceType::Deployment)
@@ -313,9 +317,12 @@ pub(crate) fn extract(
             "Environment to deploy to",
         ));
     }
+    // Each record becomes at most one step, chained so every step consumes the previous step's
+    // output (the first consumes the inputs)
     let mut previous: Option<String> = None;
     let mut described = BTreeSet::new();
     for record in records {
+        // A tool call that touched Crane policy is noted; the compilation is blocked on it later
         if record.evidence_type == EvidenceType::ToolCall {
             let target = record
                 .field("command")
@@ -330,6 +337,8 @@ pub(crate) fn extract(
         let Some((kind, description)) = step_of(record) else {
             continue;
         };
+        // A repeated identical step adds its evidence to the first one instead of becoming another
+        // step
         if !described.insert((format!("{kind:?}"), description.clone())) {
             if let Some(basis) = extraction.bases.iter_mut().find(|basis| {
                 extraction
@@ -355,12 +364,15 @@ pub(crate) fn extract(
                 .collect(),
         };
         let output = format!("{step_id}-result");
+        // The first step needs repository access, and a deployment needs a known target
         let preconditions = match (extraction.steps.is_empty(), kind) {
             (true, _) => vec!["repository-access".to_string()],
             (false, StepKind::Deploy) => vec!["deployment-target-known".to_string()],
             _ => Vec::new(),
         };
         extraction.mutating |= kind.mutating();
+        // Side effects: the first change touches repository files; a deployment changes what runs
+        // in an environment and is reversible only if a recovery was observed
         match kind {
             StepKind::Change
                 if !extraction
@@ -424,6 +436,8 @@ pub(crate) fn extract(
         });
         previous = Some(output);
     }
+    // Model-proposed steps are accepted only when they are valid, new, do not touch policy, cite
+    // evidence the requester can read, and do not add a mutation to a low-risk capability
     let readable = intake
         .validation
         .references
@@ -493,6 +507,7 @@ pub(crate) fn extract(
             reasons,
         });
     }
+    // Recovery is what the episode actually did to recover, or a plain statement that it is unknown
     extraction.recovery = if intake.observed.recovery.is_empty() {
         vec!["No rollback or recovery was observed; how to recover is unknown".into()]
     } else {
@@ -508,6 +523,7 @@ pub(crate) fn extract(
             })
             .collect()
     };
+    // Branches the recipe took conditionally, and the rollback branch when one was observed
     if let Some(audit) = sources.capture.audit(&intake.work.query_id) {
         for branch in &audit.branches {
             extraction.branches.push(BranchNote { condition: format!("{} ran only because its condition {}", branch.step_id, if branch.held { "held" } else { "did not hold (skipped)" }), basis: Basis::Observed, source: "the evidence investigation's recipe (how evidence was gathered, not the procedure)".into() });

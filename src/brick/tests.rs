@@ -1316,6 +1316,12 @@ fn kinds_of_change_and_gates() {
     );
 }
 
+/** Dashboard requests map to the right role, need a reason, and keep only the fields their command reads
+ * Input
+    - None
+ * Output
+    - None (panics on failure)
+*/
 #[test]
 fn dashboard_requests_are_checked_before_they_run() {
     use super::requests::{check, command, role, Role};
@@ -2296,10 +2302,24 @@ fn knowledge_files_agents_may_not_read_are_not_delivered() {
 */
 #[test]
 fn links_do_not_lead_out_of_the_repository() {
+    /** Create a file symlink (Unix); false when the platform refuses
+     * Input
+        - from: &Path - link target
+        - to: &Path - link path
+     * Output
+        - bool
+    */
     #[cfg(unix)]
     fn link(from: &Path, to: &Path) -> bool {
         std::os::unix::fs::symlink(from, to).is_ok()
     }
+    /** Create a file symlink (Windows, which may need developer mode); false when it is refused
+     * Input
+        - from: &Path - link target
+        - to: &Path - link path
+     * Output
+        - bool
+    */
     #[cfg(windows)]
     fn link(from: &Path, to: &Path) -> bool {
         std::os::windows::fs::symlink_file(from, to).is_ok()

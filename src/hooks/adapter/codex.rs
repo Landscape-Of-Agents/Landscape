@@ -319,12 +319,15 @@ pub(super) fn codex_action(payload: &Value) -> AgentAction {
     - Option<Vec<FileChange>>, None if the patch is malformed or changes nothing
 */
 pub(crate) fn parse_patch(patch: &str, cwd: Option<&str>) -> Option<Vec<FileChange>> {
+    // Paths in the patch are relative to the agent's working directory
     let resolve = |path: &str| match cwd {
         Some(cwd) if Path::new(path).is_relative() => {
             Path::new(cwd).join(path).to_string_lossy().into_owned()
         }
         _ => path.to_string(),
     };
+    // Anything that does not follow the apply_patch grammar returns None, so the caller denies a
+    // patch it cannot check instead of guessing
     let mut lines = patch
         .lines()
         .skip_while(|line| line.trim().is_empty())
@@ -338,6 +341,7 @@ pub(crate) fn parse_patch(patch: &str, cwd: Option<&str>) -> Option<Vec<FileChan
         if line.trim() == "*** End Patch" {
             break;
         }
+        // Add File: every following '+' line is the new content
         if let Some(path) = line.strip_prefix("*** Add File: ") {
             let mut content = String::new();
             while let Some(added) = lines.peek().and_then(|next| next.strip_prefix('+')) {
@@ -349,11 +353,15 @@ pub(crate) fn parse_patch(patch: &str, cwd: Option<&str>) -> Option<Vec<FileChan
                 path: resolve(path.trim()),
                 proposed: Proposed::Content(content),
             });
+        // Delete File: the whole file goes away
         } else if let Some(path) = line.strip_prefix("*** Delete File: ") {
             changes.push(FileChange {
                 path: resolve(path.trim()),
                 proposed: Proposed::Delete,
             });
+        // Update File: optionally moved, then hunks of context, '-' and '+' lines. Each hunk
+        // becomes an edit from its old lines to its new lines; a hunk that only adds lines has no
+        // anchor, so its effect is unknown
         } else if let Some(path) = line.strip_prefix("*** Update File: ") {
             let moved = lines
                 .peek()
@@ -406,6 +414,7 @@ pub(crate) fn parse_patch(patch: &str, cwd: Option<&str>) -> Option<Vec<FileChan
             } else {
                 Proposed::Edits(edits)
             };
+            // A move deletes the old path and writes the new one
             match moved {
                 Some(target) => {
                     changes.push(FileChange {
@@ -422,6 +431,7 @@ pub(crate) fn parse_patch(patch: &str, cwd: Option<&str>) -> Option<Vec<FileChan
                     proposed,
                 }),
             }
+        // Any other non-empty line is not part of the grammar
         } else if !line.trim().is_empty() {
             return None;
         }

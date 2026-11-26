@@ -370,6 +370,7 @@ pub(crate) fn check_assignment(
     assignment: &Assignment,
     now: u64,
 ) -> Validation {
+    // Problems make the assignment invalid; warnings are shown but allowed
     let mut problems = Vec::new();
     let mut warnings = Vec::new();
     let definition = store
@@ -392,12 +393,15 @@ pub(crate) fn check_assignment(
     if admitted.decision != Decision::Allow {
         problems.extend(admitted.reasons.iter().cloned());
     }
+    // It must wake on something: a subscription or a timer
     if assignment.subscriptions.is_empty() && assignment.timers.is_empty() {
         problems.push((
             "NO_TRIGGER".to_string(),
             "subscribe to at least one trigger source or add a timer".into(),
         ));
     }
+    // Each subscription must use a source the definition allows and that has a connector, name the
+    // event kinds it wants, and keep its filters small
     let allowed_sources = definition
         .map(|record| record.definition.triggers.clone())
         .unwrap_or_default();
@@ -444,6 +448,7 @@ pub(crate) fn check_assignment(
             ));
         }
     }
+    // Timers must be allowed by the definition and run between every 5 minutes and once a week
     if !assignment.timers.is_empty()
         && !allowed_sources.contains(&super::model::TriggerSource::Timer)
     {
@@ -466,6 +471,8 @@ pub(crate) fn check_assignment(
             ));
         }
     }
+    // The RCA graph, when given, must exist and describe this target; without one the agent can
+    // only ask or propose
     match &assignment.rca {
         None => warnings.push((
             "NO_RCA".to_string(),

@@ -337,6 +337,11 @@ pub(crate) struct HookConfig {
     pub(crate) format: HookConfigFormat,
 }
 
+/** How an agent's hook file lists handlers
+ * Variants
+    - Grouped - each event holds matcher groups whose "hooks" arrays hold the handlers (Claude, Codex, Gemini)
+    - Flat - each event holds the handlers directly (Copilot)
+*/
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HookConfigFormat {
     Grouped,

@@ -115,6 +115,7 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
   let dialogs: Dialogs;
 
   return {
+    /** Build the panel state: load Bricks and the DataSea inbox, then lay attachments over the graph. */
     async state(refresh) {
       const problem = await load();
       await loadInbox(Boolean(refresh));
@@ -144,6 +145,7 @@ export function bricksHost(deps: PanelDeps): WorkbenchHost {
       };
     },
 
+    /** Run a panel operation and refresh the views after a change (loads and tests change nothing). */
     async run(op, values, progress, asked) {
       dialogs = asked;
       const result = await operate(op, values, progress);
@@ -663,8 +665,11 @@ let S = { graph: { nodes: [], edges: [] }, targets: [], bricks: [], stacks: [], 
 let configTouched = false;
 let commonLoaded = "";
 const graph = Graph($("graph"), (node) => { showPreview(node); if (node && node.kind !== "item") setTarget(node.id); });
+/** The display name of what an attachment attaches (a Brick or a Stack). */
 const subjectName = (subject) => { const brick = S.bricks.find((row) => "brick:" + row.ref === subject || row.ref === subject); return brick ? brick.name : subject.replace(/^(brick|stack):/, ""); };
+/** A Brick reference without its brick: prefix. */
 const brickRef = (subject) => subject.replace(/^brick:/, "");
+/** The colour class for a Brick state. */
 const stateTone = (state) => state === "active" ? "ok" : state === "draft" ? "warn" : state === "revoked" ? "bad" : "";
 function options(select, items, placeholder) {
   const keep = select.value;
@@ -759,6 +764,7 @@ $("refresh").addEventListener("click", () => { notice(); vscode.postMessage({ ty
 const previews = {};
 let previewFor = null;
 const SECTION = { enforcement: "var(--muted)", zone: "var(--zone)", flow: "var(--flow)", brick_common: "var(--ok)", brick_current: "var(--warn)" };
+/** A byte count in B or KB. */
 const size = (bytes) => bytes < 1024 ? bytes + " B" : (bytes / 1024).toFixed(1) + " KB";
 function sectionTitle(section) {
   if (section.kind === "enforcement") return "Rules Crane enforces";
@@ -767,6 +773,7 @@ function sectionTitle(section) {
   if (section.kind === "brick_current") { const subject = section.reference.split(" on ")[0]; return "Volatile context · " + subjectName(subject) + " (" + brickRef(subject) + ")"; }
   return section.kind;
 }
+/** Preview what agents receive at the chosen graph node: every context section, its own context marked. */
 async function showPreview(node) {
   const box = $("selected");
   if (!node) {
@@ -794,7 +801,9 @@ function renderPreview(entry, target, row) {
   const snapshot = entry.data.snapshot;
   const kind = target.split(":")[0];
   const own = snapshot.sections.filter((section) => section.kind !== "enforcement");
+  /** Whether a context section comes from the selected attachment or its Brick. */
   const mine = (section) => row && (section.source === "attachment:" + row.attachment_id || section.source === "brick:" + brickRef(row.subject));
+  /** One context section as a collapsible block; enforcement sections start closed. */
   const block = (section) => '<details class="ctx' + (mine(section) ? " mine" : "") + '"' + (section.kind === "enforcement" ? "" : " open") + ' style="--tone:' + (SECTION[section.kind] || "var(--line)") + '"><summary><b>' + esc(sectionTitle(section)) + "</b>" + (section.kind === "brick_common" ? infoButton(section.source.replace(/^brick:/, ""), sectionTitle(section)) : section.kind === "brick_current" ? infoButton(brickRef(section.reference.split(" on ")[0]), sectionTitle(section)) : "") + '<span class="muted small">' + esc(size(section.bytes)) + "</span></summary><pre>" + esc(section.text) + "</pre></details>";
   box.innerHTML = '<div class="row small" style="margin-bottom:6px"><span class="tag ' + (kind === "flow" ? "fox" : "busy") + '">' + esc(kind) + '</span><span class="muted grow">' + own.length + " context section(s)</span></div>" +
     '<div class="legend-row"><span><i style="background:var(--' + (kind === "flow" ? "flow" : "zone") + ')"></i>' + (kind === "flow" ? "Flow" : "Zone") + ' context</span><span><i style="background:var(--ok)"></i>Common</span><span><i style="background:var(--warn)"></i>Volatile</span><span><i style="background:var(--muted)"></i>Crane rules</span></div>' +
@@ -840,6 +849,7 @@ function shown(value) {
   if (typeof value === "object") return "<pre>" + esc(JSON.stringify(value, null, 2)) + "</pre>";
   return "<code>" + esc(String(value)) + "</code>";
 }
+/** Show a Brick's definition and details in a dialog. */
 async function showInfo(ref) {
   const result = await ask("load:brick", { ref });
   if (!result.ok) { notice("bad", result.message); return; }
@@ -872,6 +882,7 @@ async function showInfo(ref) {
     ((definition.dependencies || []).length ? '<h4 class="props-title">Needs alongside it</h4><p>' + definition.dependencies.map((item) => "<code>" + esc(item.brick_id + "@" + item.version) + "</code>").join(", ") + "</p>" : "") +
     '</div><div class="m-foot"><button class="btn" data-i="kind">What is a ' + esc(kind) + ' Brick?</button><span class="grow"></span><button class="btn primary" data-i="close">Close</button></div></div>';
   document.body.appendChild(back);
+  /** Close the dialog. */
   const close = () => back.remove();
   back.addEventListener("click", (event) => {
     const button = event.target.closest("[data-i]");
@@ -918,6 +929,7 @@ function showKindInfo(type) {
     '<h4 class="props-title">Settings you can configure</h4><div class="props">' + (rows || '<div class="muted">This kind has no settings.</div>') + "</div>" +
     '</div><div class="m-foot"><span class="grow"></span><button class="btn primary" data-k="close">Close</button></div></div>';
   document.body.appendChild(back);
+  /** Close the dialog. */
   const close = () => back.remove();
   back.addEventListener("click", (event) => { if (event.target === back || event.target.closest('[data-k="close"]')) close(); });
   back.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); close(); } });
@@ -996,6 +1008,7 @@ $("attach-form").addEventListener("submit", (event) => {
   if (!values.subject || !values.target) { notice("bad", "Choose what to attach and where."); return; }
   perform($("a-submit"), "attach", values, () => { $("a-volatile").value = ""; });
 });
+/** Load the common context of the chosen Brick into the editor. */
 async function loadCommon() {
   const ref = $("k-brick").value;
   const row = S.bricks.find((item) => item.ref === ref || (item.state === "draft" && item.brick_id === ref));
@@ -1046,6 +1059,7 @@ function fillTest(form) {
   showWrite();
 }
 function showWrite() { $("t-write").hidden = $("t-operation").value !== "write"; }
+/** Fill the test form with a preset call for the chosen Brick. */
 async function loadPreset() {
   const ref = $("t-brick").value;
   $("t-note").hidden = true;
@@ -1066,6 +1080,7 @@ function openTest(ref) {
   if (picked && !picked.startsWith("item:")) setTarget(picked); else if (attached) $("t-target").value = attached.target;
   loadPreset();
 }
+/** Run a Brick test (a mock call or a real check) from the test form and show the result. */
 async function runTest(button, mock) {
   const form = $("test-form");
   clearErrors(form);

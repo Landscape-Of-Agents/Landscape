@@ -384,11 +384,16 @@ pub(crate) fn compile(
     request: &CompileRequest,
     now: u64,
 ) -> CompilationReport {
+    // The pipeline: check the request, submit the intake, reconstruct what happened, plan
+    // verification, extract steps, plan context, assemble a definition, validate it, and store it
+    // as a candidate. Any stage can end the compilation with an outcome in the report
     let mut report = CompilationReport::new(request, actor, now);
     let problems = check_request(request);
     if !problems.is_empty() {
         return report.finish(CompilationOutcome::CompilationFailed, problems);
     }
+    // The registry validates the intake; integrity, access and idempotency problems block rather
+    // than fail, because retrying will not help
     let intake = match registry.submit_intake(&request.intake, sources, actor, now) {
         Ok(submission) => submission.intake,
         Err(error) => {
@@ -403,6 +408,8 @@ pub(crate) fn compile(
             return report.finish(outcome, vec![format!("the intake was refused: {error}")]);
         }
     };
+    // Lineage records the query and the recipe that produced the evidence, so the candidate can be
+    // traced back to its sources
     let audit = sources.capture.audit(&intake.work.query_id);
     report.lineage = Some(Lineage {
         intake_id: intake.intake_id.clone(),
@@ -423,6 +430,8 @@ pub(crate) fn compile(
         }),
         source_refs: Vec::new(),
     });
+    // Rebuild the episode's timeline from the evidence, then map its claims to evidence (the first
+    // observed environment is where they were seen)
     let reconstruction = reconstruct::reconstruct(&intake, sources);
     let environment = reconstruction
         .items
@@ -434,6 +443,7 @@ pub(crate) fn compile(
     report.gaps.clone_from(&verification.gaps);
     report.hypotheses.clone_from(&verification.hypotheses);
     report.reconstruction = Some(reconstruction.clone());
+    // Extract reusable steps and branches; proposed steps are accepted or refused with reasons
     let extraction = extract::extract(
         &reconstruction,
         &intake,
@@ -465,6 +475,8 @@ pub(crate) fn compile(
                 )
             }),
     );
+    // Stop early when the episode cannot be reused: it changed Crane policy, it did not succeed, or
+    // it shows no observed action to form a procedure
     if !extraction.policy_touches.is_empty() {
         return report.finish(CompilationOutcome::CompilationBlocked, vec![format!("the episode changed Crane policy or governance ({}); policy changes go through Crane's signed workflow and are never compiled into a capability", extraction.policy_touches.join(", "))]);
     }
@@ -488,6 +500,7 @@ pub(crate) fn compile(
             vec!["the episode shows no observed action or check to form a procedure".into()],
         );
     }
+    // The commit the code change was made on anchors the context plan
     let commit = intake
         .observed
         .code_changes
@@ -504,6 +517,7 @@ pub(crate) fn compile(
     report.element_bases.clone_from(&context.bases);
     report.gaps.extend(context.gaps.iter().cloned());
     report.warnings.extend(context.warnings.iter().cloned());
+    // Open questions come from the Evidence Pack and from every blocking gap
     let pack_questions = sources.capture.packs.get(&intake.work.pack_id).map(|pack| {
         pack.contributions
             .task_local
@@ -528,6 +542,7 @@ pub(crate) fn compile(
             .filter(|gap| gap.blocking)
             .map(|gap| format!("What evidence resolves: {}?", gap.detail)),
     );
+    // The evidence actually used becomes the candidate's source references
     let mut sources_used = verification
         .bases
         .iter()
@@ -566,6 +581,8 @@ pub(crate) fn compile(
             )
         }
     };
+    // Versioning: an identical definition reuses the latest version; any difference becomes the
+    // next version with a change reason
     let existing = registry
         .state
         .versions
@@ -599,6 +616,7 @@ pub(crate) fn compile(
             }
         }
     };
+    // Validate the candidate; a structural failure means the definition itself is malformed
     let run = validate::run(
         &candidate,
         &profile,
@@ -623,6 +641,7 @@ pub(crate) fn compile(
             ],
         );
     }
+    // Store the new candidate (version 1) or proposed version; a reused one is already stored
     if !reused {
         let stored = if candidate.version == 1 {
             registry.create_candidate(actor, candidate.clone(), Some(&profile.profile_id), now)
@@ -647,6 +666,7 @@ pub(crate) fn compile(
         digest: candidate.digest(),
         reused,
     });
+    // Blocking gaps mean the candidate exists but needs more evidence before review
     let blocking = report
         .gaps
         .iter()

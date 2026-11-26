@@ -129,6 +129,8 @@ pub(crate) fn build_plan(
             format!("proposal {} has no candidate", proposal.proposal_id),
         )
     })?;
+    // The intended definition is the parent with only the allowed changes applied; scenarios are
+    // judged against it
     let parent = &state
         .record(&proposal.capability_id, proposal.parent_version)?
         .definition;
@@ -140,6 +142,8 @@ pub(crate) fn build_plan(
         .iter()
         .map(|condition| condition.id.clone())
         .collect::<Vec<_>>();
+    // Scenarios from history: every environment where the parent verifiably succeeded must still
+    // apply
     let mut scenarios = Vec::new();
     let mut historical = Vec::new();
     if let Some(analysis) = analysis {
@@ -171,6 +175,8 @@ pub(crate) fn build_plan(
             ));
         }
     }
+    // An unknown environment must never match, and each declared environment must decide as the
+    // change intends
     scenarios.push(applicability(
         "unknown-environment".into(),
         "An unknown environment never matches".into(),
@@ -196,6 +202,7 @@ pub(crate) fn build_plan(
             expect,
         ));
     }
+    // Governance pins: each required zone, flow or policy dependency must not have gone stale
     let mut pins = 0;
     for dependency in intended.dependencies.iter().filter(|dependency| {
         dependency.required
@@ -226,6 +233,9 @@ pub(crate) fn build_plan(
             });
         }
     }
+    // Evidence scenarios: a claim backed by a single evidence type is tested by removing that
+    // evidence. Each is probed on the parent first, and kept only if the parent passes it, so a
+    // failure later is the candidate's fault
     let mut evidence_scenarios = Vec::new();
     for claim in &parent.verification.claims {
         let resolved = claim
@@ -271,6 +281,8 @@ pub(crate) fn build_plan(
             ));
         }
     }
+    // The parent's negative cases, and any known failure cases the proposal adds, must still be
+    // refused
     for (index, case) in parent.verification.negative_cases.iter().enumerate() {
         scenarios.push(Scenario {
             scenario_id: format!("negative-{}", index + 1),
@@ -291,6 +303,7 @@ pub(crate) fn build_plan(
             });
         }
     }
+    // Wrap the scenarios as a Lab test plan, parsed back to prove it is well formed
     let short = &proposal.proposal_id[..proposal.proposal_id.len().min(20)];
     let lab_plan = TestPlan {
         plan_id: format!("evolution-{}", short.to_ascii_lowercase()),
@@ -302,6 +315,7 @@ pub(crate) fn build_plan(
         scenarios,
     };
     let lab_plan = TestPlan::parse(&json!(lab_plan).to_string())?;
+    // What this regression cannot establish is stated in the plan
     let mut unsupported = vec![
         "Parent-versus-candidate execution: the Lab evaluates contracts and evidence; it never executes procedures, so behavior is compared only when the procedure is identical".to_string(),
     ];
@@ -337,6 +351,7 @@ pub(crate) fn build_plan(
         created_at: now,
         digest: String::new(),
     };
+    // The plan id derives from its content, so the same plan is recognized again
     let content_digest = digest_of(
         "evolution/regression-plan-content/v1",
         &(
@@ -654,6 +669,7 @@ fn content_checks(
     candidate: &CapabilityDefinition,
     now: u64,
 ) -> CapabilityResult<Vec<RegressionCheck>> {
+    // Structural: the candidate is the parent's next version and keeps its provenance
     let mut checks = Vec::new();
     let identity = candidate.capability_id == parent.capability_id
         && candidate.previous_version_ref == Some(parent.version)
@@ -689,6 +705,8 @@ fn content_checks(
         },
         "the candidate keeps the parent's intake, episode, and Evidence Pack references",
     ));
+    // The candidate may differ from the parent only by the declared change set; otherwise the
+    // differing fields are the counterexample
     let intended = apply_content(parent, &allowed_changes(proposal));
     let declared = content(&intended) == content(candidate);
     let mut declared_check = check(
@@ -721,6 +739,7 @@ fn content_checks(
         declared_check.counterexample = Some(json!({"fields": differing}));
     }
     checks.push(declared_check);
+    // Dry-run validation of both: the candidate's outcome may not be worse than the parent's
     let parent_run = registry.validate(
         actor,
         &parent.capability_id,
@@ -756,6 +775,7 @@ fn content_checks(
         );
     }
     checks.push(dry);
+    // Claim integrity: nothing the parent claimed, its invariants or negative cases may be weakened
     let weak = weakenings(parent, candidate);
     let (claims, governance): (Vec<_>, Vec<_>) = weak.iter().cloned().partition(|item| {
         item.contains("claim") || item.contains("invariant") || item.contains("negative case")
@@ -778,6 +798,8 @@ fn content_checks(
         claim_check.counterexample = Some(json!({"violations": claims}));
     }
     checks.push(claim_check);
+    // Recompute every claim from evidence: a claim may not become verified that was not verified
+    // before, since a revision cannot create evidence
     let mut upgraded = Vec::new();
     let mut evidence = Vec::new();
     for claim in &candidate.verification.claims {
@@ -817,6 +839,7 @@ fn content_checks(
         .into_iter()
         .collect();
     checks.push(recomputed);
+    // Verification coverage: at least as many required claims and the same verification method
     let required = |definition: &CapabilityDefinition| {
         definition
             .verification
@@ -840,6 +863,8 @@ fn content_checks(
             candidate.verification.method
         ),
     ));
+    // Governance: risk, review level, policies, dependencies, exclusions, scope, preconditions and
+    // steps may not be weakened
     let mut governance_check = check(
         "governance:not-weakened",
         Dimension::Governance,
@@ -858,6 +883,8 @@ fn content_checks(
         governance_check.counterexample = Some(json!({"violations": governance}));
     }
     checks.push(governance_check);
+    // Behaviour: an identical execution contract passes; a changed one is inconclusive, because the
+    // Lab never runs procedures
     let same_procedure = parent.execution == candidate.execution;
     checks.push(check(
         "behavioral:procedure",
@@ -900,8 +927,12 @@ pub(crate) fn execute(
     actor: &Actor,
     now: u64,
 ) -> CapabilityResult<(RegressionRun, Vec<LabReport>)> {
+    // Permission first; the number of registry transitions is remembered to prove the run changes
+    // nothing
     registry.grants.require(actor, Role::Contributor)?;
     let transitions_before = registry.state.transitions.len();
+    // The run id includes the attempt number and the exact inputs, so each retry is a distinct,
+    // reproducible run
     let inputs_digest = digest_of(
         "evolution/regression-inputs/v1",
         &(
@@ -962,6 +993,8 @@ pub(crate) fn execute(
         RunState::Preflight,
         "checking identities, digests, staleness, integrity, and the plan",
     )?;
+    // Preflight: a plan whose inputs went stale (for example a dependency moved again) is blocked
+    // before any check runs
     let blocked = preflight(&registry.state, sources, proposal, plan, signal);
     if !blocked.is_empty() {
         run.reason = format!("blocked before any check ran: {}", blocked.join("; "));
@@ -976,6 +1009,8 @@ pub(crate) fn execute(
         RunState::Running,
         "evaluating supported deterministic checks",
     )?;
+    // Run the same Lab plan on the parent and on the candidate, then compare content and Lab
+    // results
     let parent = registry
         .state
         .record(&proposal.capability_id, plan.parent_version)?
@@ -1032,6 +1067,8 @@ pub(crate) fn execute(
         registry, sources, actor, proposal, &parent, &candidate, now,
     )?);
     run.checks.extend(compare_lab(&parent_lab, &candidate_lab));
+    // The run must leave the registry untouched and the candidate unpublished; publishing stays a
+    // separate, reviewed step
     let untouched = registry.state.transitions.len() == transitions_before
         && registry
             .state
@@ -1044,6 +1081,7 @@ pub(crate) fn execute(
         if untouched { CheckStatus::Passed } else { CheckStatus::Failed },
         "the run changed no lifecycle state and the candidate is unpublished; publication stays with Component 2's authorized workflow",
     ));
+    // Collect skipped checks and counterexamples for the report
     for item in &run.checks {
         if item.status == CheckStatus::NotRun {
             run.skipped
@@ -1054,6 +1092,8 @@ pub(crate) fn execute(
                 .push(json!({"check": item.check_id, "counterexample": counterexample}));
         }
     }
+    // The verdict from required checks only: any failure fails the run, any check not established
+    // makes it inconclusive, otherwise it passes
     let required = run
         .checks
         .iter()

@@ -580,8 +580,12 @@ fn shared_scope(configs: &[Configured], id: &str) -> Option<PathSet> {
     - Controls
 */
 pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Controls {
+    // Fold every attachment's configuration into one set of controls. Each fold can only tighten:
+    // ceilings take the minimum, criticality the maximum, modes the stricter, and lists only grow.
+    // Anything that cannot be honored fails closed
     let mut controls = Controls::default();
     let (configs, unhonored) = configs_of(store, target_key);
+    // Attachments whose Brick cannot be read or honored fail closed
     for (reference, message) in unhonored {
         controls.fail_closed.push(message);
         controls.sources.insert(reference);
@@ -600,8 +604,10 @@ pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Con
             continue;
         }
         let shared = share.and_then(|(_, scope)| scope).unwrap_or_default();
+        // Only configurations that change enforcement are recorded as sources of the decision
         let mut enforced = true;
         match config.clone() {
+            // Limits lower the ceiling, raise the criticality, and add session or daily caps
             Config::Limits(limits) => {
                 if let Some(ceiling) = limits.max_ceiling {
                     controls.ceiling = Some(controls.ceiling.map_or(ceiling, |c| c.min(ceiling)));
@@ -640,6 +646,8 @@ pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Con
                     controls.gaps.push(config::problem("RETRIES_FOR_OPERATIONS", format!("{reference} caps retries, which apply to resident agents and skills, not to agent tool calls")));
                 }
             }
+            // Access: read-only and deny-read paths, include/exclude scopes, and the strictest mode
+            // per kind of change; each one remembers which Brick set it, for attribution
             Config::Access(access) => {
                 for pattern in &access.read_only {
                     controls.note(format!("read_only:{pattern}"), reference);
@@ -672,12 +680,14 @@ pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Con
                 controls.execute = stricter(controls.execute, access.mode(ChangeClass::Execute));
                 controls.network = stricter(controls.network, access.mode(ChangeClass::Network));
             }
+            // Identity admits callers
             Config::Identity(identity) => controls.identities.push(IdentityRule {
                 agents: identity.agents,
                 models: identity.models,
                 on_other: identity.on_other,
                 source: reference.clone(),
             }),
+            // Approval holds changes in its paths (or in the scope it shares from an access Brick)
             Config::Approval(approval) => {
                 let mut paths = if approval.scope_from.is_some() {
                     shared
@@ -696,6 +706,8 @@ pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Con
                     source: reference.clone(),
                 });
             }
+            // Environment: isolation profiles, hidden and required variables, network allow lists
+            // (each kept separately, so all must allow) and deny lists, and credentials
             Config::Environment(environment) => {
                 if environment.profile != "agent-hooks" {
                     controls.isolation.push(environment.profile.clone());
@@ -724,6 +736,8 @@ pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Con
                         .map(|credential| credential.name),
                 );
             }
+            // Preconditions: file checks that are cheap run now (a failing one blocks or asks); the
+            // others become gates decided at call time
             Config::Precondition(precondition) => {
                 for check in &precondition.checks {
                     if file_based(check) {
@@ -744,6 +758,8 @@ pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Con
                     }
                 }
             }
+            // Action: the operations routed through Crane; direct use is denied only with
+            // deny_direct
             Config::Action(action) => {
                 for rule in action.rules() {
                     controls
@@ -759,6 +775,7 @@ pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Con
                 }
                 enforced = action.deny_direct;
             }
+            // Recovery: the lowest limit on failures in a row
             Config::Recovery(recovery) => match recovery.max_consecutive_failures {
                 Some(limit) => {
                     controls.note(format!("recovery:{limit}"), reference);
@@ -770,6 +787,7 @@ pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Con
                 }
                 None => enforced = false,
             },
+            // Watch: only a watch that pauses on fire changes enforcement
             Config::Watch(watch) => {
                 if watch.on_fire.contains(&Reaction::Pause) {
                     controls.watch_pause.push(reference.clone());
@@ -777,6 +795,7 @@ pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Con
                     enforced = false;
                 }
             }
+            // Provenance: commit gates check commit messages
             Config::Provenance(provenance) => match provenance.gate_commits {
                 Some(mode) => controls.commit_gates.push(CommitGate {
                     mode,
@@ -786,12 +805,15 @@ pub(crate) fn controls(store: &BrickStore, target_key: &str, root: &Path) -> Con
                 }),
                 None => enforced = false,
             },
+            // Knowledge and verification give guidance and checks, never enforcement
             Config::Knowledge(_) | Config::Verification(_) => enforced = false,
         }
         if enforced {
             controls.sources.insert(reference.clone());
         }
     }
+    // Gaps in what the hooks can enforce are reported, so nobody assumes more protection than there
+    // is
     if controls.execute.is_some() || controls.network.is_some() {
         controls.gaps.push(config::problem("COMMANDS_BY_FILES", "execute and network modes apply to commands and calls that name the target's files; a command naming no file cannot be attributed to a target"));
     }

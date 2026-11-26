@@ -172,6 +172,7 @@ fn simulated(repo: &Repo, brick: &Brick, target: &str) -> Result<BrickStore, Str
     - Result<(), String>
 */
 fn trial(args: &Args, repo: &Repo, brick: &Brick, raw: &str) -> Result<(), String> {
+    // The mock call is inline JSON or a file holding it
     let text = if raw.trim_start().starts_with('{') {
         raw.to_string()
     } else {
@@ -179,6 +180,8 @@ fn trial(args: &Args, repo: &Repo, brick: &Brick, raw: &str) -> Result<(), Strin
     };
     let call = serde_json::from_str::<Value>(&text)
         .map_err(|error| format!("the mock call is not JSON: {error}"))?;
+    // The target is given, or the first one the Brick is attached to; it must be a Zone or Flow of
+    // the governance file
     let all = targets(repo)?;
     let target = match target_option(args)? {
         Some(target) => target.key(),
@@ -199,6 +202,8 @@ fn trial(args: &Args, repo: &Repo, brick: &Brick, raw: &str) -> Result<(), Strin
         .filter(|(key, entity)| entity.status == Lifecycle::Active || **key == target)
         .map(|(key, entity)| (key.clone(), entity.files.clone()))
         .collect::<BTreeMap<_, _>>();
+    // Notes explain anything that makes the trial less faithful: an inactive target, or base limits
+    // that could not be computed
     let mut notes = Vec::new();
     if info.status != Lifecycle::Active {
         notes.push(format!(
@@ -219,6 +224,8 @@ fn trial(args: &Args, repo: &Repo, brick: &Brick, raw: &str) -> Result<(), Strin
             None
         }
     };
+    // Decide the mock call with the same guard rules a real call meets, as if the Brick were
+    // attached to the target, without changing anything
     let mut result = crate::brick::trial::run(
         &repo.workspace,
         &simulated(repo, brick, &target)?,
@@ -236,6 +243,7 @@ fn trial(args: &Args, repo: &Repo, brick: &Brick, raw: &str) -> Result<(), Strin
         "BRICK_TESTED",
         json!({"brick": brick.reference().to_string(), "type": brick.brick_type, "result": "OK", "cases": 1, "mock_call": true, "verdict": verdict}),
     );
+    // Report each finding, each file's limit, and the notes
     let mut detail = result["findings"]
         .as_array()
         .into_iter()
@@ -588,6 +596,8 @@ fn test_config(
     cases: &mut Vec<Value>,
     effects: &mut Vec<Value>,
 ) -> Result<(), String> {
+    // Kinds decided on every tool call, and kinds folded into the guard's per-file limits; a
+    // configuration may be both
     let per_call = matches!(
         config,
         Config::Identity(_)
@@ -601,6 +611,9 @@ fn test_config(
         config,
         Config::Access(_) | Config::Limits(_) | Config::Precondition(_) | Config::Environment(_)
     );
+    // Both are previewed by simulating the Brick on each target: control gaps fail, per-file limits
+    // must match some file (or the whole target falls back to observe-only), and per-call rules are
+    // noted as decided at run time
     if per_file || per_call {
         if on.is_empty() {
             cases.push(case(
@@ -644,10 +657,15 @@ fn test_config(
             effects.push(preview);
         }
     }
+    // Parts that only a resident agent exercises cannot be tested here, so they are reported as
+    // unknown
     for (name, detail) in resident_only(config) {
         cases.push(case(name, "UNKNOWN", detail));
     }
+    // Then each kind is exercised as far as this machine can, without changing anything
     match config {
+        // Precondition gates run their checks locally; one that does not hold now is unknown, since
+        // it may hold when work starts
         Config::Precondition(precondition) => {
             for (check, outcome, detail) in run_checks(
                 &repo.workspace,
@@ -674,6 +692,7 @@ fn test_config(
                 ));
             }
         }
+        // Verification runs its own checks plus those shared from an active precondition Brick
         Config::Verification(verification) => {
             let mut checks = verification.checks.clone();
             if let Some(source) = &verification.checks_from {
@@ -711,6 +730,8 @@ fn test_config(
                 cases.push(case(&check, outcome_word(outcome), detail));
             }
         }
+        // Provenance: the signed state and the audit chain are verified directly, commit records
+        // against recent commits
         Config::Provenance(provenance) => {
             for item in &provenance.require {
                 let (status, detail) = match item {
@@ -742,6 +763,7 @@ fn test_config(
                 cases.push(case(&config::serial(item), status, detail));
             }
         }
+        // Action: each operation must be registered here or be a known direct operation
         Config::Action(action) => {
             let registered = validate::registered_operations(&repo.workspace.root);
             for rule in action.rules() {
@@ -774,6 +796,8 @@ fn test_config(
                 ));
             }
         }
+        // Identity: every agent already assigned to a target must be admitted by the Brick, or the
+        // assignment would stop working
         Config::Identity(identity) => {
             for target in on {
                 for assignment in repo.store.assignments.iter().filter(|assignment| {
@@ -791,6 +815,8 @@ fn test_config(
                 }
             }
         }
+        // Environment: credentials must be in this machine's vault and required variables set;
+        // missing ones are unknown, as another machine may have them
         Config::Environment(environment) => {
             for credential in &environment.credentials {
                 let present = crate::trust::vault::exists(&repo.workspace, &credential.name);
@@ -820,6 +846,7 @@ fn test_config(
                 ));
             }
         }
+        // Watch: signals without a connector are coverage gaps
         Config::Watch(watch) => {
             for signal in &watch.signals {
                 cases.push(case(
@@ -840,6 +867,7 @@ fn test_config(
                 ));
             }
         }
+        // Knowledge: every delivered file must exist
         Config::Knowledge(knowledge) => {
             for file in &knowledge.files {
                 let readable = repo.workspace.root.join(file).is_file();
@@ -852,6 +880,7 @@ fn test_config(
         }
         _ => {}
     }
+    // A kind none of the above covers is described by what its runtime does
     if !per_file
         && !per_call
         && !matches!(

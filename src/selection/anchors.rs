@@ -23,6 +23,12 @@ pub(crate) enum CommentSyntax {
     Block(&'static str, &'static str),
 }
 
+/** What a source marker delimits
+ * Variants
+    - Selection - a signed selection
+    - Zone - a zone's lines
+    - Flow - a flow's lines
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum MarkerKind {
     Selection,
@@ -31,6 +37,12 @@ pub(crate) enum MarkerKind {
 }
 
 impl MarkerKind {
+    /** The tag prefix written in markers of this kind
+     * Input
+        - None (uses self)
+     * Output
+        - &'static str
+    */
     pub(crate) fn tag(self) -> &'static str {
         match self {
             Self::Selection => MARKER_TAG,
@@ -163,6 +175,15 @@ pub(crate) fn render(syntax: CommentSyntax, id: &str, boundary: Boundary) -> Str
     render_kind(syntax, MarkerKind::Selection, id, boundary)
 }
 
+/** Render one marker comment of a given kind in a language's comment syntax
+ * Input
+    - syntax: CommentSyntax - line or block comment syntax
+    - kind: MarkerKind - what the marker delimits
+    - id: &str - entity or selection id
+    - boundary: Boundary - start or end
+ * Output
+    - String
+*/
 pub(crate) fn render_kind(
     syntax: CommentSyntax,
     kind: MarkerKind,

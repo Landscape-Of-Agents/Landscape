@@ -582,7 +582,9 @@ details.more summary { cursor: pointer; font-weight: 600; }
 const CLIENT = `
 const vscode = acquireVsCodeApi();
 const $ = (id) => document.getElementById(id);
+/** Escape text for safe use in HTML. */
 const esc = (text) => String(text == null ? "" : text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+/** Shorten text to n characters with an ellipsis. */
 const clip = (text, n) => { text = String(text || ""); return text.length > n ? text.slice(0, n - 1) + "…" : text; };
 let requests = 0;
 const waiting = new Map();
@@ -643,8 +645,11 @@ function Graph(host, onPick) {
     '<div class="zoom"><button data-z="in" title="Zoom in" aria-label="Zoom in">+</button><button data-z="out" title="Zoom out" aria-label="Zoom out">−</button><button data-z="fit" title="Fit" aria-label="Fit the graph">⤢</button></div>';
   const svg = host.querySelector("svg"), viewport = host.querySelector(".viewport"), placeholder = host.querySelector(".placeholder");
   let model = { nodes: [], edges: [] }, pos = {}, view = { scale: 1, x: 20, y: 20 }, picked = null, gesture = null, fitted = false;
+  /** The colour of a graph node by kind and tone. */
   const tone = (node) => node.kind === "zone" ? "var(--zone)" : node.kind === "flow" ? "var(--flow)" : node.tone === "bad" ? "var(--bad)" : node.tone === "attention" ? "var(--warn)" : node.tone === "busy" ? "var(--busy)" : node.tone === "off" ? "var(--off)" : "var(--ok)";
+  /** The glyph drawn before a node's name. */
   const glyph = (node) => node.kind === "zone" ? "▦ " : node.kind === "flow" ? "⇢ " : (host.dataset.glyph || "◆") + " ";
+  /** Apply the pan and zoom to the graph. */
   const apply = () => viewport.setAttribute("transform", "translate(" + view.x + " " + view.y + ") scale(" + view.scale + ")");
   function fit() {
     const ids = Object.keys(pos);
@@ -750,6 +755,7 @@ function dialog(message) {
     '<div class="m-foot"><button class="btn" data-m="no">Cancel</button><button class="btn ' + (tone ? "danger-fill" : "primary") + '" data-m="yes"' + (kind === "pick" && !items.length ? " disabled" : "") + ">" + esc(message.button || "OK") + "</button></div></div>";
   document.body.appendChild(back);
   const input = back.querySelector("#m-input"), area = back.querySelector("#m-text"), search = back.querySelector("#m-search");
+  /** Close the dialog and send the answer; a reason or a pick is required to confirm. */
   const answer = (ok) => {
     if (ok && kind === "reason" && !input.value.trim()) { input.closest(".field").classList.add("error"); input.focus(); return; }
     const picked = [...back.querySelectorAll('input[name="m-pick"]:checked')].map((box) => Number(box.value));

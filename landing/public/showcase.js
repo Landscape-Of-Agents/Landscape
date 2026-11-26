@@ -18,18 +18,22 @@
   const HOLD = 1.6;
   const LOGO = "logo.png?v=3";
   const SVG = "http://www.w3.org/2000/svg";
+  /** Keep a value inside a range (0 to 1 by default). */
   const clamp = (value, low = 0, high = 1) => Math.min(high, Math.max(low, value));
+  /** Create an HTML element with an optional class and text. */
   const make = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
     if (text != null) node.textContent = text;
     return node;
   };
+  /** Create an SVG element with attributes. */
   const svg = (tag, attributes) => {
     const node = document.createElementNS(SVG, tag);
     for (const [key, value] of Object.entries(attributes || {})) node.setAttribute(key, String(value));
     return node;
   };
+  /** A stroked icon from SVG path markup. */
   const ICON = (path) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
 
   // A timeline: tracks that switch a class on over time ranges, type text over a span of time, or
@@ -66,8 +70,11 @@
 
   // ---------------------------------------------------------------- Crane: three terminals, one codebase
   const k = (text) => `<span class="sh-k">${text}</span>`;
+  /** Highlight a flag in a terminal line. */
   const f = (text) => `<span class="sh-f">${text}</span>`;
+  /** Highlight a string in a terminal line. */
   const s = (text) => `<span class="sh-s">${text}</span>`;
+  /** One terminal line. */
   const row = (html, className = "") => `<div class="sh-line ${className}"><i></i><span>${html}</span></div>`;
   // Each terminal names its layer class in full, so the style build keeps it
   const terminal = (n, layer, who, branch, depth, delay) => `
@@ -110,6 +117,7 @@
   ${terminal(1, "ly-t1", "you", "main", 70, 0.15)}
   ${terminal(2, "ly-t2", "ana", "feature/refunds", 125, 0.3)}
   ${terminal(3, "ly-t3", "ci", "github actions", 180, 0.45)}`,
+    /** Wire the terminals scene: commands typed in three terminals and the file they change, each step at its time. */
     build(t) {
       const terms = [1, 2, 3].map((n) => t.q(`[data-term="${n}"]`));
       const code = t.q("[data-code]");
@@ -217,6 +225,7 @@
       <div class="flex items-center gap-2 pt-1"><span class="font-mono text-[10px] text-ink-3">Ctrl ↵</span><span class="sh-btn" data-sign><span class="st" data-sign-idle>Sign context</span><span class="st" data-sign-done>✓ Signed</span></span></div>
     </div>
   </div>`,
+    /** Wire the graph scene: draw the nodes and edges and light them in order. */
     build(t) {
       const nodes = {};
       for (const [id, node] of Object.entries(NODES)) {
@@ -366,6 +375,7 @@
     ${TRACES.map((_, index) => `<div class="sh-spans st" data-trace-set="${index}"></div>`).join("")}
   </div>
   <div class="ly ly-metric sh-metric" data-metric style="--z:200px;--d:.5s"><span class="sh-label">Hook decision · p95</span><b>38<small>ms</small></b><svg viewBox="0 0 100 30" preserveAspectRatio="none"><polyline data-spark fill="none" stroke="rgba(255,255,255,.7)" stroke-width="1.4" vector-effect="non-scaling-stroke"/></svg><p><span>bypasses</span><span class="text-green-300">0 confirmed</span></p></div>`,
+    /** Wire the metrics scene: charts whose series slide with the time. */
     build(t) {
       // The series move with the time, so the chart slides forward and back with it
       const allowedAt = (i) => 62 + 22 * Math.sin(i / 3.1) + 7 * Math.sin(i * 1.7);
@@ -479,6 +489,7 @@
     return entry;
   });
 
+  /** Draw a scene at a time: advance its timeline and mark the steps already reached. */
   const draw = (entry, time) => {
     entry.time = time;
     const moment = (time * AUTHORED) / DURATION;
@@ -519,6 +530,7 @@
   // Scrolling down plays faster, scrolling up plays backwards; a still page plays at 1x
   let rate = 1;
   let settle = 0;
+  /** Speed the scene up or reverse it briefly while the page is scrolled, then return to normal speed. */
   const nudge = (direction) => {
     rate = direction > 0 ? 1.15 : -1;
     clearTimeout(settle);
@@ -535,7 +547,9 @@
   let jumpingUntil = 0;
   const DOWN_KEYS = new Set([" ", "PageDown", "ArrowDown", "End"]);
   const UP_KEYS = new Set(["PageUp", "ArrowUp", "Home"]);
+  /** Stop holding the pinned scene in place. */
   const release = () => { if (pinned) { pinned.armed = false; pinned = null; } };
+  /** Pin a scene in the middle of the window and start it from the beginning. */
   const pin = (entry) => {
     const box = entry.stage.getBoundingClientRect();
     pinY = Math.round(window.scrollY + box.top - Math.max(0, (window.innerHeight - box.height) / 2));
@@ -594,6 +608,7 @@
 
   let previous = performance.now();
   for (const entry of rows) draw(entry, 0);
+  /** Advance every visible scene by the real time since the last frame. */
   const frame = (now) => {
     // Real time, so slow or throttled frames do not slow the scene; a long gap (a hidden tab) is cut short
     const elapsed = Math.min(0.25, (now - previous) / 1000);

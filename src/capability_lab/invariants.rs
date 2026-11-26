@@ -48,6 +48,9 @@ pub(crate) fn verify(
     sources: &Sources,
 ) -> Vec<LabCheck> {
     let mut checks = Vec::new();
+    // Claims are recomputed from evidence: conflicting assertions fail; a claim stated as verified
+    // must also recompute as verified; an unverified required claim fails and an optional one is
+    // only noted
     for claim in &definition.verification.claims {
         let subject = format!("claim:{}", claim.claim_id);
         let (status, reasons, relied) = effective_claim(definition, claim, sources);
@@ -101,6 +104,8 @@ pub(crate) fn verify(
         refs.extend(claim.evidence_refs.iter().cloned());
         checks.push(result.with_refs(refs));
     }
+    // A business invariant holds only with an authoritative mapping and a verified claim about it;
+    // technical results never stand in for it
     for invariant in definition
         .verification
         .invariants
@@ -144,6 +149,7 @@ pub(crate) fn verify(
             )
         });
     }
+    // Dependencies must resolve; an unverifiable or optional one is noted, not passed
     match dependencies(
         state,
         &definition.capability_id,

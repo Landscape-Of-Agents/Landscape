@@ -250,6 +250,12 @@ fn tool(tool: &str) -> &'static str {
     }
 }
 
+/** The tool name reported in events: kept as given (MCP names stay granular), capped at 160 characters, UNKNOWN_TOOL when empty
+ * Input
+    - name: &str - tool name
+ * Output
+    - String
+*/
 fn reported_tool(name: &str) -> String {
     if name.is_empty() {
         return "UNKNOWN_TOOL".into();
@@ -709,6 +715,8 @@ fn tool_call(spec: &mut Spec, event: &Event, action_type: &str) {
 
 /** F05 (and F16, F27.3, F27.5, F36): the decision before a tool call */
 fn decided(event: &Event) -> Vec<Spec> {
+    // One stored decision can project to several specification events: the decision itself, plus
+    // credits, guidance, subagent, network and external-tool events when the call involved them
     let payload = &event.payload;
     let decision = event.decision.unwrap_or(Decision::Allow);
     let rule = rule(event).unwrap_or_default();
@@ -724,6 +732,7 @@ fn decided(event: &Event) -> Vec<Spec> {
     let permission =
         payload.get("hook_event").and_then(Value::as_str) == Some("permission-request");
     let mut specs = Vec::new();
+    // Every event made here shares the tool call groups of this decision
     let make = |name: &str, flow: &str| {
         let mut spec = base(event, name, flow);
         tool_call(
@@ -737,6 +746,8 @@ fn decided(event: &Event) -> Vec<Spec> {
         );
         spec
     };
+    // A permission request (the agent asked to be allowed) is either refused by Crane outright or
+    // left to the person
     if permission {
         let refused = matches!(decision, Decision::Deny | Decision::Quarantine);
         let mut spec = make(
@@ -777,6 +788,8 @@ fn decided(event: &Event) -> Vec<Spec> {
         }
         return vec![spec];
     }
+    // A normal pre-tool-use decision: each verdict maps to its own event name, and denials are told
+    // apart by the rule that fired
     match decision {
         Decision::Allow => {
             let mut spec = make("TOOL_CALL_ALLOWED", "F05");
@@ -795,6 +808,8 @@ fn decided(event: &Event) -> Vec<Spec> {
                 );
             specs.push(spec);
         }
+        // Approval: scripts that look suspicious are told apart from ordinary approvals, and
+        // running out of credits adds a separate F27 event
         Decision::RequireApproval => {
             let script = SCRIPT_ASK_RULES.contains(&rule.as_str());
             let (name, statement) = if script && operation == "write" {
@@ -865,6 +880,9 @@ fn decided(event: &Event) -> Vec<Spec> {
                 .set("telemetry", "agent_state", "QUARANTINED");
             specs.push(spec);
         }
+        // Denials, most specific first: blocked scripts, fail-closed integrity or configuration
+        // errors, attempts on Crane itself, then ordinary rule denials with the change they would
+        // have made
         Decision::Deny | Decision::Error => {
             if SCRIPT_DENY_RULES.contains(&rule.as_str()) {
                 let mut spec = make("SCRIPT_BLOCKED", "F05");
@@ -920,6 +938,7 @@ fn decided(event: &Event) -> Vec<Spec> {
             }
         }
     }
+    // Calls that went ahead may also have received zone guidance or dispatched a subagent
     if decision != Decision::Deny && decision != Decision::Quarantine {
         if let Some(bytes) = payload
             .get("guidance_bytes")
@@ -966,6 +985,7 @@ fn decided(event: &Event) -> Vec<Spec> {
             specs.push(spec);
         }
     }
+    // Network destinations inferred from the call are reported whatever the decision (F36)
     if let Some(network) = payload
         .get("network")
         .and_then(Value::as_array)
@@ -994,6 +1014,8 @@ fn decided(event: &Event) -> Vec<Spec> {
         );
         specs.push(spec);
     }
+    // Tools Crane cannot classify (MCP and unknown tools) are reported as external, with the server
+    // name when it has one
     if matches!(tool(tool_name), "MCP" | "OTHER") && operation == "other" {
         let status = match decision {
             Decision::Allow => "ALLOWED",
@@ -1577,6 +1599,12 @@ mod tests {
         }
     }
 
+    /** Tool names are reported as given, and an empty name becomes UNKNOWN_TOOL
+     * Input
+        - None
+     * Output
+        - None (panics on failure)
+    */
     #[test]
     fn unrecognized_and_mcp_tool_names_remain_granular() {
         assert_eq!(reported_tool("Read"), "Read");

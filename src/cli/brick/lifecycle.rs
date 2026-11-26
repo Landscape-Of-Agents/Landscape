@@ -160,6 +160,8 @@ pub(super) fn activate(args: &[String]) -> Result<(), String> {
     - Result<(), String>
 */
 pub(super) fn withdraw(args: &[String], revoke: bool) -> Result<(), String> {
+    // Revoke and deprecate share this path: revoking may cover every version, deprecating names one
+    // exact version
     let command = if revoke {
         "brick.revoke"
     } else {
@@ -188,6 +190,7 @@ pub(super) fn withdraw(args: &[String], revoke: bool) -> Result<(), String> {
     } else {
         VersionState::Deprecated
     };
+    // The versions this changes; with none, report that nothing was changed
     let affected = repo
         .store
         .versions(&id)
@@ -208,6 +211,8 @@ pub(super) fn withdraw(args: &[String], revoke: bool) -> Result<(), String> {
         );
         return finish(&args, response, &[]);
     }
+    // Attachments pinned to an affected version (directly or through a Stack) are reported so
+    // people can move them
     let pinned = repo
         .store
         .attachments
@@ -232,6 +237,7 @@ pub(super) fn withdraw(args: &[String], revoke: bool) -> Result<(), String> {
             )
         })
         .collect::<Vec<_>>();
+    // Change the signed store: each affected version gets the new state with who, when and why
     require_verified(&repo)?;
     let by = store::author(&repo.workspace);
     let now = crate::platform::now_millis();
@@ -260,6 +266,7 @@ pub(super) fn withdraw(args: &[String], revoke: bool) -> Result<(), String> {
             Ok(())
         },
     )?;
+    // Record the change and report it with the pinned attachments
     let references = affected
         .iter()
         .map(|version| {

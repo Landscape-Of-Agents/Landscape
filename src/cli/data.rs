@@ -9,6 +9,13 @@ use crate::platform::process;
 use crate::telemetry::ingest::Client;
 use crate::trust::require_human;
 
+/** Dispatch 'crane data' subcommands; only 'clear' exists
+ * Input
+    - args: &[String] - arguments after 'data'
+ * Output
+    - Result<(), String>
+    - Error on unknown usage or if the subcommand fails
+*/
 pub(crate) fn data(args: &[String]) -> Result<(), String> {
     match args {
         [command] if command == "clear" => clear(),
@@ -16,6 +23,13 @@ pub(crate) fn data(args: &[String]) -> Result<(), String> {
     }
 }
 
+/** Permanently delete this repository's hosted records. Requires a human at the terminal, a normalized GitHub remote and a GitHub CLI token; the person must type CLEAR OWNER/REPO, and the service then checks they are listed in CODEOWNERS before deleting
+ * Input
+    - None
+ * Output
+    - Result<(), String>
+    - Error if any check fails, the confirmation does not match, or the service refuses
+*/
 fn clear() -> Result<(), String> {
     require_human("crane data clear")?;
     let workspace = Workspace::discover()?;

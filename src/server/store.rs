@@ -411,6 +411,16 @@ pub(super) enum ClearRepositoryError {
     Database(String),
 }
 
+/** Delete every hosted record of a repository, but only for an installation verified for that repository and remote; reports how many documents each collection lost
+ * Input
+    - database: &Database - database
+    - repository: &str - repository identity
+    - installation: &str - installation key
+    - remote: &str - normalized remote
+ * Output
+    - Result<Value, ClearRepositoryError>
+    - Error if the installation is not verified for the repository or the database fails
+*/
 pub(super) fn clear_repository(
     database: &Database,
     repository: &str,

@@ -255,9 +255,13 @@ pub(crate) fn valid_policy_name(name: &str) -> bool {
       identifier, an option a command does not take, a missing ';', or an unclosed block
 */
 pub(crate) fn parse(path: &str, text: &str) -> Result<PolicyFile, SyntaxError> {
+    // A small hand-written parser over tokens: a file is a sequence of 'policy NAME { COMMAND; ...
+    // }' blocks. Every error points at the line and column of the offending token, with a hint for
+    // common mistakes
     let tokens = tokenize(text)?;
     let mut blocks = Vec::new();
     let mut index = 0;
+    // One policy block per iteration: the keyword, a valid name and an opening brace
     while index < tokens.len() {
         let keyword = &tokens[index];
         if keyword.text != "policy" {
@@ -296,6 +300,7 @@ pub(crate) fn parse(path: &str, text: &str) -> Result<PolicyFile, SyntaxError> {
             ));
         }
         index += 3;
+        // Commands until the closing brace: 'preserve ID;' or 'target ID [change_type TYPE];'
         let mut statements = Vec::new();
         let close = loop {
             let Some(token) = tokens.get(index) else {
@@ -347,6 +352,7 @@ pub(crate) fn parse(path: &str, text: &str) -> Result<PolicyFile, SyntaxError> {
                 ));
             }
             index += 2;
+            // Options until the semicolon; only target commands take a change_type, and only once
             let mut change_type = None;
             loop {
                 let Some(next) = tokens.get(index) else {

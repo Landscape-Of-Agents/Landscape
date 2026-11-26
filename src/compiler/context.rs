@@ -124,9 +124,12 @@ pub(crate) fn plan(
     extraction: &Extraction,
     commit: Option<String>,
 ) -> ContextPlan {
+    // Every element of the context records its basis (observed, derived or declared), so reviewers
+    // can see how each part was established
     let mut bases = Vec::new();
     let mut gaps = Vec::new();
     let mut warnings = Vec::new();
+    // The capability applies only where the episode was actually observed
     let environments = reconstruction
         .items
         .iter()
@@ -154,6 +157,8 @@ pub(crate) fn plan(
         value: request.task_class.clone(),
         basis: Basis::Declared,
     });
+    // A procedure that changes state is at least medium risk, whatever was declared; the risk sets
+    // the review level
     let mut risk = intake.risk;
     if extraction.mutating && risk == RiskLevel::Low {
         risk = RiskLevel::Medium;
@@ -173,6 +178,8 @@ pub(crate) fn plan(
         RiskLevel::Medium => ReviewLevel::Owner,
         _ => ReviewLevel::Admin,
     };
+    // Preconditions: repository access (read or write, as the procedure needs) and, for
+    // deployments, a known target
     let access = if extraction.mutating {
         "read and change"
     } else {
@@ -199,6 +206,7 @@ pub(crate) fn plan(
         value: precondition.id.clone(),
         basis: Basis::Inferred,
     }));
+    // Assumptions: everything rests on one episode, and accepted model proposals are hypotheses
     let observed_in = if environments.is_empty() {
         "no observed environment".to_string()
     } else {
@@ -219,6 +227,7 @@ pub(crate) fn plan(
             ClaimStatus::Unresolved,
         ));
     }
+    // Limitations: the evidence the intake could not see
     let mut limitations = vec![format!(
         "Applicability is limited to what one episode observed: {observed_in}"
     )];
@@ -228,6 +237,8 @@ pub(crate) fn plan(
             missing.evidence_type, missing.state
         )
     }));
+    // Dependencies pin the zones, flows and policies the evidence was captured under, Crane itself,
+    // and the commit the work was done on
     let governance = &intake.governance;
     let mut dependencies = Vec::new();
     dependencies.extend(

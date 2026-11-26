@@ -449,6 +449,7 @@ export function mockPreset(type: string, config: Record<string, unknown>, file: 
   return { form };
 }
 
+/** The JSON printed by crane brick list --json: Bricks, Stacks, attachments and assignments. */
 export interface BrickList {
   bricks: BrickRow[];
   stacks: StackRow[];

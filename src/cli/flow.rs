@@ -1436,6 +1436,7 @@ fn proposals(args: &[String]) -> Result<(), String> {
     - Result<(), String>
 */
 fn proposal_decide(args: &[String], approving: bool) -> Result<(), String> {
+    // Only a person decides agent proposals, and only pending ones
     require_human("crane flow proposals")?;
     let args = parse(args, &["reason"], &["required"])?;
     args.expect_positional(
@@ -1455,6 +1456,7 @@ fn proposal_decide(args: &[String], approving: bool) -> Result<(), String> {
         ));
     }
     let now = crate::platform::now_millis();
+    // Rejecting records who decided and why, and tells the proposing session
     if !approving {
         let reason = text(
             &args,
@@ -1486,6 +1488,8 @@ fn proposal_decide(args: &[String], approving: bool) -> Result<(), String> {
         );
         return finish(&args, response, &[]);
     }
+    // Approving turns the proposal into signed Flow knowledge: a test (optionally required) or a
+    // context item, under an id that does not clash with existing ones
     declared(&workspace, &proposal.flow)?;
     let flow = proposal.flow.clone();
     let by = format!(

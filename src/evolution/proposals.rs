@@ -117,6 +117,8 @@ pub(crate) struct GateContext<'a> {
     - Result<String, String> allowed with a reason, or refused with a reason
 */
 fn decide(change: &Change, context: &GateContext) -> Result<String, String> {
+    // Every change must cite evidence the signal itself rests on (its supporting invocations,
+    // evidence or drift); anything else is refused
     let parent = context.parent;
     let signal = context.signal;
     let grounded = signal
@@ -150,8 +152,11 @@ fn decide(change: &Change, context: &GateContext) -> Result<String, String> {
             signal.signal_id
         ));
     }
+    // Each kind of change has its own rule; the Ok text says why it is safe, the Err text why it is
+    // refused
     let text_ok = |text: &str| !text.trim().is_empty() && text.len() <= MAX_TEXT;
     match &change.change {
+        // Documenting changes only add text, so they are always safe
         ChangeKind::AddKnownFailureCase { text }
         | ChangeKind::AddLimitation { text }
         | ChangeKind::AddUnresolvedAssumption { text } => {
@@ -161,6 +166,8 @@ fn decide(change: &Change, context: &GateContext) -> Result<String, String> {
                 Err(format!("text must be 1-{MAX_TEXT} characters"))
             }
         }
+        // Exclusions tighten applicability, and only a qualified failure or drift signal justifies
+        // them
         ChangeKind::AddExclusion {
             exclusion_kind,
             value,
@@ -176,6 +183,8 @@ fn decide(change: &Change, context: &GateContext) -> Result<String, String> {
                 Ok("tightens applicability; justified by the cited failures (regression checks verified contexts)".into())
             }
         }
+        // A new requirement must use a verification method that was actually observed, and stays
+        // unresolved until validated
         ChangeKind::AddVerificationRequirement {
             claim_id,
             statement,
@@ -197,6 +206,7 @@ fn decide(change: &Change, context: &GateContext) -> Result<String, String> {
                 Ok("adds a required claim that stays unresolved until validated".into())
             }
         }
+        // Re-pinning is only to the version observed right now, and only for zones and flows
         ChangeKind::UpdateDependency {
             dependency,
             target_id,
@@ -225,6 +235,7 @@ fn decide(change: &Change, context: &GateContext) -> Result<String, String> {
                 _ => Ok("re-pins to the observed current version; the candidate must be revalidated".into()),
             }
         }
+        // Rewording keeps the step's kind and contract
         ChangeKind::ClarifyStep {
             step_id,
             description,
@@ -242,6 +253,7 @@ fn decide(change: &Change, context: &GateContext) -> Result<String, String> {
                 Ok("rewords a step from observed evidence; its kind and contract are unchanged".into())
             }
         }
+        // Risk can only go up
         ChangeKind::RaiseRisk { to } => {
             if *to > parent.applicability.risk {
                 Ok("raises risk; never weakens a safeguard".into())
@@ -249,6 +261,8 @@ fn decide(change: &Change, context: &GateContext) -> Result<String, String> {
                 Err("risk can only be raised".into())
             }
         }
+        // Everything that could weaken the capability is refused outright: policy edits, lower risk
+        // or review, removed or self-verified claims, broader scope, and new steps
         ChangeKind::ChangePolicy { target_id, .. } => Err(format!(
             "policy {target_id}: evolution never edits or re-pins policies; signed governance changes go through Crane's policy workflow"
         )),
@@ -453,6 +467,8 @@ pub(crate) fn weakenings(
 ) -> Vec<String> {
     let mut found = Vec::new();
     let (before, after) = (&parent.applicability, &candidate.applicability);
+    // Applicability and review: risk and review level may not drop, policy dependencies may not
+    // change, and no dependency may disappear or become optional
     if after.risk < before.risk {
         found.push(format!(
             "risk lowered from {:?} to {:?}",
@@ -488,6 +504,8 @@ pub(crate) fn weakenings(
             ));
         }
     }
+    // Scope may not broaden: no exclusion removed, no environment or task class added, no
+    // precondition removed
     for exclusion in &before.exclusions {
         if !after.exclusions.contains(exclusion) {
             found.push(format!(
@@ -519,6 +537,9 @@ pub(crate) fn weakenings(
             found.push(format!("precondition {} removed", precondition.id));
         }
     }
+    // Verification: the same method and scope, every claim kept (still required, never newly
+    // verified, with the same evidence and statement), new claims unresolved, and every invariant
+    // and negative case kept
     let (verify_before, verify_after) = (&parent.verification, &candidate.verification);
     if verify_before.method != verify_after.method
         || verify_before.method_version != verify_after.method_version
@@ -585,6 +606,7 @@ pub(crate) fn weakenings(
             found.push(format!("negative case removed: {case}"));
         }
     }
+    // The procedure's shape (steps and their kinds, in order) may not change
     let shape = |definition: &CapabilityDefinition| {
         definition
             .execution

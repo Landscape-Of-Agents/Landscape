@@ -34,6 +34,12 @@ struct World {
 }
 
 impl Drop for World {
+    /** Drop the test database when the world ends, unless CRANE_TEST_KEEP_DATABASE=1
+     * Input
+        - None (uses self)
+     * Output
+        - None
+    */
     fn drop(&mut self) {
         // CRANE_TEST_KEEP_DATABASE=1 keeps the data, for looking at the dashboard by hand
         if std::env::var("CRANE_TEST_KEEP_DATABASE").map_or(true, |value| value != "1") {

@@ -78,6 +78,7 @@ const COMMANDS = [
 
 const $ = (selector, root) => (root || document).querySelector(selector);
 const $$ = (selector, root) => [...(root || document).querySelectorAll(selector)];
+/** Create an element with attributes and children. */
 const make = (tag, attributes, ...children) => {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attributes || {})) {
@@ -87,6 +88,7 @@ const make = (tag, attributes, ...children) => {
   node.append(...children.filter((child) => child != null));
   return node;
 };
+/** Storage that reads and writes JSON and ignores blocked storage. */
 const store = (kind) => ({
   get(key) { try { return JSON.parse(window[kind].getItem(key)); } catch { return null; } },
   set(key, value) { try { window[kind].setItem(key, JSON.stringify(value)); } catch { /* blocked storage */ } },
@@ -104,6 +106,7 @@ function toast(text) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => node.classList.add("opacity-0", "translate-y-4"), 1600);
 }
+/** Copy text to the clipboard and show it on the button. */
 async function copy(text, button) {
   try { await navigator.clipboard.writeText(text); } catch {
     const area = make("textarea", { class: "fixed opacity-0", "aria-hidden": "true" });
@@ -152,6 +155,7 @@ const scene = {
 const REFUND = "order.total - order.refunded";
 let sceneVisible = true;
 new IntersectionObserver((entries) => { sceneVisible = entries.some((entry) => entry.isIntersecting); }).observe(scene.root);
+/** Wait a number of milliseconds. */
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // Waits that hold while nobody can see the scene
 async function beat(ms) { await pause(ms); while (!sceneVisible || document.hidden) await pause(400); }
@@ -185,6 +189,7 @@ function sceneEnd() {
   scene.target.classList.add("pass");
   scene.result.classList.add("on");
 }
+/** Play the hero scene in a loop: an agent edit is denied, the person approves, the change lands. */
 async function playScene() {
   if (STILL) { sceneEnd(); return; }
   const feeLine = $("#line-fee"), refundLine = $("#line-refund");
@@ -234,6 +239,7 @@ playScene();
 // Downloads are named by platform (crane-0.5.10-windows.zip); releases before 0.5.11 used Rust's
 // target names, which the second entry still finds
 const TARGETS = { linux: ["-linux.", "x86_64-unknown-linux-gnu"], macos: ["-macos-apple-silicon.", "aarch64-apple-darwin"], windows: ["-windows.", "x86_64-pc-windows-msvc"] };
+/** A version tag without its leading v. */
 const plain = (tag) => tag.replace(/^v/, "");
 const INSTALL = {
   linux: (tag) => `curl -LO ${RELEASES}/download/${tag}/crane-${plain(tag)}-linux.tar.gz
@@ -301,10 +307,12 @@ function setStat(name, value) {
 function countUp(node) {
   const target = Number(node.dataset.value);
   if (!Number.isFinite(target)) return;
+  /** Show a counter value, compact above ten thousand. */
   const show = (value) => (node.textContent = value >= 10000 ? compact.format(value) : Math.round(value).toLocaleString());
   if (STILL) return show(target);
   const start = performance.now();
   const from = Number(node.dataset.shown || 0);
+  /** Ease the counter towards its target on each animation frame. */
   const step = (now) => {
     const progress = Math.min(1, (now - start) / 1400);
     const value = from + (target - from) * (1 - Math.pow(1 - progress, 3));
@@ -321,6 +329,7 @@ new IntersectionObserver((entries, observer) => {
   observer.disconnect();
 }, { threshold: 0.3 }).observe($("#stats"));
 
+/** Load the GitHub releases (cached for ten minutes per tab) and fill the release list and download count. */
 async function loadReleases() {
   // The cache is per repository, so a move to another repository never shows the old releases
   const CACHE_KEY = "releases:" + REPO;
@@ -353,6 +362,7 @@ async function loadReleases() {
   setStat("releases", published.length);
   setStat("downloads", published.reduce((sum, release) => sum + release.assets.filter((asset) => !isChecksum(asset.name)).reduce((total, asset) => total + asset.download_count, 0), 0));
 }
+/** Count this visit once per browser session and show the total visits. */
 async function loadVisits() {
   // A visit counts once per browser session; later page views, and local previews, only read it
   const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
@@ -436,6 +446,7 @@ if (new URLSearchParams(location.search).get("sent") === "1") {
 }
 form.addEventListener("submit", (event) => {
   const error = $("#feedback-error");
+  /** Stop the form and show the error. */
   const fail = (text) => { event.preventDefault(); error.textContent = text; error.hidden = false; };
   error.hidden = true;
   const images = [...$("#feedback-images").files];
@@ -452,6 +463,7 @@ form.addEventListener("submit", (event) => {
 // ------------------------------------------------------------------ navigation
 const menu = $("#menu");
 const mobile = $("#mobile-links");
+/** Open or close the mobile menu. */
 const setMenu = (open) => { mobile.hidden = !open; menu.setAttribute("aria-expanded", String(open)); menu.setAttribute("aria-label", open ? "Close the menu" : "Open the menu"); };
 menu.addEventListener("click", () => setMenu(mobile.hidden));
 mobile.addEventListener("click", (event) => { if (event.target.closest("a")) setMenu(false); });

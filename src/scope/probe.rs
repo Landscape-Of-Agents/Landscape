@@ -453,6 +453,8 @@ fn metadata(boundary: &Boundary, guard: &Guard, probes: &mut Probes) {
     - None
 */
 fn selection(boundary: &Boundary, guard: &Guard, record: &Record, probes: &mut Probes) {
+    // Each probe asks the real guard to decide a synthetic attack on this selection; a probe that
+    // cannot be built is skipped with the reason, never silently passed
     let category = "selections";
     let path = record.current.span.path.clone();
     let id = &record.id;
@@ -489,6 +491,8 @@ fn selection(boundary: &Boundary, guard: &Guard, record: &Record, probes: &mut P
         );
         return;
     };
+    // A target may be edited (unless its zone is observe-only); everything below is for preserved
+    // selections
     if record.operation == SelectionOperation::Target {
         let observe = boundary
             .enforcement
@@ -510,6 +514,9 @@ fn selection(boundary: &Boundary, guard: &Guard, record: &Record, probes: &mut P
         );
         return;
     }
+    // A preserved selection must be protected however the file is named: directly, through a path
+    // traversal, by absolute path, with different letter case, and through a symlink outside the
+    // repository
     let edit = |target: &str| write(target, Proposed::Content(changed.clone()));
     probes.check(
         guard,
@@ -570,6 +577,8 @@ fn selection(boundary: &Boundary, guard: &Guard, record: &Record, probes: &mut P
             &format!("a symlink could not be created ({error})"),
         ),
     }
+    // Removing a marker, deleting the file, and shell commands that change, remove or move it (also
+    // when the file is named through a variable) must all be refused
     if let Some(marker) = find_markers(&path, &text)
         .iter()
         .find(|marker| marker.id.as_deref() == Some(id.as_str()))
